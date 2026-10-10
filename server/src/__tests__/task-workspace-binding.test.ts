@@ -8,7 +8,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import express from "express";
+import request from "supertest";
+import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { deleteCompany } from "../services/company-deletion.js";
@@ -187,6 +191,78 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0]?.metadata)
       .toMatchObject({ _issuePrivacySources: { [f.issueId]: true } });
     await expect(svc.selectTaskWorkspace({ ...request, requestKey: "stale" })).rejects.toThrow("binding changed");
+  });
+
+  it("preserves a queued next-run choice through first binding and its original retry receipt", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db);
+    const [nextWorkspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId,
+      mode: "shared_workspace", strategyType: "project_primary", name: "Next folder", cwd: `/tmp/next-${f.issueId}` }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "First worker", adapterType: "process" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id,
+      status: "running", invocationSource: "on_demand", contextSnapshot: { issueId: f.issueId } }).returning();
+    const selectionRequest = { ...f, selection: { kind: "existing" as const, workspaceId: nextWorkspace.id },
+      expectedBindingRevision: 0, requestKey: "choose-during-first-admission" };
+    await svc.selectTaskWorkspace(selectionRequest);
+    await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+    expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({
+      workspace: { id: f.workspaceId }, bindingRevision: 1,
+      pendingSelection: { expectedBindingRevision: 1, intent: { request: { expectedBindingRevision: 0 } } },
+    });
+    expect(await svc.selectTaskWorkspace(selectionRequest)).toMatchObject({ kind: "scheduled", bindingRevision: 1 });
+    await expect(svc.selectTaskWorkspace({ ...selectionRequest, expectedBindingRevision: 1 })).rejects.toThrow("different intent");
+    const admission = { ...f, runId: randomUUID() };
+    await expect(svc.applyPendingTaskWorkspaceSelection(admission)).rejects.toThrow("Previous task run must finish");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    expect(await svc.applyPendingTaskWorkspaceSelection(admission)).toBe(true);
+    expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({
+      workspace: { id: nextWorkspace.id }, bindingRevision: 2, pendingSelection: null,
+    });
+    expect(await svc.selectTaskWorkspace(selectionRequest)).toMatchObject({ kind: "applied", bindingRevision: 2 });
+
+    // A later, unrelated replacement still invalidates the revision fence.
+    await svc.selectTaskWorkspace({ ...f, selection: { kind: "task_directory" },
+      expectedBindingRevision: 2, requestKey: "later-choice" });
+    await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+    await expect(svc.applyPendingTaskWorkspaceSelection({ ...f, runId: randomUUID() })).rejects.toThrow("Pending workspace selection is stale");
+  });
+
+  it("allows regular signed-in members to select files and request repositories while denying viewers", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db), userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Board member", email: `${userId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    const [membership] = await db.insert(companyMemberships).values({ companyId: f.companyId,
+      principalType: "user", principalId: userId, status: "active", membershipRole: "member" }).returning();
+    await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+    const actor = { type: "board" as const, source: "session" as const, userId,
+      companyIds: [f.companyId], isInstanceAdmin: false };
+    const app = express();
+    app.use(express.json());
+    // Authentication middleware establishes this session actor; all company,
+    // issue and workspace authorization below uses the real database service.
+    app.use((req, _res, next) => { req.actor = actor; next(); });
+    app.use("/api", taskWorkspaceRoutes(db));
+    app.use(errorHandler);
+    const selection = { selection: { kind: "task_directory" as const }, expectedBindingRevision: 1, requestKey: "member-selection" };
+    const repository = { repository: { kind: "url" as const, url: "https://github.com/public/example" }, requestKey: "member-repository" };
+    const selected = await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection);
+    expect(selected.status, JSON.stringify(selected.body)).toBe(200);
+    expect(selected.body).toMatchObject({ kind: "scheduled" });
+    const prepared = await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(repository);
+    expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
+    expect(prepared.body).toMatchObject({ kind: "requires_next_admission" });
+    const before = await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor);
+    expect(before).toMatchObject({ workspace: { id: f.workspaceId }, pendingSelection: { requestKey: selection.requestKey } });
+    expect(await svc.listTaskRepositories(f.companyId, f.workspaceId)).toHaveLength(1);
+
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.id, membership.id));
+    const deniedSelection = { ...selection, requestKey: "viewer-selection" };
+    const deniedRepository = { ...repository, requestKey: "viewer-repository" };
+    expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send(deniedSelection)).status).toBe(403);
+    expect((await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(deniedRepository)).status).toBe(403);
+    await expect(svc.selectTaskWorkspace({ ...f, actor, ...deniedSelection })).rejects.toThrow("modification is not allowed");
+    await expect(svc.requestTaskRepository({ ...f, actor, request: deniedRepository })).rejects.toThrow("modification is not allowed");
+    expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toEqual(before);
+    expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, f.workspaceId))).toHaveLength(1);
   });
 
   it.each(["binding", "configured_source"] as const)("supersedes an older queued selection when an ordinary update changes %s", async kind => {

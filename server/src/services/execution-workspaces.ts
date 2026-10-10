@@ -1,10 +1,9 @@
 import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 import { executionWorkspaceRepositoryService } from "./execution-workspace-repositories.js";
-import { accessService } from "./access.js";
 import { forbidden } from "../errors.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
-import { executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
@@ -1330,12 +1329,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function selectTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;
     selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string }) {
-    const decision = await accessService(db).decide({ actor: input.actor, action: "issue:mutate", resource: { type: "issue", companyId: input.companyId, issueId: input.issueId } });
-    if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
     return db.transaction(async tx => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
         await issueReadSqlCondition(tx, input.actor))).for("update");
       if (!task) throw notFound("Task not found");
+      const decision = await authorizationService(tx).decide({ actor: input.actor, action: "issue:mutate", resource: {
+        type: "issue", companyId: task.companyId, issueId: task.id,
+        status: task.status, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId,
+      } });
+      if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
       if (task.workspaceSelection?.request?.key === input.requestKey) {
         if (task.workspaceSelection.request.expectedBindingRevision !== input.expectedBindingRevision ||
             JSON.stringify(taskWorkspaceSelectionSchema.parse(task.workspaceSelection.selection)) !== JSON.stringify(taskWorkspaceSelectionSchema.parse(input.selection))) {
@@ -1344,7 +1346,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         return { kind: "applied" as const, bindingRevision: task.workspaceBindingRevision };
       }
       if (task.workspacePendingSelection?.requestKey === input.requestKey) {
-        if (task.workspacePendingSelection.expectedBindingRevision !== input.expectedBindingRevision ||
+        if ((task.workspacePendingSelection.intent.request?.expectedBindingRevision ?? task.workspacePendingSelection.expectedBindingRevision) !== input.expectedBindingRevision ||
             JSON.stringify(taskWorkspaceSelectionSchema.parse(task.workspacePendingSelection.intent.selection)) !== JSON.stringify(taskWorkspaceSelectionSchema.parse(input.selection))) {
           throw conflict("Workspace selection request key was already used for different intent");
         }
@@ -1394,8 +1396,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // Retain confidentiality even after a task is moved to another root.
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata,
         _issuePrivacySources: { ...(workspace.metadata?._issuePrivacySources as Record<string, unknown> ?? {}), [task.id]: true } } }).where(eq(executionWorkspaces.id, workspaceId));
+      const nextRevision = task.workspaceBindingRevision + (task.executionWorkspaceId === workspaceId ? 0 : 1);
+      // Realizing the current run's first folder must not invalidate an already
+      // accepted choice for its next run. Keep the original request receipt for retries.
+      const pending = task.workspacePendingSelection;
+      const pendingAfterFirstBinding = !task.executionWorkspaceId && pending?.expectedBindingRevision === task.workspaceBindingRevision
+        ? { ...pending, expectedBindingRevision: nextRevision }
+        : pending;
       const [bound] = await tx.update(issues).set({ ...patch, executionWorkspaceId: workspaceId,
-        workspaceBindingRevision: task.workspaceBindingRevision + (task.executionWorkspaceId === workspaceId ? 0 : 1), updatedAt: new Date() })
+        workspaceBindingRevision: nextRevision, workspacePendingSelection: pendingAfterFirstBinding, updatedAt: new Date() })
         .where(eq(issues.id, issueId)).returning();
       return bound;
     });

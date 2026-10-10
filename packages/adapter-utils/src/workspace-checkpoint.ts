@@ -69,7 +69,9 @@ async function checkpointMain(
       else if (before.isSymbolicLink()) {
         const target = await fs.readlink(source);
         const resolved = path.resolve(path.dirname(source), target);
-        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) throw new Error("Unsafe workspace archive symlink");
+        // Match confined full exports: omit the unsafe entry without losing
+        // unrelated changed files. Never follow the link or copy its target.
+        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) continue;
         entry = { kind: "symlink", target };
       } else continue;
       if (fingerprint(before) !== fingerprint(await fs.lstat(source))) throw new Error("Workspace changed during checkpoint capture");

@@ -9,9 +9,8 @@ import { activityLog, executionWorkspaceRepositories, executionWorkspaces, issue
 import { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository, type ProjectRepository } from "@paperclipai/shared";
 import { withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { conflict, forbidden, notFound } from "../errors.js";
-import { accessService } from "./access.js";
 import { assertTaskWorkspaceAccess } from "./task-workspace-source-access.js";
-import { canActorReadExecutionWorkspace, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { authorizationService, canActorReadExecutionWorkspace, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
@@ -47,7 +46,11 @@ export function executionWorkspaceRepositoryService(db: Db) {
   }
   async function request(input: { companyId: string; issueId: string; actor: AuthorizationActor; request: PrepareWorkspaceRepository }) {
     const parsed = prepareWorkspaceRepositorySchema.parse(input.request);
-    const decision = await accessService(db).decide({ actor: input.actor, action: "issue:mutate", resource: { type: "issue", companyId: input.companyId, issueId: input.issueId } });
+    const [requestedIssue] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), await issueReadSqlCondition(db, input.actor)));
+    if (!requestedIssue) throw notFound("Task not found");
+    const issueResource = (issue: typeof issues.$inferSelect) => ({ type: "issue" as const, companyId: issue.companyId, issueId: issue.id,
+      status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId });
+    const decision = await authorizationService(db).decide({ actor: input.actor, action: "issue:mutate", resource: issueResource(requestedIssue) });
     if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
     let userId = input.actor.userId ?? null;
     let localTrusted = input.actor.source === "local_implicit";
@@ -65,6 +68,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
     const receipt = await db.transaction(async tx => {
       const [issue] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), await issueReadSqlCondition(tx, input.actor))).for("no key update");
       if (!issue) throw notFound("Task not found");
+      const currentDecision = await authorizationService(tx).decide({ actor: input.actor, action: "issue:mutate", resource: issueResource(issue) });
+      if (!currentDecision.allowed) throw forbidden("Task workspace modification is not allowed");
       if (input.actor.type === "agent" && !["standard", "skill_test"].includes(issue.workMode)) throw forbidden("Repository preparation is unavailable in Ask or Plan mode");
       if (!issue.executionWorkspaceId) throw conflict("The task has no admitted workspace yet. Start it once before preparing a repository.");
       if (!(await canActorReadExecutionWorkspace(db, input.actor, issue.executionWorkspaceId))) throw notFound("Execution workspace not found");

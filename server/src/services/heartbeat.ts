@@ -3605,7 +3605,9 @@ export function heartbeatService(
           );
         }
       }
-      if (taskWorkspaceIntentRow?.intent && !nativeRecoveryExecutionWorkspaceId) {
+      // Once bound, retained workspace authorization above is authoritative.
+      // The original source selection may outlive its configuration row.
+      if (taskWorkspaceIntentRow?.intent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
         await executionWorkspacesSvc.validateSelection({ companyId: agent.companyId,
           actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
           selection: taskWorkspaceIntentRow.intent.selection });

@@ -222,6 +222,59 @@ suite("task project repository provisioning", () => {
     }
   }, 40_000);
 
+  it.each([true, false])("handles a deleted configured source with a retained workspace: %s", async (bound) => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "retained-source");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, "work.txt"), "Retained task work");
+    await db.insert(companies).values({ id: companyId, name: "Retained source", issuePrefix: `D${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Source policy" });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Source", sourceType: "local_path", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Writer", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue retained work", status: "todo", assigneeAgentId: agentId,
+      projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "shared_workspace" },
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } } });
+    const admit = async () => {
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      return (await heartbeat.getRun(run!.id))!;
+    };
+    let bindingId: string | null = null;
+    if (bound) {
+      expect(await admit()).toMatchObject({ status: "succeeded", error: null });
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      bindingId = task.executionWorkspaceId;
+      expect(bindingId).not.toBeNull();
+    }
+    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, sourceId));
+    const result = await admit();
+    const calls = execute.mock.calls.filter(([input]) => input.runId === result.id);
+    if (bound) {
+      expect(result).toMatchObject({ status: "succeeded", error: null });
+      expect(calls).toHaveLength(1);
+      expect(await realpath(calls[0]![0].context.paperclipWorkspace.cwd)).toBe(await realpath(cwd));
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, bindingId!));
+      expect(task.executionWorkspaceId).toBe(bindingId);
+      expect(workspace).toMatchObject({ projectId, projectWorkspaceId: null });
+      expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Retained task work");
+      await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, projectId));
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+      const callsBeforeRevocation = execute.mock.calls.length;
+      expect(await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } })).toBeNull();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(execute.mock.calls).toHaveLength(callsBeforeRevocation);
+    } else {
+      expect(result.status).toBe("failed");
+      expect(result.error).toContain("Workspace source is unavailable or inaccessible");
+      expect(calls).toHaveLength(0);
+    }
+  }, 40_000);
+
   it.each([
     { code: "workspace_git_scan_timeout", scenario: "temporary", retryable: true },
     { code: "workspace_git_scan_saturated", scenario: "temporary", retryable: true },

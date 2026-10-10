@@ -20,7 +20,10 @@ export function taskWorkspaceRoutes(db: Db) {
     if (!issue) throw notFound("Task not found");
     if (!hasCompanyAccess(req, issue.companyId)) throw notFound("Task not found");
     assertCompanyAccess(req, issue.companyId);
-    const decision = await accessService(db).decide({ actor: req.actor, action: write ? "issue:mutate" : "issue:read", resource: { type: "issue", companyId: issue.companyId, issueId: issue.id } });
+    const decision = await accessService(db).decide({ actor: req.actor, action: write ? "issue:mutate" : "issue:read", resource: {
+      type: "issue", companyId: issue.companyId, issueId: issue.id,
+      status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+    } });
     if (!decision.allowed) throw forbidden("Task workspace is outside this actor's authorization boundary");
     if (issue.executionWorkspaceId && !(await canActorReadExecutionWorkspace(db, req.actor, issue.executionWorkspaceId))) throw notFound("Execution workspace not found");
     if (write && req.actor.type === "agent") {

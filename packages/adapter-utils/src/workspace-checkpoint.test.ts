@@ -51,10 +51,34 @@ describe("workspace sparse checkpoint", () => {
     expect(await fs.readFile(path.join(host, "cache", "ignored"), "utf8")).toBe("private");
     await disposeDirectorySnapshot(f.baseline);
   });
-  it("rejects escaping links and changed payloads before merge", async () => {
-    const f = await fixture(); await fs.symlink("../../secret", path.join(f.root, "escape"));
-    await expect(f.capture()).rejects.toThrow("Unsafe workspace archive symlink");
-    await disposeDirectorySnapshot(f.baseline);
+  it.each(["absolute", "escaping"])("omits an %s link while restoring ordinary changes and safe links", async (kind) => {
+    const f = await fixture();
+    const host = path.join(f.temp, "host"); await fs.cp(f.root, host, { recursive: true });
+    const outside = path.join(f.temp, "secret"); await fs.writeFile(outside, "outside bytes");
+    await fs.symlink(kind === "absolute" ? outside : "../secret", path.join(f.root, "unsafe"));
+    await fs.writeFile(path.join(f.root, "unchanged"), "edited");
+    await fs.writeFile(path.join(f.root, "new"), "new output");
+    await fs.unlink(path.join(f.root, "deleted"));
+    await fs.symlink("new", path.join(f.root, "safe"));
+    const result = await f.capture();
+    expect(result.snapshot.entries.has("unsafe")).toBe(false);
+    await expect(fs.lstat(path.join(result.payload, "unsafe"))).rejects.toMatchObject({ code: "ENOENT" });
+    await mergeDirectoryWithBaseline({ baseline: f.baseline, sourceDir: result.payload, targetDir: host, snapshots: { source: result.snapshot } });
+    expect(await fs.readFile(path.join(host, "unchanged"), "utf8")).toBe("edited");
+    expect(await fs.readFile(path.join(host, "new"), "utf8")).toBe("new output");
+    expect(await fs.readlink(path.join(host, "safe"))).toBe("new");
+    await expect(fs.lstat(path.join(host, "unsafe"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(path.join(host, "deleted"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(outside, "utf8")).toBe("outside bytes");
+    await disposeDirectorySnapshot(result.snapshot); await disposeDirectorySnapshot(f.baseline);
+  });
+  it("rejects an unsafe link forged into a checkpoint manifest before merge", async () => {
+    const f = await fixture(); const result = await f.capture();
+    const entries = new Map(result.snapshot.entries);
+    entries.set("unsafe", { kind: "symlink", target: "../secret" });
+    await expect(validateCheckpointPayload({ baseline: f.baseline, snapshot: { ...result.snapshot, entries }, payload: result.payload }))
+      .rejects.toMatchObject({ code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" });
+    await disposeDirectorySnapshot(result.snapshot); await disposeDirectorySnapshot(f.baseline);
   });
   it("replays a checkpoint after interruption and preserves a concurrently edited deletion", async () => {
     const f = await fixture(); const host = path.join(f.temp, "host"); await fs.cp(f.root, host, { recursive: true });
@@ -131,8 +155,17 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
   await fs.writeFile(path.join(cache, generation, "workspace.tar"), "corrupt cache");
   const second = await prepare();
   await fs.writeFile(path.join(remote, "new"), "changed"); await fs.unlink(path.join(remote, "deleted"));
+  const outside = path.join(f.temp, "outside"); await fs.writeFile(outside, "private");
+  await fs.symlink(outside, path.join(remote, "absolute-link"));
+  await fs.symlink("../outside", path.join(remote, "escaping-link"));
+  await fs.symlink("new", path.join(remote, "safe-link"));
   await second.restoreWorkspace(); expect(payloadBytes).toBe(7);
   expect(await fs.readFile(path.join(f.root, "new"), "utf8")).toBe("changed");
+  expect(await fs.readlink(path.join(f.root, "safe-link"))).toBe("new");
+  for (const name of ["absolute-link", "escaping-link"]) {
+    await expect(fs.lstat(path.join(f.root, name))).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  expect(await fs.readFile(outside, "utf8")).toBe("private");
   await expect(fs.stat(path.join(f.root, "deleted"))).rejects.toMatchObject({ code: "ENOENT" });
   supportsCheckpoint = false;
   const third = await prepare(); await fs.writeFile(path.join(remote, "new"), "fallback");
