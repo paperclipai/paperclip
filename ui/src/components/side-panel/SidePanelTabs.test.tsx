@@ -101,7 +101,7 @@ describe("SidePanelTabs", () => {
     expect(separators[0]?.parentElement?.querySelector('[data-side-panel-tab-target="inactive-two"]')).not.toBeNull();
   });
 
-  it("restores the pre-rebase Streamlined UI tab treatment", () => {
+  it("highlights the active Streamlined tab and caps content-sized tabs", () => {
     act(() => {
       root.render(
         <TooltipProvider>
@@ -124,42 +124,50 @@ describe("SidePanelTabs", () => {
     expect(tabs).toHaveLength(2);
     expect(tabs[0]?.className).toContain("text-sm");
     expect(tabs[0]?.querySelector("svg")).toBeNull();
-    expect(container.querySelectorAll('[data-side-panel-tab-separator="true"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-side-panel-tab-separator="true"]')).toHaveLength(0);
 
     const propertiesWrapper = container.querySelector<HTMLElement>('[data-side-panel-tab-wrapper="properties"]');
-    expect(propertiesWrapper?.className).toContain("mx-1.5");
     expect(propertiesWrapper?.className).toContain("h-7");
     expect(propertiesWrapper?.className).toContain("text-foreground");
-    expect(propertiesWrapper?.className).toContain("hover:bg-accent/50");
+    expect(propertiesWrapper?.className).toContain("bg-(--side-panel-streamlined-tab-active-bg)");
     expect(propertiesWrapper?.className).not.toContain("bg-muted");
+    expect(container.querySelector<HTMLElement>('[data-side-panel-tab-wrapper="document:plan"]')?.className)
+      .toContain("hover:bg-(--side-panel-streamlined-tab-hover-bg)");
     expect(propertiesWrapper?.style.width).toBe("");
     expect(propertiesWrapper?.parentElement?.className)
-      .toContain("min-w-(--side-panel-streamlined-tab-min-width)");
+      .toContain("mx-0.75");
+    expect(propertiesWrapper?.parentElement?.className).toContain("w-max");
     expect(propertiesWrapper?.parentElement?.className)
       .toContain("max-w-(--side-panel-streamlined-tab-max-width)");
 
     const planLabel = container.querySelector<HTMLElement>('[data-side-panel-tab-target="document:plan"] span');
-    expect(planLabel?.className).toContain("task-detail-pane-tab-label");
-    expect(planLabel?.className).toContain("side-panel-tab-label-close-fade");
-    expect(planLabel?.className).toContain("text-center");
+    expect(planLabel?.className).toContain("text-left");
+    expect(planLabel?.className).toContain("flex-auto");
+    expect(tabs[0]?.className).toContain("pl-1.5");
+    expect(tabs[0]?.className).toContain("pr-6");
     const tabList = container.querySelector<HTMLElement>('[role="tablist"]');
     expect(tabList?.className).toContain("overflow-x-auto");
     expect(tabList?.className).not.toContain("overflow-hidden");
     expect(tabList?.firstElementChild?.className).toContain("w-max");
-    expect(tabList?.firstElementChild?.className).toContain("min-w-full");
+    expect(tabList?.firstElementChild?.className).not.toContain("min-w-full");
     const planCloseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close Implementation plan"]');
     expect(planCloseButton?.className).toContain("opacity-0");
-    expect(planCloseButton?.className).toContain("right-0");
+    expect(planCloseButton?.className).toContain("right-0.5");
+    expect(planCloseButton?.className).toContain("rounded-full");
+    expect(planCloseButton?.className).toContain("hover:bg-accent");
     expect(planCloseButton?.className).toContain("side-panel-tab-close-motion");
     expect(planCloseButton?.className).not.toContain("side-panel-tab-motion");
     expect(planCloseButton?.className).not.toContain("group-focus-within/side-panel-tab:opacity-100");
+    const propertiesCloseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]');
+    expect(propertiesCloseButton?.className).toContain("opacity-100");
+    expect(propertiesCloseButton?.className).toContain("hover:bg-accent");
     const addButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
     expect(addButton?.className).toContain("h-(--side-panel-tab-height)");
     expect(addButton?.className).toContain("w-(--side-panel-tab-height)");
     expect(addButton?.className).toContain("hover:bg-accent");
   });
 
-  it("lets a lone Streamlined tab fill the space before the add action", () => {
+  it("keeps a lone Streamlined tab sized to its label and below the same cap", () => {
     act(() => {
       root.render(
         <TooltipProvider>
@@ -187,13 +195,11 @@ describe("SidePanelTabs", () => {
     const propertiesWrapper = container.querySelector<HTMLElement>(
       '[data-side-panel-tab-wrapper="properties"]',
     )?.parentElement;
-    expect(tabTrack?.className).toContain("w-full");
-    expect(tabTrack?.className).not.toContain("w-max");
-    expect(propertiesWrapper?.className).toContain("max-w-none");
-    expect(propertiesWrapper?.className).toContain("flex-1");
-    expect(propertiesWrapper?.className).not.toContain(
-      "max-w-(--side-panel-streamlined-tab-max-width)",
-    );
+    expect(tabTrack?.className).toContain("w-max");
+    expect(tabTrack?.className).not.toContain("w-full");
+    expect(propertiesWrapper?.className).toContain("w-max");
+    expect(propertiesWrapper?.className).toContain("max-w-(--side-panel-streamlined-tab-max-width)");
+    expect(propertiesWrapper?.className).not.toContain("flex-1");
   });
 
   it("enables the tab flyout only while its label is truncated", () => {
@@ -218,15 +224,17 @@ describe("SidePanelTabs", () => {
 
     renderLabel("Properties");
     const tab = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="properties"]')!;
-    const label = tab.querySelector<HTMLElement>(".task-detail-pane-tab-label")!;
+    const label = tab.querySelector<HTMLElement>("span")!;
     expect(tab.dataset.sidePanelTabTooltip).toBe("disabled");
     expect(label.dataset.truncated).toBeUndefined();
+    expect(label.className).not.toContain("side-panel-tab-label-fade");
 
     scrollWidth.mockReturnValue(128);
     clientWidth.mockReturnValue(72);
     renderLabel("Properties panel");
     expect(tab.dataset.sidePanelTabTooltip).toBe("enabled");
     expect(label.dataset.truncated).toBe("true");
+    expect(label.className).toContain("side-panel-tab-label-fade");
   });
 
   it("fades the right edge only while more Streamlined tabs remain", () => {

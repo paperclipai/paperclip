@@ -12,7 +12,7 @@ The components exported by `@/components/side-panel` are controlled, domain-free
 
 Never put React nodes or fetched content in a persisted `SidePanelTabRecord`. Project icons and live status into `SidePanelTabItem` at render time.
 
-`SidePanelTabs` also accepts `appearance="streamlined-task"` for the experimental task-detail shell. That appearance preserves the approved pre-rebase Codex-inspired treatment—equal-width text tabs, separated surfaces, edge fades, and hover-revealed close actions—while the default appearance remains master's portable side-panel chrome.
+`SidePanelTabs` also accepts `appearance="streamlined-task"` for the experimental task-detail shell. Its text tabs hug their labels up to a shared width cap, keep a subtle active fill, fade clipped labels, and omit dividers. The active tab shows its round close action; inactive tabs reveal theirs on hover. Every close action has its own hover highlight. The default appearance remains the portable side-panel chrome.
 
 Use `headerSize="task-detail"` on `SidePanelFrame` when the panel shares the 60px task breadcrumb row. It keeps the task-detail footer treatment while matching the default portable header height.
 
