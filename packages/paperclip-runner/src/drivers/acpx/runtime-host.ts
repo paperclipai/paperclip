@@ -483,7 +483,7 @@ export class AcpxRuntimeHost {
       // agent and run. Environment/config values cannot widen the grant. Each
       // resumed process receives the newly registered copy; collection already
       // requires verified provider shutdown in the native executor.
-      const agentFiles = ["cursor", "copilot", "pi"].includes(options.agent)
+      const agentFiles = options.runtimeContext?.persistentAgentHome || ["cursor", "copilot", "pi"].includes(options.agent)
         ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
           ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
         ]) : null;

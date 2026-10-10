@@ -21,6 +21,8 @@ export interface NativeRuntimeContextSnapshot {
     /** Server-registered writable copy; excluded from the pinned prompt digest. */
     workingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" };
   };
+  /** Authenticated controller grant for an attached computer; independent of instruction-copy ownership. */
+  persistentAgentHome?: { rootPath: string };
   skills: Array<{ key: string; runtimeName: string; versionId: string | null; bundle: NativeRuntimeAssetReference }>;
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
   connectionInstructions?: { text: string; digest: string };
@@ -80,6 +82,8 @@ function parseAsset(value: unknown, path: string): NativeRuntimeAssetReference {
 function aggregatePayload(value: Omit<NativeRuntimeContextSnapshot, "aggregateDigest">) {
   return {
     prompt: value.prompt,
+    // Registered filesystem locators (workingCopy and persistentAgentHome)
+    // are authenticated run authority, not pinned instruction content.
     instructions: { entryPath: value.instructions.entryPath, bundleDigest: value.instructions.bundle.digest },
     skills: [...value.skills].sort((a, b) => a.key.localeCompare(b.key)).map((skill) => ({
       key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId, bundleDigest: skill.bundle.digest,
@@ -100,7 +104,7 @@ export function nativeRuntimePromptDigest(): string { return sha256(PAPERCLIP_EX
 
 export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextSnapshot {
   const context = object(value, "input.runtimeContext");
-  exact(context, ["prompt", "instructions", "skills", "mcp", "connectionInstructions", "aggregateDigest"], "input.runtimeContext");
+  exact(context, ["prompt", "instructions", "persistentAgentHome", "skills", "mcp", "connectionInstructions", "aggregateDigest"], "input.runtimeContext");
   const prompt = object(context.prompt, "input.runtimeContext.prompt");
   exact(prompt, ["revision", "text", "digest"], "input.runtimeContext.prompt");
   // New runs use the current constants. Recovery uses the immutable saved
@@ -141,7 +145,13 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
     if (sha256(content) !== contentDigest) throw new NativeRuntimeContextError("Connection instruction digest does not match text");
     connectionInstructions = { text: content, digest: contentDigest };
   }
+  const persistentAgentHome = context.persistentAgentHome === undefined ? undefined
+    : object(context.persistentAgentHome, "input.runtimeContext.persistentAgentHome");
+  if (persistentAgentHome) exact(persistentAgentHome, ["rootPath"], "input.runtimeContext.persistentAgentHome");
   const parsed = {
+    ...(persistentAgentHome ? { persistentAgentHome: {
+      rootPath: text(persistentAgentHome.rootPath, "input.runtimeContext.persistentAgentHome.rootPath"),
+    } } : {}),
     prompt: { revision: promptRevision, text: promptText, digest: promptDigest },
     instructions: {
       entryPath: safeRelativePath(instructions.entryPath, "input.runtimeContext.instructions.entryPath"),

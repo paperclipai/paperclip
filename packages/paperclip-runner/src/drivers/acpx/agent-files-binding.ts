@@ -13,8 +13,9 @@ export function bindAcpxAgentFiles(
   protectedRoots: readonly string[],
 ): AcpxAgentFilesBinding | null {
   const copy = context?.instructions.workingCopy;
-  if (copy?.kind !== "agent_files") return null;
-  const declared = copy.rootPath;
+  const persistentHome = context?.persistentAgentHome;
+  if (!persistentHome && copy?.kind !== "agent_files") return null;
+  const declared = persistentHome?.rootPath ?? copy!.rootPath;
   if (!isAbsolute(declared) || declared.includes("\0") || resolve(declared) !== declared) {
     throw new Error("ACP agent directory must be an absolute normalized registered path");
   }
@@ -27,7 +28,10 @@ export function bindAcpxAgentFiles(
   for (const protectedRoot of protectedRoots) {
     // These roots belong to the verified runtime and sandbox, not user input.
     const canonical = realpathSync(protectedRoot);
-    if (contains(root, canonical) || contains(canonical, root)) {
+    // Attached-computer homes contain the runner's isolated state beneath
+    // .paperclip-runtime. This env pointer does not widen the provider policy;
+    // retain its protected roots, and never alias the home into one of them.
+    if (contains(canonical, root) || (!persistentHome && contains(root, canonical))) {
       throw new Error("ACP agent directory overlaps protected runtime state");
     }
   }
