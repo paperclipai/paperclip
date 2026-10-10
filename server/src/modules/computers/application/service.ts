@@ -770,6 +770,8 @@ finally:
       projectId?: string;
       taskId?: string;
       repositoryUrl?: string;
+      /** Transient Git helper configuration; sent over stdin, never retained in the ledger. */
+      gitAuth?: { configArgs: string[]; env: Record<string, string> };
       branch?: string;
       baseRef?: string;
       mode: "shared" | "worktree";

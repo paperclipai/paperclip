@@ -303,6 +303,23 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
+  it("resolves run-scoped checkout credentials without persisting them in workspace metadata", async () => {
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const request = mockBuildWorkspaceRealizationRequest.getMockImplementation()!();
+    request.source.repoUrl = "https://github.com/company/private-repo.git";
+    mockBuildWorkspaceRealizationRequest.mockReturnValue(request);
+    const gitAuth = { configArgs: ["-c", "credential.helper="], env: { PAPERCLIP_GIT_TOKEN: "scoped-fixture-token" }, source: "managed_connection" as const, secretName: null };
+    const resolveGitAuth = vi.fn(async () => gitAuth);
+    await orchestrator.realizeForRun({ ...makeRealizeInput({ environment: makeEnvironment("computer") }), resolveGitAuth });
+    expect(resolveGitAuth).toHaveBeenCalledExactlyOnceWith(request.source.repoUrl);
+    expect(runtime.realizeWorkspace).toHaveBeenCalledWith(expect.objectContaining({ gitAuth }));
+    const dispatched = vi.mocked(runtime.realizeWorkspace).mock.calls[0]![0];
+    expect(JSON.stringify(dispatched.workspace)).not.toContain("scoped-fixture-token");
+    expect(JSON.stringify(mockUpdateLeaseMetadata.mock.calls)).not.toContain("scoped-fixture-token");
+    expect(JSON.stringify(mockUpdateExecutionWorkspace.mock.calls)).not.toContain("scoped-fixture-token");
+  });
+
   it("uses an in-place authoritative root on the adapter execution target", async () => {
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
       kind: "remote",

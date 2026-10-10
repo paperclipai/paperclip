@@ -113,6 +113,16 @@ function fixture() {
   };
 }
 describe("computer ownership", () => {
+  it("passes checkout credentials transiently without retaining them in computer state", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    const gitAuth = { configArgs: ["-c", "credential.helper="], env: { PAPERCLIP_GIT_TOKEN: "scoped-fixture-token" } };
+    await f.service.realizeWorkspace({ ...f.scope, owner: binding.owner, projectId: "project", mode: "shared",
+      repositoryUrl: "https://github.com/company/private.git", gitAuth });
+    expect(f.backend.remote).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "workspace", gitAuth }));
+    expect(JSON.stringify(await f.repository.get(f.scope))).not.toContain("scoped-fixture-token");
+  });
   it("explains an unavailable dev server without masking provider errors", async () => {
     const f = fixture();
     await f.attach();
