@@ -125,13 +125,11 @@ export function createPluginJobCoordinator(
       const manifest = plugin.manifestJson;
       const jobDeclarations = manifest.jobs ?? [];
 
-      if (jobDeclarations.length > 0) {
-        log.info(
-          { pluginId, pluginKey, jobCount: jobDeclarations.length },
-          "syncing job declarations from manifest",
-        );
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
-      }
+      log.info(
+        { pluginId, pluginKey, jobCount: jobDeclarations.length },
+        "syncing job declarations from manifest",
+      );
+      await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
 
       // Register with the scheduler (computes nextRunAt for active jobs)
       await scheduler.registerPlugin(pluginId);
