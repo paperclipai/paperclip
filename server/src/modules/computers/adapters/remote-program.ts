@@ -60,36 +60,47 @@ if act=='seed':
  sys.exit(0)
 if act=='workspace':
  os.makedirs(root,exist_ok=True)
- repo=p.get('repositoryUrl');branch=p.get('branch');task=p.get('taskId');base_ref=p.get('baseRef')
- if base_ref and (base_ref.startswith('-') or '\n' in base_ref):fail('invalid')
- checkout=os.path.join(root,'checkout')
- if repo:
-  if not (repo.startswith('https://') or repo.startswith('ssh://') or repo.startswith('git@')) or '\n' in repo:fail('invalid')
-  if not os.path.exists(checkout):
-   # Resolve credentials on the controller for this operation. Only the clone
-   # child receives the helper environment; no credential file or Git config persists.
-   auth=p.get('gitAuth') or {};git_env=dict(os.environ)
-   git_env.update({'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1'})
-   git_env.update(auth.get('env',{}))
-   run(['git']+auth.get('configArgs',[])+['clone','--',repo,checkout],env=git_env)
-  elif run(['git','remote','get-url','origin'],checkout)!=repo:fail('conflict')
- else:
-  os.makedirs(checkout,exist_ok=True)
-  if not os.path.isdir(os.path.join(checkout,'.git')):run(['git','init',checkout])
- if branch:
-  if branch.startswith('-') or '\n' in branch:fail('invalid')
-  run(['git','check-ref-format','--branch',branch])
- if p.get('mode')=='worktree':
-  if not task:fail('invalid')
-  target=os.path.join(root,'tasks',task);os.makedirs(os.path.dirname(target),exist_ok=True)
-  task_branch=branch or 'paperclip/task-'+task
-  if not os.path.exists(target):run(['git','worktree','add','-b',task_branch,target,base_ref or 'HEAD'],checkout)
-  run(['git','rev-parse','--show-toplevel'],target)
-  if run(['git','symbolic-ref','--quiet','--short','HEAD'],target)!=task_branch:fail('conflict')
- else:
-  target=checkout
-  if branch:run(['git','checkout',branch],checkout)
- print(json.dumps({'remoteCwd':target}));sys.exit(0)
+ # The root is the company/project placement on this physical computer. Keep
+ # clone validation, shared checkout, and worktree creation under one flock.
+ rootfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try:
+  lock=os.open('.paperclip-workspace.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=rootfd)
+ except OSError:fail('invalid')
+ finally:os.close(rootfd)
+ with os.fdopen(lock,'r+') as workspace_lock:
+  info=os.fstat(workspace_lock.fileno())
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+  fcntl.flock(workspace_lock,fcntl.LOCK_EX)
+  repo=p.get('repositoryUrl');branch=p.get('branch');task=p.get('taskId');base_ref=p.get('baseRef')
+  if base_ref and (base_ref.startswith('-') or '\n' in base_ref):fail('invalid')
+  checkout=os.path.join(root,'checkout')
+  if repo:
+   if not (repo.startswith('https://') or repo.startswith('ssh://') or repo.startswith('git@')) or '\n' in repo:fail('invalid')
+   if not os.path.exists(checkout):
+    # Resolve credentials on the controller for this operation. Only the clone
+    # child receives the helper environment; no credential file or Git config persists.
+    auth=p.get('gitAuth') or {};git_env=dict(os.environ)
+    git_env.update({'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1'})
+    git_env.update(auth.get('env',{}))
+    run(['git']+auth.get('configArgs',[])+['clone','--',repo,checkout],env=git_env)
+   elif run(['git','remote','get-url','origin'],checkout)!=repo:fail('conflict')
+  else:
+   os.makedirs(checkout,exist_ok=True)
+   if not os.path.isdir(os.path.join(checkout,'.git')):run(['git','init',checkout])
+  if branch:
+   if branch.startswith('-') or '\n' in branch:fail('invalid')
+   run(['git','check-ref-format','--branch',branch])
+  if p.get('mode')=='worktree':
+   if not task:fail('invalid')
+   target=os.path.join(root,'tasks',task);os.makedirs(os.path.dirname(target),exist_ok=True)
+   task_branch=branch or 'paperclip/task-'+task
+   if not os.path.exists(target):run(['git','worktree','add','-b',task_branch,target,base_ref or 'HEAD'],checkout)
+   run(['git','rev-parse','--show-toplevel'],target)
+   if run(['git','symbolic-ref','--quiet','--short','HEAD'],target)!=task_branch:fail('conflict')
+  else:
+   target=checkout
+   if branch:run(['git','checkout',branch],checkout)
+  print(json.dumps({'remoteCwd':target}));sys.exit(0)
 # Hold directory descriptors throughout each operation. Ancestor symlink swaps cannot
 # redirect a checked pathname outside the selected placement.
 def directory(parts,create=False,start=None):
