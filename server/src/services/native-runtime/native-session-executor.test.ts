@@ -28,6 +28,7 @@ import { inspect } from "node:util";
 import { join } from "node:path";
 import {
   heartbeatRuns,
+  environmentLeases,
   heartbeatRunEvents,
   issues,
   nativeRunFinalizations,
@@ -81,6 +82,9 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
+
+const computerRetirement = vi.hoisted(() => ({ isRetired: vi.fn() }));
+vi.mock("../../modules/computers/index.js", () => ({ computerService: () => computerRetirement }));
 
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
@@ -13435,6 +13439,65 @@ describe("runnerd provider runtime wiring", () => {
           runnerInstanceId: "computer-runner", environmentLeaseId: "computer-lease" },
         allowVerifiedBackup: false, remoteRunnerState: true, allowRetainedWarmRunner: owner,
       })).toBe(expected);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { condition: "retired", expected: "verified" },
+    { condition: "uncertain", expected: "terminal_state_indeterminate" },
+    { condition: "stale-generation", expected: "terminal_state_indeterminate" },
+    { condition: "wrong-placement", expected: "scope_mismatch" },
+    { condition: "wrong-lease", expected: "scope_mismatch" },
+    { condition: "active-run", expected: "active" },
+    { condition: "unavailable", expected: "unavailable" },
+    { condition: "corrupt-local", expected: "terminal_state_indeterminate" },
+  ])("verifies remote idle retirement before a fresh same-session turn ($condition)", async ({ condition, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-computer-idle-retirement-"));
+    const prior = execution;
+    const current = { ...execution, binding: { ...execution.binding, runId: "after-idle" } };
+    const owner = { computerId: "computer", ownerId: "retired-owner", generation: 2, listenerPort: 43127 };
+    const descriptor = { kind: "remote-persistent", leaseId: "prior-lease", providerLeaseId: owner.ownerId,
+      remoteCwd: "/remote/agent", computerId: owner.computerId, ownerGeneration: owner.generation,
+      listenerPort: owner.listenerPort, placementId: "placement" };
+    const db = { select: () => ({ from: (table: unknown) => ({ where: () => ({ limit: async () =>
+      table === environmentLeases ? condition === "wrong-lease" ? [] : [{
+        providerLeaseId: owner.ownerId,
+        metadata: { agentId: prior.binding.agentId, computerOwner: { ...owner, generation: 1 } },
+      }] : [{ status: condition === "active-run" ? "running" : "succeeded",
+        runnerProfileJson: { nativeExecutionInput: prior, nativeComputerWorkspace: descriptor } }],
+    }) }) }) } as unknown as Db;
+    computerRetirement.isRetired.mockReset().mockImplementation(async ({ owner: requested }) => {
+      if (condition === "unavailable") throw new Error("ledger unavailable");
+      return condition !== "uncertain" && requested.generation === (condition === "stale-generation" ? 3 : 2);
+    });
+    const input = { db, root, execution: current, identity: { runId: prior.binding.runId,
+      normalizedSessionId: prior.session.normalizedSessionId!, runnerInstanceId: "prior-runner",
+      environmentLeaseId: condition === "wrong-lease" ? "other-lease" : "initial-physical-lease" },
+      allowVerifiedBackup: false, remoteRunnerState: true,
+      runnerExecutionTarget: { kind: "remote", transport: "computer", environmentId: "environment",
+        remoteCwd: "/remote/agent", resourceAuthority: { ...owner, ownerId: "successor-owner", generation: 1 },
+        fileAuthority: { placementId: condition === "wrong-placement" ? "other-placement" : "placement" } } as never };
+    try {
+      if (condition === "corrupt-local") {
+        await mkdir(join(root, "runner"));
+        await writeFile(join(root, "runner", "runner-state.json"), "invalid state");
+      }
+      if (condition === "retired") {
+        // Both live warm handoffs use their retained owner. After idle expiry,
+        // the next turn must instead prove the exact generation was retired.
+        for (let turn = 0; turn < 2; turn += 1) {
+          expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: true }))
+            .toBe("retained_warm_runner");
+        }
+        expect(computerRetirement.isRetired).not.toHaveBeenCalled();
+      }
+      expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: false })).toBe(expected);
+      if (["retired", "uncertain", "stale-generation", "unavailable"].includes(condition)) {
+        expect(computerRetirement.isRetired).toHaveBeenCalledExactlyOnceWith({
+          companyId: current.binding.companyId, environmentId: "environment", agentId: current.binding.agentId,
+          runId: prior.binding.runId, owner,
+        });
+      } else expect(computerRetirement.isRetired).not.toHaveBeenCalled();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

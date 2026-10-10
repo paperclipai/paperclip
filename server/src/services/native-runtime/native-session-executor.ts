@@ -1,3 +1,5 @@
+import { computerService } from "../../modules/computers/index.js";
+import { readNativeComputerWorkspaceReference } from "./native-workspace-sync.js";
 import { adapterExecutionTargetIsCommandBacked, type AdapterComputerExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { agents } from "@paperclipai/db";
@@ -4295,6 +4297,7 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
   allowVerifiedBackup: boolean;
   allowRetainedWarmRunner: boolean;
   remoteRunnerState?: boolean;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -4351,6 +4354,49 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
         ((input.allowVerifiedBackup || input.remoteRunnerState) && directLifecycle === "absent"))
     ) {
       return "retained_warm_runner";
+    }
+    const target = input.runnerExecutionTarget;
+    if (input.remoteRunnerState && directLifecycle === "absent" &&
+        target?.kind === "remote" && target.transport === "computer" && target.environmentId) {
+      const descriptor = record(priorRun.runnerProfileJson).nativeComputerWorkspace;
+      const priorWorkspace = readNativeComputerWorkspaceReference(descriptor);
+      if (!priorWorkspace || priorWorkspace.computerOwner.computerId !== target.resourceAuthority.computerId ||
+          priorWorkspace.remoteCwd !== target.remoteCwd ||
+          record(descriptor).placementId !== target.fileAuthority.placementId) return "scope_mismatch";
+      // Persistent runners keep their state remotely. Once the exact prior
+      // owner has completed retirement, its terminal run and fenced process
+      // are authoritative even though no local runner-state.json exists.
+      // This read cannot retire a live owner or accept a newer generation.
+      try {
+        // Warm turns advance the attempt lease while the physical runner keeps
+        // its initial PRP lease identity. Verify that original lease belongs to
+        // this exact owner lineage instead of requiring the latest attempt id.
+        const [physicalLease] = await input.db.select({
+          providerLeaseId: environmentLeases.providerLeaseId,
+          metadata: environmentLeases.metadata,
+        }).from(environmentLeases).where(and(
+          eq(environmentLeases.id, input.identity.environmentLeaseId),
+          eq(environmentLeases.companyId, input.execution.binding.companyId),
+          eq(environmentLeases.environmentId, target.environmentId),
+        )).limit(1);
+        const leaseMetadata = record(physicalLease?.metadata);
+        const leaseOwner = record(leaseMetadata.computerOwner);
+        if (physicalLease?.providerLeaseId !== priorWorkspace.computerOwner.ownerId ||
+            leaseMetadata.agentId !== input.execution.binding.agentId ||
+            leaseOwner.computerId !== priorWorkspace.computerOwner.computerId ||
+            leaseOwner.ownerId !== priorWorkspace.computerOwner.ownerId ||
+            !Number.isSafeInteger(leaseOwner.generation) || Number(leaseOwner.generation) < 1 ||
+            Number(leaseOwner.generation) > priorWorkspace.computerOwner.generation) return "scope_mismatch";
+        if (await computerService(input.db).isRetired({
+          companyId: input.execution.binding.companyId,
+          environmentId: target.environmentId,
+          agentId: input.execution.binding.agentId,
+          runId: input.identity.runId,
+          owner: priorWorkspace.computerOwner,
+        })) return "verified";
+      } catch {
+        return "unavailable";
+      }
     }
     return "terminal_state_indeterminate";
   } catch {
@@ -4896,6 +4942,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
         remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
           input.runnerExecutionTarget.transport === "computer",
+        runnerExecutionTarget: input.runnerExecutionTarget,
       });
       if (
         verification !== "verified" &&
@@ -4940,6 +4987,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
         remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
           input.runnerExecutionTarget.transport === "computer",
+        runnerExecutionTarget: input.runnerExecutionTarget,
       });
       if (
         verification !== "verified" &&
