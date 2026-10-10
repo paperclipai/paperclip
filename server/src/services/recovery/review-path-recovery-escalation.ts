@@ -1,9 +1,10 @@
 import { and, desc, eq, getTableColumns, or, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { isWaitingConversation } from "../agent-conversations.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
+import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   executeIssuePostCommitActions,
   issueService,
@@ -40,9 +41,15 @@ export async function escalateExhaustedIssueReviewPathRecovery(
       || issue.assigneeUserId || isWaitingConversation(issue)
       || issue.externalConversationState === "waiting") return null;
 
-    // Startup recovery precedes monitor ticks. A due (or claimed) saved check
-    // still belongs to that dispatcher until it is consumed or its bounds expire.
-    if (hasUnconsumedIssueMonitorPath(issue, new Date())) return null;
+    // Startup recovery precedes monitor ticks. Preserve a due or claimed check
+    // only while the owner still allows the on-demand wake used by dispatch.
+    // Otherwise the dispatcher leaves it overdue indefinitely without consuming it.
+    if (hasUnconsumedIssueMonitorPath(issue, new Date())) {
+      const owner = await tx.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
+        .where(and(eq(agents.companyId, run.companyId), eq(agents.id, issue.assigneeAgentId)))
+        .then((rows) => rows[0] ?? null);
+      if (owner && isHeartbeatWakeOnDemandEnabled(owner)) return null;
+    }
 
     const attention = (await issuesSvc.listReviewAttention(run.companyId, [issue], tx)).get(issueId);
     if (!attention || decideIssueReviewPathRecovery({

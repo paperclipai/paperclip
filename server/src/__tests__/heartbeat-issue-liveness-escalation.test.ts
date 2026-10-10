@@ -527,7 +527,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_path_recovery_exhausted"))).toHaveLength(1);
   });
 
-  it.each(["restart", "transaction_failure", "due_monitor", "claimed_monitor", "expired_monitor", "exhausted_monitor"] as const)("reconciles a committed review repair after %s with a one-connection pool", async (gap) => {
+  it.each(["restart", "transaction_failure", "due_monitor", "claimed_monitor", "expired_monitor", "exhausted_monitor", "disabled_monitor"] as const)("reconciles a committed review repair after %s with a one-connection pool", async (gap) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -550,10 +550,14 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         executionPolicy: { monitor: {
           nextCheckAt: dueAt.toISOString(), notes: "Check external build", scheduledBy: "assignee",
           kind: "external_service", serviceName: "github_checks",
-          timeoutAt: new Date(Date.now() + 60_000).toISOString(), maxAttempts: 3,
+          ...(gap === "disabled_monitor" ? {} : { timeoutAt: new Date(Date.now() + 60_000).toISOString(), maxAttempts: 3 }),
         } },
       });
-      if (gap === "claimed_monitor") {
+      if (gap === "disabled_monitor") {
+        // A policy change after saving an unbounded check must not hide the
+        // spent repair forever: dispatch cannot accept its on-demand wake.
+        await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+      } else if (gap === "claimed_monitor") {
         await db.update(issues).set({ monitorWakeRequestedAt: new Date() }).where(eq(issues.id, issueId));
       } else if (gap === "expired_monitor" || gap === "exhausted_monitor") {
         const policy = monitored!.executionPolicy as { monitor: Record<string, unknown> };
