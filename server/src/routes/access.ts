@@ -2445,21 +2445,27 @@ async function defaultInviteResolutionHeadRequest(
     }
 
     let settled = false;
-    const req = request(options, (response: IncomingMessage) => {
-      settled = true;
-      response.resume();
-      resolve({ httpStatus: response.statusCode ?? null });
-    });
-    req.setTimeout(timeoutMs, () => {
+    const hardTimeout = setTimeout(() => {
       if (settled) return;
       const error = new Error("Invite resolution probe timed out");
       error.name = "AbortError";
       req.destroy(error);
+    }, timeoutMs);
+
+    const req = request(options, (response: IncomingMessage) => {
+      settled = true;
+      clearTimeout(hardTimeout);
+      response.resume();
+      resolve({ httpStatus: response.statusCode ?? null });
     });
     req.on("error", (error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(hardTimeout);
       reject(error);
+    });
+    req.on("close", () => {
+      clearTimeout(hardTimeout);
     });
     req.end();
   });

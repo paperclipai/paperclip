@@ -204,6 +204,8 @@ ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pa
 # Empty for local builds, preserving the server's normal version fallbacks.
 ARG PAPERCLIP_BUILD_VERSION=""
 ARG PAPERCLIP_BUILD_COMMIT=""
+RUN mkdir -p /paperclip && chown -R node:node /paperclip /app
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -221,6 +223,8 @@ ENV NODE_ENV=production \
   OPENCODE_ALLOW_ALL_MODELS=true \
   GEMINI_SANDBOX=false
 
+USER node
+VOLUME ["/paperclip"]
 EXPOSE 3100
 
 # tini, not node, is PID 1. The entrypoint ends in `exec`, so without an init
