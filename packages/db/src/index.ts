@@ -1,7 +1,10 @@
 export {
   createDb,
+  withDedicatedDbConnection,
+  closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
+  resetPostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
@@ -14,6 +17,7 @@ export {
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   type EmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
@@ -21,6 +25,7 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
@@ -29,4 +34,13 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  ensureLinuxSharedLibraryAliases,
+  prepareEmbeddedPostgresNativeRuntime,
+} from "./embedded-postgres-native.js";
+export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
+export { issueRelations } from "./schema/issue_relations.js";
+export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+
+export { signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";

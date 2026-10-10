@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Paperclip evaluation results, run histories, and guides for Runner Evals and Product E2E Evals.">
+  <title>Paperclip Evals</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f8f8f5; --card:#fff; --text:#20221e; --muted:#60645c; --line:#d9ddd3; --accent:#306340; --tint:#edf3ec; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:inherit; text-underline-offset:4px; }
+    a:focus-visible { outline:3px solid var(--accent); outline-offset:5px; }
+    .bar { border-bottom:1px solid var(--line); }
+    .bar div { max-width:1160px; margin:auto; padding:20px 28px; display:flex; justify-content:space-between; align-items:center; gap:20px; }
+    .brand { font-weight:750; letter-spacing:-.04em; font-size:21px; text-decoration:none; }
+    .bar span, .eyebrow { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.13em; }
+    main { max-width:1160px; margin:64px auto; padding:0 28px; }
+    h1 { font-size:clamp(38px,6vw,62px); line-height:1.05; letter-spacing:-.055em; margin:14px 0 20px; font-weight:650; }
+    .intro { max-width:690px; font-size:19px; color:var(--muted); margin-bottom:36px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
+    article { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:30px; display:flex; flex-direction:column; }
+    .number { font:13px/1.4 ui-monospace,monospace; color:var(--accent); }
+    h2 { margin:12px 0 12px; letter-spacing:-.035em; font-size:29px; line-height:1.2; }
+    article p { color:var(--muted); margin:0 0 22px; }
+    .boundary { font-size:14px; padding:14px 16px; background:var(--tint); border-radius:6px; margin-bottom:24px; }
+    .latest { border-top:1px solid var(--line); padding-top:20px; margin-top:auto; }
+    .latest .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .counts { font-size:19px; font-weight:600; margin:7px 0; }
+    .meta { font-size:13px; color:var(--muted); }
+    .id { overflow-wrap:anywhere; margin-top:4px; font:11px/1.6 ui-monospace,monospace; color:var(--muted); }
+    .links { display:flex; flex-wrap:wrap; align-items:center; gap:18px; margin:24px 0 18px; }
+    .button { display:inline-block; background:var(--text); color:var(--card); padding:10px 15px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px; }
+    .guide { font-size:13px; }
+    .note { font-size:13px; color:var(--muted); margin:19px 0 38px; }
+    .start { display:flex; gap:28px; justify-content:space-between; align-items:center; padding:25px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .start h2 { font-size:22px; margin:0 0 6px; }
+    .start p { margin:0; color:var(--muted); font-size:14px; max-width:650px; }
+    footer { margin-top:25px; color:var(--muted); font-size:12px; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#151714; --card:#1d201b; --text:#f2f4ed; --muted:#aeb6a6; --line:#363d31; --accent:#a0cda5; --tint:#273024; } }
+    @media (max-width:700px) { main { margin:36px auto; padding:0 20px; } .grid { grid-template-columns:1fr; } article { padding:24px; } .start { align-items:flex-start; flex-direction:column; gap:18px; } .bar div { padding:16px 20px; } .bar span { font-size:10px; } }
+  </style>
+</head>
+<body>
+  <header class="bar"><div><a class="brand" href="https://paperclip.ing">Paperclip</a><span>Evaluation directory</span></div></header>
+  <main>
+    <div class="eyebrow">Evidence for better agents</div>
+    <h1>Paperclip Evals</h1>
+    <p class="intro">Two ways to test Paperclip. Follow each program from a test case to its evidence, results, and run history.</p>
+    <div class="grid">
+      <article>
+        <div class="number">01 / RUNNER</div>
+        <h2>Runner Evals</h2>
+        <p>Does the runner use tools correctly, respect permissions, and preserve its execution contract?</p>
+        <div class="boundary">Real runner + model provider<br>Controlled mock Paperclip control plane</div>
+        <div class="latest"><div class="label">Latest recorded measurement</div><div class="counts">$runner_counts</div><div class="meta">$runner_date · $runner_coverage</div><div class="id">$runner_id</div></div>
+        <div class="links"><a class="button" href="https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html">Browse run history →</a><a href="$runner_url">Open report</a></div>
+        <a class="guide" href="https://github.com/paperclipai/paperclip/blob/master/packages/paperclip-runner/docs/runner-protocol-live-evals.md">Runner operations guide</a>
+      </article>
+      <article>
+        <div class="number">02 / PRODUCT</div>
+        <h2>Product E2E Evals</h2>
+        <p>Can a user complete work through Paperclip, from the first request to a usable result?</p>
+        <div class="boundary">Real browser + server + database + runner + model provider<br>Local and Daytona environments, as selected</div>
+        <div class="latest"><div class="label">Latest recorded measurement</div><div class="counts">$product_counts</div><div class="meta">$product_date · $product_coverage</div><div class="id">$product_id</div></div>
+        <div class="links"><a class="button" href="https://d1p6rlowie26tp.cloudfront.net/runner-e2e/">Browse run history →</a><a href="$product_url">Open report</a></div>
+        <a class="guide" href="https://github.com/paperclipai/paperclip/blob/master/tests/runner-e2e/README.md">Product E2E operations guide</a>
+      </article>
+    </div>
+    <p class="note">Snapshot refreshed $refreshed. History pages may contain newer runs. A partial campaign covers only its selected cases. These programs measure different boundaries; their pass rates are not combined.</p>
+    <section class="start"><div><h2>Choose a test. Make the result inspectable.</h2><p>The eval guide explains which program to use, how to add a case, and how to distinguish a product defect from model behavior, a grading error, or a setup failure. Evalbook is a report framework used to present evidence; it is not an execution boundary.</p></div><a class="button" href="$guide_url">Read the eval guide →</a></section>
+    <footer>Existing run archives remain the source of truth. Report refreshes do not count as new model runs.</footer>
+  </main>
+</body>
+</html>

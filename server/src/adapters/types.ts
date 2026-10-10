@@ -9,6 +9,8 @@ export type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterExecutionContext,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
@@ -25,5 +27,9 @@ export type {
   NativeContextManagement,
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,
+  ConfigFieldOption,
+  ConfigFieldSchema,
+  AdapterConfigSchema,
+  AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "@paperclipai/adapter-utils";

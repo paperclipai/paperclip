@@ -20,7 +20,7 @@ describe("opencode local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the shared Claude/OpenCode skills home", async () => {
+  it("defaults and installs the operational Paperclip skill in the shared Claude/OpenCode skills home", async () => {
     const home = await makeTempDir("paperclip-opencode-skill-sync-");
     cleanupDirs.add(home);
 
@@ -32,9 +32,6 @@ describe("opencode local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
-        },
       },
     } as const;
 
@@ -42,48 +39,9 @@ describe("opencode local skill sync", () => {
     expect(before.mode).toBe("persistent");
     expect(before.warnings).toContain("OpenCode currently uses the shared Claude skills home (~/.claude/skills).");
     expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
     expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
 
     const after = await syncOpenCodeSkills(ctx, [paperclipKey]);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".claude", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
-  });
-
-  it("keeps required bundled Paperclip skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-opencode-skill-prune-");
-    cleanupDirs.add(home);
-
-    const configuredCtx = {
-      agentId: "agent-2",
-      companyId: "company-1",
-      adapterType: "opencode_local",
-      config: {
-        env: {
-          HOME: home,
-        },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
-        },
-      },
-    } as const;
-
-    await syncOpenCodeSkills(configuredCtx, [paperclipKey]);
-
-    const clearedCtx = {
-      ...configuredCtx,
-      config: {
-        env: {
-          HOME: home,
-        },
-        paperclipSkillSync: {
-          desiredSkills: [],
-        },
-      },
-    } as const;
-
-    const after = await syncOpenCodeSkills(clearedCtx, []);
-    expect(after.desiredSkills).toContain(paperclipKey);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".claude", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
