@@ -16,6 +16,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockCreateInstructionApplyTask = vi.hoisted(() => vi.fn());
 
 vi.mock("../modules/agent-lifecycle/adapters/records.js", () => ({
   agentRecords: vi.fn(() => ({ ...mockAgentService, rejectPendingHire: mockAgentService.terminate })),
@@ -23,6 +24,10 @@ vi.mock("../modules/agent-lifecycle/adapters/records.js", () => ({
 
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
+}));
+
+vi.mock("../services/instruction-apply-hook.js", () => ({
+  createInstructionApplyTask: mockCreateInstructionApplyTask,
 }));
 
 type ApprovalRecord = {
@@ -35,21 +40,27 @@ type ApprovalRecord = {
   requestedByUserId?: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, type = "hire_agent"): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
-    type: "hire_agent",
+    type,
     status,
     payload: { agentId: "agent-1" },
     requestedByAgentId: "requester-1",
   };
 }
 
-function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
+function createDbStub(
+  selectResults: ApprovalRecord[][],
+  updateResults: ApprovalRecord[],
+  options: { shiftOutsideTransaction?: boolean } = {},
+) {
   const pendingSelectResults = [...selectResults];
   let inTransaction = false;
-  const selectWhere = vi.fn(async () => (inTransaction ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? []);
+  const selectWhere = vi.fn(async () =>
+    (inTransaction || options.shiftOutsideTransaction ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? [],
+  );
   const from = vi.fn((table) => table === companies
     ? { where: () => ({ for: async () => [{ id: "company-1" }] }) }
     : { where: selectWhere });
@@ -118,6 +129,50 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload, approved.requestedByUserId);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the board-auth apply task when an instruction-generation approval is newly approved", async () => {
+    const approved = createApproval("approved", "instruction_generation");
+    const dbStub = createDbStub(
+      [[createApproval("pending", "instruction_generation")]],
+      [approved],
+    );
+    mockCreateInstructionApplyTask.mockResolvedValue({ issueId: "issue-1", created: true });
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "apply it");
+
+    expect(result.applied).toBe(true);
+    expect(result.applyTask).toEqual({ issueId: "issue-1", created: true });
+    expect(mockCreateInstructionApplyTask).toHaveBeenCalledWith(dbStub.db, {
+      companyId: "company-1",
+      approvalId: "approval-1",
+      decidedByUserId: "board",
+      payload: { agentId: "agent-1" },
+    });
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("does not create an apply task when an instruction-generation approve retry is a no-op", async () => {
+    // Non-hire approvals resolve outside a transaction on master: decide() reads
+    // once, resolveApproval() reads again, the conditional update matches no
+    // row (another worker won), then the re-read sees the approved record.
+    const dbStub = createDbStub(
+      [
+        [createApproval("pending", "instruction_generation")],
+        [createApproval("pending", "instruction_generation")],
+        [createApproval("approved", "instruction_generation")],
+      ],
+      [],
+      { shiftOutsideTransaction: true },
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "apply it");
+
+    expect(result.applied).toBe(false);
+    expect(result.applyTask).toBeNull();
+    expect(mockCreateInstructionApplyTask).not.toHaveBeenCalled();
   });
 
   it("does not notify the adapter when the approval transaction fails to commit", async () => {
