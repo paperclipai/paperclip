@@ -35,6 +35,16 @@ export const MUSE_CLEANUP_TTL_MS = 24 * 60 * 60_000;
 export const MUSE_IDLE_OPERATIONS = ["identify", "task.list", "task.search", "task.read", "task.history", "task.document.read", "task.create", "task.comment"] as const;
 const id = z.uuid();
 const boundedId = z.string().min(1).max(200);
+// Keep these transport bounds aligned with Runner's external-provider validation.
+const nativeRequestId = z.string().min(1).max(160).refine(
+  (value) => !/[^A-Za-z0-9._:-]/.test(value),
+  "Native request IDs must contain only ASCII letters, digits, '.', '_', ':', or '-'.",
+);
+const utf8Encoder = new TextEncoder();
+const progressText = z.string().trim().min(1).max(12000).refine(
+  (value) => utf8Encoder.encode(value).byteLength <= 12000,
+  "Progress text must not exceed 12000 UTF-8 bytes.",
+);
 const envelope = { version: z.literal(MUSE_PROTOCOL_VERSION) };
 const operation = { ...envelope, assignmentId: id, requestId: id };
 export const museCommandSchema = z.discriminatedUnion("command", [
@@ -45,17 +55,17 @@ export const museCommandSchema = z.discriminatedUnion("command", [
   z.object({ ...envelope, command: z.literal("task.comment"), requestId: id, issueId: id, body: z.string().trim().min(1).max(16000) }).strict(),
   z.object({ ...operation, command: z.literal("accept") }).strict(),
   z.object({ ...operation, command: z.literal("tool"), name: boundedId, arguments: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ ...operation, command: z.literal("progress"), text: z.string().trim().min(1).max(16000) }).strict(),
+  z.object({ ...operation, command: z.literal("progress"), text: progressText }).strict(),
   z.object({ ...operation, command: z.literal("finish"), result: z.record(z.string(), z.unknown()) }).strict(),
   z.object({ ...operation, command: z.literal("renew"), expiresAtUnixMs: z.number().int().positive() }).strict(),
-  z.object({ ...operation, command: z.literal("request_user_input"), nativeRequestId: boundedId, questionSet: paperclipQuestionSetPayloadSchema }).strict(),
-  z.object({ ...operation, command: z.literal("consume_input"), nativeRequestId: boundedId, inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/), continuationReceiptId: id, continuationPersisted: z.literal(true) }).strict(),
+  z.object({ ...operation, command: z.literal("request_user_input"), nativeRequestId, questionSet: paperclipQuestionSetPayloadSchema }).strict(),
+  z.object({ ...operation, command: z.literal("consume_input"), nativeRequestId, inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/), continuationReceiptId: id, continuationPersisted: z.literal(true) }).strict(),
 ]);
 export const museQuerySchema = z.discriminatedUnion("query", [
   z.object({ ...envelope, query: z.literal("identify") }).strict(),
   z.object({ ...envelope, query: z.literal("mailbox"), after: z.number().int().nonnegative().default(0) }).strict(),
   z.object({ ...envelope, query: z.literal("assignment.read"), assignmentId: id }).strict(),
-  z.object({ ...envelope, query: z.literal("input.pending"), assignmentId: id, nativeRequestId: boundedId }).strict(),
+  z.object({ ...envelope, query: z.literal("input.pending"), assignmentId: id, nativeRequestId }).strict(),
   z.object({ ...envelope, query: z.literal("operation.receipt"), assignmentId: id, requestId: id }).strict(),
   z.object({ ...envelope, query: z.literal("task.list"), after: id.optional() }).strict(),
   z.object({ ...envelope, query: z.literal("task.search"), text: z.string().trim().min(1).max(500), after: id.optional() }).strict(),
