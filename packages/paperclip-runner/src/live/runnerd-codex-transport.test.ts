@@ -7985,6 +7985,13 @@ it.each([
     process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
   `], { maxBuffer: 16 * 1024 * 1024 });
   await writeFile(proxy, proxyBytes, { mode: 0o755 });
+  // writeFile's mode applies only on creation; ensure the launch fixture is qualified.
+  await chmod(proxy, 0o755);
+  // The CI Node executable may itself be group-writable. Qualify a private
+  // copy because the runner verifies the interpreter as the proxy command.
+  const providerNode = join(root, "node");
+  await cp(process.execPath, providerNode);
+  await chmod(providerNode, 0o755);
   const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
   const runtime = join(root, "opencode");
   const bundle = createCapabilityRunnerdCodexTransport({
@@ -8027,6 +8034,10 @@ it.each([
   });
   await withPreparedOpenCodeCleanup({
     run: async () => {
+      // The launch profile is verified when the session opens, after transport
+      // setup. Keep the fixture qualified at that boundary as well.
+      await chmod(proxy, 0o755);
+      expect((await stat(proxy)).mode & 0o022).toBe(0);
       session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
       expect(bundle.transport.supportsTurnReasoning?.()).toBe(supportsReasoning);
       const firstTurn = { message: { role: "user" as const, text: prepared } };

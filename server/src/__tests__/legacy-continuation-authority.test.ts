@@ -33,6 +33,24 @@ describe("legacy continuation persisted authority", () => {
     }
     return { companyId, agentId, issueId, runId, createRecovery, runs, actions, finish };
   }
+  it("holds a successful legacy run through pause and reconciles it after resume", async () => {
+    const createdAfter = new Date();
+    const f = await fixture();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+
+    const recovery = f.createRecovery();
+    const held = await recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: createdAfter });
+    expect(held.escalated).toBe(0);
+    expect(held.continuationRequeued).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.status).toBe("in_progress");
+    expect(await f.actions()).toHaveLength(0);
+    expect(await f.runs()).toHaveLength(1);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    const resumed = await recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: createdAfter });
+    expect(resumed.continuationRequeued).toBe(1);
+    expect(await f.runs()).toHaveLength(2);
+  });
   it.each([1, 2, 3, 4, 5])("deduplicates concurrent replay with stale prose-derived liveness (%s)", async () => {
     const f = await fixture();
     const recovery = f.createRecovery();
