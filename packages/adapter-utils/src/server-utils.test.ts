@@ -732,6 +732,8 @@ describe("runChildProcess", () => {
     childSource: string[];
     options?: Partial<Parameters<typeof runChildProcess>[3]>;
     afterHolderStarted?: (runId: string) => void | Promise<void>;
+    // A line the child prints once it is ready for `afterHolderStarted`.
+    readyMarker?: string;
     settleBoundMs?: number;
   }) {
     const runId = randomUUID();
@@ -758,6 +760,10 @@ describe("runChildProcess", () => {
       const pidMatch = await waitForTextMatch(() => observed, /holder:(\d+)/, 5_000);
       holderPid = Number.parseInt(pidMatch?.[1] ?? "", 10);
       expect(Number.isInteger(holderPid) && holderPid > 0).toBe(true);
+      if (input.readyMarker) {
+        const ready = await waitForTextMatch(() => observed, new RegExp(input.readyMarker), 5_000);
+        expect(ready, "the child reported that it is ready").not.toBeNull();
+      }
       await input.afterHolderStarted?.(runId);
       const outcome = await Promise.race([
         resultPromise,
@@ -806,7 +812,14 @@ describe("runChildProcess", () => {
 
     it("settles when an outside stop signals a child that catches it and exits normally", async () => {
       const { result } = await runWithEscapedHolder({
-        childSource: ["process.on('SIGTERM', () => process.exit(0));", "setInterval(() => {}, 1000);"],
+        // The handler is installed before the child reports that it is ready,
+        // and the signal is sent only after that report.
+        childSource: [
+          "process.on('SIGTERM', () => process.exit(0));",
+          "process.stdout.write('ready\\n');",
+          "setInterval(() => {}, 1000);",
+        ],
+        readyMarker: "ready",
         afterHolderStarted: (runId) => {
           const running = runningProcesses.get(runId);
           expect(running).toBeDefined();
