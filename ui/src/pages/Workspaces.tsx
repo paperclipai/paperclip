@@ -10,7 +10,7 @@ import { SummarySlotCard } from "../components/SummarySlotCard";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
-import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import { targetForExecutionWorkspace, type ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
@@ -24,6 +24,14 @@ type ProjectWorkspaceGroup = {
 };
 
 function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSummary {
+  // The cross-project overview only ever lists execution workspaces (kind is always
+  // "execution_workspace"), and the server now carries the same repoUrl/providerType/
+  // providerRef fields as the single-project ExecutionWorkspace shape, so provenance is
+  // derived with the same rules instead of guessing from strategyType alone.
+  const target = targetForExecutionWorkspace(
+    item,
+    `/execution-workspaces/${item.executionWorkspaceId}/configuration`,
+  );
   return {
     key: item.key,
     kind: item.kind,
@@ -42,6 +50,7 @@ function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSum
     hasRuntimeConfig: item.hasRuntimeConfig,
     linkedIssueCount: item.linkedIssueCount,
     issues: item.linkedIssues,
+    target,
   };
 }
 
