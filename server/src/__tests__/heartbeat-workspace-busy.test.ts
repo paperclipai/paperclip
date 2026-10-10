@@ -156,6 +156,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     failExecutionRunIds.clear();
     captureRunFailure.mockClear();
     await instanceSettingsService(db).updateGeneral({ executionMode: "any" });
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: false });
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -487,6 +489,90 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
     expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).not.toContain(run!.id);
+  });
+
+  it.each(["any", "invalid"])("refuses local fallback when Kubernetes is required but bootstrap mode is %s", async (mode) => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    vi.stubEnv("PAPERCLIP_EXECUTION_MODE", mode);
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const finished = await heartbeat.getRun(run!.id);
+    expect(finished?.status).toBe("failed");
+    expect(finished?.error).toContain("no managed Kubernetes environment is configured");
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
+  it("lazily provisions the required Kubernetes environment before applying workspace contention", async () => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    for (const key of Object.keys(process.env).filter(key => key.startsWith("PAPERCLIP_K8S_"))) {
+      vi.stubEnv(key, undefined);
+    }
+    vi.stubEnv("PAPERCLIP_EXECUTION_MODE", "kubernetes");
+    vi.stubEnv("PAPERCLIP_K8S_IN_CLUSTER", "true");
+    vi.stubEnv("PAPERCLIP_K8S_BACKEND", "job");
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const configured = await db.select().from(environments).where(eq(environments.driver, "sandbox"));
+    expect(configured).toMatchObject([{
+      status: "active",
+      config: { provider: "kubernetes", inCluster: true, backend: "job" },
+      metadata: { managedKubernetesSandbox: true },
+    }]);
+    expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(1);
+  });
+
+  it.each(["missing", "archived"])("refuses local execution when the managed sandbox is %s", async (state) => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    if (state === "archived") {
+      await db.insert(environments).values({
+        name: "Unavailable managed sandbox", driver: "sandbox", status: "archived",
+        config: { provider: "fake" }, metadata: { managedByPaperclip: true },
+      });
+    }
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: true });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const finished = await heartbeat.getRun(run!.id);
+    expect(finished?.status).toBe("failed");
+    expect(finished?.error).toContain("no active managed sandbox environment exists");
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
+  it("redirects a local selection to the managed sandbox before applying workspace contention", async () => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    await db.insert(environments).values({
+      name: "Managed sandbox", driver: "sandbox", status: "active",
+      config: { provider: "fake" }, metadata: { managedByPaperclip: true },
+    });
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: true });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(1);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
   });
 
   it.each([
