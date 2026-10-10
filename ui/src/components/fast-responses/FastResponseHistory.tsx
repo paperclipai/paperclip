@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fastResponsesApi } from "@/api/fast-responses";
 import { DecisionHistoryTable } from "@/components/decision-models/DecisionHistory";
 import { Button } from "@/components/ui/button";
+import { useFastResponsesEnabled } from "@/hooks/useFastResponsesEnabled";
 export function FastResponseHistory({
   companyId,
   from,
@@ -11,6 +12,7 @@ export function FastResponseHistory({
   from?: string | null;
   to?: string | null;
 }) {
+  const { enabled } = useFastResponsesEnabled();
   const query = useQuery({
     queryKey: ["fast-response-history", companyId, from, to],
     queryFn: () =>
@@ -39,5 +41,5 @@ export function FastResponseHistory({
         </Button>
       </div>
     );
-  return <DecisionHistoryTable entries={query.data ?? []} fastResponse />;
+  return <DecisionHistoryTable entries={query.data ?? []} fastResponse connectionsEnabled={enabled} />;
 }
