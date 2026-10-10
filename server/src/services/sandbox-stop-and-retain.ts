@@ -13,6 +13,11 @@ export const SANDBOX_STOP_AND_RETAIN_KEY = "sandboxStopAndRetain";
  * Require the dedicated stop-only dispatch receipt and its independent stop
  * confirmation, both bound to the original lease. No provider work is allowed. */
 export function hasConfirmedSandboxStopAndRetain(lease: typeof environmentLeases.$inferSelect): boolean {
+  const acquiredAt = lease.acquiredAt.getTime();
+  const releasedAt = lease.releasedAt?.getTime();
+  const expiresAt = lease.expiresAt?.getTime();
+  if (!Number.isFinite(acquiredAt) || releasedAt === undefined || !Number.isFinite(releasedAt)
+    || (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now()))) return false;
   const value = lease.metadata?.sandboxStopAndRetainReceipt;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;
@@ -20,7 +25,6 @@ export function hasConfirmedSandboxStopAndRetain(lease: typeof environmentLeases
   if (lease.status !== "released" || !hasRemoteTerminationReceipt(lease)
     || termination?.state !== "stopped" || hasStopOnlyCleanup(lease)
     || lease.metadata?.pendingCleanupInFlight === true
-    || (lease.expiresAt !== null && lease.expiresAt.getTime() <= Date.now())
     || receipt.schema !== "paperclip.sandbox-stop-and-retain-receipt.v1"
     || receipt.companyId !== lease.companyId || receipt.runId !== lease.heartbeatRunId
     || receipt.leaseId !== lease.id || receipt.provider !== lease.provider
@@ -28,8 +32,7 @@ export function hasConfirmedSandboxStopAndRetain(lease: typeof environmentLeases
     || typeof receipt.requestId !== "string" || !receipt.requestId.trim()
     || typeof receipt.confirmedAt !== "string" || receipt.confirmedAt !== termination.confirmedAt) return false;
   const confirmedAt = Date.parse(receipt.confirmedAt);
-  if (!Number.isFinite(confirmedAt) || confirmedAt < lease.acquiredAt.getTime()
-    || confirmedAt > lease.releasedAt!.getTime()) return false;
+  if (!Number.isFinite(confirmedAt) || confirmedAt < acquiredAt || confirmedAt > releasedAt) return false;
   if (receipt.builtinProvider !== undefined) {
     return receipt.builtinProvider === lease.provider && isBuiltinSandboxProvider(lease.provider!)
       && receipt.method === "builtin.stopLease" && receipt.pluginId === undefined

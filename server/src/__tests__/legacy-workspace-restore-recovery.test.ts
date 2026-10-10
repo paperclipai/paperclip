@@ -6,7 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { recordLegacyWorkspaceRestoreFailure, legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { hasConversationContinuationPolicy, conversationRecoveryActionPredicate } from "../services/conversation-continuation.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../services/legacy-workspace-restore-recovery.js";
-import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
+import { hasConfirmedSandboxStopAndRetain, prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
 import { environmentService } from "../services/environments.js";
 import { hasRequiredWorkspaceRecovery } from "../services/workspace-restore-recovery-state.js";
 
@@ -156,7 +156,7 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
     },
   );
 
-  it.each(["missing_dedicated", "missing_termination", "destroyed", "foreign_receipt", "wrong_plugin", "wrong_method", "empty_request", "invalid_time", "before_acquisition", "after_release", "unequal_confirmation", "pending_intent", "cleanup_in_flight", "expired_allocation", "retained_without_stop", "failed_cleanup"])(
+  it.each(["missing_dedicated", "missing_termination", "destroyed", "foreign_receipt", "wrong_plugin", "wrong_method", "empty_request", "invalid_time", "before_acquisition", "after_release", "unequal_confirmation", "pending_intent", "cleanup_in_flight", "expired_allocation", "missing_release_time", "retained_without_stop", "failed_cleanup"])(
     "does not infer retention from %s", async scenario => {
       const f = await seed();
       const stopped = await stopAndRetain(f);
@@ -179,6 +179,7 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
       const [invalid] = await db.update(environmentLeases).set({ metadata,
         ...(scenario === "retained_without_stop" ? { status: "retained" } : {}),
         ...(scenario === "expired_allocation" ? { expiresAt: new Date(stopped.acquiredAt.getTime() - 1) } : {}),
+        ...(scenario === "missing_release_time" ? { releasedAt: null } : {}),
         ...(scenario === "failed_cleanup" ? { cleanupStatus: "failed" } : {}),
       }).where(eq(environmentLeases.id, f.lease.id)).returning();
       await recordLegacyWorkspaceRestoreFailure(db, f.run, patch.resultJson, f.lease);
@@ -186,6 +187,15 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
     },
   );
+
+  it("rejects invalid lease timestamps instead of treating receipt metadata as proof", async () => {
+    const f = await seed();
+    const stopped = await stopAndRetain(f);
+    expect(hasConfirmedSandboxStopAndRetain(stopped)).toBe(true);
+    for (const field of ["acquiredAt", "releasedAt", "expiresAt"] as const) {
+      expect(hasConfirmedSandboxStopAndRetain({ ...stopped, [field]: new Date(Number.NaN) })).toBe(false);
+    }
+  });
 
   it.each(["missing_root", "empty_root", "invalid_realized_root", "run_workspace_mismatch"])(
     "requires the original execution root after %s", async scenario => {
