@@ -1105,8 +1105,14 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
         const normalized = normalizeWorkspaceRelativePath(name);
         if (shouldPruneSegments(normalized.segments)) continue;
         if (entry.kind === "directory") {
-          if (recursive) await walk(name, depth + 1);
-          else items.push(listItemFromDirectory({ candidate, relativePath: name, stat: { mtime: new Date(entry.mtimeMs) } }));
+          if (recursive) {
+            try { await walk(name, depth + 1); }
+            catch (error) {
+              // A child may disappear during the scan. Only a missing starting
+              // directory should make automatic resolution try another workspace.
+              if (!isHttpStatus(error, 404)) throw error;
+            }
+          } else items.push(listItemFromDirectory({ candidate, relativePath: name, stat: { mtime: new Date(entry.mtimeMs) } }));
         } else if (matchesSearch(name, normalizedQuery)) {
           items.push(listItemFromStat({ candidate, relativePath: name, stat: { size: entry.size, mtime: new Date(entry.mtimeMs) } })!);
         }

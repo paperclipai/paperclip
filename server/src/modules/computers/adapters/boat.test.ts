@@ -9,6 +9,8 @@ import {
   symlinkSync,
   writeFileSync,
   mkdirSync,
+  renameSync,
+  chmodSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -237,6 +239,98 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 describe("confined computer files", () => {
+  function interruptedWrite() {
+    const f = fixture();
+    f.call({ action: "seed", files: { "nested/notes": Buffer.from("original").toString("base64") } });
+    const result = spawnSync("python3", ["-c", remoteProgram
+      .replaceAll("/home/user/paperclip/", `${f.temp}/`)
+      .replace("f.write(data);f.flush();os.fsync(f.fileno())", "f.write(data);f.flush();os.kill(os.getpid(),9)")], {
+      input: JSON.stringify({ root: f.root, action: "write", path: "nested/notes", expectedSha256: createHash("sha256").update("original").digest("hex"), base64: Buffer.from("interrupted content").toString("base64") }),
+      encoding: "utf8",
+    });
+    expect(result.signal).toBe("SIGKILL");
+    const receipt = JSON.parse(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8"));
+    expect(readFileSync(join(f.root, receipt.path), "utf8")).toBe("interrupted content");
+    return { ...f, receipt };
+  }
+  it("reclaims only the recorded interrupted write before the next file operation", () => {
+    const f = interruptedWrite();
+    expect(f.call({ action: "list", path: "nested" }).entries.map((entry: { name: string }) => entry.name)).toEqual(["notes"]);
+    expect(readFileSync(join(f.root, "nested/notes"), "utf8")).toBe("original");
+    expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+  });
+  it("clears the write receipt after a successful atomic save", () => {
+    const f = fixture(); f.call({ action: "seed", files: {} });
+    expect(f.call({ action: "write", path: "notes", expectedSha256: null, base64: Buffer.from("saved").toString("base64") })).toEqual({ sha256: createHash("sha256").update("saved").digest("hex") });
+    expect(readFileSync(join(f.root, "notes"), "utf8")).toBe("saved");
+    expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+    expect(readdirSync(f.root).sort()).toEqual([".paperclip-editor.lock", "notes"]);
+  });
+  it("preserves a replacement inode and unrelated temp-looking user files", () => {
+    const f = interruptedWrite();
+    const temp = join(f.root, f.receipt.path);
+    renameSync(temp, join(f.root, "user-kept-content"));
+    writeFileSync(temp, "replacement user file");
+    const unrelated = join(f.root, ".paperclip-write-" + "a".repeat(32));
+    writeFileSync(unrelated, "unrelated user file");
+    f.call({ action: "list", path: "" });
+    expect(readFileSync(temp, "utf8")).toBe("replacement user file");
+    expect(readFileSync(unrelated, "utf8")).toBe("unrelated user file");
+    expect(readFileSync(join(f.root, "user-kept-content"), "utf8")).toBe("interrupted content");
+    expect(readFileSync(join(f.root, "nested/notes"), "utf8")).toBe("original");
+  });
+  it("preserves a symlink replacing the recorded temp without following it", () => {
+    const f = interruptedWrite();
+    const temp = join(f.root, f.receipt.path);
+    renameSync(temp, join(f.root, "user-kept-content"));
+    const outside = join(f.temp, "outside"); writeFileSync(outside, "preserve");
+    symlinkSync(outside, temp);
+    f.call({ action: "list", path: "nested" });
+    expect(readFileSync(outside, "utf8")).toBe("preserve");
+    expect(existsSync(temp)).toBe(true);
+  });
+  it.each(["missing", "file", "symlink"])("discards an unusable receipt when its parent is %s", (replacement) => {
+    const f = interruptedWrite();
+    renameSync(join(f.root, "nested"), join(f.root, "moved-by-user"));
+    const outside = join(f.temp, "outside"); mkdirSync(outside);
+    writeFileSync(join(outside, "notes"), "outside user content");
+    if (replacement === "file") writeFileSync(join(f.root, "nested"), "replacement parent");
+    if (replacement === "symlink") symlinkSync(outside, join(f.root, "nested"));
+    writeFileSync(join(f.root, "unrelated"), "still readable");
+    expect(f.call({ action: "list", path: "" }).entries).toEqual(expect.any(Array));
+    expect(Buffer.from(f.call({ action: "read", path: "unrelated" }).base64, "base64").toString()).toBe("still readable");
+    expect(f.call({ action: "write", path: "new-file", expectedSha256: null, base64: Buffer.from("new content").toString("base64") }).sha256).toBeTruthy();
+    expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+    expect(readFileSync(join(f.root, "moved-by-user/notes"), "utf8")).toBe("original");
+    expect(readFileSync(join(f.root, "moved-by-user", f.receipt.path.split("/").at(-1)), "utf8")).toBe("interrupted content");
+    expect(readFileSync(join(outside, "notes"), "utf8")).toBe("outside user content");
+    if (replacement === "file") expect(readFileSync(join(f.root, "nested"), "utf8")).toBe("replacement parent");
+    if (replacement === "symlink") expect(existsSync(join(f.root, "nested/notes"))).toBe(true);
+  });
+  it.skipIf(process.getuid?.() === 0)("preserves an inaccessible temp parent without blocking unrelated reads", () => {
+    const f = interruptedWrite();
+    writeFileSync(join(f.root, "unrelated"), "still readable");
+    chmodSync(join(f.root, "nested"), 0);
+    try {
+      expect(Buffer.from(f.call({ action: "read", path: "unrelated" }).base64, "base64").toString()).toBe("still readable");
+      expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+    } finally { chmodSync(join(f.root, "nested"), 0o700); }
+    expect(readFileSync(join(f.root, f.receipt.path), "utf8")).toBe("interrupted content");
+    expect(readFileSync(join(f.root, "nested/notes"), "utf8")).toBe("original");
+  });
+  it("leaves only an empty temp when killed before its ownership receipt", () => {
+    const f = fixture(); f.call({ action: "seed", files: {} });
+    const result = spawnSync("python3", ["-c", remoteProgram
+      .replaceAll("/home/user/paperclip/", `${f.temp}/`)
+      .replace("record_write(relative,f.fileno())", "os.kill(os.getpid(),9)")], {
+      input: JSON.stringify({ root: f.root, action: "write", path: "notes", expectedSha256: null, base64: Buffer.from("must not reach disk").toString("base64") }), encoding: "utf8",
+    });
+    expect(result.signal).toBe("SIGKILL");
+    const temp = readdirSync(f.root).find(name => name.startsWith(".paperclip-write-"))!;
+    f.call({ action: "list", path: "" });
+    expect(statSync(join(f.root, temp)).size).toBe(0);
+    expect(existsSync(join(f.root, "notes"))).toBe(false);
+  });
   it("seeds absent home only and preserves existing content", () => {
     const f = fixture();
     expect(
