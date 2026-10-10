@@ -807,6 +807,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [environments, effectiveLoginEnvironmentId],
   );
   const attachedBoat = experimentalSettings !== undefined
+    && !forcedKubernetes
     && effectiveLoginEnvironment?.status === "active"
     && effectiveLoginEnvironment.driver === "computer"
     && effectiveLoginEnvironment.config.provider === "boat";

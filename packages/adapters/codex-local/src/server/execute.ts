@@ -1090,15 +1090,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+    // Controller scratch supplies prompt bytes; persistent computer paths come
+    // from the registered instruction copy, including a nested entry file.
+    const persistentComputer = executionTarget?.kind === "remote" && executionTarget.transport === "computer";
+    const promptInstructionsFilePath = persistentComputer
+      ? asString(workspaceContext.instructionsFilePath, "").trim()
+      : instructionsFilePath;
+    const instructionsDir = promptInstructionsFilePath ? `${(persistentComputer ? path.posix : path).dirname(promptInstructionsFilePath)}/` : "";
     let instructionsPrefix = "";
     if (instructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
         instructionsPrefix =
           `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+          (promptInstructionsFilePath
+            ? `The above agent instructions were loaded from ${promptInstructionsFilePath}. ` +
+              `Resolve any relative file references from ${instructionsDir}.\n\n`
+            : "");
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(

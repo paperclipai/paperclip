@@ -4711,6 +4711,9 @@ export function heartbeatService(
             if (isAgentDirectoryCopy(instructionCopy)) {
               const workspace = parseObject(context.paperclipWorkspace);
               context.paperclipWorkspace = { ...workspace, agentHome: instructionCopy.executionRoot,
+                ...(instructionCopy.receipt?.fileAuthority === "remote-persistent" ? {
+                  instructionsFilePath: path.posix.join(instructionCopy.executionRoot, instructionCopy.entryFile),
+                } : {}),
                 // Keep the pre-existing permission root stable for ACP session
                 // identity. The per-run copy is already under the company root.
                 agentHomeForPermissions: workspace.agentHome,
