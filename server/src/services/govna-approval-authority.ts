@@ -8,7 +8,7 @@ import {
   verify,
   type KeyObject,
 } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   toolCallEvents,
   toolConnections,
@@ -1245,6 +1245,11 @@ export function govnaAuthorityOperationService(
       ) {
         throw new GovnaAuthorityStateError("invocation_invalid", "Invocation changed before Govna dispatch");
       }
+      // The database trigger takes this same transaction-level lock for every
+      // tool-policy INSERT/UPDATE/DELETE, including write paths outside this
+      // service. Taking it before current-policy evaluation prevents a new or
+      // edited hard deny from committing between evaluation and claim.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'paperclip:tool-policy:' + input.companyId}, 0))`);
       if (operation.approvalExpiresAt.getTime() <= Date.now()) {
         throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority approval has expired");
       }

@@ -316,15 +316,23 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
     });
-    await db.insert(toolPolicies).values({
-      companyId: f.company.id,
-      name: "Emergency local stop",
-      policyType: "block",
-      selectors: { toolName: "send_email" },
-      enabled: true,
+    let releaseMutation!: () => void;
+    let mutationLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseMutation = resolve; });
+    const locked = new Promise<void>((resolve) => { mutationLocked = resolve; });
+    const mutation = db.transaction(async (transaction) => {
+      await transaction.insert(toolPolicies).values({
+        companyId: f.company.id,
+        name: "Emergency local stop",
+        policyType: "block",
+        selectors: { toolName: "send_email" },
+        enabled: true,
+      });
+      mutationLocked();
+      await release;
     });
-
-    await expect(service.claimDispatch({
+    await locked;
+    const claim = service.claimDispatch({
       companyId: f.company.id,
       operationId: input.operationId,
       reservationId: input.reservationId,
@@ -333,7 +341,14 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
       ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
-    })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
+    });
+    expect(await Promise.race([
+      claim.then(() => "settled", () => "settled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 50)),
+    ])).toBe("waiting");
+    releaseMutation();
+    await mutation;
+    await expect(claim).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     expect(operation).toMatchObject({ state: "approved", localClaimId: null });
   });
