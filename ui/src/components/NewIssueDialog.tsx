@@ -48,6 +48,8 @@ import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+// The existing issue-comment contract binds at most 20 upload receipts.
+const MAX_TASK_ATTACHMENTS = 20;
 
 type VisualViewportLayout = {
   height: number;
@@ -433,6 +435,9 @@ export function NewIssueDialog() {
       navigateOnCreate,
       ...data
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
+      if (pendingStagedFiles.filter(file => file.kind === "attachment").length > MAX_TASK_ATTACHMENTS) {
+        throw new Error(`Choose up to ${MAX_TASK_ATTACHMENTS} attachments. Remove extra files before creating the task.`);
+      }
       // An executable task must not wake its assignee before its selected files
       // exist. Backlog is the existing durable state that suppresses that wake.
       const activateAfterUploads = pendingStagedFiles.length > 0
@@ -443,6 +448,7 @@ export function NewIssueDialog() {
       });
       const failures: string[] = [];
       const attachmentIds: string[] = [];
+      let activationWarning: string | null = null;
 
       for (const stagedFile of pendingStagedFiles) {
         try {
@@ -466,18 +472,37 @@ export function NewIssueDialog() {
       if (activateAfterUploads && failures.length === 0) {
         // Binding the upload receipts and activating the task in one mutation
         // produces one wake whose immutable comment contains exactly these files.
-        issue = await issuesApi.update(issue.id, {
-          status: data.status,
-          ...(attachmentIds.length ? {
-            comment: "Files attached when this task was created.",
-            attachmentIds,
-          } : {}),
-        });
+        try {
+          issue = await issuesApi.update(issue.id, {
+            status: data.status,
+            ...(attachmentIds.length ? {
+              comment: "Files attached when this task was created.",
+              attachmentIds,
+            } : {}),
+          });
+        } catch {
+          // A lost response may follow a committed start. Read the existing task
+          // rather than recreating it or repeating a potentially accepted wake.
+          let startConfirmed = false;
+          let backlogConfirmed = false;
+          try {
+            issue = await issuesApi.get(issue.id);
+            startConfirmed = issue.status === data.status;
+            backlogConfirmed = issue.status === "backlog";
+          } catch {
+            // Creation and uploads succeeded; only the current status is unknown.
+          }
+          if (!startConfirmed) {
+            activationWarning = backlogConfirmed
+              ? "The task and files were saved in Backlog. Open the task to start it."
+              : "The task and files were saved, but starting it could not be confirmed. Open the task to check its status before retrying.";
+          }
+        }
       }
 
-      return { issue, companyId, failures, navigateOnCreate };
+      return { issue, companyId, failures, activationWarning, navigateOnCreate };
     },
-    onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
+    onSuccess: ({ issue, companyId, failures, activationWarning, navigateOnCreate }) => {
       trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
       if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
@@ -497,6 +522,13 @@ export function NewIssueDialog() {
         pushToast({
           title: `Created ${issueRef} with upload warnings`,
           body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.${issue.status === "backlog" ? " The task remains in Backlog; add the missing files before starting it." : ""}`,
+          tone: "warn",
+          action: openIssueAction,
+        });
+      } else if (activationWarning) {
+        pushToast({
+          title: `Created ${issueRef}; check task status`,
+          body: activationWarning,
           tone: "warn",
           action: openIssueAction,
         });

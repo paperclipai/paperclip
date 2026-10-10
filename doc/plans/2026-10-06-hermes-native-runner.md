@@ -1,6 +1,7 @@
 # Hermes native runner implementation
 
-Status (updated 2026-10-09): implementation candidate; **not qualified**.
+Status (updated 2026-10-09): implementation candidate; basic API browser journeys
+pass locally; Daytona is blocked by host isolation support; **not qualified**.
 Current branch: `codex/hermes-release-qualification`; stacked on
 `codex/hermes-qualification`, `codex/hermes-native-runner` and `codex/hermes-routines`.
 
@@ -2227,3 +2228,97 @@ mock transport; those are regression coverage, not paid qualification.
 Both failed campaigns and their costs remain retained. Corrected live browser
 reruns and a new cloud-built image are required; Hermes remains pending
 qualification until those and the remaining user journeys pass.
+
+### 2026-10-09 real basic API browser qualification
+
+The approved basic API scope now has eight retained paid macOS arm64 Product
+E2E passes, with cleanup and every selected-account, model, cost-settlement and
+budget-health matcher passing. These use real Chromium, the production
+server/database, Runnerd, ACPX and pinned native Hermes, with
+`claude-haiku-4-5-20251001` and `gpt-6-luna` through existing managed API accounts.
+
+| Journey | Claude API / local | OpenAI API / local | Daytona |
+| --- | --- | --- | --- |
+| Native completion and one final answer | Pass | Pass | Claude launch failed; OpenAI not run |
+| Authorized image bytes and exact undisclosed image answer | Pass | Pass | Not run |
+| Native question batch, browser reload and exactly-once answer | Pass | Pass | Not run |
+| Stop while a native question is pending | Pass | Pass | Not run |
+
+The completion passes record source `7ebcb0d5c5827121b706351d1faf88fbbed3fbce`.
+The other six passes record `a32d94cb1a2829d174d620aa83aaed53e5a1447a`.
+The latter adds the real task-file ordering/binding correction and a readable
+image fixture. All provider/server runtime bytes are unchanged between these
+controllers. This is retained compatible-source evidence, not sixteen passes
+on one final revision. Browser reload proves pending native-form continuity;
+it does not prove controller restart or remote restore.
+
+The task composer now saves executable tasks in Backlog until every selected
+file is uploaded. One existing atomic update binds the returned attachment IDs
+to the wake comment and activates the task. Failed uploads leave the saved task
+in Backlog. The earlier image attempts retain their original failing grades:
+after delivery was repaired, both models misread the block-letter test image.
+Image definition version 4 uses a checksum-pinned Inter glyph raster, retaining
+the exact undisclosed-code oracle and tool prohibitions. Both models pass it.
+
+The eight passing cells' public settlement receipts total `0.311362120` USD in
+reviewed rate-card estimates. These are not provider-reported charges or
+invoices. Unknown earlier costs remain fully reserved. The approved ceiling is
+35 USD; 32.90 USD remains reserved, including the bounded Daytona compute hold.
+No further paid attempt is running or authorized beyond that ceiling.
+
+[Hosted image build 37999413691](https://github.com/paperclipai/paperclip/actions/runs/37999413691)
+passed for runtime source `bed8374d8922fea4ba466ea13ede422eb4937278`, including
+signature/image identity, a verified exported provider pack, and the clean
+public npm consumer. The selected image is
+`ghcr.io/paperclipai/paperclip-daytona-runner@sha256:b832e856c5fd321cd8421523119de31526643dd382271da1327faf5cfd9c75aa`.
+The downloaded Linux binary and every provider-pack file were independently
+verified. Fresh source comparison confirms the tested controller has identical
+Runner/server production source. The Mac daemon is the verified cloud artifact
+from `85f701daa`, with unchanged Rust source. No Docker or Rust build ran locally.
+
+The first Daytona attempt failed during local plugin installation before any
+task or resource admission. Restoring the existing development SDK link and
+building the excluded plugin fixed that prerequisite; a credential-free public
+`POST /api/plugins/install` check passed. The next real browser attempt created
+one remote lease and reached Runnerd, then failed the unchanged Hermes command
+sandbox check. Its original failed grade and passed cleanup remain retained.
+A separate credential-free check against the identical image confirmed:
+`bwrap: setting up uid map: Permission denied`.
+That diagnostic sandbox was also deleted successfully.
+
+[Daytona supports Linux VM snapshots](https://www.daytona.io/docs/en/sandboxes/#vm-sandboxes),
+but this account's US API rejected the VM request because no Linux VM runners
+are configured there. EU rejected it because the organization lacks access.
+Both rejected requests were confirmed to have created no snapshot. The other
+seven cloud cells were not attempted. Namespace and protected-path checks are
+unchanged; cloud qualification needs a compatible Linux amd64 execution host.
+
+Canonical Product E2E reporting records **8/16 expected cells passing**: eight
+local passes, one actual cloud failure and seven unexecuted cloud cells. The
+earlier setup failure is retained separately. Sanitized original artifacts,
+native question screenshots, billing receipts and source/runtime attestations
+remain in the ignored results directory and private qualification report.
+No raw trace, credential material or native session history was published.
+
+[Source a32d94 CI](https://github.com/paperclipai/paperclip/actions/runs/38016040493)
+and [both native platform fixtures](https://github.com/paperclipai/paperclip/actions/runs/38016040503)
+passed. Those platform fixtures use a simulated model, independently of the
+paid browser evidence. Follow-up UI attachment-limit and activation-recovery
+changes pass 190 composer tests, UI typechecking and token gates. A separate
+real Chromium/server/database walkthrough verifies rejection of 21 attachments
+before any task write, acceptance of 20, saved-task discovery after a rejected
+start, and exactly one activation when its successful HTTP response is lost.
+It uses a paused process fixture and no model credentials or inference. The
+large-file validation message was initially outside the visible scrolled area;
+moving it beside the submit controls passes the browser visibility assertion.
+Screenshots of that correction and the saved-task warning were visually
+inspected. Earlier auxiliary setup/navigation attempts remain retained.
+This follow-up does not replace the paid native proofs with a simulated model.
+Automated review's existing attachment findings remain pending fresh review;
+no reviewer message or bot retrigger was sent.
+
+The broader release remains pending: actual cloud journeys, paid active
+steering/queue, controller/remote recovery, cross-task memory and learned
+skills, routine firing/deduplication, lower permission modes and credential
+lifecycle still need their required live proof. Subscriptions, Grok and Bedrock
+remain deferred under the user's API-only scope.
