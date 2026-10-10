@@ -4,7 +4,7 @@ Run Paperclip agents in isolated SmolVMs on your own computer or in Smol Cloud. 
 
 ## Install and configure
 
-Install the provider from a checkout with `paperclipai plugin install --local /path/to/paperclip/packages/plugins/sandbox-providers/smolmachines`, then add a sandbox environment in **Instance Settings → Environments** with the **Smol Machines VM** driver. Select `local` or `cloud`.
+Build the provider from a Paperclip checkout with the commands under **Local development**, then install it with `paperclipai plugin install --local /path/to/paperclip/packages/plugins/sandbox-providers/smolmachines` while the instance is running. Add a sandbox environment in **Instance Settings → Environments** with the **Smol Machines VM** driver. Select `local` or `cloud`.
 
 - **Local:** Run Paperclip on a Linux host with `/dev/kvm`, an Apple Silicon Mac, or a Windows machine with the Windows Hypervisor Platform. The host needs a working SmolVM installation. A Paperclip Docker deployment needs access to the host hypervisor; ordinary containers cannot run local VMs without it.
 - **Cloud:** Paste a Smol Cloud API key into the environment's `apiKey` field. Paperclip stores it as a company secret. `SMOL_CLOUD_TOKEN` or an existing `smol auth login` session can be used instead. Cloud VMs expire after `ttlSeconds` (one hour by default); increase that value when jobs run longer.
