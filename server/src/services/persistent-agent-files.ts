@@ -38,6 +38,12 @@ export async function readPersistentAgentFile(files: NonNullable<Awaited<ReturnT
   catch (error) { if (isMissingRemoteFile(error)) return null; throw error; }
 }
 
+/** Inspect remote bytes without downloading them or applying the editor read cap. */
+export async function hashPersistentAgentFile(files: NonNullable<Awaited<ReturnType<typeof persistentAgentFiles>>>, relative: string) {
+  try { return await files.hash(instructionPath(relative)); }
+  catch (error) { if (isMissingRemoteFile(error)) return null; throw error; }
+}
+
 /** First attachment only. Existing directories are adopted, including empty ones.
  * Later turns never read/upload the controller copy of personal files. */
 export async function seedPersistentAgentHome(files: NonNullable<Awaited<ReturnType<typeof persistentAgentFiles>>>, localRoot: string) {

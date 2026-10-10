@@ -7,6 +7,7 @@ import {
   writeFileSync,
   mkdirSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -169,6 +170,25 @@ describe("confined computer files", () => {
     expect(f.call({ action: "read", path: "ok", maxBytes: 4 })).toEqual({
       error: "invalid",
     });
+  });
+  it("hashes and deletes files over the read limit while fencing changed bytes", () => {
+    const f = fixture();
+    f.call({ action: "seed", files: {} });
+    const bytes = Buffer.alloc(17 * 1024 * 1024, 7);
+    writeFileSync(join(f.root, "large.bin"), bytes);
+    const expected = createHash("sha256").update(bytes).digest("hex");
+    expect(f.call({ action: "read", path: "large.bin" })).toEqual({ error: "invalid" });
+    expect(f.call({ action: "hash", path: "large.bin" })).toEqual({ sha256: expected, size: bytes.length });
+    bytes[0] = 8;
+    writeFileSync(join(f.root, "large.bin"), bytes);
+    expect(f.call({ action: "remove", path: "large.bin", expectedSha256: expected })).toEqual({ error: "conflict" });
+    const current = f.call({ action: "hash", path: "large.bin" });
+    expect(current.sha256).not.toBe(expected);
+    expect(f.call({ action: "remove", path: "large.bin", expectedSha256: current.sha256 })).toEqual({});
+    expect(f.call({ action: "hash", path: "large.bin" })).toEqual({ error: "not_found" });
+    symlinkSync(join(f.temp, "outside"), join(f.root, "escape"));
+    expect(f.call({ action: "hash", path: "escape" })).toEqual({ error: "invalid" });
+    expect(f.call({ action: "hash", path: "../outside" })).toEqual({ error: "invalid" });
   });
   it("rejects stale edits and uses no-clobber move semantics", () => {
     const f = fixture();

@@ -129,7 +129,12 @@ describe("persistent agent directories", () => {
       remoteFiles.set(relative, bytes); return { sha256: fileHash(bytes) };
     });
     const seedBytes = vi.fn();
-    const remote = { root: remoteRoot, list: async () => [], listPage: async () => ({ entries: [], truncated: false }), readBytes, writeBytes, seedBytes };
+    const hash = vi.fn(async (relative: string) => {
+      const bytes = remoteFiles.get(relative);
+      if (!bytes) throw { code: "not_found" };
+      return { sha256: fileHash(bytes), size: bytes.length };
+    });
+    const remote = { root: remoteRoot, list: async () => [], listPage: async () => ({ entries: [], truncated: false }), readBytes, hash, writeBytes, seedBytes };
     const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
     const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand");
     try {
@@ -162,6 +167,29 @@ describe("persistent agent directories", () => {
       expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
 
     } finally { lookup.mockRestore(); shell.mockRestore(); }
+  });
+
+  it("deletes oversized remote files by hash without downloading and rejects stale deletion", async () => {
+    let bytes: Buffer | null = Buffer.alloc(17 * 1024 * 1024, 7);
+    const correctHash = fileHash(bytes);
+    const hash = vi.fn(async () => bytes ? { sha256: fileHash(bytes), size: bytes.length } : Promise.reject({ code: "not_found" }));
+    const readBytes = vi.fn(async () => { throw new Error("Remote read exceeds 16 MiB"); });
+    const remove = vi.fn(async (_relative: string, expected: string) => {
+      if (!bytes || fileHash(bytes) !== expected) throw { code: "conflict" };
+      bytes = null;
+    });
+    const remote = { root: "/home/user/paperclip/test/agents/target", listPage: async () => ({ entries: [], truncated: false }), hash, readBytes, remove };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    try {
+      const store = agentFileStore(db);
+      await expect(store.write({ ...target(), path: "large.bin", bytes: null, baseHash: "stale" }, board())).rejects.toMatchObject({ status: 409 });
+      expect(remove).not.toHaveBeenCalled();
+      expect(bytes?.length).toBe(17 * 1024 * 1024);
+      await expect(store.write({ ...target(), path: "large.bin", bytes: null, baseHash: correctHash }, board())).resolves.toEqual({ contentHash: null, changed: true });
+      expect(remove).toHaveBeenCalledWith("large.bin", correctHash);
+      expect(bytes).toBeNull();
+      expect(readBytes).not.toHaveBeenCalled();
+    } finally { lookup.mockRestore(); }
   });
 
   describe("warm directory ownership", () => {

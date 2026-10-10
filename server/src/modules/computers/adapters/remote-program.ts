@@ -143,6 +143,18 @@ try:
   finally:os.close(parentfd)
   if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):fail('invalid')
   print(json.dumps({'name':name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000}))
+ elif act=='hash':
+  parentfd,name=parent(path)
+  try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+  finally:os.close(parentfd)
+  with os.fdopen(fd,'rb') as f:
+   if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):fail('invalid')
+   h=hashlib.sha256();size=0
+   while True:
+    block=f.read(65536)
+    if not block:break
+    h.update(block);size+=len(block)
+  print(json.dumps({'sha256':h.hexdigest(),'size':size}))
  elif act=='read':
   parentfd,name=parent(path)
   try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)

@@ -702,6 +702,9 @@ finally:
       async stat(path: string): Promise<{ name: string; kind: "file" | "directory"; size: number; mtimeMs: number }> {
         return remote({ action: "stat", path });
       },
+      async hash(path: string): Promise<{ sha256: string; size: number }> {
+        return remote({ action: "hash", path });
+      },
       async remove(path: string, expectedSha256: string) {
         await remote({ action: "remove", path, expectedSha256 });
       },

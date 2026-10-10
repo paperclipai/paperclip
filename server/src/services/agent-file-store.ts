@@ -1,4 +1,4 @@
-import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
+import { persistentAgentFiles, hashPersistentAgentFile, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -232,8 +232,8 @@ export function agentFileStore(db: Db) {
       locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, remote) => {
         const relative = agentFilePath(input.path);
         if (input.bytes) assertFileSize(input.bytes.length, relative);
-        const remotePrevious = remote ? await readPersistentAgentFile(remote, relative) : null;
-        const previous = remote ? (remotePrevious ? { hash: remotePrevious.sha256, size: remotePrevious.bytes.length } : null) : await inspectAgentFile(root, relative);
+        const remotePrevious = remote ? await hashPersistentAgentFile(remote, relative) : null;
+        const previous = remote ? (remotePrevious ? { hash: remotePrevious.sha256, size: remotePrevious.size } : null) : await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
         if (currentHash === incomingHash) return { contentHash: currentHash, changed: false };
