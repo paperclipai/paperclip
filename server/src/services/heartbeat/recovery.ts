@@ -77,6 +77,7 @@ import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
 import type { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import type { createHeartbeatRunState } from "./run-state.js";
+import { isPluginSessionRunContext } from "./retries.js";
 import type { HeartbeatRetryDependencies, createHeartbeatRetries } from "./retries.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -2253,6 +2254,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const shouldRetry =
         (run.processLossRetryCount ?? 0) < 1 &&
+        !isPluginSessionRunContext(run.contextSnapshot) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           monitorDispatchLostWithoutFutureWake);
