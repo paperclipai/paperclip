@@ -225,16 +225,26 @@ try {
   assert.equal(interaction.sourceRunId, runIds[0]);
   const pendingEvent = await until("durable runtime_request.created v2", async () =>
     rows(await board(`/api/heartbeat-runs/${runIds[0]}/events?limit=1000`)).find(row => {
+      if (row.eventType !== "runtime_request.created") return false;
       const event = object(object(row.payload).prpEvent ?? {});
       return event.eventType === "runtime_request.created" && object(object(event.payload).request).requestId === nativeRequestId;
     }) ?? {}, value => typeof value.id === "number");
   const nativeRequest = object(object(object(object(pendingEvent.payload).prpEvent).payload).request);
   assert.equal(nativeRequest.schema, "paperclip.runtime_request.v2"); assert.equal(nativeRequest.status, "pending");
+  step("native-question-pending", { runId: runIds[0], interactionId: interaction.id, nativeRequestId });
   const answered = object(await board(`/api/issues/${issueId}/interactions/${interaction.id}/respond`, "POST", {
     answers: [{ questionId: "environment", optionIds: ["test"] }] })); assert.equal(answered.status, "answered");
   const input = await until("durable answer input", () => query({ query: "input.pending", assignmentId: first.assignmentId, nativeRequestId }), value => typeof value.inputDigest === "string");
   assert.equal(input.requestId, nativeRequestId); assert.equal(input.turnId, object(first.binding).turnId);
   assert.equal(input.inputDigest, digestPaperclipSemanticContent({ requestId: nativeRequestId, turnId: input.turnId, response: input.response }));
+  const resolvedEvent = await until("durable native answer resolution", async () =>
+    rows(await board(`/api/heartbeat-runs/${runIds[0]}/events?limit=1000`)).find(row => {
+      if (row.eventType !== "runtime_request.resolved") return false;
+      const event = object(object(row.payload).prpEvent ?? {});
+      return event.eventType === "runtime_request.resolved" && object(event.payload).requestId === nativeRequestId;
+    }) ?? {}, value => typeof value.id === "number");
+  const resolvedPayload = object(object(object(resolvedEvent.payload).prpEvent).payload);
+  assert.equal(resolvedPayload.turnId, input.turnId); assert.equal(resolvedPayload.action, "submit");
   const continuationReceiptId = randomUUID(), continuationFile = join(evidenceDirectory, `continuation-${continuationReceiptId}.json`);
   await writeFile(continuationFile, JSON.stringify({ synthetic: true, continuationReceiptId, requestId: nativeRequestId,
     turnId: input.turnId, inputDigest: input.inputDigest, response: input.response }), { mode: 0o600, flag: "wx" });
@@ -243,7 +253,7 @@ try {
     continuationReceiptId, continuationPersisted: true });
   const consumed = await query({ query: "input.pending", assignmentId: first.assignmentId, nativeRequestId }); assert.equal(consumed.consumed, true);
   evidence.question = { interactionId: interaction.id, nativeRequestId, questionCommandId: `question_${interaction.id}`,
-    pendingNative: true, nativeEventId: pendingEvent.id, nativeRequestSchema: nativeRequest.schema, answeredStatus: answered.status, inputDigest: input.inputDigest, continuationReceiptId, continuationPersisted: true, consumed: true };
+    pendingNative: true, nativeEventId: pendingEvent.id, resolvedNativeEventId: resolvedEvent.id, resolvedNativeRequestId: resolvedPayload.requestId, nativeRequestSchema: nativeRequest.schema, answeredStatus: answered.status, inputDigest: input.inputDigest, continuationReceiptId, continuationPersisted: true, consumed: true };
   step("native-question-consumed");
   await finish(first, "Saved the synthetic report and consumed the selected test environment.");
   const reopen = object(await board(`/api/issues/${issueId}/comments`, "POST", { body: `${marker}: revise the report after completed work.`, reopen: true, clientRequestId: randomUUID() }));
