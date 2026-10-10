@@ -430,6 +430,10 @@ function assertRoutineCanEnable(status: string, assigneeAgentId: string | null |
   }
 }
 
+function ownRecordValue(record: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
 function collectProvidedRoutineVariables(
   source: "schedule" | "manual" | "api" | "webhook",
   payload: Record<string, unknown> | null | undefined,
@@ -463,10 +467,14 @@ function resolveRoutineVariableValues(
   for (const variable of variables) {
     // Workspace-derived automatic values are authoritative for variables that
     // Paperclip manages from execution context, so callers cannot override them.
-    const candidate = automaticVariables[variable.name] !== undefined
-      ? automaticVariables[variable.name]
-      : provided[variable.name] !== undefined
-        ? provided[variable.name]
+    // Own-property lookups keep names like `toString` from resolving to
+    // Object.prototype members.
+    const automaticValue = ownRecordValue(automaticVariables, variable.name);
+    const providedValue = ownRecordValue(provided, variable.name);
+    const candidate = automaticValue !== undefined
+      ? automaticValue
+      : providedValue !== undefined
+        ? providedValue
         : variable.defaultValue;
     const normalized = normalizeRoutineVariableValue(variable, candidate);
     if (normalized == null || (typeof normalized === "string" && normalized.trim().length === 0)) {
