@@ -30,8 +30,10 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  isToolConnectionAttentionHealth,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type ToolConnectionHealthStatus,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -2237,6 +2239,7 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "envBindings",
   "secrets",
   "runtimeSkills",
+  "toolConnections",
 ] as const;
 
 const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES = [
@@ -2512,6 +2515,7 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<
   envBindings: "env bindings",
   secrets: "secrets",
   runtimeSkills: "runtime skills",
+  toolConnections: "tool connections",
 };
 
 const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS: Record<
@@ -2877,6 +2881,77 @@ async function resolveInstructionsConfigFingerprintMetadata(
   return metadata;
 }
 
+/**
+ * Structural view of the connection state that decides MCP tool attachment.
+ * Kept duck-typed so the fingerprint layer does not depend on tool-access.
+ */
+export type EffectiveRunToolConnectionsInput = {
+  installedConnections: readonly {
+    id: string;
+    name: string;
+    // `ToolConnection.status` is optional. An absent status does not attach, so
+    // the marker keeps that distinction instead of widening it away.
+    status?: string | null;
+    enabled: boolean;
+    transport: string;
+    credentialPolicy?: string | null;
+    healthStatus: ToolConnectionHealthStatus;
+    installs?: readonly { targetType: string }[] | null;
+  }[];
+  permittedConnectionIds: readonly string[];
+};
+
+/**
+ * Reduce the agent's connection access to a stable marker for the session
+ * fingerprint.
+ *
+ * Only the inputs that `buildPaperclipRuntimeMcpServers` actually uses to pick
+ * which connections attach are included: identity, name (tool names embed the
+ * connection name), permit, install scope, and the status/enabled/transport/
+ * health predicate.
+ *
+ * Deliberately excluded:
+ * - `updatedAt`, `healthCheckedAt`, `healthMessage`, `lastError` —
+ *   `updateConnectionHealth` rewrites these on every health poll, so
+ *   fingerprinting them would rotate every session on a routine poll.
+ *   `healthStatus` is reduced to the `attentionHealth` boolean the attachment
+ *   filter tests, which only moves when attachment would actually change.
+ * - `config` / `transportConfig` — connection tools are delivered through one
+ *   aggregate gateway server, so per-connection config does not change the
+ *   server set, and these carry rotating OAuth material.
+ * - the per-run identity filtering applied by
+ *   `filterResolvedGitHubConnectionsForRun`. Fingerprinting the
+ *   identity-filtered view would rotate the session whenever the responsible
+ *   user changed, which is a new reset axis; the agent's installed/permitted
+ *   set is the configuration boundary.
+ */
+export function buildEffectiveRunToolConnectionsConfigValue(
+  input: EffectiveRunToolConnectionsInput,
+) {
+  const permitted = new Set(input.permittedConnectionIds);
+  const connections = input.installedConnections
+    .map((connection) => ({
+      id: connection.id,
+      name: connection.name,
+      status: connection.status ?? null,
+      enabled: connection.enabled,
+      transport: connection.transport,
+      credentialPolicy: connection.credentialPolicy ?? null,
+      attentionHealth: isToolConnectionAttentionHealth(connection.healthStatus),
+      permitted: permitted.has(connection.id),
+      installScopes: [
+        ...new Set((connection.installs ?? []).map((install) => install.targetType)),
+      ].sort(),
+    }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    connections,
+    // A permit granted before the connection is installed is still a change to
+    // the agent's effective access, so it has to move the fingerprint too.
+    permittedConnectionIds: [...permitted].sort(),
+  };
+}
+
 function buildSessionConfigCategoryValues(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
@@ -2890,6 +2965,7 @@ function buildSessionConfigCategoryValues(input: {
   routineEnv: unknown;
   secretManifest: readonly EffectiveRunConfigSecretManifestEntry[];
   runtimeSkills: unknown;
+  toolConnections: unknown;
   agentConfigRevision: unknown;
   agentIdentityKeyId?: string;
 }) {
@@ -2929,6 +3005,7 @@ function buildSessionConfigCategoryValues(input: {
     },
     secrets: sanitizedSecretManifest,
     runtimeSkills: input.runtimeSkills,
+    toolConnections: input.toolConnections,
   } satisfies Record<EffectiveRunSessionConfigCategory, unknown>;
 }
 
@@ -2945,6 +3022,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   routineEnv: unknown;
   secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
   runtimeSkills: unknown;
+  toolConnections?: unknown;
   agentConfigRevision?: unknown;
   agentIdentityKeyId?: string;
 }): Promise<EffectiveRunSessionConfigMetadata> {
@@ -2965,6 +3043,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     routineEnv: input.routineEnv,
     secretManifest,
     runtimeSkills: input.runtimeSkills,
+    toolConnections: input.toolConnections ?? null,
     agentConfigRevision: input.agentConfigRevision ?? null,
     agentIdentityKeyId: input.agentIdentityKeyId,
   });

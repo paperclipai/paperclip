@@ -146,6 +146,7 @@ import {
   buildExecutionWorkspaceConfigSnapshot,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   buildEffectiveRunSessionConfigMetadata,
+  buildEffectiveRunToolConnectionsConfigValue,
   readConfigFingerprintFromSessionParams,
   readConfiguredModelFromAdapterConfig,
   resolveTaskSessionConfigFreshness,
@@ -290,6 +291,7 @@ import {
 } from "@paperclipai/shared";
 
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
+import { toolAccessService } from "./tool-access.js";
 import { liveVoiceExecutionGuidance } from "./voice/voice-execution-guidance.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 
@@ -3751,6 +3753,24 @@ export function heartbeatService(
         agent.companyId,
         agent.id,
       );
+      // Connection access has to be resolved before the session fingerprint,
+      // otherwise installing, permitting or revoking a connection cannot
+      // invalidate a task session and the new tool set only takes effect when
+      // some unrelated category happens to change. Resolved once here and
+      // threaded into buildPaperclipRuntimeMcpServers below so the run still
+      // makes a single query.
+      const effectiveToolProfiles = await toolAccessService(db)
+        .getEffectiveProfilesForAgent(agent.companyId, agent.id);
+      const toolConnectionsConfigValue =
+        buildEffectiveRunToolConnectionsConfigValue({
+          installedConnections: effectiveToolProfiles.installedConnections,
+          permittedConnectionIds: [
+            ...effectiveToolProfiles.entries
+              .filter((entry) => entry.effect === "include" && entry.connectionId)
+              .map((entry) => entry.connectionId!),
+            ...effectiveToolProfiles.allowedTools.map((tool) => tool.connectionId),
+          ],
+        });
       const sessionConfigMetadataInput = {
           agentIdentityKeyId: agentIdentity?.keyId,
           adapterType: agent.adapterType,
@@ -3808,6 +3828,7 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretManifest,
           runtimeSkills: runtimeSkillEntries,
+          toolConnections: toolConnectionsConfigValue,
           agentConfigRevision: latestAgentConfigRevision
             ? {
                 id: latestAgentConfigRevision.id,
@@ -6778,6 +6799,7 @@ export function heartbeatService(
               agent,
               runId: run.id,
               expectedAssignmentDigest: expectedNativeMcpDigest,
+              effectiveToolProfiles,
             });
             if ("runtimeContext" in nativeExecution) {
               if (nativeMcpServers.length > 1)
@@ -7030,6 +7052,7 @@ export function heartbeatService(
               db,
               agent,
               runId: run.id,
+              effectiveToolProfiles,
             });
             const runtimeToolDelivery =
               adapter.runtimeToolDelivery ?? "invocation_context";

@@ -29,6 +29,7 @@ import {
   type ChatProvider,
   type RoutineRevisionSnapshotV1,
   type SourceTrustMetadata,
+  type ToolProfileEffectiveSummary,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -910,12 +911,20 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
+  /**
+   * Pre-resolved effective profiles. The session fingerprint already resolves
+   * these before deciding task-session reuse, so callers pass that result
+   * through to keep one resolve per run.
+   */
+  effectiveToolProfiles?: ToolProfileEffectiveSummary;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveProfilesForAgent(
-    input.agent.companyId,
-    input.agent.id,
-  );
+  const effective =
+    input.effectiveToolProfiles ??
+    (await access.getEffectiveProfilesForAgent(
+      input.agent.companyId,
+      input.agent.id,
+    ));
   const [runIdentity] = await input.db
     .select({
       contextSnapshot: heartbeatRuns.contextSnapshot,
