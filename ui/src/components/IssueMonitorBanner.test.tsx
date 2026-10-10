@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -29,6 +30,16 @@ function derived(overrides: Partial<DerivedMonitorState> & { state: DerivedMonit
 }
 
 describe("buildMonitorSurfaceCopy", () => {
+  it.each(["retrying", "due-now", "overdue"] as const)("keeps workspace contention neutral when %s", (state) => {
+    const copy = buildMonitorSurfaceCopy(derived({
+      state, source: "scheduled-retry", nextCheckAt: NOW.toISOString(), attemptCount: 4,
+    }), NOW, "workspace_busy");
+    expect(copy!.bannerTitle).toBe("Waiting for workspace");
+    expect(copy!.stripTitle).toBe("Waiting for workspace");
+    expect(copy!.tone).toBe("info");
+    expect(copy!.workspaceWait).toBe(true);
+    expect(copy!.bannerMeta.join(" ")).not.toMatch(/Attempt|overdue|retry/i);
+  });
   it("leads with two-unit relative time while scheduled", () => {
     const copy = buildMonitorSurfaceCopy(
       derived({
@@ -135,6 +146,94 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     } as unknown as Issue;
   }
 
+  it("requires confirmation, keeps the monitor on dismissal, and reports cancellation errors", async () => {
+    const issue = issueWithMonitor(new Date(NOW.getTime() + 60_000).toISOString());
+    const onCancel = vi.fn().mockRejectedValueOnce(new Error("Unable to save monitor")).mockResolvedValueOnce(undefined);
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={onCancel} />));
+    const open = () => flushSync(() => (container.querySelector('[aria-label="Cancel monitor"]') as HTMLButtonElement).click());
+    open();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("no longer resume");
+    flushSync(() => (Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Keep monitor")!).click());
+    expect(onCancel).not.toHaveBeenCalled();
+    open();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe("Unable to save monitor");
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("does not offer monitor cancellation for automatic retries", () => {
+    const issue = { scheduledRetry: { status: "scheduled_retry", scheduledRetryAt: NOW.toISOString() } } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={vi.fn()} />));
+    expect(container.querySelector('[aria-label="Cancel monitor"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("shows the saved PR and a status check above the composer during a GitHub review wait", () => {
+    const issue = issueWithMonitor(new Date(NOW.getTime() + 6 * 60 * 60_000).toISOString());
+    issue.executionState!.monitor!.serviceName = "github";
+    const product = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe", url: null,
+      metadata: { url: "https://github.com/example/private-repo/pull/42" },
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: NOW,
+    } as unknown as IssueWorkProduct;
+    const onCheckNow = vi.fn();
+    const root = createRoot(container);
+    const render = (products: IssueWorkProduct[], error?: string) => flushSync(() => root.render(
+      <IssueMonitorComposerStrip issue={issue} workProducts={products} onCheckNow={onCheckNow} checkError={error} />,
+    ));
+    render([product]);
+    expect(container.textContent).toContain("Pull request review requested");
+    expect(container.textContent).toContain("Next check in 6h");
+    expect(container.textContent).not.toContain("Resumes in");
+    expect(container.querySelector("a")?.href).toBe("https://github.com/example/private-repo/pull/42");
+    expect(container.querySelector("a")?.textContent).toBe("example/private-repo#42");
+    const button = container.querySelector("button")!;
+    expect(button.textContent).toBe("Check status");
+    flushSync(() => button.click());
+    expect(onCheckNow).toHaveBeenCalledTimes(1);
+    render([product], "GitHub status check could not start");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not start");
+    render([{ ...product, metadata: { ...product.metadata, state: "merged" } }]);
+    expect(container.textContent).not.toContain("review requested");
+    expect(container.querySelector("a")).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {
+    const issue = {
+      status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
+    expect(container.textContent).toContain("Waiting for workspace");
+    expect(container.textContent).toContain("You can keep sending instructions while the agent waits.");
+    expect(container.textContent).not.toContain("wakes the agent now");
+    expect(container.querySelector("button")).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("explains pool exhaustion and retained account affinity on both waiting surfaces", () => {
+    const issue = {
+      status: "in_progress", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(NOW.getTime() + 60_000).toISOString(), scheduledRetryAttempt: 1 },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
+    expect(container.textContent).toContain("Pool exhausted");
+    expect(container.textContent).toContain("Usage recheck in 1m");
+    expect(container.textContent).toContain("Tasks with a selected account keep it while waiting.");
+    expect(container.textContent).toContain("Work resumes when usage permits.");
+    expect(container.textContent).not.toContain("Attempt 1");
+    expect(container.querySelector("button")).not.toBeNull();
+    flushSync(() => root.unmount());
+  });
+
   it("renders the banner with a working Check now button while waiting", () => {
     const onCheckNow = vi.fn();
     expect(hasVisibleMonitorSurface(issueWithMonitor(new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString()))).toBe(true);
@@ -191,6 +290,44 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).toContain("Resumes in 2h");
     expect(container.textContent).toContain("Sending a reply wakes the agent now");
 
+    flushSync(() => root.unmount());
+  });
+
+  it("removes both countdowns and Check now when the retry starts, then shows a newly scheduled retry", () => {
+    const root = createRoot(container);
+    const issue = {
+      status: "in_progress",
+      scheduledRetry: {
+        status: "scheduled_retry",
+        scheduledRetryAt: new Date(NOW.getTime() - 2 * 60_000).toISOString(),
+        scheduledRetryAttempt: 1,
+      },
+    } as Issue;
+    const render = (next: Issue) => flushSync(() => root.render(
+      <>
+        <IssueMonitorBanner issue={next} onCheckNow={vi.fn()} />
+        <IssueMonitorComposerStrip issue={next} onCheckNow={vi.fn()} />
+      </>,
+    ));
+
+    render(issue);
+    expect(container.textContent).toContain("Overdue by 2m");
+
+    for (const status of ["queued", "running"] as const) {
+      const promoted = { ...issue, scheduledRetry: { ...issue.scheduledRetry!, status } };
+      render(promoted);
+      expect(hasVisibleMonitorSurface(promoted)).toBe(false);
+      expect(container.textContent).toBe("");
+      expect(container.querySelector("button")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+
+    render({ ...issue, scheduledRetry: { ...issue.scheduledRetry!, scheduledRetryAt: new Date(NOW.getTime() + 5 * 60_000).toISOString() } });
+    expect(container.textContent).toContain("Resumes in 5m");
+
+    render({ ...issue, status: "done" });
+    expect(container.textContent).toBe("");
+    expect(vi.getTimerCount()).toBe(0);
     flushSync(() => root.unmount());
   });
 });

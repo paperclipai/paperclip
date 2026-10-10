@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
+  costEvents,
   activityLog,
   agents,
   agentWakeupRequests,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         return;
       } catch (error) {
@@ -328,11 +330,14 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await heartbeat.waitForRunExecutionDrain(run!.id);
     expect(terminalStatus).toBe("succeeded");
 
-    const runCount = await db
-      .select({ count: sql<number>`count(*)::int` })
+    const runs = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
+      .orderBy(heartbeatRuns.createdAt);
+    expect(runs.map((entry) => entry.contextSnapshot?.wakeReason)).toEqual([
+      "issue_assigned",
+      "issue_review_path_lost",
+    ]);
   }, 10_000);
 
   it("recognizes explicit restore-in-progress suppression", () => {

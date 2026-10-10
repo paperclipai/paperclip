@@ -21,6 +21,7 @@ export const companySecrets = pgTable(
     externalRef: text("external_ref"),
     providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
     providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
+    aiSessionEpoch: integer("ai_session_epoch").notNull().default(0),
     latestVersion: integer("latest_version").notNull().default(1),
     description: text("description"),
     lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),

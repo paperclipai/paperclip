@@ -1,3 +1,4 @@
+import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { api } from "./client";
 
 /**
@@ -6,10 +7,11 @@ import { api } from "./client";
  * Consumes the unified read API shipped by Phase 2c
  * (`server/src/routes/activity.ts` → `services/agent-action-audit.ts`):
  *   GET /companies/:companyId/audit/agent-actions
- * Gated server-side by the `audit:view_agent_actions` board permission — the
- * client renders an upsell/permission-denied state when the request 403s
- * (see `ui/src/pages/CompanyAudit.tsx`). CSV export streams from the sibling
- * `.csv` endpoint, which logs the export action itself.
+ * The default agent scope is gated server-side by the
+ * `audit:view_agent_actions` board permission. The explicit all-actors scope
+ * also supports a company-read basic tier with attribution stripped. CSV
+ * export streams from the permission-gated sibling `.csv` endpoint, which
+ * logs the export action itself.
  */
 
 /** Render-ready entity snippets attached to each row at read time (no N+1). */
@@ -39,10 +41,14 @@ export interface AuditActionRecord {
 export interface AuditActionsResponse {
   items: AuditActionRecord[];
   nextCursor: string | null;
+  /** Controls whether attribution filters and CSV export are available. */
+  accessTier: "basic" | "full";
 }
 
 /** Server-side filters for the audit feed. All optional. */
 export interface AuditActionFilters {
+  /** Defaults to `agents`; `all` opts into the unified all-actors feed. */
+  actorScope?: "agents" | "all";
   agentId?: string | null;
   responsibleUserId?: string | null;
   runId?: string | null;
@@ -60,6 +66,7 @@ export interface AuditActionFilters {
 
 function buildAuditQuery(filters: AuditActionFilters): URLSearchParams {
   const search = new URLSearchParams();
+  if (filters.actorScope) search.set("actorScope", filters.actorScope);
   if (filters.agentId) search.set("agentId", filters.agentId);
   if (filters.responsibleUserId) search.set("responsibleUserId", filters.responsibleUserId);
   if (filters.runId) search.set("runId", filters.runId);
@@ -76,9 +83,9 @@ function buildAuditQuery(filters: AuditActionFilters): URLSearchParams {
 
 export const auditApi = {
   /**
-   * Cursor-paginated agent-action feed. Returns `{ items, nextCursor }`.
-   * Throws `ApiError` with status 403 when the caller lacks
-   * `audit:view_agent_actions`.
+   * Cursor-paginated activity/audit feed. The default agent scope throws a
+   * 403 without `audit:view_agent_actions`; `actorScope: "all"` returns a
+   * redacted basic tier to ordinary company readers.
    */
   listAgentActions: (companyId: string, filters: AuditActionFilters = {}) => {
     const search = buildAuditQuery(filters);
@@ -104,6 +111,8 @@ export const auditApi = {
     );
     if (!res.ok) {
       const body = await res.json().catch(() => null);
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, body);
+      if (recovery) return recovery;
       const message = (body as { error?: string } | null)?.error ?? `Export failed: ${res.status}`;
       throw new Error(message);
     }

@@ -1,8 +1,12 @@
+export { chatSlackRegistrations } from "./chat_slack_registrations.js";
 export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
+export { companyTransferRuns } from "./company_transfer_runs.js";
+export { companyOnboardingSeeds } from "./company_onboarding_seeds.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
+export { chatVoiceCallbacks } from "./chat_voice_callbacks.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
 export { agents } from "./agents.js";
 export { builtInManagedResources } from "./built_in_managed_resources.js";
@@ -20,31 +24,50 @@ export { budgetIncidents } from "./budget_incidents.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
-export { agentTaskSessions } from "./agent_task_sessions.js";
+export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
+export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
+export { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES } from "./adapter_auth_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
+export { issueAccessGrants } from "./issue_access_grants.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
+export { connectionEventDeliveries } from "./connection_event_deliveries.js";
+export {
+  chatEndpoints,
+  chatEndpointResources,
+  chatExternalPrincipals,
+  chatIdentityLinks,
+  chatConversations,
+  chatDeliveries,
+  chatPublications,
+  chatMessageLinks,
+  chatActions,
+  chatAgentRoutes,
+  chatEndpointLeases,
+  chatSdkState,
+} from "./chat_channels.js";
 export { issueRelations } from "./issue_relations.js";
-export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
@@ -70,6 +93,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
   decisionBundles,
@@ -89,10 +113,13 @@ export {
   decisionQueueItems,
   decisionTriage,
   decisionTriageEvents,
+  decisionRetention,
+  decisionArchiveNotificationOutbox,
 } from "./decision_queues.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
+export { runnerApiResponseReservations } from "./runner_api_response_reservations.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
@@ -105,6 +132,13 @@ export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
+export { providerTraceRecords } from "./provider_trace_records.js";
+export { completionContracts } from "./completion_contracts.js";
+export { nativeRunResults } from "./native_run_results.js";
+export { nativeRunFinalizations } from "./native_run_finalizations.js";
+export { workAssessments } from "./work_assessments.js";
+export { statusDecisions } from "./status_decisions.js";
+export { statusDecisionEffects } from "./status_decision_effects.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
 export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";
 export { costEvents } from "./cost_events.js";
@@ -115,14 +149,19 @@ export { activityLog } from "./activity_log.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 export { userSecretDefinitions } from "./user_secret_definitions.js";
 export { companySecrets } from "./company_secrets.js";
+export { managedAgentProfiles } from "./managed_agent_profiles.js";
+export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export {
   toolApplications,
   toolConnections,
   connectionGrants,
+  connectionGrantMembers,
+  connectionGrantDelegations,
   toolConnectionInstalls,
   toolOauthStates,
   toolCatalogEntries,
@@ -163,3 +202,47 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { runIdentityContexts } from "./run_identity_contexts.js";
+export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
+export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
+export { pluginLifecycleAcknowledgments } from "./plugin_lifecycle_acknowledgments.js";
+
+export { toolActionDeliveries } from "./tool_action_deliveries.js";
+export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
+export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
+export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
+export { chatVoiceSessions, chatVoiceToolCalls, chatVoiceReplies } from "./chat_voice_sessions.js";
+export { chatGitHubConfigurations, chatGitHubRegistrations, chatGitHubReviews } from "./chat_github.js";
+
+export { aiConnectionDefaults } from "./ai_connection_defaults.js";
+export { aiProviderDefaults } from "./ai_provider_defaults.js";
+export * from "./email.js";
+export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
+export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
+
+export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
+
+
+export * from "./company_skill_sources.js";
+export * from "./public_mcp.js";
+export * from "./dot_runner.js";
+
+
+export * from "./accounting.js";
+export * from "./ai_connection_routing.js";
+export { toolConnectionAppSnapshots } from "./tool_connection_app_snapshots.js";
+export { toolConnectionAppSyncs } from "./tool_connection_app_syncs.js";
+export { agentCommentary } from "./agent_commentary.js";
+
+
+export { agentIdentityKeys } from "./agent_identity_keys.js";
+
+export { chatVoiceReports } from "./chat_voice_reports.js";
+
+export { chatVoicePhoneLines, chatVoiceInboundCalls } from "./chat_voice_inbound.js";
+export * from "./decision_models.js";
+export { userCompanyPreferences } from "./user_company_preferences.js";
+export { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections } from "./ai_subscriptions.js";
+
+export * from "./fast_responses.js";

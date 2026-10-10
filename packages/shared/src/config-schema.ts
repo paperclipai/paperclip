@@ -13,19 +13,19 @@ export const configMetaSchema = z.object({
   version: z.literal(1),
   updatedAt: z.string(),
   source: z.enum(["onboard", "configure", "doctor"]),
-});
+}).passthrough();
 
 export const llmConfigSchema = z.object({
   provider: z.enum(["claude", "openai"]),
   apiKey: z.string().optional(),
-});
+}).passthrough();
 
 export const databaseBackupConfigSchema = z.object({
   enabled: z.boolean().default(true),
   intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
   retentionDays: z.number().int().min(1).max(3650).default(7),
   dir: z.string().default("~/.paperclip/instances/default/data/backups"),
-});
+}).passthrough();
 
 export const databaseConfigSchema = z.object({
   mode: z.enum(["embedded-postgres", "postgres"]).default("embedded-postgres"),
@@ -38,12 +38,12 @@ export const databaseConfigSchema = z.object({
     retentionDays: 7,
     dir: "~/.paperclip/instances/default/data/backups",
   }),
-});
+}).passthrough();
 
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
-});
+}).passthrough();
 
 export const serverConfigSchema = z.object({
   deploymentMode: z.enum(DEPLOYMENT_MODES).default("local_trusted"),
@@ -54,17 +54,17 @@ export const serverConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(3100),
   allowedHostnames: z.array(z.string().min(1)).default([]),
   serveUi: z.boolean().default(true),
-});
+}).passthrough();
 
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
   disableSignUp: z.boolean().default(false),
-});
+}).passthrough();
 
 export const storageLocalDiskConfigSchema = z.object({
   baseDir: z.string().default("~/.paperclip/instances/default/data/storage"),
-});
+}).passthrough();
 
 export const storageS3ConfigSchema = z.object({
   bucket: z.string().min(1).default("paperclip"),
@@ -72,7 +72,7 @@ export const storageS3ConfigSchema = z.object({
   endpoint: z.string().optional(),
   prefix: z.string().default(""),
   forcePathStyle: z.boolean().default(false),
-});
+}).passthrough();
 
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
@@ -85,11 +85,11 @@ export const storageConfigSchema = z.object({
     prefix: "",
     forcePathStyle: false,
   }),
-});
+}).passthrough();
 
 export const secretsLocalEncryptedConfigSchema = z.object({
   keyFilePath: z.string().default("~/.paperclip/instances/default/secrets/master.key"),
-});
+}).passthrough();
 
 export const secretsConfigSchema = z.object({
   provider: z.enum(SECRET_PROVIDERS).default("local_encrypted"),
@@ -97,15 +97,15 @@ export const secretsConfigSchema = z.object({
   localEncrypted: secretsLocalEncryptedConfigSchema.default({
     keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
   }),
-});
+}).passthrough();
 
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
-}).default({});
+}).passthrough().prefault({});
 
 export const updatesConfigSchema = z.object({
   checkEnabled: z.boolean().default(true),
-}).default({});
+}).passthrough().prefault({});
 
 export const paperclipConfigSchema = z
   .object({
@@ -140,6 +140,7 @@ export const paperclipConfigSchema = z
       },
     }),
   })
+  .passthrough()
   .superRefine((value, ctx) => {
     if (value.server.deploymentMode === "local_trusted" && value.server.exposure !== "private") {
       ctx.addIssue({
@@ -203,3 +204,146 @@ export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type UpdatesConfig = z.infer<typeof updatesConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function unwrapConfigSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let current: z.ZodTypeAny = schema;
+  while (true) {
+    if (current instanceof z.ZodOptional) {
+      current = current.unwrap() as z.ZodTypeAny;
+      continue;
+    }
+    if (current instanceof z.ZodDefault) {
+      current = current.unwrap() as z.ZodTypeAny;
+      continue;
+    }
+    return current;
+  }
+}
+
+function mergeUnknownConfigKeys(
+  source: Record<string, unknown>,
+  update: Record<string, unknown>,
+  schema: z.ZodTypeAny,
+): Record<string, unknown> {
+  const objectSchema = unwrapConfigSchema(schema);
+  if (!(objectSchema instanceof z.ZodObject)) return { ...update };
+
+  const shape = objectSchema.shape as Record<string, z.ZodTypeAny>;
+  const merged = { ...update };
+
+  for (const [key, sourceValue] of Object.entries(source)) {
+    const childSchema = shape[key];
+    if (childSchema === undefined) {
+      merged[key] = sourceValue;
+      continue;
+    }
+
+    const updateValue = update[key];
+    if (isRecord(sourceValue) && isRecord(updateValue)) {
+      merged[key] = mergeUnknownConfigKeys(sourceValue, updateValue, childSchema);
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Applies a config update while retaining extension keys from the parsed source.
+ * Known optional keys that are absent from the update stay absent, so callers can
+ * intentionally clear values such as llm.apiKey or auth.publicBaseUrl.
+ */
+export function mergePaperclipConfig(
+  source: PaperclipConfig,
+  update: PaperclipConfig,
+): PaperclipConfig {
+  return mergeUnknownConfigKeys(
+    source as Record<string, unknown>,
+    update as Record<string, unknown>,
+    paperclipConfigSchema,
+  ) as PaperclipConfig;
+}
+
+export type ConfigKeyWarning = {
+  path: string;
+  suggestion: string;
+};
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + substitutionCost,
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+
+  return previous[right.length];
+}
+
+function nearMatch(key: string, candidates: string[]): string | null {
+  const normalizedKey = key.toLowerCase();
+  let best: { candidate: string; distance: number } | null = null;
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = candidate.toLowerCase();
+    if (normalizedKey === normalizedCandidate && key !== candidate) return candidate;
+
+    const distance = editDistance(normalizedKey, normalizedCandidate);
+    const threshold = Math.max(normalizedKey.length, normalizedCandidate.length) >= 8 ? 2 : 1;
+    if (distance > threshold || (best && distance >= best.distance)) continue;
+    best = { candidate, distance };
+  }
+
+  return best?.candidate ?? null;
+}
+
+function collectConfigKeyWarnings(
+  value: Record<string, unknown>,
+  schema: z.ZodTypeAny,
+  prefix: string,
+  warnings: ConfigKeyWarning[],
+): void {
+  const objectSchema = unwrapConfigSchema(schema);
+  if (!(objectSchema instanceof z.ZodObject)) return;
+
+  const shape = objectSchema.shape as Record<string, z.ZodTypeAny>;
+  const knownKeys = Object.keys(shape);
+
+  for (const [key, childValue] of Object.entries(value)) {
+    const childSchema = shape[key];
+    const childPath = prefix ? `${prefix}.${key}` : key;
+    if (childSchema === undefined) {
+      const suggestion = nearMatch(key, knownKeys);
+      if (suggestion) {
+        warnings.push({
+          path: childPath,
+          suggestion: prefix ? `${prefix}.${suggestion}` : suggestion,
+        });
+      }
+      continue;
+    }
+
+    if (isRecord(childValue)) {
+      collectConfigKeyWarnings(childValue, childSchema, childPath, warnings);
+    }
+  }
+}
+
+/** Returns likely misspellings among retained extension keys without modifying them. */
+export function findPaperclipConfigKeyWarnings(config: unknown): ConfigKeyWarning[] {
+  if (!isRecord(config)) return [];
+  const warnings: ConfigKeyWarning[] = [];
+  collectConfigKeyWarnings(config, paperclipConfigSchema, "", warnings);
+  return warnings;
+}

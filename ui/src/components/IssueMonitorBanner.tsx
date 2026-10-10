@@ -1,9 +1,21 @@
-import { useMemo } from "react";
-import { Clock } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import { useMemo, useState } from "react";
+import { Clock, X } from "lucide-react";
+import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
 
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { InlineBanner } from "@/components/InlineBanner";
+import { IssuePullRequestLinks } from "@/components/IssuePullRequestLinks";
+import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-requests";
 import { cn } from "@/lib/utils";
 import {
   deriveMonitorState,
@@ -49,6 +61,8 @@ export interface MonitorSurfaceCopy {
   stripMeta: string[];
   /** `warning` (amber) once overdue, `info` (blue) while still on schedule. */
   tone: "info" | "warning";
+  workspaceWait?: boolean;
+  pullRequestReview?: boolean;
 }
 
 function capitalize(value: string): string {
@@ -63,11 +77,44 @@ function capitalize(value: string): string {
 export function buildMonitorSurfaceCopy(
   derived: DerivedMonitorState,
   now: MonitorDate,
+  scheduledRetryReason?: string | null,
+  pendingPullRequestReviews = 0,
 ): MonitorSurfaceCopy | null {
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
+    return {
+      bannerTitle: "Waiting for workspace",
+      stripTitle: "Waiting for workspace",
+      bannerMeta: ["Another task is using this workspace. Work starts automatically when it is available."],
+      stripMeta: ["Work starts automatically when the workspace is available."],
+      tone: "info",
+      workspaceWait: true,
+    };
+  }
+
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
+  if (derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0) {
+    return {
+      bannerTitle: "Pull request review requested",
+      stripTitle: "Pull request review requested",
+      bannerMeta: [`Next check ${eta} · ${absolute} (your time)`],
+      stripMeta: [`Next check ${eta} · ${absolute}`],
+      tone: derived.state === "overdue" ? "warning" : "info",
+      pullRequestReview: true,
+    };
+  }
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
+    return {
+      bannerTitle: "Pool exhausted",
+      stripTitle: "Pool exhausted",
+      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits."],
+      stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
+      tone: "info",
+    };
+  }
+
   const isScheduledRetryOnly = derived.source === "scheduled-retry";
 
   let bannerTitle: string;
@@ -111,21 +158,23 @@ export function buildMonitorSurfaceCopy(
   };
 }
 
-function useMonitorSurfaceCopy(issue: Issue): MonitorSurfaceCopy | null {
+function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number): MonitorSurfaceCopy | null {
   // `nextCheckAt` is stable for a given issue; derive once to seed the ticking
   // countdown cadence, then re-derive against the live clock so the surfaces
   // roll scheduled → due → overdue on their own.
   const nextCheckAt = useMemo(() => deriveMonitorState(issue).nextCheckAt, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now), [issue, now]);
+  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews), [issue, now, pendingPullRequestReviews]);
 }
 
 function CheckNowButton({
   onCheckNow,
   checkingNow,
+  reviewRequested = false,
 }: {
   onCheckNow: () => void;
   checkingNow: boolean;
+  reviewRequested?: boolean;
 }) {
   return (
     <Button
@@ -136,8 +185,46 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : "Check now"}
+      {checkingNow ? "Checking…" : reviewRequested ? "Check status" : "Check now"}
     </Button>
+  );
+}
+
+function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancel = async () => {
+    setPending(true);
+    setError(null);
+    try {
+      await onCancel();
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel the monitor. Try again.");
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => { if (!pending) { setOpen(next); setError(null); } }}>
+      <AlertDialogTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label="Cancel monitor" title="Cancel monitor">
+          <X className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Cancel monitor?</AlertDialogTitle>
+          <AlertDialogDescription>This removes the scheduled monitor check. The agent will no longer resume from this monitor. You can send a message to continue the task.</AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Keep monitor</AlertDialogCancel>
+          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? "Cancelling…" : "Cancel monitor"}</Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -145,6 +232,9 @@ export interface IssueMonitorSurfaceProps {
   issue: Issue;
   onCheckNow?: (() => void) | null;
   checkingNow?: boolean;
+  workProducts?: IssueWorkProduct[] | null;
+  checkError?: string | null;
+  onCancelMonitor?: (() => Promise<unknown>) | null;
 }
 
 /**
@@ -156,19 +246,30 @@ export function IssueMonitorBanner({
   issue,
   onCheckNow = null,
   checkingNow = false,
+  workProducts,
+  checkError,
+  onCancelMonitor,
 }: IssueMonitorSurfaceProps) {
-  const copy = useMonitorSurfaceCopy(issue);
+  const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
+
+  const canCancel = onCancelMonitor && deriveMonitorState(issue).source === "monitor";
 
   return (
     <InlineBanner
       tone={copy.tone}
       icon={Clock}
       title={copy.bannerTitle}
-      className="my-3"
-      actions={onCheckNow ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} /> : null}
+      className={cn("relative my-3", canCancel && "pr-12")}
+      actions={onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
     >
-      <span>{copy.bannerMeta.join("  ·  ")}</span>
+      {canCancel ? <CancelMonitorButton key={issue.id} onCancel={onCancelMonitor} /> : null}
+      <div className="flex flex-col gap-2">
+        {copy.pullRequestReview ? <IssuePullRequestLinks products={reviews} /> : null}
+        <span>{copy.bannerMeta.join("  ·  ")}</span>
+        {checkError ? <p role="alert">{checkError}</p> : null}
+      </div>
     </InlineBanner>
   );
 }
@@ -182,9 +283,12 @@ export function IssueMonitorComposerStrip({
   issue,
   onCheckNow = null,
   checkingNow = false,
+  workProducts,
+  checkError,
   className,
 }: IssueMonitorSurfaceProps & { className?: string }) {
-  const copy = useMonitorSurfaceCopy(issue);
+  const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
 
   return (
@@ -196,16 +300,22 @@ export function IssueMonitorComposerStrip({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-2">
           <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-col gap-2">
             <div className="text-sm font-medium text-foreground">{copy.stripTitle}</div>
+            {copy.pullRequestReview ? <IssuePullRequestLinks products={reviews} /> : null}
             <div className="text-xs text-muted-foreground">{copy.stripMeta.join(" · ")}</div>
           </div>
         </div>
-        {onCheckNow ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} /> : null}
+        {onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        Sending a reply wakes the agent now — before the scheduled check.
+        {copy.pullRequestReview
+          ? "Review on GitHub, then check status to have the agent verify the result."
+          : copy.workspaceWait
+          ? "You can keep sending instructions while the agent waits."
+          : "Sending a reply wakes the agent now — before the scheduled check."}
       </p>
+      {checkError ? <p role="alert" className="text-sm text-destructive">{checkError}</p> : null}
     </div>
   );
 }

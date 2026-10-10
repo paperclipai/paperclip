@@ -8,7 +8,7 @@ export const adapterRegistryEntrySchema = z
     envKeys: z.array(z.string()).optional(),
     allowFqdns: z.array(z.string()).optional(),
     probeCommand: z.array(z.string()).optional(),
-    defaultEnv: z.record(z.string()).optional(),
+    defaultEnv: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 

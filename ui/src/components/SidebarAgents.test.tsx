@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
@@ -14,6 +13,14 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+}));
+
+const mockBuiltInAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -93,6 +100,14 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("../api/builtInAgents", () => ({
+  builtInAgentsApi: mockBuiltInAgentsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -111,14 +126,6 @@ vi.mock("../api/resourceMemberships", () => ({
 if (!globalThis.PointerEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).PointerEvent = MouseEvent;
-}
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
 }
 
 function makeAgent(overrides: Partial<Agent>): Agent {
@@ -152,7 +159,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
   });
 }
 
@@ -211,6 +218,7 @@ describe("SidebarAgents", () => {
   let memberships: ResourceMemberships;
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     mockSidebarState.collapsed = false;
     mockSidebarState.peeking = false;
     container = document.createElement("div");
@@ -222,6 +230,8 @@ describe("SidebarAgents", () => {
     mockAgentsApi.list.mockResolvedValue([makeAgent({})]);
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({}));
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: false });
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
@@ -263,19 +273,33 @@ describe("SidebarAgents", () => {
     localStorage.clear();
   });
 
-  afterEach(async () => {
+  async function unmountSidebarAgents() {
     const currentRoot = root;
+    root = null;
     if (currentRoot) {
       await act(async () => {
         currentRoot.unmount();
       });
     }
-    vi.useRealTimers();
     queryClient.clear();
-    container.remove();
-    document.body.innerHTML = "";
-    localStorage.clear();
-    vi.clearAllMocks();
+    // Radix defers focus restoration until after unmount. Run it while the
+    // JSDOM event constructors still belong to this document.
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  }
+
+  afterEach(async () => {
+    try {
+      await unmountSidebarAgents();
+    } finally {
+      vi.useRealTimers();
+      container.remove();
+      document.body.innerHTML = "";
+      localStorage.clear();
+      vi.clearAllMocks();
+    }
   });
 
   async function renderSidebarAgents(streamlined = true) {
@@ -306,23 +330,6 @@ describe("SidebarAgents", () => {
     await flushReact();
   }
 
-  async function renderSidebarAgentsWithFakeTimers() {
-    const currentRoot = createRoot(container);
-    root = currentRoot;
-
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents streamlined />
-        </QueryClientProvider>,
-      );
-    });
-    await act(async () => {
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-
   async function renderRailSidebarAgents() {
     mockSidebarState.collapsed = true;
     const currentRoot = createRoot(container);
@@ -339,6 +346,50 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
   }
+
+  it.each(["agent", "section"])("finishes deferred %s menu focus cleanup before DOM teardown", async (menu) => {
+    await renderSidebarAgents();
+    if (menu === "agent") await openAgentMenu();
+    else await openAgentsSectionMenu();
+
+    const menuContent = document.body.querySelector('[role="menu"]');
+    expect(menuContent).not.toBeNull();
+    const onUnmountAutoFocus = vi.fn();
+    menuContent!.addEventListener("focusScope.autoFocusOnUnmount", onUnmountAutoFocus);
+
+    await unmountSidebarAgents();
+
+    expect(onUnmountAutoFocus).toHaveBeenCalledTimes(1);
+    expect(container.isConnected).toBe(true);
+  });
+
+  it("does not query built-in agents when the experimental feature is disabled", async () => {
+    queryClient.setQueryData(queryKeys.builtInAgents.list("company-1"), [
+      { agentId: "agent-1", status: "needs_setup" },
+    ]);
+
+    await renderSidebarAgents();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Needs setup");
+  });
+
+  it("does not query built-in agents while the experimental setting is unresolved", async () => {
+    mockInstanceSettingsApi.getExperimental.mockReturnValue(new Promise(() => {}));
+
+    await renderSidebarAgents();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("queries built-in agents when the experimental feature is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: true });
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
+  });
 
   it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
     mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
@@ -629,7 +680,10 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
     ]);
-    mockAgentsApi.pause.mockImplementation(() => new Promise(() => {}));
+    let finishPause!: (agent: Agent) => void;
+    mockAgentsApi.pause.mockImplementation(() => new Promise<Agent>((resolve) => {
+      finishPause = resolve;
+    }));
 
     await renderSidebarAgents();
     await openAgentMenu();
@@ -650,6 +704,11 @@ describe("SidebarAgents", () => {
       .find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+
+    await act(async () => {
+      finishPause(makeAgent({ status: "paused" }));
+    });
+    await flushReact();
   });
 
   it("shows only active agents when any agent has a live run", async () => {
@@ -673,7 +732,7 @@ describe("SidebarAgents", () => {
   });
 
   it("keeps formerly live agents visible for the streamlined linger window", async () => {
-    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -684,7 +743,7 @@ describe("SidebarAgents", () => {
       { id: "run-1", agentId: "agent-a", status: "running" },
     ]);
 
-    await renderSidebarAgentsWithFakeTimers();
+    await renderSidebarAgents();
 
     let labels = agentLinkLabels(container);
     expect(labels).toHaveLength(1);
@@ -717,7 +776,7 @@ describe("SidebarAgents", () => {
   });
 
   it("expires staggered lingering agents without unrelated sidebar updates", async () => {
-    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -728,7 +787,7 @@ describe("SidebarAgents", () => {
       { id: "run-1", agentId: "agent-a", status: "running" },
     ]);
 
-    await renderSidebarAgentsWithFakeTimers();
+    await renderSidebarAgents();
     expect(agentLinkLabels(container)[0]).toContain("Alpha");
 
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);

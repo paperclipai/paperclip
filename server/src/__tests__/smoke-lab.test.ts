@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   authUsers,
+  connectionGrants,
   companies,
   companyMemberships,
   createDb,
@@ -354,10 +355,13 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
 
     const applications = await db.select().from(toolApplications).where(eq(toolApplications.companyId, company.id));
     const connections = await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id));
+    const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.companyId, company.id));
     const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, company.id));
     const profiles = await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id));
     expect(applications).toHaveLength(2);
     expect(connections).toHaveLength(2);
+    expect(grants).toHaveLength(2);
+    expect(grants.every((grant) => grant.kind === "organization" && grant.isDefault)).toBe(true);
     expect(catalog.some((entry) => entry.toolName === "todo.add" && entry.riskLevel === "write")).toBe(true);
     expect(catalog.some((entry) => entry.toolName === "time.now" && entry.riskLevel === "read")).toBe(true);
     expect(profiles).toHaveLength(1);

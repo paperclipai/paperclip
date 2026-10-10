@@ -154,6 +154,7 @@ export function filterLocalInboxArchivedQueryData<TData>(queryKey: QueryKey, dat
 
 function inboxIssueQueryPrefixes(companyId: string) {
   return [
+    [...queryKeys.issues.list(companyId), "compact"],
     queryKeys.issues.listMineByMe(companyId),
     queryKeys.issues.listTouchedByMe(companyId),
     queryKeys.issues.listUnreadTouchedByMe(companyId),

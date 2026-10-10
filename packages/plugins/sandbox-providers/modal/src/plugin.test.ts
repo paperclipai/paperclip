@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import manifest from "./manifest.js";
+
 const { MockNotFoundError, MockTimeoutError, MockSandboxTimeoutError } = vi.hoisted(() => {
   class MockNotFoundError extends Error {}
   class MockTimeoutError extends Error {}
@@ -702,5 +704,27 @@ describe("Modal sandbox provider plugin", () => {
       stdout: "",
       stderr: "No provider lease ID available for execution.",
     });
+  });
+});
+
+describe("modal manifest form defaults", () => {
+  const configSchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { format?: string; default?: unknown }>;
+    }
+  );
+  const properties = configSchema.properties ?? {};
+
+  it("pre-fills the required app name and image so the form works out of the box", () => {
+    expect(properties.appName?.default).toBe("paperclip");
+    expect(properties.image?.default).toBe("node:24");
+  });
+
+  it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {
+    for (const prop of Object.values(properties)) {
+      if (prop.format === "secret-ref") {
+        expect(prop.default).toBeUndefined();
+      }
+    }
   });
 });

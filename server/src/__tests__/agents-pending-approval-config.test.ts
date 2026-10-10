@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -8,6 +9,7 @@ import {
   budgetPolicies,
   companies,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -40,6 +42,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
     await db.delete(agents);
@@ -64,8 +67,9 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
   it("freezes generic pending hire config and reapplies the approval snapshot on activation", async () => {
     const companyId = await seedCompany();
     const agentSvc = agentService(db);
+  const agentSvcLifecycle = createAgentLifecycle(db);
     const approvalSvc = approvalService(db);
-    const pending = await agentSvc.create(companyId, {
+    const pending = await agentSvcLifecycle.requestHire(companyId, {
       name: "Pending Coder",
       role: "engineer",
       title: "Software Engineer",
@@ -99,6 +103,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
         budgetMonthlyCents: 1234,
         metadata: { source: "hire-form" },
         agentId: pending.id,
+        appearance: pending.appearance,
       },
       decisionNote: null,
       decidedByUserId: null,
@@ -142,7 +147,9 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await approvalSvc.approve(approval.id, "board-user", "Approved generic hire");
 
     await expect(agentSvc.getById(pending.id)).resolves.toMatchObject({
-      status: "idle",
+      status: "paused",
+      lifecycleState: "preparing",
+      appearance: pending.appearance,
       name: "Pending Coder",
       role: "engineer",
       title: "Software Engineer",

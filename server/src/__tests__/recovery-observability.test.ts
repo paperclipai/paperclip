@@ -85,6 +85,12 @@ describe("classifyRecoveryHandoff", () => {
     ).toBe("owner_completed");
   });
 
+  it("does not treat in-review work as a completed owner handoff", () => {
+    expect(
+      classifyRecoveryHandoff({ ...base, finalAssigneeAgentId: "manager", finalIssueStatus: "in_review" }),
+    ).toBe("other");
+  });
+
   it("marks work returned to the original assignee as handed_back", () => {
     expect(classifyRecoveryHandoff({ ...base, finalAssigneeAgentId: "coder" })).toBe("handed_back");
   });
@@ -388,5 +394,29 @@ describeEmbeddedPostgres("recovery observability report", () => {
     expect(report.window.since).toBe(report.weekly[0]?.weekStart);
     expect(report.window.since).not.toContain("T");
     expect(report.weekly).toHaveLength(MAX_WINDOW_WEEKS);
+  });
+
+  it("counts an active board recovery action without reporting an active takeover", async () => {
+    const { companyId, coderId } = await seedBaseline();
+    await seedRecoveryAction({
+      companyId,
+      n: 101,
+      createdAt: latestWeek,
+      cause: "process_lost",
+      errorCode: "process_lost",
+      status: "active",
+      outcome: null,
+      ownerAgentId: null,
+      returnOwnerAgentId: coderId,
+      finalAssigneeAgentId: coderId,
+      finalIssueStatus: "blocked",
+    });
+
+    const report = await recoveryObservabilityService(db).report(companyId, { now, weeks: 8 });
+
+    expect(report.handoff).toMatchObject({ boardOwned: 1, activeTakeovers: 0 });
+    expect(report.perCauseRouting.find((entry) => entry.cause === "process_lost")).toMatchObject({
+      active: 1,
+    });
   });
 });

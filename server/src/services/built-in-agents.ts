@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
+import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -6,22 +7,32 @@ import { fileURLToPath } from "node:url";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
+import { activityLog, agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
 import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { adoptAgentFiles, agentFilePath, fileHash, readAgentFile, snapshotAgentFiles } from "./agent-file-store.js";
+import { assertInstructionPathSafe, instructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
+import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
+import type { AuthorizationActor } from "./authorization.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
   withBuiltInAgentMarker,
-} from "./built-in-agent-metadata.js";
+} from "../lib/built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
+import {
+  resourceStatus,
+  stableJson,
+  stockHash,
+  type ManagedResourceStockStatus,
+} from "./managed-resource-drift.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -72,11 +83,7 @@ export interface BuiltInAgentProvisionResult {
 }
 
 export type BuiltInManagedResourceKind = "instructions" | "skill" | "routine";
-export type BuiltInManagedResourceStockStatus =
-  | "missing"
-  | "stock_current"
-  | "stock_update_available"
-  | "operator_modified";
+export type BuiltInManagedResourceStockStatus = ManagedResourceStockStatus;
 
 export interface BuiltInManagedResourceState {
   resourceKind: BuiltInManagedResourceKind;
@@ -180,7 +187,7 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
 const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
   "You are Summarizer, a built-in reporting agent at Paperclip.",
   "",
-  "Turn the current state of a Paperclip scope (project, workspaces overview, or a single project workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
+  "Turn the current state of a Paperclip scope (project, workspaces overview, project workspace, or execution workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
   "",
   "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
   "",
@@ -400,7 +407,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     displayName: "Summarizer",
     featureKeys: ["summarizer"],
     shortPurpose:
-      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, and project-workspace summary slots on demand.",
+      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, project-workspace, and execution-workspace summary slots on demand.",
     defaultInstructions: SUMMARIZER_INSTRUCTIONS,
     defaultRole: "general",
     defaultTitle: "Summarizer",
@@ -418,7 +425,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-15",
+      stockVersion: "2026-08-02",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -451,7 +458,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
             type: "select",
             defaultValue: "all",
             required: true,
-            options: ["all", "project", "workspaces_overview", "project_workspace"],
+            options: ["all", "project", "workspaces_overview", "project_workspace", "execution_workspace"],
           },
         ],
         triggers: [
@@ -469,6 +476,12 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
 ]);
 
 const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
+
+// Bundled built-in agents that should be provisioned automatically when a
+// company is created (and re-ensured on startup reconcile). Empty by default so
+// a new user starts clean — the Reflection Coach and Summarizer are opt-in, not
+// seeded. Add a definition key here to restore automatic provisioning.
+const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
@@ -495,40 +508,11 @@ function uniqueNonEmptyStrings(values: string[]) {
   return result;
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function stockHash(value: unknown) {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
-}
-
 function changedFileList(currentFiles: Record<string, string | null>, stockFiles: Record<string, string>) {
   const paths = new Set([...Object.keys(currentFiles), ...Object.keys(stockFiles)]);
   return [...paths]
     .filter((filePath) => (currentFiles[filePath] ?? null) !== (stockFiles[filePath] ?? null))
     .sort((left, right) => left.localeCompare(right));
-}
-
-function resourceStatus(input: {
-  resourceId: string | null;
-  currentHash: string | null;
-  bindingStockHash: string | null;
-  latestStockHash: string;
-}): BuiltInManagedResourceStockStatus {
-  if (!input.resourceId || !input.currentHash) return "missing";
-  if (input.currentHash === input.latestStockHash) return "stock_current";
-  if (input.bindingStockHash && input.currentHash === input.bindingStockHash) {
-    return "stock_update_available";
-  }
-  return "operator_modified";
 }
 
 function stockState(input: {
@@ -822,9 +806,10 @@ function isBuiltInAgentMarkerConflict(error: unknown): boolean {
 
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
+  const agentSvcLifecycle = createAgentLifecycle(db);
   const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
-  const instructionsSvc = agentInstructionsService();
+  const instructionsSvc = agentInstructionsService(db);
   const skillSvc = companySkillService(db);
   const routineSvc = routineService(db);
 
@@ -938,9 +923,9 @@ export function builtInAgentService(db: Db) {
     stockVersion: string;
     stockHash: string;
     defaultsJson: Record<string, unknown>;
-  }) {
+  }, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] = db) {
     const now = new Date();
-    return db
+    return connection
       .insert(builtInManagedResources)
       .values(input)
       .onConflictDoUpdate({
@@ -974,10 +959,15 @@ export function builtInAgentService(db: Db) {
     return currentFiles;
   }
 
-  async function materializeInstructions(agent: Agent, definition: BuiltInAgentDefinition, mode: "reconcile" | "reset") {
+  async function materializeInstructions(agent: Agent, definition: BuiltInAgentDefinition, mode: "reconcile" | "reset", actor?: AuthorizationActor) {
     const bundle = definition.bundle!;
     const stock = stockHash(bundle.instructions.files);
     const binding = await getManagedResourceBinding(agent.companyId, definition.key, "instructions", "AGENTS.md");
+    // Stock operations also read the committed projection after interrupted writes.
+    if (agentInstructionsBundleMode(agent) === "managed") {
+      try { await agentInstructionRevisionService(db).materializeCurrent({ companyId: agent.companyId, agentId: agent.id }); }
+      catch (error) { if (!(error instanceof HttpError && error.status === 404)) throw error; }
+    }
     const currentFiles = await currentInstructionFiles(agent, bundle);
     const currentHash = Object.values(currentFiles).some((value) => value === null) ? null : stockHash(currentFiles);
     const currentState = stockState({
@@ -990,6 +980,100 @@ export function builtInAgentService(db: Db) {
       bindingStockHash: binding?.stockHash ?? null,
       changedFiles: changedFileList(currentFiles, bundle.instructions.files),
     });
+
+    if (!actor && mode === "reconcile" && agentInstructionsBundleMode(agent) === "managed"
+      && binding && (binding.stockHash !== stock || binding.defaultsJson.pendingInstructionsUpdate)) {
+      const bindingWhere = and(eq(builtInManagedResources.companyId, agent.companyId),
+        eq(builtInManagedResources.bundleKey, definition.key), eq(builtInManagedResources.resourceKind, "instructions"),
+        eq(builtInManagedResources.resourceKey, "AGENTS.md"));
+      const incoming = Object.fromEntries(Object.entries(bundle.instructions.files)
+        .map(([file, content]) => [agentFilePath(file), instructionBytes(content)]));
+      // Persist only the pending operation's baseline hashes before touching
+      // files. If a write or DB commit fails, the next reconciliation can accept
+      // already-applied bytes and retry. This is not instruction revision history.
+      const prepared = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(agents).where(and(eq(agents.companyId, agent.companyId), eq(agents.id, agent.id))).for("update");
+        if (!current) throw notFound("Built-in agent not found");
+        if (agentInstructionsBundleMode(current) !== "managed") return false;
+        const root = await adoptAgentFiles(tx, current);
+        const [latest] = await tx.select().from(builtInManagedResources).where(bindingWhere);
+        if (!latest) return false;
+        const pending = latest.defaultsJson.pendingInstructionsUpdate as {
+          stockHash?: string; baseHashes?: Record<string, string | null>; nextHashes?: Record<string, string | null>;
+        } | undefined;
+        if (pending?.stockHash === stock) return true;
+        if (!pending && latest.stockHash === stock) return false;
+        const previousPaths = latest.defaultsJson.files;
+        if (!Array.isArray(previousPaths) || !previousPaths.every((file): file is string => typeof file === "string")) return false;
+        const ownedPaths = new Set(previousPaths);
+        if (pending) {
+          // A newer release (or rollback) can supersede an interrupted update.
+          // Recognize only the previous operation's baseline or intended bytes;
+          // never mistake an intervening operator edit for partially applied stock.
+          if (!pending.baseHashes || !pending.nextHashes) return false;
+          for (const [file, baseHash] of Object.entries(pending.baseHashes)) {
+            if (!(file in pending.nextHashes)) return false;
+            const bytes = await readAgentFile(root, agentFilePath(file));
+            const hash = bytes === null ? null : fileHash(bytes);
+            if (hash !== baseHash && hash !== pending.nextHashes[file]) return false;
+            ownedPaths.add(file);
+          }
+        } else {
+          const previousFiles: Record<string, string | null> = {};
+          for (const file of previousPaths) {
+            try { previousFiles[file] = (await instructionsSvc.readFile(current, file)).content; }
+            catch { previousFiles[file] = null; }
+          }
+          if (stockHash(previousFiles) !== latest.stockHash) return false;
+        }
+        await snapshotAgentFiles(root);
+        const baseHashes: Record<string, string | null> = {};
+        const nextHashes: Record<string, string | null> = {};
+        for (const file of new Set([...ownedPaths, ...Object.keys(incoming)])) {
+          const bytes = await readAgentFile(root, agentFilePath(file));
+          // A newly declared stock path must not overwrite a personal file.
+          if (!ownedPaths.has(file) && bytes !== null && !bytes.equals(incoming[file]!)) return false;
+          baseHashes[file] = bytes === null ? null : fileHash(bytes);
+          nextHashes[file] = incoming[file] ? fileHash(incoming[file]) : null;
+        }
+        await tx.update(builtInManagedResources).set({ defaultsJson: { ...latest.defaultsJson,
+          pendingInstructionsUpdate: { stockHash: stock, baseHashes, nextHashes } }, updatedAt: new Date() }).where(bindingWhere);
+        return true;
+      });
+      if (!prepared) return currentState;
+      return db.transaction(async (tx) => {
+        const [current] = await tx.select().from(agents).where(and(eq(agents.companyId, agent.companyId), eq(agents.id, agent.id))).for("update");
+        if (!current) throw notFound("Built-in agent not found");
+        if (agentInstructionsBundleMode(current) !== "managed") return currentState;
+        const root = await adoptAgentFiles(tx, current);
+        const [latest] = await tx.select().from(builtInManagedResources).where(bindingWhere);
+        const pending = latest?.defaultsJson.pendingInstructionsUpdate as { stockHash?: string; baseHashes?: Record<string, string | null> } | undefined;
+        if (pending?.stockHash !== stock || !pending.baseHashes) return currentState;
+        await snapshotAgentFiles(root);
+        // Preflight every changed or removed path before mutation; preserve any
+        // operator edit made between preparation, failure, and this retry.
+        for (const [file, baseHash] of Object.entries(pending.baseHashes)) {
+          const bytes = await readAgentFile(root, agentFilePath(file));
+          const hash = bytes === null ? null : fileHash(bytes);
+          const nextHash = incoming[file] ? fileHash(incoming[file]) : null;
+          if (hash !== baseHash && hash !== nextHash) return currentState;
+        }
+        for (const [file, bytes] of Object.entries(incoming)) await materializeInstructionBytes(root, file, bytes);
+        for (const file of Object.keys(pending.baseHashes)) {
+          if (!(file in incoming)) await fs.rm(await assertInstructionPathSafe(root, file), { force: true });
+        }
+        await upsertManagedResourceBinding({ companyId: agent.companyId, bundleKey: definition.key,
+          resourceKind: "instructions", resourceKey: "AGENTS.md", resourceId: agent.id,
+          stockVersion: bundle.stockVersion, stockHash: stock,
+          defaultsJson: { entryFile: bundle.instructions.entryFile, files: Object.keys(bundle.instructions.files) },
+        }, tx);
+        await tx.insert(activityLog).values({ companyId: agent.companyId, actorType: "system", actorId: "built-in-reconcile",
+          action: "agent.files_updated", entityType: "agent", entityId: agent.id,
+          details: { source: "built-in-stock-update", bundleKey: definition.key, stockHash: stock } });
+        return stockState({ resourceKind: "instructions", resourceKey: "AGENTS.md", resourceId: agent.id,
+          stockVersion: bundle.stockVersion, latestStockHash: stock, currentHash: stock, bindingStockHash: stock });
+      });
+    }
 
     const shouldWrite =
       mode === "reset"
@@ -1014,13 +1098,36 @@ export function builtInAgentService(db: Db) {
       return currentState;
     }
 
-    const materialized = await instructionsSvc.materializeManagedBundle(agent, bundle.instructions.files, {
-      entryFile: bundle.instructions.entryFile,
-      replaceExisting: true,
-      clearLegacyPromptTemplate: true,
-    });
+    let adapterConfig: Record<string, unknown>;
+    if (currentFiles[bundle.instructions.entryFile] !== null && currentFiles[bundle.instructions.entryFile] !== undefined) {
+      if (!actor && mode === "reconcile") return currentState;
+      if (!actor) throw unprocessable("Resetting existing instructions requires an authenticated operator", { code: "INSTRUCTION_IDENTITY_INVALID" });
+      const revisions = agentInstructionRevisionService(db);
+      const target = { companyId: agent.companyId, agentId: agent.id };
+      const baseline = await revisions.readCurrent(target, actor);
+      const receipt = await revisions.commit({ ...target, entryFile: bundle.instructions.entryFile,
+        baseRevisionId: baseline?.revision.id ?? null, content: bundle.instructions.files[bundle.instructions.entryFile] ?? "",
+        source: actor.type === "board" ? "board" : "api" }, actor);
+      if (receipt.materialization === "pending") throw conflict("Instruction revision saved; retry reset to repair its disk copy", { revisionId: receipt.revision.id });
+      const refreshed = await agentSvc.getById(agent.id);
+      if (!refreshed) throw notFound("Built-in agent not found");
+      for (const [file, content] of Object.entries(bundle.instructions.files)) {
+        if (file !== bundle.instructions.entryFile) await instructionsSvc.writeFile(refreshed, file, content);
+      }
+      // Preserve personal files outside this built-in bundle's declared paths.
+      adapterConfig = { ...refreshed.adapterConfig };
+      delete adapterConfig.promptTemplate;
+      delete adapterConfig.bootstrapPromptTemplate;
+    } else {
+      const materialized = await instructionsSvc.materializeManagedBundle(agent, bundle.instructions.files, {
+        entryFile: bundle.instructions.entryFile,
+        replaceExisting: false,
+        clearLegacyPromptTemplate: true,
+      });
+      adapterConfig = materialized.adapterConfig;
+    }
     const updated = await agentSvc.update(agent.id, {
-      adapterConfig: materialized.adapterConfig,
+      adapterConfig,
     }, {
       allowBuiltInAgentMetadata: true,
       recordRevision: { source: `built-in-bundle:${mode}:instructions` },
@@ -1298,8 +1405,8 @@ export function builtInAgentService(db: Db) {
   }
 
   async function ensureBuiltInAgentAssignable(agent: Agent) {
-    if (agent.status !== "paused") return agent;
-    const resumed = await agentSvc.resume(agent.id);
+    if (agent.status !== "paused" || ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return agent;
+    const resumed = await agentSvcLifecycle.resumeAgent(agent.id);
     if (!resumed) throw notFound("Built-in agent not found");
     return resumed as Agent;
   }
@@ -1502,13 +1609,14 @@ export function builtInAgentService(db: Db) {
     definition: BuiltInAgentDefinition,
     mode: "reconcile" | "reset",
     resources?: Array<"instructions" | "skill" | "routine">,
+    actor?: AuthorizationActor,
   ) {
     if (!definition.bundle) return [];
     const selected = new Set(resources ?? ["instructions", "skill", "routine"]);
     const existingStates = await bundleResourceStates(agent.companyId, definition, agent);
     const byKind = new Map(existingStates.map((state) => [state.resourceKind, state]));
     const instruction = selected.has("instructions")
-      ? await materializeInstructions(agent, definition, mode)
+      ? await materializeInstructions(agent, definition, mode, actor)
       : byKind.get("instructions")!;
     const refreshedAgent = await agentSvc.getById(agent.id) as Agent | null;
     if (!refreshedAgent) throw notFound("Built-in agent not found");
@@ -1558,7 +1666,7 @@ export function builtInAgentService(db: Db) {
     const [keep, ...duplicates] = markedRows;
     for (const duplicate of duplicates) {
       const openApproval = await approvalSvc.findOpenHireApprovalForAgent(companyId, duplicate.id);
-      await agentSvc.terminate(duplicate.id);
+      await agentSvcLifecycle.terminateAgent(duplicate.id);
       if (openApproval) {
         await approvalSvc.cancel(
           openApproval.id,
@@ -1679,7 +1787,7 @@ export function builtInAgentService(db: Db) {
       : null;
     let created: Agent;
     try {
-      created = await agentSvc.create(companyId, {
+      created = await agentSvcLifecycle.requestHire(companyId, {
         ...definitionPatch(definition, resolvedInput),
         status: definition.defaultStatus ?? "idle",
         pauseReason: definition.defaultStatus === "paused"
@@ -1784,7 +1892,7 @@ export function builtInAgentService(db: Db) {
       : null;
     let pending: Agent;
     try {
-      pending = await agentSvc.create(companyId, {
+      pending = await agentSvcLifecycle.requestHire(companyId, {
         ...definitionPatch(definition, input),
         status: "pending_approval",
         reportsTo,
@@ -1869,7 +1977,7 @@ export function builtInAgentService(db: Db) {
     return state(definition, updated as Agent);
   }
 
-  async function reset(companyId: string, key: string, input: { resources?: Array<"agent" | "instructions" | "skill" | "routine"> } = {}) {
+  async function reset(companyId: string, key: string, input: { resources?: Array<"agent" | "instructions" | "skill" | "routine"> } = {}, actor?: AuthorizationActor) {
     const definition = requireBuiltInAgentDefinition(key);
     const resetAgentDefaults = !input.resources || input.resources.includes("agent");
     const current = resetAgentDefaults
@@ -1884,6 +1992,7 @@ export function builtInAgentService(db: Db) {
       definition,
       "reset",
       input.resources ? selectedBundleResources ?? [] : undefined,
+      actor,
     );
     return state(definition, await agentSvc.getById(current.agent.id) as Agent, resources);
   }
@@ -1945,7 +2054,17 @@ export function builtInAgentService(db: Db) {
     const company = await ensureCompany(companyId);
     let autoEnsured = 0;
     let pendingApprovals = 0;
+    // A fresh company starts with only its own lead agent — the Reflection
+    // Coach and Summarizer are no longer auto-created for new users. They stay
+    // available to enable on demand (via ensure / provision / the built-in
+    // bundle panel). We still reconcile any bundled agent that already exists
+    // (e.g. one an operator enabled) so its instructions/skill/routine keep
+    // tracking stock. Add a key to AUTO_PROVISION_ON_COMPANY_CREATE_KEYS to
+    // restore automatic creation for that definition.
     for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+      const existing = await findSingleAgent(companyId, definition);
+      const shouldProvision = existing !== null || AUTO_PROVISION_ON_COMPANY_CREATE_KEYS.has(definition.key);
+      if (!shouldProvision) continue;
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;

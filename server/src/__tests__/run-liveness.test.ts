@@ -74,13 +74,14 @@ describe("run liveness classifier", () => {
     expect(classification.lastUsefulActionAt).toBeNull();
   });
 
-  it("exempts planning/document tasks from plan-only retry classification", () => {
+  it("uses explicit planning mode for the planning diagnostic exemption", () => {
     const classification = classifyRunLiveness({
       ...baseInput,
       issue: {
         status: "in_progress",
         title: "Draft implementation plan",
         description: "Create a plan for the work.",
+        workMode: "planning",
       },
       resultJson: {
         summary: "Plan:\n- Inspect files\n- Implement after approval",
@@ -88,6 +89,35 @@ describe("run liveness classifier", () => {
     });
 
     expect(classification.livenessState).toBe("advanced");
+  });
+
+  it.each([undefined, null, "standard", "ask", "skill_test", "planning"])(
+    "title and description cannot change liveness in explicit mode %s",
+    (workMode) => {
+      const input = {
+        ...baseInput,
+        issue: { ...baseInput.issue, workMode },
+        resultJson: { summary: "I will inspect the repo next." },
+      };
+      const expected = classifyRunLiveness(input);
+      expect(expected.livenessState).toBe(workMode === "planning" ? "advanced" : "plan_only");
+      for (const text of ["plan", "planning", "analysis", "investigation", "research", "report", "proposal", "design doc", "write-up", "making a plan", "No plan requested", "Preparar un plan"]) {
+        for (const prose of [{ title: `Implement ${text} export` }, { description: `Create a ${text} exporter.` }]) {
+          expect(classifyRunLiveness({ ...input, issue: { ...input.issue, ...prose } })).toEqual(expected);
+        }
+      }
+    },
+  );
+
+  it("a standard-mode task can deliver a plan and complete without entering planning mode", () => {
+    const input = {
+      ...baseInput,
+      issue: { ...baseInput.issue, workMode: "standard", title: "Write a plan" },
+      resultJson: { summary: "Plan:\n1. Inspect files.\n2. Implement the service." },
+      evidence: { documentRevisionsCreated: 1, planDocumentRevisionsCreated: 1 },
+    };
+    expect(classifyRunLiveness(input).livenessState).toBe("advanced");
+    expect(classifyRunLiveness({ ...input, issue: { ...input.issue, status: "done" } }).livenessState).toBe("completed");
   });
 
   it("exempts runs that update the plan document from plan-only classification", () => {

@@ -1,14 +1,105 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
+  legacyIssueThreadInteractionResolverPolicyAlias,
+  normalizeIssueThreadInteractionResolverPolicy,
+} from "./constants.js";
+import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
+  askUserQuestionsPayloadSchema,
   createIssueThreadInteractionSchema,
+  paperclipQuestionSetPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestItemVerdictsResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("derives every legacy question from a complete mixed canonical form", () => {
+    const questionSet = paperclipQuestionSetPayloadSchema.parse({
+      schema: "paperclip.question_set.v1",
+      questions: [
+        { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text", textValidation: { minLength: 1 } },
+        { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All changes", recommended: true }, { id: "selected", label: "Selected changes" }] },
+        { id: "hosting", prompt: "Preview hosting?", required: false, answerMode: "multi_select", options: [{ id: "paperclip_custom_answer", label: "Existing host" }, { id: "new", label: "New host" }], customAnswer: { enabled: true } },
+      ],
+    });
+    const parsed = createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    if (parsed.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+    expect(parsed.payload.questions).toMatchObject([
+      { id: "repo", required: true, selectionMode: "single", options: [{ id: "paperclip_text_answer", freeText: true }] },
+      { id: "scope", required: true, selectionMode: "single", allowOther: false, options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+      { id: "hosting", required: false, selectionMode: "multi", allowOther: true, options: [{ id: "paperclip_custom_answer" }, { id: "new" }, { id: "paperclip_custom_answer_2", freeText: true }] },
+    ]);
+    expect(askUserQuestionsPayloadSchema.parse(parsed.payload)).toEqual(parsed.payload);
+  });
+
+  it("rejects canonical-only forms with invalid modes or missing questions", () => {
+    for (const questionSet of [
+      { schema: "paperclip.question_set.v1", questions: [] },
+      { schema: "paperclip.question_set.v1", questions: [{ id: "repo", prompt: "Repository?", required: true, answerMode: "text", options: [{ id: "a", label: "A" }] }] },
+    ]) expect(createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1, questionSet } }).success).toBe(false);
+    expect(createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1 } }).success).toBe(false);
+  });
+
+  it("preserves canonical display whitespace while deriving trimmed storage fields", () => {
+    const questionSet = { schema: "paperclip.question_set.v1", questions: [
+      { id: "scope", prompt: "  Review scope? \n", required: true, answerMode: "single_select", options: [{ id: "all", label: " All changes " }, { id: "selected", label: " Selected changes " }] },
+      { id: "repo", prompt: " Repository URL? ", required: true, answerMode: "text" },
+    ] };
+    const parsed = createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    if (parsed.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+    expect(parsed.payload.questions[0]).toMatchObject({ prompt: "Review scope?", options: [{ label: "All changes" }, { label: "Selected changes" }] });
+    expect(parsed.payload.questions[1].prompt).toBe("Repository URL?");
+  });
+
+  it("rejects dual choice forms that disagree about written alternatives", () => {
+    const options = [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }];
+    for (const storage of [
+      { options: [...options, { id: "other", label: "Other", freeText: true }] },
+      { options, allowOther: true },
+    ]) {
+      const parsed = createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1,
+        questions: [{ id: "scope", prompt: "Scope?", required: true, selectionMode: "single", ...storage }],
+        questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options }] },
+      } });
+      expect(parsed.success).toBe(false);
+    }
+  });
+  it("defines canonical resolver policies and normalizes compatibility aliases", () => {
+    expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
+      "anyone",
+      "not_creator",
+      "human_only",
+    ]);
+    expect(ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES).toEqual([
+      "board_or_agents",
+      "board_only",
+    ]);
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_or_agents")).toBe("anyone");
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_only")).toBe("human_only");
+    expect(normalizeIssueThreadInteractionResolverPolicy("not_creator")).toBe("not_creator");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("anyone")).toBe("board_or_agents");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("not_creator")).toBeNull();
+  });
+
+  it.each(["anyone", "not_creator", "human_only", "board_or_agents", "board_only"] as const)(
+    "accepts resolver policy input %s",
+    (resolverPolicy) => {
+      const parsed = createIssueThreadInteractionSchema.parse({
+        kind: "request_confirmation",
+        resolverPolicy,
+        payload: { version: 1, prompt: "Proceed?" },
+      });
+      expect(parsed.resolverPolicy).toBe(resolverPolicy);
+    },
+  );
+
   it("parses request_confirmation payloads with default no-wake continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
@@ -82,6 +173,40 @@ describe("issue thread interaction schemas", () => {
     expect(result.toolAction).toMatchObject({ version: 1, status: "executed" });
     expect(requestConfirmationPayloadSchema.parse({ version: 1, prompt: "Legacy confirmation?" }).toolAction)
       .toBeUndefined();
+  });
+
+  it("parses superseded confirmation results with a replacement pointer", () => {
+    const result = requestConfirmationResultSchema.parse({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(result).toEqual({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("accepts run-attributed agent item verdict results and rejects missing runs", () => {
+    const result = {
+      version: 1,
+      outcome: "resolved",
+      complete: true,
+      items: [{
+        id: "api",
+        verdict: "approve",
+        resolvedByAgentId: "11111111-1111-4111-8111-111111111111",
+        resolvedByRunId: "22222222-2222-4222-8222-222222222222",
+        resolvedAt: "2026-08-14T12:00:00.000Z",
+      }],
+    };
+    expect(requestItemVerdictsResultSchema.parse(result)).toMatchObject(result);
+    expect(() => requestItemVerdictsResultSchema.parse({
+      ...result,
+      items: [{ ...result.items[0], resolvedByRunId: undefined }],
+    })).toThrow("resolvedByRunId is required for an agent resolver");
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {
@@ -186,6 +311,75 @@ describe("issue thread interaction schemas", () => {
       expirationReason: "superseded_by_comment",
       commentId: "11111111-1111-4111-8111-111111111111",
     });
+  });
+
+  it("retains canonical runner question sets without narrowing their public bounds", () => {
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      title: "Runner input",
+      questions: [{
+        id: "deployment-color",
+        prompt: "Which deployment color should the runner use?",
+        required: true,
+        answerMode: "single_select" as const,
+        options: [{ id: "blue", label: "Blue" }],
+      }],
+    };
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "deployment-color",
+          prompt: "Which deployment color should the runner use?",
+          selectionMode: "single",
+          allowOther: false,
+          options: [{ id: "blue", label: "Blue" }],
+        }],
+        questionSet,
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+
+    expect(() => paperclipQuestionSetPayloadSchema.parse({
+      ...questionSet,
+      questions: [{ ...questionSet.questions[0], answerMode: "text", options: questionSet.questions[0].options }],
+    })).toThrow("text questions cannot define options");
+  });
+
+  it("rejects creation of a form that hides required questions, while retaining historical readability", () => {
+    const payload = {
+      version: 1,
+      questions: [
+        { id: "club_name", prompt: "Club name?", selectionMode: "single", required: true, options: [{ id: "text", label: "Answer", freeText: true }] },
+        { id: "audience", prompt: "Audience?", selectionMode: "single", required: true, options: [{ id: "beginners", label: "Beginners" }, { id: "everyone", label: "Everyone" }] },
+      ],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "club_name", prompt: "Club name?", answerMode: "text", required: true }] },
+    };
+    expect(() => createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload })).toThrow("must present every questions entry");
+    expect(askUserQuestionsPayloadSchema.parse(payload).questions).toHaveLength(2);
+    const complete = { ...payload, questionSet: { ...payload.questionSet, questions: [...payload.questionSet.questions, { id: "audience", prompt: "Audience?", answerMode: "single_select", required: true, options: payload.questions[1].options }] } };
+    expect(createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: complete }).payload).toMatchObject({ questionSet: { questions: expect.any(Array) } });
+  });
+
+  it.each([
+    ["required", { required: false }],
+    ["answer mode", { answerMode: "multi_select" }],
+    ["option IDs", { options: [{ id: "different", label: "Blue" }] }],
+    ["option labels", { options: [{ id: "blue", label: "Red" }] }],
+    ["prompt", { prompt: "A different question?" }],
+  ])("rejects conflicting canonical %s at creation", (_name, changes) => {
+    const payload = {
+      version: 1,
+      questions: [{ id: "color", prompt: "Color?", required: true, selectionMode: "single", options: [{ id: "blue", label: "Blue" }] }],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "color", prompt: "Color?", required: true, answerMode: "single_select", options: [{ id: "blue", label: "Blue" }], ...changes }] },
+    };
+    expect(() => createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload })).toThrow("must match");
+    expect(askUserQuestionsPayloadSchema.parse(payload).questions).toHaveLength(1);
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {

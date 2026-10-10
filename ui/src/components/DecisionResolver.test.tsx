@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ issueStatus: "todo" }));
+const state = vi.hoisted(() => ({ issueStatus: "todo", queriedIssueIds: [] as string[] }));
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
@@ -18,9 +18,20 @@ vi.mock("@tanstack/react-query", () => ({
           originIssueId: "origin-1",
           status: "open",
           targetSnapshots: { "target-1": { updatedAt: "2026-07-31T00:00:00.000Z" } },
-          options: [{ id: "yes", label: "Yes", effects: [{
-            type: "comment_on_issue", targetIssueId: "target-1", staleness: "lenient", bodyMarkdown: "hello",
-          }] }],
+          options: [{ id: "yes", label: "Yes", effects: [
+            {
+              type: "create_issue",
+              targetIssueId: "target-1",
+              staleness: "strict",
+              draft: { title: "Follow-up", parentId: "parent-1", blockedByIssueIds: ["blocker-1"] },
+            },
+            {
+              type: "resolve_blocker",
+              targetIssueId: "target-1",
+              staleness: "strict",
+              removeBlockedByIssueIds: ["removed-blocker-1"],
+            },
+          ] }],
           executions: [],
         },
         isLoading: false,
@@ -34,8 +45,9 @@ vi.mock("@tanstack/react-query", () => ({
     queries: Array<{ queryKey: readonly string[] }>;
     combine?: (results: Array<{ data: { id: string; identifier: string; title: string; status: string } }>) => unknown;
   }) => {
-    const results = queries.map(() => ({
-      data: { id: "target-1", identifier: "PAP-1", title: "Target", status: state.issueStatus },
+    state.queriedIssueIds = queries.map((query) => String(query.queryKey[2]));
+    const results = queries.map((query) => ({
+      data: { id: String(query.queryKey[2]), identifier: "PAP-1", title: "Target", status: state.issueStatus },
     }));
     return combine ? combine(results) : results;
   },
@@ -60,6 +72,7 @@ describe("DecisionResolver", () => {
 
   beforeEach(() => {
     state.issueStatus = "todo";
+    state.queriedIssueIds = [];
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -82,6 +95,20 @@ describe("DecisionResolver", () => {
     state.issueStatus = "done";
     flushSync(() => root.render(<DecisionResolver companyId="company-1" decisionId="decision-1" />));
     expect(container.querySelector('[data-testid="resolved-status"]')?.textContent).toBe("done");
+
+    flushSync(() => root.unmount());
+  });
+
+  it("loads every primary and secondary effect target", () => {
+    const root = createRoot(container);
+    flushSync(() => root.render(<DecisionResolver companyId="company-1" decisionId="decision-1" />));
+
+    expect(state.queriedIssueIds).toEqual(expect.arrayContaining([
+      "target-1",
+      "parent-1",
+      "blocker-1",
+      "removed-blocker-1",
+    ]));
 
     flushSync(() => root.unmount());
   });

@@ -16,7 +16,7 @@ describe("codex_local parser", () => {
     expect(parsed.sessionId).toBe("thread-123");
     expect(parsed.summary).toBe("hello");
     expect(parsed.usage).toEqual({
-      inputTokens: 10,
+      inputTokens: 8,
       cachedInputTokens: 2,
       outputTokens: 4,
     });

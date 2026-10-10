@@ -42,7 +42,13 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
+    // 48h default, matching DEFAULT_AGENT_JWT_TTL_SECONDS in cli/src/commands/env.ts
+    // and the agent-authentication design doc. Run tokens are minted once at
+    // adapter spawn and injected as env, so the TTL must cover the entire run —
+    // including host-suspension gaps: heartbeats scheduled while a laptop lid is
+    // closed fire during ~2s dark wakes, and the spawned session can then sit
+    // frozen for over an hour before it first executes.
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
     // The control-plane instance this process belongs to. The live plane runs as
@@ -154,7 +160,7 @@ export function createLocalAgentJwt(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export function verifyLocalAgentJwt(token: string, options: { strictRunAuthority?: boolean } = {}): LocalAgentJwtClaims | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -183,7 +189,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   // bounds the legacy window naturally).
   //
   // Operators should set `PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK=true`
-  // approximately one JWT TTL (~1h by default, see PAPERCLIP_AGENT_JWT_TTL_SECONDS)
+  // approximately one JWT TTL (~48h by default, see PAPERCLIP_AGENT_JWT_TTL_SECONDS)
   // after deploying per-company signing. Once set, the master-secret fallback
   // is disabled and only tokens validating under the per-instance/per-company
   // derived key are accepted — closing the window in which a leaked master
@@ -193,7 +199,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const perCompanyKey = deriveCompanySigningKey(config.secret, claimedCompanyId, config.instanceId);
   const perCompanySig = signPayload(perCompanyKey, signingInput);
   let signatureOk = safeCompare(signature, perCompanySig);
-  if (!signatureOk && !config.disableLegacyFallback) {
+  if (!signatureOk && !config.disableLegacyFallback && !options.strictRunAuthority) {
     const legacySig = signPayload(config.secret, signingInput);
     signatureOk = safeCompare(signature, legacySig);
   }
@@ -231,6 +237,15 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   // enforcement is conditional — matching how iss/aud are handled above.
   const instanceClaim = typeof claims.instance_id === "string" ? claims.instance_id : undefined;
   if (instanceClaim && instanceClaim !== config.instanceId) return null;
+  // Cross-instance inspection cannot inherit the compatibility exceptions of
+  // ordinary API authentication. Only a current, standard managed-run token
+  // issued by this instance can attest live authority.
+  if (options.strictRunAuthority && (
+    header.typ !== "JWT" || issuer !== config.issuer || audience !== config.audience
+    || instanceClaim !== config.instanceId || exp <= now || iat > now
+    || !Number.isInteger(iat) || !Number.isInteger(exp)
+    || (Object.hasOwn(claims, "key_scope") && (!claims.key_scope || typeof claims.key_scope !== "object" || (claims.key_scope as { kind?: unknown }).kind !== "standard"))
+  )) return null;
 
   return {
     sub,

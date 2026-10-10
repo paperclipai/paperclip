@@ -4,11 +4,13 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { activityToastIdentity } from "./activity-toast-identity.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { trackIdleWork } from "../services/task-admission.js";
 
 interface WsSocket {
   readyState: number;
@@ -40,10 +42,22 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
 };
 
+import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
+import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+
 interface UpgradeContext {
+  actor: AuthorizationActor;
+  apiKeyId?: string;
   companyId: string;
   actorType: "board" | "agent";
   actorId: string;
+}
+
+/** Cloud-proxied browser identity resolved from trusted x-paperclip-cloud-* headers. */
+export interface CloudUpgradeActor {
+  userId: string;
+  /** Companies this actor may subscribe to (primary stack company + real memberships). */
+  companyIds: string[];
 }
 
 interface IncomingMessageWithContext extends IncomingMessage {
@@ -122,6 +136,7 @@ async function authorizeUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
@@ -135,7 +150,28 @@ async function authorizeUpgrade(
         companyId,
         actorType: "board",
         actorId: "board",
+        actor: { type: "board", userId: "local-board", source: "local_implicit" },
       };
+    }
+
+    // Cloud-managed deployments authenticate proxied browsers with trusted
+    // x-paperclip-cloud-* headers, never a local Better Auth session — the
+    // session fallback below can only 403 them, which left the live-events
+    // socket permanently unreachable behind the Cloud front door. A resolved
+    // cloud actor is authoritative: authorize against its membership scope.
+    // Absent/invalid cloud headers fall through to the session path, so
+    // self-hosted behavior is unchanged.
+    if (opts.resolveCloudActor) {
+      const cloudActor = await opts.resolveCloudActor(req);
+      if (cloudActor) {
+        if (!cloudActor.companyIds.includes(companyId)) return null;
+        return {
+          companyId,
+          actorType: "board",
+          actorId: cloudActor.userId,
+          actor: { type: "board", userId: cloudActor.userId, source: "cloud_tenant", companyIds: cloudActor.companyIds },
+        };
+      }
     }
 
     if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
@@ -171,6 +207,7 @@ async function authorizeUpgrade(
       companyId,
       actorType: "board",
       actorId: userId,
+      actor: { type: "board", userId, source: "session", companyIds: memberships.map(m => m.companyId) },
     };
   }
 
@@ -181,7 +218,7 @@ async function authorizeUpgrade(
     .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
     .then((rows) => rows[0] ?? null);
 
-  if (!key || key.companyId !== companyId) {
+  if (!key || key.companyId !== companyId || key.scopeConfig) {
     return null;
   }
 
@@ -194,6 +231,8 @@ async function authorizeUpgrade(
     companyId,
     actorType: "agent",
     actorId: key.agentId,
+    apiKeyId: key.id,
+    actor: { type: "agent", agentId: key.agentId, companyId, source: "agent_key", onBehalfOfUserId: key.responsibleUserId },
   };
 }
 
@@ -203,6 +242,12 @@ export function setupLiveEventsWebSocketServer(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Resolves a Cloud-proxied browser's identity from the trusted
+     * x-paperclip-cloud-* headers on the upgrade request. Wired by managed
+     * deployments; self-hosted instances leave it unset.
+     */
+    resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ) {
   const wss = new WebSocketServer({ noServer: true });
@@ -227,9 +272,75 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
+    const access = authorizationService(db);
+    async function visibleEvent(event: LiveEvent): Promise<LiveEvent | null> {
+      if (context!.actor.source === "local_implicit") {
+        if (event.type === "activity.logged" && event.payload.entityType === "issue") {
+          return { ...event, payload: { ...event.payload,
+            ...await activityToastIdentity(db, event.companyId, event.payload) } };
+        }
+        return event;
+      }
+      if (context!.apiKeyId) {
+        const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
+          .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
+        if (!active.length) return null;
+      } else {
+        const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
+          .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
+        const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+          .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
+        if (!membership.length && !admin) return null;
+      }
+      const payload = event.payload;
+      const issueId = typeof payload.issueId === "string" ? payload.issueId
+        : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
+      if (issueId) {
+        const [issue] = await db.select({ id: issues.id }).from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, event.companyId))).limit(1);
+        if (!issue || !(await access.decide({ actor: context!.actor, action: "issue:read",
+          resource: { type: "issue", companyId: event.companyId, issueId } })).allowed) return null;
+      }
+      if (payload.entityType === "project" && typeof payload.entityId === "string") {
+        const [project] = await db.select({ id: projects.id }).from(projects)
+          .where(and(eq(projects.id, payload.entityId), eq(projects.companyId, event.companyId))).limit(1);
+        if (!project || !(await access.decide({ actor: context!.actor, action: "project:read",
+          resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
+      }
+      const runId = typeof payload.runId === "string" ? payload.runId
+        : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      if (runId) {
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
+        if (!run || !(await canActorReadHeartbeatRun(db, access, context!.actor, run))) return null;
+      }
+      if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
+      if (event.type === "agent.session.goal.changed") return issueId ? event : null;
+      // Company-wide invalidations carry no task-derived content. Authorized
+      // clients obtain details through viewer-filtered HTTP reads.
+      if (event.type === "activity.logged") return { ...event, payload: {
+        action: payload.action, entityType: payload.entityType, entityId: payload.entityId,
+        // The task read check above authorizes attribution, but not arbitrary details.
+        ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
+      } };
+      if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
+      if (event.type === "external_object.updated") return { ...event, payload: { externalObjectId: payload.externalObjectId } };
+      if (event.type.startsWith("plugin.")) return event;
+      return null;
+    }
+    let delivery = Promise.resolve();
+    let pending = 0;
     const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(event));
+      if (++pending > 1000) { socket.close(1013, "event backlog"); return; }
+      delivery = delivery.then(async () => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        // Check at delivery time, including after a grant is revoked while the
+        // subscription remains open. Never cache successful privacy decisions.
+        const visible = await visibleEvent(event);
+        if (visible && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(visible));
+      }).catch(err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"))
+        .finally(() => { pending -= 1; });
     });
 
     cleanupByClient.set(socket, unsubscribe);
@@ -283,9 +394,12 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    void authorizeUpgrade(db, req, companyId, url, {
+    // Upgrade admission precedes this async authentication. An idle hold or
+    // socket close must not make its accepted database writes disappear.
+    void trackIdleWork(authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
+      resolveCloudActor: opts.resolveCloudActor,
     })
       .then((context) => {
         if (!context) {
@@ -309,7 +423,7 @@ export function setupLiveEventsWebSocketServer(
       .catch((err) => {
         logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
-      });
+      }));
   });
 
   return wss;

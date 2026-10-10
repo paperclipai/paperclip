@@ -44,7 +44,7 @@ export type RecoveryCauseGroup = {
 };
 
 export type RecoveryHandoffSummary = {
-  /** Genuine manager takeovers (recovery owner != original assignee) that resolved. */
+  /** Historical agent takeovers (recovery owner != original assignee) that resolved. */
   resolvedTakeovers: number;
   handedBack: number;
   ownerCompleted: number;
@@ -101,7 +101,7 @@ type RecoveryActionFacts = {
 };
 
 const ACTIVE_STATUSES = new Set(["active", "escalated"]);
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "in_review"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
 
 /**
  * Classify a recovery action by who ended up owning the deliverable work.
@@ -309,7 +309,9 @@ export function recoveryObservabilityService(db: Db) {
       if (klass === "active") {
         routing.active += 1;
         if (row.status === "escalated") routing.escalated += 1;
-        if (row.ownerAgentId && row.ownerAgentId !== row.returnOwnerAgentId) {
+        if (!row.ownerAgentId) {
+          handoff.boardOwned += 1;
+        } else if (row.ownerAgentId !== row.returnOwnerAgentId) {
           handoff.activeTakeovers += 1;
         }
         continue;
