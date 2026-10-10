@@ -1,3 +1,7 @@
+import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
+import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
@@ -1938,7 +1942,10 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration"> & {
+type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration" | "workspaceSelection"> & {
+  workspaceSelection?: TaskWorkspaceSelection;
+  workspaceSelectionSource?: "explicit" | "channel";
+  workspaceSelectionActor?: AuthorizationActor;
   title?: string;
   initialPlan?: string | null;
   labelIds?: string[];
@@ -5000,6 +5007,9 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  workspaceSelection: sql<null>`null`,
+  workspacePendingSelection: sql<null>`null`,
+  workspaceBindingRevision: issues.workspaceBindingRevision,
   sourceTrust: issues.sourceTrust,
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
@@ -7295,6 +7305,7 @@ export function issueService(db: Db) {
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
         projectId: executionWorkspaces.projectId,
+        projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
       })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
@@ -7302,11 +7313,6 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Execution workspace not found");
     if (workspace.companyId !== companyId)
       throw unprocessable("Execution workspace must belong to same company");
-    if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable(
-        "Execution workspace must belong to the selected project",
-      );
-    }
     return workspace;
   }
 
@@ -9914,6 +9920,7 @@ export function issueService(db: Db) {
       dbOrTx: Db | DbTransaction = db,
     ) => {
       const {
+        workspaceSelection, workspaceSelectionSource = "explicit", workspaceSelectionActor,
         initialPlan,
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -10081,12 +10088,14 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        let inheritedWorkspaceSelection = false;
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
             issueData.parentId ??
             null);
         const hasExplicitExecutionWorkspaceOverride =
+          (workspaceSelection !== undefined && workspaceSelectionSource === "explicit") ||
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
@@ -10114,10 +10123,12 @@ export function issueService(db: Db) {
             workspaceSource.projectWorkspaceId
           ) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
+            inheritedWorkspaceSelection = true;
           }
+          // Sharing an existing task binding preserves parent files even when
+          // the optional isolated-worktree controls are disabled.
           if (
             inheritsSourceProject &&
-            isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
           ) {
@@ -10136,6 +10147,7 @@ export function issueService(db: Db) {
               .then((rows) => rows[0] ?? null);
             if (sourceWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
+              inheritedWorkspaceSelection = true;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
                 ...((workspaceSource.executionWorkspaceSettings as
@@ -10147,23 +10159,26 @@ export function issueService(db: Db) {
             }
           }
         }
-        if (issueData.projectId == null && projectWorkspaceId) {
-          const workspace = await assertValidProjectWorkspace(
-            companyId,
-            null,
-            projectWorkspaceId,
-            tx,
-          );
-          issueData.projectId = workspace.projectId;
+        const workspaceActor: AuthorizationActor = workspaceSelectionActor ?? (issueData.createdByUserId
+          ? { type: "board", userId: issueData.createdByUserId, companyIds: [companyId] }
+          : { type: "agent", agentId: issueData.createdByAgentId ?? issueData.assigneeAgentId, companyId });
+        let workspaceIntent: TaskWorkspaceIntent | null = null;
+        if (workspaceSelection && (workspaceSelectionSource === "explicit" || !inheritedWorkspaceSelection)) {
+          const projection = await executionWorkspaceService(db).validateSelection({ companyId,
+            actor: workspaceActor,
+            selection: workspaceSelection, parentIssueId: issueData.parentId,
+            assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides, projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
+          projectWorkspaceId = projection.projectWorkspaceId;
+          executionWorkspaceId = projection.executionWorkspaceId;
+          executionWorkspacePreference = projection.executionWorkspacePreference;
+          executionWorkspaceSettings = projection.executionWorkspaceSettings;
+          workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
         }
-        if (issueData.projectId == null && executionWorkspaceId) {
-          const workspace = await assertValidExecutionWorkspace(
-            companyId,
-            null,
-            executionWorkspaceId,
-            tx,
-          );
-          issueData.projectId = workspace.projectId;
+        if (executionWorkspaceId) {
+          // A durable binding owns its source, including a deliberately absent
+          // source. Organizational defaults and legacy hints cannot replace it.
+          const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
+          projectWorkspaceId = workspace.projectWorkspaceId;
         }
         const projectGoalId = await getProjectDefaultGoalId(
           tx,
@@ -10211,7 +10226,7 @@ export function issueService(db: Db) {
               ),
             ) as Record<string, unknown> | null;
         }
-        if (!projectWorkspaceId && issueData.projectId) {
+        if (!executionWorkspaceId && !projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
           const project = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
@@ -10246,19 +10261,31 @@ export function issueService(db: Db) {
               .then((rows) => rows[0]?.id ?? null);
           }
         }
+        if (projectWorkspaceId && workspaceSelectionActor) {
+          const [readableSource] = await tx.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
+            .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+            .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
+          if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
+          const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
+            assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
+            executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy,
+            typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
+          await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId, {
+            parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId,
+            write: !executionWorkspaceId && sourceStrategy !== "git_worktree",
+          });
+        }
+        if (executionWorkspaceId && workspaceSelectionActor) {
+          const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
+            .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
+          if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
+          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true, parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId });
+        }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
             companyId,
-            issueData.projectId,
+            null,
             projectWorkspaceId,
-            tx,
-          );
-        }
-        if (executionWorkspaceId) {
-          await assertValidExecutionWorkspace(
-            companyId,
-            issueData.projectId,
-            executionWorkspaceId,
             tx,
           );
         }
@@ -10368,6 +10395,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          workspaceSelection: workspaceIntent,
           visibility,
           privacyRootIssueId,
           privacyParentIssueId,
@@ -10382,12 +10410,11 @@ export function issueService(db: Db) {
             projectGoalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
-          ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
-          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
-          ...(executionWorkspacePreference
-            ? { executionWorkspacePreference }
-            : {}),
-          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+          // Nulls from canonical selection must clear conflicting legacy input.
+          projectWorkspaceId,
+          executionWorkspaceId,
+          executionWorkspacePreference,
+          executionWorkspaceSettings,
           companyId,
           issueNumber,
           identifier,
@@ -10835,6 +10862,7 @@ export function issueService(db: Db) {
         actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
       },
       dbOrTx: any = db,
@@ -10883,6 +10911,7 @@ export function issueService(db: Db) {
         actorRunStopId,
         actorUserId,
         companyGuard,
+        workspaceSelectionActor,
         expectedExecutionPolicy,
         ...issueData
       } = data;
@@ -11084,46 +11113,8 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      let validatedProjectWorkspace: { projectId: string } | null = null;
-      let validatedExecutionWorkspace: { projectId: string } | null = null;
-      if (!nextProjectId && nextProjectWorkspaceId) {
-        const workspace = await assertValidProjectWorkspace(
-          existing.companyId,
-          null,
-          nextProjectWorkspaceId,
-        );
-        validatedProjectWorkspace = workspace;
-        nextProjectId = workspace.projectId;
-        patch.projectId = workspace.projectId;
-      }
-      if (!nextProjectId && nextExecutionWorkspaceId) {
-        const workspace = await assertValidExecutionWorkspace(
-          existing.companyId,
-          null,
-          nextExecutionWorkspaceId,
-        );
-        validatedExecutionWorkspace = workspace;
-        nextProjectId = workspace.projectId;
-        patch.projectId = workspace.projectId;
-      }
-      if (nextProjectWorkspaceId) {
-        if (!validatedProjectWorkspace) {
-          await assertValidProjectWorkspace(
-            existing.companyId,
-            nextProjectId,
-            nextProjectWorkspaceId,
-          );
-        }
-      }
-      if (nextExecutionWorkspaceId) {
-        if (!validatedExecutionWorkspace) {
-          await assertValidExecutionWorkspace(
-            existing.companyId,
-            nextProjectId,
-            nextExecutionWorkspaceId,
-          );
-        }
-      }
+      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined
@@ -11176,6 +11167,12 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
+            issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
+          Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
+            companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,
+          }, tx));
+        }
         if (expectedExecutionPolicy !== undefined && !isDeepStrictEqual(
           receiptExisting.executionPolicy ?? null,
           expectedExecutionPolicy,
@@ -11282,6 +11279,14 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (workspaceSelectionActor && updated.workspaceBindingRevision !== receiptExisting.workspaceBindingRevision) {
+          // Authorize the persisted target inside this transaction so a combined
+          // assignment/workspace edit checks the actual new assignee. A denial
+          // rolls back the binding, revision and retained-privacy trigger too.
+          await executionWorkspaceService(db).assertTaskWorkspaceUpdateAccess({
+            task: updated, actor: workspaceSelectionActor,
+          }, tx);
+        }
         if (issueData.description !== undefined) await attachOwnedDraftImages(tx, updated, updated.description,
           { userId: actorUserId, agentId: actorAgentId });
         if (changesPrivacy && updated.visibility === "private") {

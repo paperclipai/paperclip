@@ -118,6 +118,8 @@ export interface HeartbeatRuntimeSelectionInput {
     activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
     isDotRun: boolean;
     projectRepositoryPaths: string[];
+    onCheckpoint?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onCheckpoint"];
+    onPhase?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onPhase"];
   };
   config: {
     runtimeConfig: Record<string, unknown>;
@@ -1014,6 +1016,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
+      onCheckpoint: input.workspace.onCheckpoint,
+      onPhase: input.workspace.onPhase,
     });
   } else {
     const legacyWarmLifecycle =

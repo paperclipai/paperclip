@@ -5633,7 +5633,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("derives project identity when an update adds workspace linkage to a projectless issue", async () => {
+  it("preserves projectless organization when an update adds workspace linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -5674,7 +5674,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       projectWorkspaceId,
     });
 
-    expect(updated?.projectId).toBe(projectId);
+    expect(updated?.projectId).toBeNull();
     expect(updated?.projectWorkspaceId).toBe(projectWorkspaceId);
   });
 

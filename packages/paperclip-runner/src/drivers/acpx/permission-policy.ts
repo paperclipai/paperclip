@@ -19,12 +19,14 @@ export class AcpxApprovalRequiredError extends Error {
 // Review additions explicitly: a newly catalogued mutation must not inherit
 // automatic provider permission. These operations implement the bounded plan,
 // task, and handoff workflow; governance decisions, generic APIs, and workspace
-// controls deliberately stay outside it. Asking a human does not approve work.
+// controls deliberately stay outside it. Repository acquisition also stays
+// outside: it can trigger host-side clones with unbounded cumulative disk use.
+// Asking a human does not approve work.
 const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "report_progress", "answer_status_question", "write_document",
   "request_human_input", "register_deliverable", "finish_task", "block_task",
   "set_task_title", "request_review", "create_task", "reassign_task", "set_dependencies",
-  "create_project", "request_approval",
+  "create_project", "select_workspace", "request_approval",
 ]);
 
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */

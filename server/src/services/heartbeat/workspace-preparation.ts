@@ -58,8 +58,7 @@ import type { NativeChatWorkspaceScope } from "../native-runtime/native-chat-wor
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import type { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import type { instanceSettingsService } from "../instance-settings.js";
-import type { issueService } from "../issues.js";
-import type { executionWorkspaceService } from "../execution-workspaces.js";
+import type { executionWorkspaceService, TaskWorkspaceBindingPatch } from "../execution-workspaces.js";
 import type { workspaceOperationService } from "../workspace-operations.js";
 import type { watchLegacyControllerLease } from "../legacy-controller-lease.js";
 import type {
@@ -88,7 +87,6 @@ export interface HeartbeatWorkspacePreparationInput {
     }) | null;
     issueId: string | null;
     context: Record<string, unknown>;
-    executionProjectId: string | null;
     responsibleUserId: string | null;
     previousSessionParams: Record<string, unknown> | null;
   };
@@ -128,9 +126,8 @@ export interface HeartbeatWorkspacePreparationInput {
   };
   services: {
     envOrchestrator: Pick<ReturnType<typeof environmentRunOrchestrator>, "resolveEnvironment" | "acquireForRun" | "realizeForRun">;
-    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "create" | "update">;
+    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "create" | "update" | "bindTaskWorkspace" | "prepareTaskRepositoriesForAdmission">;
     workspaceOperationsSvc: Pick<ReturnType<typeof workspaceOperationService>, "createRecorder">;
-    issuesSvc: Pick<ReturnType<typeof issueService>, "update">;
     resolveWorkspaceForRun: WorkspaceResolver["resolveWorkspaceForRun"];
     resolveReusedGitWorkspaceAnchor: WorkspaceResolver["resolveReusedGitWorkspaceAnchor"];
     appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
@@ -149,13 +146,12 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     issueRef,
     issueId,
     context,
-    executionProjectId,
     responsibleUserId,
     previousSessionParams,
   } = input.task;
   const {
     trustPreset,
-    isolatedWorkspacesEnabled,
+    isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
     effectiveExecutionWorkspaceMode,
     requestedExecutionWorkspaceMode,
     useIsolatedTaskDirectory,
@@ -187,7 +183,6 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     envOrchestrator,
     executionWorkspacesSvc,
     workspaceOperationsSvc,
-    issuesSvc,
     resolveWorkspaceForRun,
     resolveReusedGitWorkspaceAnchor,
     appendRunEvent,
@@ -198,7 +193,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   } = await resolveWorkspaceAfterLowTrustPreflight({
     db,
     trustPreset,
-    isolatedWorkspacesEnabled,
+    isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
     effectiveExecutionWorkspaceMode,
     issue: issueRef
       ? {
@@ -233,7 +228,6 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
         });
         if (reusableExistingExecutionWorkspace && (
           reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
-          reusableExistingExecutionWorkspace.projectId !== issueRef.projectId ||
           reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
           reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
           reusableExistingExecutionWorkspace.strategyType !== "project_primary" ||
@@ -248,7 +242,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
           anchorWorkspace: {
             cwd,
             source: "task_session",
-            projectId: issueRef.projectId,
+            projectId: reusableExistingExecutionWorkspace?.projectId ?? null,
             workspaceId: null,
             repoUrl: null,
             repoRef: null,
@@ -285,6 +279,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
         {
           useProjectWorkspace:
             requestedExecutionWorkspaceMode !== "agent_default",
+          configuredCwd: readNonEmptyString(mergedConfig.cwd),
           anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
             ? await resolveReusedGitWorkspaceAnchor({
                 agent,
@@ -300,7 +295,14 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
                 issueId,
                 runId: run.id,
               })
-            : undefined,
+            : requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.cwd ? {
+                cwd: reusableExistingExecutionWorkspace.cwd, source: "task_session" as const,
+                projectId: reusableExistingExecutionWorkspace.projectId,
+                workspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
+                repoUrl: reusableExistingExecutionWorkspace.repoUrl, repoRef: reusableExistingExecutionWorkspace.baseRef,
+                localPathOnlyWorkspace: reusableExistingExecutionWorkspace.strategyType === "project_primary" && !reusableExistingExecutionWorkspace.repoUrl && !reusableExistingExecutionWorkspace.branchName,
+                workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [],
+              } : undefined,
           // Thread the selected environment driver so run-workspace resolution can tell a local
           // target from a remote one, and a confined sandbox target from an unconfined remote
           // target. A remote run resolves referenced projects only for the confined sandbox
@@ -569,10 +571,9 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     },
   );
   const resolvedProjectId =
-    executionWorkspace.projectId ??
-    issueRef?.projectId ??
-    executionProjectId ??
-    null;
+    reusableExistingExecutionWorkspace
+      ? reusableExistingExecutionWorkspace.projectId
+      : executionWorkspace.projectId;
   const resolvedProjectWorkspaceId =
     resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
       ? reusableExistingExecutionWorkspace.projectWorkspaceId
@@ -607,8 +608,8 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       issueRef?.executionWorkspacePreference === "reuse_existing" ||
       requestedExecutionWorkspaceMode === "isolated_workspace" ||
       requestedExecutionWorkspaceMode === "operator_branch" ||
-      warmReusableExecutionWorkspace || nativeSharedWorkspace;
-    const nextIssuePatch: Record<string, unknown> = {};
+      warmReusableExecutionWorkspace || nativeSharedWorkspace || Boolean(issueId);
+    const nextIssuePatch: TaskWorkspaceBindingPatch = {};
     if (issueExecutionWorkspaceIdForRun !== workspace.id) {
       nextIssuePatch.executionWorkspaceId = workspace.id;
     }
@@ -630,14 +631,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       };
     }
     if (Object.keys(nextIssuePatch).length > 0) {
-      await issuesSvc.update(
-        issueId,
-        { ...nextIssuePatch, companyGuard: agent.companyId },
-        db,
-        undefined,
-        undefined,
-        { bindRuntimeSharedWorkspace: (warmReusableExecutionWorkspace || nativeSharedWorkspace) && workspace.mode === "shared_workspace" },
-      );
+      await executionWorkspacesSvc.bindTaskWorkspace(agent.companyId, issueId, workspace.id, nextIssuePatch);
       issueExecutionWorkspaceIdForRun = workspace.id;
       issueProjectWorkspaceIdForRun =
         resolvedProjectWorkspaceId ?? issueProjectWorkspaceIdForRun;
@@ -744,7 +738,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
                 ),
             },
           )
-        : resolvedProjectId
+        : !isDotRun && !persistedNativeExecutionInput && (resolvedProjectId || issueRef)
           ? await executionWorkspacesSvc.create({
               companyId: agent.companyId,
               projectId: resolvedProjectId,
@@ -866,7 +860,9 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];
-  if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+  if (executionWorkspace.projectId
+    && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
+    && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
       eq(projectWorkspaces.companyId, agent.companyId),
       eq(projectWorkspaces.projectId, executionWorkspace.projectId),
@@ -880,9 +876,20 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     const paths = new Map(repositories.map((repo) => [repo.workspaceId, repo.cwd]));
     projectRepositoryPaths.push(...repositories.map((repo) => path.relative(executionWorkspace.cwd, repo.cwd)));
     if (resolvedWorkspace.workspaceId) paths.set(resolvedWorkspace.workspaceId, executionWorkspace.cwd);
-    resolvedWorkspace.workspaceHints = resolvedWorkspace.workspaceHints.map((hint) => ({
-      ...hint, cwd: paths.get(hint.workspaceId) ?? hint.cwd,
+    // Reused roots may have no transient hints. Rebuild from the currently
+    // authorized source rows and the paths actually prepared for this admission.
+    resolvedWorkspace.workspaceHints = repositoryRows.map((source) => ({
+      workspaceId: source.id,
+      cwd: paths.get(source.id) ?? readNonEmptyString(source.cwd),
+      repoUrl: readNonEmptyString(source.repoUrl),
+      repoRef: readNonEmptyString(source.repoRef),
     }));
+  }
+  if (persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput) {
+    const taskRepositories = await executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
+      issueId, workspaceId: persistedExecutionWorkspace.id, cwd: executionWorkspace.cwd,
+      agentId: agent.id, runId: run.id, responsibleUserId });
+    projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
   if (persistedExecutionWorkspace) {
     context.executionWorkspaceId = persistedExecutionWorkspace.id;
@@ -930,7 +937,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     await controllerLease.assertOwned();
     nativeRunnerPreparationSpans.push({
       name: "environment.acquire",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: environmentAcquireStartedAtMs,
       endedAtMs: Date.now(),
       attributes: { adapter: agent.adapterType },
@@ -938,7 +945,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   } catch (error) {
     nativeRunnerPreparationSpans.push({
       name: "environment.acquire",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: environmentAcquireStartedAtMs,
       endedAtMs: Date.now(),
       outcome: "failed",
@@ -1016,7 +1023,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     });
     nativeRunnerPreparationSpans.push({
       name: "environment.workspace.realize",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: environmentRealizeStartedAtMs,
       endedAtMs: Date.now(),
       attributes: { driver: selectedEnvironment.driver },
@@ -1024,7 +1031,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   } catch (error) {
     nativeRunnerPreparationSpans.push({
       name: "environment.workspace.realize",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: environmentRealizeStartedAtMs,
       endedAtMs: Date.now(),
       outcome: "failed",

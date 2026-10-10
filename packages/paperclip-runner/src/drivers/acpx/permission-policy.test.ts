@@ -53,6 +53,16 @@ describe("ACPX permission policy", () => {
     });
   });
 
+  it.each(["approve-reads", "approve-paperclip"] as const)("requires repository acquisition approval in %s", (mode) => {
+    const tools = ["prepare_repository", "paperclip__prepare_repository", "mcp__paperclip__prepare_repository"]
+      .map(name => ({ name, annotations: { readOnlyHint: true, effect: "read" } }));
+    expect(claudePaperclipPermissionRules(tools, mode)).toEqual([]);
+    expect(decideAcpxPermission("claude", mode, {
+      inferredKind: "read",
+      raw: { toolCall: { name: "mcp__paperclip__prepare_repository" } },
+    })).toBe("delegate");
+  });
+
   it.each([
     ["approve-all", "execute", "allow_once"],
     ["approve-reads", "read", "delegate"],

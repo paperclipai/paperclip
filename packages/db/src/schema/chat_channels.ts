@@ -14,6 +14,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ChatExecutionDefaults,
   ChatAdapterCapabilities,
   ChatConcurrencyPolicy,
   ChatDeliveryState,
@@ -65,6 +66,7 @@ export const chatEndpoints = pgTable(
     botDisplayName: text("bot_display_name"),
     botAvatarUrl: text("bot_avatar_url"),
     communicationInstructions: text("communication_instructions").notNull().default(""),
+    executionDefaults: jsonb("execution_defaults").$type<ChatExecutionDefaults>(),
     allowDirectMessages: boolean("allow_direct_messages")
       .notNull()
       .default(true),
@@ -220,6 +222,7 @@ export const chatEndpointResources = pgTable(
       .notNull()
       .default("available"),
     enabled: boolean("enabled").notNull().default(false),
+    executionDefaults: jsonb("execution_defaults").$type<ChatExecutionDefaults>(),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()

@@ -200,12 +200,14 @@ describeEmbeddedPostgres("workspace file resources", () => {
   let db: Db;
 
   beforeAll(async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
   });
 
   it("withholds private task files and private cross-project targets", async () => {
@@ -309,6 +311,36 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(resolved.workspaceKind).toBe("project_workspace");
     expect(resolved.displayPath).toBe("README.md");
     expect(resolved.capabilities.preview).toBe(true);
+  });
+
+  it("reads projectless task files before and after organizational project assignment", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+    await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, strategyType: "project_primary", providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.writeFile(path.join(executionRoot, "report.txt"), "Task-owned report", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    for (const projectId of [null, graph.targetProjectId]) {
+      await db.update(issues).set({ projectId }).where(eq(issues.id, graph.issueId));
+      const result = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "report.txt" }).expect(200);
+      expect(result.body.content.data).toBe("Task-owned report");
+      expect(result.body.resource.workspaceKind).toBe("execution_workspace");
+    }
+  });
+
+  it("reads a selected source independently of task project while retaining source privacy", async () => {
+    const { projectRoot, targetProjectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot });
+    await fs.writeFile(path.join(projectRoot, "source.txt"), "Selected source", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    for (const projectId of [null, graph.targetProjectId]) {
+      await db.update(issues).set({ projectId }).where(eq(issues.id, graph.issueId));
+      const result = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "source.txt" }).expect(200);
+      expect(result.body.content.data).toBe("Selected source");
+      expect(result.body.resource.workspaceId).toBe(graph.projectWorkspaceId);
+    }
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.projectId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "source.txt" }).expect(404);
   });
 
   it("auto-discovers unhinted same-company project files when issue workspaces miss", async () => {

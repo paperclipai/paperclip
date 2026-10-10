@@ -250,19 +250,19 @@ function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; paren
 }
 
 describe("assertGitSensitiveAdapterWorkspaceValid", () => {
-  it("rejects a project-workspace-linked issue that is missing its project id before adapter launch", async () => {
-    await expectWorkspaceValidationFailure(
-      buildWorkspaceValidationInput({
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-1",
-          projectId: null,
-          projectWorkspaceId: "workspace-1",
-        },
-      }),
-      "missing_project_id",
-      "linked to a project workspace but has no project id",
-    );
+  it("accepts a projectless issue using an authorized persisted source workspace", async () => {
+    await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+      issue: { id: "issue-1", identifier: "PAP-1", projectId: null, projectWorkspaceId: "workspace-1" },
+      resolvedWorkspace: buildResolvedWorkspace({ localPathOnlyWorkspace: true }),
+    }))).resolves.toBeUndefined();
+  });
+
+  it("rejects a configured source without source-project evidence", async () => {
+    const input = buildWorkspaceValidationInput();
+    await expectWorkspaceValidationFailure(buildWorkspaceValidationInput({
+      issue: { id: "issue-1", identifier: "PAP-1", projectId: null, projectWorkspaceId: "workspace-1" },
+      persistedExecutionWorkspace: { ...input.persistedExecutionWorkspace!, projectId: null },
+    }), "missing_project_id", "linked to a project workspace but has no project id");
   });
 
   it("rejects a git-sensitive local adapter when effective cwd differs from the persisted workspace cwd", async () => {
@@ -2468,6 +2468,7 @@ describe("effective run session config freshness", () => {
       workspaceConfig: {
         requestedMode: "shared_workspace",
         effectiveMode: "shared_workspace",
+        issueSettings: null,
         reusableExecutionWorkspaceConfig: null,
         existingExecutionWorkspace: null,
       },
@@ -2476,6 +2477,7 @@ describe("effective run session config freshness", () => {
       workspaceConfig: {
         requestedMode: "shared_workspace",
         effectiveMode: "shared_workspace",
+        issueSettings: { mode: "shared_workspace" },
         reusableExecutionWorkspaceConfig: {
           strategyType: "project_primary",
           workspaceGeneration: 1,

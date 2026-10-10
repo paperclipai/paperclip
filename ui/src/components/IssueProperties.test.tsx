@@ -16,6 +16,7 @@ import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
+import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -1938,6 +1939,36 @@ describe("IssueProperties", () => {
     expect(getLastProjectId("company-2")).toBeUndefined();
     act(() => root.unmount());
     localStorage.clear();
+  });
+
+  it("changes only project organization while preserving the bound workspace", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject({ name: "Target Project" })]);
+    const workspace = createExecutionWorkspace({ projectId: null, projectWorkspaceId: null });
+    const issue = createIssue({
+      executionWorkspaceId: workspace.id,
+      currentExecutionWorkspace: workspace,
+    });
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, { issue, childIssues: [], onUpdate, inline: true });
+    await flush();
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const project = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "Target Project")!;
+    act(() => project.click());
+    expect(onUpdate).toHaveBeenLastCalledWith({ projectId: "project-1" });
+    const assigned = applyOptimisticIssueFieldUpdate(issue, onUpdate.mock.lastCall![0])!;
+    expect(assigned.executionWorkspaceId).toBe(workspace.id);
+    expect(assigned.currentExecutionWorkspace).toBe(workspace);
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const none = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "No project")!;
+    act(() => none.click());
+    expect(onUpdate).toHaveBeenLastCalledWith({ projectId: null });
+    const cleared = applyOptimisticIssueFieldUpdate(assigned, onUpdate.mock.lastCall![0])!;
+    expect(cleared.executionWorkspaceId).toBe(workspace.id);
+    expect(cleared.currentExecutionWorkspace).toBe(workspace);
+    expect(cleared.currentExecutionWorkspace?.cwd).toBe(workspace.cwd);
+    act(() => root.unmount());
   });
 
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {

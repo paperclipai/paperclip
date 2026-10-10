@@ -1,3 +1,4 @@
+import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
@@ -737,6 +738,7 @@ const createIssueBaseSchema = z.object({
     .enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES)
     .optional()
     .nullable(),
+  workspaceSelection: taskWorkspaceSelectionSchema.optional(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema
     .optional()
     .nullable(),
@@ -884,6 +886,7 @@ const issueCommentAttachmentIdsSchema = z
 
 export const updateIssueSchema = objectWithoutDefaults(
   createIssueBaseSchema.omit({
+    workspaceSelection: true,
     createdByUserId: true,
     responsibleUserId: true,
     watchdog: true,

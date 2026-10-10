@@ -76,11 +76,15 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
 
   it("persists the native input, completion contract, and coordinator before transferring cleanup ownership", async () => {
     const { input, run } = await fixture();
+    input.workspace.onCheckpoint = vi.fn(async () => {});
+    input.workspace.onPhase = async (_name, work) => work();
     vi.mocked(prepareNativeWorkspaceSync).mockImplementationOnce(async args => {
       expect(await read(run.id)).toMatchObject({ runtimeMode: "native", nativeIssueId: input.task.issueRef!.id });
       expect(await coordinators(run.id)).toHaveLength(1);
       expect(input.stopControllerLease).toHaveBeenCalledOnce();
       expect(args).toMatchObject({ runId: run.id, workspaceId: run.id, workspaceLocalDir: input.workspace.executionWorkspace.cwd });
+      expect(args.onCheckpoint).toBe(input.workspace.onCheckpoint);
+      expect(args.onPhase).toBe(input.workspace.onPhase);
       return null;
     });
     const selected = await selectHeartbeatRuntime(db, input);

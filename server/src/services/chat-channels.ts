@@ -31,6 +31,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { registerSlackTaskAuthority, slackRunOrigin } from "./connectors/slack-authority.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
+import { assertChatExecutionDefaultsAccess, assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 function githubPolicyRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 import { githubChatManagementService } from "./chat-github-management.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
@@ -154,6 +155,7 @@ import {
 } from "@paperclipai/db";
 import type {
   ChatAdapterCapabilities,
+  ChatExecutionDefaults,
   ChatEndpointCallbackSurfaces,
   ChatEventKind,
   ChatEndpoint,
@@ -5874,6 +5876,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       botLabel: endpoint.botDisplayName ?? row.assignedAgentName,
       botAvatarUrl: endpoint.botAvatarUrl,
       communicationInstructions: endpoint.communicationInstructions,
+      executionDefaults: endpoint.executionDefaults,
       ...(endpoint.provider === "imessage-photon" && endpoint.botExternalId ? { photonAllocation: endpoint.botExternalId.startsWith("photon-project:") ? "shared" as const : "dedicated" as const } : {}),
       allowDirectMessages: endpoint.allowDirectMessages,
       requireAtMention: endpoint.requireAtMention,
@@ -6100,7 +6103,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
-    if (initial.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
+    if (initial.endpoint.provider === "agentmail" && Object.keys(input).some((key) => key !== "executionDefaults")) throw badRequest("Use the email inbox API for AgentMail");
     await withCredentialMutationLease(
       initial.endpoint,
       async (credentialLease) => {
@@ -6160,6 +6163,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           values.allowUnlinkedPeople = input.allowUnlinkedPeople;
         await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
+          if (input.executionDefaults !== undefined) {
+            await assertChatExecutionDefaultsAccess(db, {
+              companyId: existing.endpoint.companyId,
+              assigneeAgentId: values.assignedAgentId ?? existing.endpoint.assignedAgentId,
+              actor: { type: "board", userId: actorUserId, source: actorUserId ? "session" : "local_implicit" },
+              defaults: input.executionDefaults,
+            }, tx);
+            values.executionDefaults = input.executionDefaults;
+          }
           await tx
             .update(chatEndpoints)
             .set(values)
@@ -16078,27 +16090,45 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ) => {
         let conversation = existingConversation;
         if (!conversation) {
+          const [taskResource] = await taskTx.select({ executionDefaults: chatEndpointResources.executionDefaults })
+            .from(chatEndpointResources).where(and(eq(chatEndpointResources.id, resource.id), eq(chatEndpointResources.endpointId, taskEndpoint.id)));
+          const executionDefaults = resolveChatExecutionDefaults(taskEndpoint.executionDefaults, taskResource?.executionDefaults);
+          const responsibleUserId = taskUserId ?? taskEndpoint.sponsorUserId;
+          await assertChatTaskCreationAccess(db, {
+            companyId: taskEndpoint.companyId,
+            assigneeAgentId: taskEndpoint.assignedAgentId,
+            actor: responsibleUserId ? { type: "board", userId: responsibleUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
+            defaults: executionDefaults,
+          }, taskTx);
+          await assertChatTaskCreationAccess(db, {
+            companyId: taskEndpoint.companyId,
+            assigneeAgentId: taskEndpoint.assignedAgentId,
+            actor: { type: "agent", agentId: taskEndpoint.assignedAgentId, companyId: taskEndpoint.companyId, onBehalfOfUserId: responsibleUserId, source: "agent_key" },
+            defaults: executionDefaults,
+          }, taskTx);
           const sessionGeneration = isLinear
             ? (latestConversation?.sessionGeneration ?? 0) + 1
             : 1;
           const issue = await issuesSvc.create(
-            endpoint.companyId,
+            taskEndpoint.companyId,
             {
               title: safeTitle(
                 githubAutomatic
                   ? `PR #${githubAutomatic.context.pullNumber}: ${githubAutomatic.context.title}`
                   : githubIssue ? `GitHub issue #${githubIssue.context.issueNumber}: ${githubIssue.context.title}` : message.text,
-                `${PROVIDER_LABELS[endpoint.provider]} conversation`,
+                `${PROVIDER_LABELS[taskEndpoint.provider]} conversation`,
               ),
-              description: `Started from ${PROVIDER_LABELS[endpoint.provider]}: ${resource.label}`,
+              description: `Started from ${PROVIDER_LABELS[taskEndpoint.provider]}: ${resource.label}`,
               status: "todo",
               priority: "medium",
-              assigneeAgentId: endpoint.assignedAgentId,
-              createdByUserId: taskUserId ?? endpoint.sponsorUserId,
-              responsibleUserId: taskUserId ?? endpoint.sponsorUserId,
+              assigneeAgentId: taskEndpoint.assignedAgentId,
+              createdByUserId: taskUserId ?? taskEndpoint.sponsorUserId,
+              responsibleUserId: taskUserId ?? taskEndpoint.sponsorUserId,
               originKind: "chat_channel",
-              originId: `${endpoint.id}:${thread.id}:${sessionGeneration}`,
-              idempotencyKey: `chat:${endpoint.id}:${thread.id}:${sessionGeneration}`,
+              originId: `${taskEndpoint.id}:${thread.id}:${sessionGeneration}`,
+              idempotencyKey: `chat:${taskEndpoint.id}:${thread.id}:${sessionGeneration}`,
+              ...(executionDefaults.projectId !== undefined ? { projectId: executionDefaults.projectId } : {}),
+              ...(executionDefaults.workspace ? { workspaceSelection: executionDefaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
             },
             taskTx,
           );
@@ -28304,7 +28334,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function replaceResources(
     endpointId: string,
-    updates: Array<{ id: string; enabled: boolean }>,
+    updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
     options?: { initialGitHubImport?: boolean },
   ) {
@@ -28319,7 +28349,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function updateResourceSelection(
     endpointId: string,
-    updates: Array<{ id: string; enabled: boolean }>,
+    updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
     options?: { initialGitHubImport?: boolean; allGitHubRepositoriesEnabled?: boolean },
   ) {
@@ -28340,6 +28370,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const [endpoint] = await tx
             .select({
               companyId: chatEndpoints.companyId,
+              assignedAgentId: chatEndpoints.assignedAgentId,
               connectionId: chatEndpoints.connectionId,
               provider: chatEndpoints.provider,
               setup: chatEndpoints.setup,
@@ -28359,6 +28390,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               id: chatEndpointResources.id,
               availability: chatEndpointResources.availability,
               enabled: chatEndpointResources.enabled,
+              executionDefaults: chatEndpointResources.executionDefaults,
             })
             .from(chatEndpointResources)
             .where(
@@ -28379,7 +28411,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .for("no key update");
           if (!bulk && rows.length !== new Set(ids).size)
             throw unprocessable("Every resource must belong to this endpoint");
-          const selectedUpdates = bulk
+          const selectedUpdates: typeof updates = bulk
             ? rows.map((row) => ({ id: row.id, enabled: options!.allGitHubRepositoriesEnabled! }))
             : updates;
           const availabilityById = new Map(
@@ -28396,15 +28428,27 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               "A destination must still be available from the provider before it can be enabled",
               { code: "chat_resource_unavailable", resourceId: unavailable.id },
             );
-          const finalEnabled = new Map(
-            selectedUpdates.map((entry) => [entry.id, entry.enabled]),
-          );
+          const finalEnabled = new Map(rows.map((row) => [row.id, row.enabled]));
+          for (const entry of selectedUpdates) {
+            if (entry.enabled !== undefined) finalEnabled.set(entry.id, entry.enabled);
+          }
+          const finalDefaults = new Map(rows.map((row) => [row.id, row.executionDefaults]));
+          for (const entry of selectedUpdates) {
+            if (entry.executionDefaults === undefined) continue;
+            await assertChatExecutionDefaultsAccess(db, {
+              companyId: endpoint.companyId,
+              assigneeAgentId: endpoint.assignedAgentId,
+              actor: { type: "board", userId: actorUserId, source: actorUserId ? "session" : "local_implicit" },
+              defaults: entry.executionDefaults,
+            }, tx);
+            finalDefaults.set(entry.id, entry.executionDefaults);
+          }
           const changes = rows
-            .filter((row) => row.enabled !== finalEnabled.get(row.id))
+            .filter((row) => row.enabled !== finalEnabled.get(row.id) || JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)))
             .map((row) => ({
               resourceId: row.id,
-              before: { enabled: row.enabled },
-              after: { enabled: finalEnabled.get(row.id)! },
+              before: { enabled: row.enabled, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: row.executionDefaults } : {}) },
+              after: { enabled: finalEnabled.get(row.id)!, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: finalDefaults.get(row.id) } : {}) },
             }));
           if (bulk) {
             // One atomic database update, independent of pagination/search and
@@ -28422,7 +28466,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           } else for (const entry of selectedUpdates)
             await tx
               .update(chatEndpointResources)
-              .set({ enabled: entry.enabled, updatedAt: new Date() })
+              .set({ enabled: entry.enabled, ...(entry.executionDefaults !== undefined ? { executionDefaults: entry.executionDefaults } : {}), updatedAt: new Date() })
               .where(
                 and(
                   eq(chatEndpointResources.companyId, endpoint.companyId),

@@ -209,6 +209,28 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it("records native restoration inside the workspace finalization operation", async () => {
+    const { input, run } = await fixture(true);
+    const restore = vi.fn(async () => {
+      expect(await finalizations()).toMatchObject([{
+        status: "running", metadata: { owningService: "native_workspace_finalizer" },
+      }]);
+    });
+    input.workspace.nativeWorkspaceSync = {
+      mode: "host_current",
+      reference: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: null },
+      restoreWorkspace: restore,
+      cleanup: vi.fn(async () => {}),
+    };
+    expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+    expect(restore).toHaveBeenCalledOnce();
+    expect(await finalizations()).toMatchObject([{
+      status: "succeeded", metadata: { owningService: "native_workspace_finalizer" },
+    }]);
+  });
+
   it("records a failed barrier if the successful finalization write fails", async () => {
     const { input } = await fixture();
     const error = new Error("finalization write failed");

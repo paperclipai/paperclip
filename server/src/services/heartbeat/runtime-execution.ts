@@ -291,192 +291,186 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const recordWorkspaceFinalize = async (
     status: "succeeded" | "failed",
     metadata?: Record<string, unknown>,
+    restore?: () => Promise<void>,
   ) => {
     if (adapterFinalizeOutcome) return;
-    let finalizeBranchMetadata: Record<string, unknown> | null = null;
-    let finalizeBranchRepairMetadata: Record<string, unknown> | null =
-      null;
-    if (status === "succeeded") {
-      const branchInspection = await inspectFinalizeWorkspaceBranch();
-      if (branchInspection) {
-        let inspection = branchInspection.inspection;
-        const initialManagedGitWorktreeBranch =
-          formatManagedGitWorktreeBranchInspection(inspection);
-        if (
-          !inspection.valid &&
-          inspection.reasonCode === "branch_mismatch" &&
-          inspection.repoRoot
-        ) {
-          let repairedExpectedBranchName = inspection.expectedBranchName;
-          try {
-            const coherence = await ensureGitWorktreeBranchCoherent({
-              db,
-              repoRoot: inspection.repoRoot,
-              worktreePath: inspection.worktreePath,
-              expectedBranchName: inspection.expectedBranchName,
-              actualBranchName: inspection.actualBranchName,
-              sourceIssue: issueRef
-                ? {
-                    id: issueRef.id,
-                    identifier: issueRef.identifier,
-                    title: issueRef.title,
-                    workMode: issueRef.workMode,
-                  }
-                : null,
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              heartbeatRunId: run.id,
-              enableWorkspaceBranchReconcileForward:
-                resolvedInstanceSettings.experimental
-                  .enableWorkspaceBranchReconcileForward,
-              enableWorkspaceDirtyQuarantineRepair:
-                resolvedInstanceSettings.experimental
-                  .enableWorkspaceDirtyQuarantineRepair,
-              persistForwardReconcile: false,
-              reconcileOperationPhase: "workspace_finalize",
-              recorder: workspaceOperationRecorder,
-            });
+    await workspaceOperationRecorder.recordOperation({
+      phase: "workspace_finalize", cwd: executionWorkspace.cwd,
+      metadata: { adapterType: agent.adapterType, executionTargetKind: executionTarget?.kind ?? "local",
+        ...(restore ? { owningService: "native_workspace_finalizer" } : {}), ...metadata },
+      run: async () => {
+        await restore?.();
+        let finalizeBranchMetadata: Record<string, unknown> | null = null;
+        let finalizeBranchRepairMetadata: Record<string, unknown> | null =
+          null;
+        if (status === "succeeded") {
+          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          if (branchInspection) {
+            let inspection = branchInspection.inspection;
+            const initialManagedGitWorktreeBranch =
+              formatManagedGitWorktreeBranchInspection(inspection);
             if (
-              coherence.branchName &&
-              coherence.branchName !==
-                branchInspection.workspaceRecord.branchName
+              !inspection.valid &&
+              inspection.reasonCode === "branch_mismatch" &&
+              inspection.repoRoot
             ) {
-              repairedExpectedBranchName = coherence.branchName;
-              executionWorkspace.branchName = coherence.branchName;
-              executionWorkspace.warnings.push(...coherence.warnings);
-            }
-          } catch (repairErr) {
-            const workspaceValidationFailure =
-              isWorkspaceValidationFailure(repairErr) ? repairErr : null;
-            finalizeBranchMetadata = {
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              ...initialManagedGitWorktreeBranch,
-            };
-            finalizeBranchRepairMetadata = {
-              attempted: true,
-              succeeded: false,
-              initial: initialManagedGitWorktreeBranch,
-              reason:
-                repairErr instanceof Error
-                  ? repairErr.message
-                  : String(repairErr),
-            };
-            await workspaceOperationRecorder.recordOperation({
-              phase: "workspace_finalize",
-              cwd: executionWorkspace.cwd,
-              metadata: {
-                adapterType: agent.adapterType,
-                executionTargetKind: executionTarget?.kind ?? "local",
-                ...metadata,
-                managedGitWorktreeBranch: finalizeBranchMetadata,
-                managedGitWorktreeBranchRepair:
-                  finalizeBranchRepairMetadata,
-                ...(workspaceValidationFailure?.resultJson
-                  ? {
-                      workspaceValidation:
-                        workspaceValidationFailure.resultJson
-                          .workspaceValidation ??
-                        workspaceValidationFailure.resultJson,
-                    }
-                  : {}),
-              },
-              run: async () => ({
-                status: "failed",
-                stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
-              }),
-            });
-            adapterFinalizeOutcome = "failed";
-            throw repairErr;
-          }
-
-          const repairedInspection =
-            await inspectManagedGitWorktreeBranch({
-              worktreePath: inspection.worktreePath,
-              expectedBranchName: repairedExpectedBranchName,
-              repoRoot: inspection.repoRoot,
-            });
-          finalizeBranchRepairMetadata = {
-            attempted: true,
-            succeeded: repairedInspection.valid,
-            initial: initialManagedGitWorktreeBranch,
-            repaired:
-              formatManagedGitWorktreeBranchInspection(
-                repairedInspection,
-              ),
-          };
-          inspection = repairedInspection;
-        }
-
-        const managedGitWorktreeBranch =
-          formatManagedGitWorktreeBranchInspection(inspection);
-        finalizeBranchMetadata = {
-          executionWorkspaceId: branchInspection.workspaceRecord.id,
-          ...managedGitWorktreeBranch,
-        };
-        if (!inspection.valid) {
-          const workspaceValidationFingerprint =
-            fingerprintFinalizeWorkspaceBranchValidation({
-              issueId: issueRef?.id ?? null,
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              inspection: managedGitWorktreeBranch,
-            });
-          await workspaceOperationRecorder.recordOperation({
-            phase: "workspace_finalize",
-            cwd: executionWorkspace.cwd,
-            metadata: {
-              adapterType: agent.adapterType,
-              executionTargetKind: executionTarget?.kind ?? "local",
-              ...metadata,
-              managedGitWorktreeBranch: finalizeBranchMetadata,
-              ...(finalizeBranchRepairMetadata
-                ? {
+              let repairedExpectedBranchName = inspection.expectedBranchName;
+              try {
+                const coherence = await ensureGitWorktreeBranchCoherent({
+                  db,
+                  repoRoot: inspection.repoRoot,
+                  worktreePath: inspection.worktreePath,
+                  expectedBranchName: inspection.expectedBranchName,
+                  actualBranchName: inspection.actualBranchName,
+                  sourceIssue: issueRef
+                    ? {
+                        id: issueRef.id,
+                        identifier: issueRef.identifier,
+                        title: issueRef.title,
+                        workMode: issueRef.workMode,
+                      }
+                    : null,
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  heartbeatRunId: run.id,
+                  enableWorkspaceBranchReconcileForward:
+                    resolvedInstanceSettings.experimental
+                      .enableWorkspaceBranchReconcileForward,
+                  enableWorkspaceDirtyQuarantineRepair:
+                    resolvedInstanceSettings.experimental
+                      .enableWorkspaceDirtyQuarantineRepair,
+                  persistForwardReconcile: false,
+                  reconcileOperationPhase: "workspace_finalize",
+                  recorder: workspaceOperationRecorder,
+                });
+                if (
+                  coherence.branchName &&
+                  coherence.branchName !==
+                    branchInspection.workspaceRecord.branchName
+                ) {
+                  repairedExpectedBranchName = coherence.branchName;
+                  executionWorkspace.branchName = coherence.branchName;
+                  executionWorkspace.warnings.push(...coherence.warnings);
+                }
+              } catch (repairErr) {
+                const workspaceValidationFailure =
+                  isWorkspaceValidationFailure(repairErr) ? repairErr : null;
+                finalizeBranchMetadata = {
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  ...initialManagedGitWorktreeBranch,
+                };
+                finalizeBranchRepairMetadata = {
+                  attempted: true,
+                  succeeded: false,
+                  initial: initialManagedGitWorktreeBranch,
+                  reason:
+                    repairErr instanceof Error
+                      ? repairErr.message
+                      : String(repairErr),
+                };
+                await workspaceOperationRecorder.recordOperation({
+                  phase: "workspace_finalize",
+                  cwd: executionWorkspace.cwd,
+                  metadata: {
+                    adapterType: agent.adapterType,
+                    executionTargetKind: executionTarget?.kind ?? "local",
+                    ...metadata,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
                     managedGitWorktreeBranchRepair:
                       finalizeBranchRepairMetadata,
-                  }
-                : {}),
-            },
-            run: async () => ({
-              status: "failed",
-              stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
-            }),
-          });
-          adapterFinalizeOutcome = "failed";
-          throw new WorkspaceValidationFailure(
-            `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
-            {
-              workspaceValidation: {
-                reason: "git_worktree_branch_incoherence",
-                fingerprint: workspaceValidationFingerprint,
-                adapterType: agent.adapterType,
-                issueId: issueRef?.id ?? null,
-                issueIdentifier: issueRef?.identifier ?? null,
-                persistedExecutionWorkspaceId:
-                  branchInspection.workspaceRecord.id,
-                executionWorkspaceCwd: executionWorkspace.cwd,
-                managedGitWorktreeBranch: finalizeBranchMetadata,
-              },
-            },
-          );
-        }
-      }
-    }
-    await workspaceOperationRecorder.recordOperation({
-      phase: "workspace_finalize",
-      cwd: executionWorkspace.cwd,
-      metadata: {
-        adapterType: agent.adapterType,
-        executionTargetKind: executionTarget?.kind ?? "local",
-        ...metadata,
-        ...(finalizeBranchMetadata
-          ? { managedGitWorktreeBranch: finalizeBranchMetadata }
-          : {}),
-        ...(finalizeBranchRepairMetadata
-          ? {
-              managedGitWorktreeBranchRepair:
-                finalizeBranchRepairMetadata,
+                    ...(workspaceValidationFailure?.resultJson
+                      ? {
+                          workspaceValidation:
+                            workspaceValidationFailure.resultJson
+                              .workspaceValidation ??
+                            workspaceValidationFailure.resultJson,
+                        }
+                      : {}),
+                  },
+                  run: async () => ({
+                    status: "failed",
+                    stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
+                  }),
+                });
+                adapterFinalizeOutcome = "failed";
+                throw repairErr;
+              }
+
+              const repairedInspection =
+                await inspectManagedGitWorktreeBranch({
+                  worktreePath: inspection.worktreePath,
+                  expectedBranchName: repairedExpectedBranchName,
+                  repoRoot: inspection.repoRoot,
+                });
+              finalizeBranchRepairMetadata = {
+                attempted: true,
+                succeeded: repairedInspection.valid,
+                initial: initialManagedGitWorktreeBranch,
+                repaired:
+                  formatManagedGitWorktreeBranchInspection(
+                    repairedInspection,
+                  ),
+              };
+              inspection = repairedInspection;
             }
-          : {}),
+
+            const managedGitWorktreeBranch =
+              formatManagedGitWorktreeBranchInspection(inspection);
+            finalizeBranchMetadata = {
+              executionWorkspaceId: branchInspection.workspaceRecord.id,
+              ...managedGitWorktreeBranch,
+            };
+            if (!inspection.valid) {
+              const workspaceValidationFingerprint =
+                fingerprintFinalizeWorkspaceBranchValidation({
+                  issueId: issueRef?.id ?? null,
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  inspection: managedGitWorktreeBranch,
+                });
+              await workspaceOperationRecorder.recordOperation({
+                phase: "workspace_finalize",
+                cwd: executionWorkspace.cwd,
+                metadata: {
+                  adapterType: agent.adapterType,
+                  executionTargetKind: executionTarget?.kind ?? "local",
+                  ...metadata,
+                  managedGitWorktreeBranch: finalizeBranchMetadata,
+                  ...(finalizeBranchRepairMetadata
+                    ? {
+                        managedGitWorktreeBranchRepair:
+                          finalizeBranchRepairMetadata,
+                      }
+                    : {}),
+                },
+                run: async () => ({
+                  status: "failed",
+                  stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
+                }),
+              });
+              adapterFinalizeOutcome = "failed";
+              throw new WorkspaceValidationFailure(
+                `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
+                {
+                  workspaceValidation: {
+                    reason: "git_worktree_branch_incoherence",
+                    fingerprint: workspaceValidationFingerprint,
+                    adapterType: agent.adapterType,
+                    issueId: issueRef?.id ?? null,
+                    issueIdentifier: issueRef?.identifier ?? null,
+                    persistedExecutionWorkspaceId:
+                      branchInspection.workspaceRecord.id,
+                    executionWorkspaceCwd: executionWorkspace.cwd,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
+                  },
+                },
+              );
+            }
+          }
+        }
+        return { status, metadata: {
+          ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
+          ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
+        } };
       },
-      run: async () => ({ status }),
     });
     // Only mark the outcome after the row landed, so a transient write
     // failure on the succeeded path can still be recovered by recording
@@ -919,10 +913,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             eq(workspaceOperations.status, "succeeded"),
           )).limit(1);
           if (exported.length) adapterFinalizeOutcome = "succeeded";
-          else await restoreNativeWorkspaceBestEffort({
-            db, runId: run.id, assertOwnership: ownership?.assertHeld,
-            restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
-          });
+          else await recordWorkspaceFinalize(hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded", undefined,
+            async () => { await restoreNativeWorkspaceBestEffort({
+              db, runId: run.id, assertOwnership: ownership?.assertHeld,
+              restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
+            }); });
         }
         await ownership?.assertHeld();
         await db

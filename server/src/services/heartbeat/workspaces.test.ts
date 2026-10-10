@@ -106,6 +106,7 @@ describe("heartbeat workspace module", () => {
     await fs.mkdir(selectedCwd);
     const database = databaseWithResults(
       [{ projectId: "current-project", projectWorkspaceId: "selected-workspace" }],
+      [{ projectId: "current-project" }],
       [workspace("default-workspace", "current-project", path.join(testRoot, "missing")), workspace("selected-workspace", "current-project", selectedCwd)],
     );
     const result = await createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
@@ -114,7 +115,37 @@ describe("heartbeat workspace module", () => {
       null,
     );
     expect(result).toMatchObject({ cwd: selectedCwd, projectId: "current-project", workspaceId: "selected-workspace", warnings: [], baseCwdFallback: false });
-    expect(database.select).toHaveBeenCalledTimes(2);
+    expect(database.select).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed with workspace diagnostics when a configured directory is unavailable", async () => {
+    const missingCwd = path.join(testRoot, "missing-configured-workspace");
+    const database = databaseWithResults([workspace("selected", "project-one", missingCwd)]);
+    await expect(createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+      agent(), { projectId: "project-one" }, null,
+    )).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { workspaceValidation: {
+        reason: "configured_workspace_unavailable", resolvedProjectId: "project-one", baseCwdFallback: false,
+      } },
+    });
+    expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
+  });
+
+  it("retains materialization diagnostics when a configured repository cannot be cloned", async () => {
+    const missingRepo = path.join(testRoot, "missing-repository.git");
+    const database = databaseWithResults([{
+      ...workspace("selected", "project-one", ""), repoUrl: missingRepo, sourceType: "git_remote",
+    }]);
+    await expect(createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+      agent(), { projectId: "project-one" }, null,
+    )).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { workspaceValidation: {
+        reason: "git_worktree_base_materialization_failed",
+        materializationFailures: [expect.objectContaining({ projectWorkspaceId: "selected", repoUrl: missingRepo, error: expect.any(String) })],
+      } },
+    });
   });
 
   it("retains a valid prior session workspace and falls back when it disappears", async () => {

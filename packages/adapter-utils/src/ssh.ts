@@ -1090,7 +1090,7 @@ async function isLocalGitRepositoryRoot(localDir: string): Promise<boolean> {
   }
 }
 
-async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
+export async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
   const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
   const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;

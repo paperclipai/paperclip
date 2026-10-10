@@ -14,6 +14,7 @@ import {
   issues,
   issueComments,
   projects,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   runIdentityContexts,
@@ -99,6 +100,9 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
+        // A retained workspace protects its source project from individual deletion.
+        // Whole-company deletion explicitly removes both in dependency order.
+        await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         const rows = await tx

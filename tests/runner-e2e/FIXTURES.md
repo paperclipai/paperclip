@@ -853,3 +853,21 @@ not task success or operator cancellation. Stop during an unresolved permission
 remains a separate `native-active-stop/pending-permission-stop` gate.
 
 Pi controls definition 9 and native definition 16 create an explicit title through the production search creation action and bind the task ID from the public creation response. The scoped task and assignee must match before any native control. Automatic naming is outside these strict native-operation fixtures; all existing permission, byte, process, run-count and cleanup assertions remain required. Preserve the failed title-lookup attempt as its original failure.
+
+## Projectless task files and repository admission
+
+The explicit `task_workspaces` flow supplies no project and strips the legacy
+profile's operator cwd. It retains the ordinary company, encrypted credentials,
+environment and agent fixtures. All mutations use production browser/API/semantic
+surfaces; the oracle never inserts database rows or prepares a replacement checkout.
+The passive public Git source is `https://github.com/octocat/Hello-World`.
+No GitHub credentials, remote repository creation or push is used.
+
+Three user-requested turns test pending idempotent preparation, controller restart,
+next-admission realization and later nested Git/dirty-file persistence. The source
+pin is observed from the real checkout rather than assumed from a mutable branch.
+Host Git inspection is limited to the verified isolated company/task root. Public
+execution-workspace file reads and run-attributed artifact downloads verify bytes.
+Calibration rejects wrong roots, missing history, changed pins, duplicate receipts,
+extra wakes, incomplete persistence, tool bypass and missing remote leases. Partial
+observations remain in retained attempt evidence; missing evidence cannot pass.

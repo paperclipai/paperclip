@@ -1,3 +1,5 @@
+import * as localServiceSupervisor from "../services/local-service-supervisor.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -264,7 +266,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       // tests further down.
       workspaceReaperCooldownDays: 0,
     });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
@@ -3704,6 +3706,11 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ].join(" ");
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
 
+    // This case proves the DB reservation/start race, not host-wide lsof latency.
+    // Keep the real process and HTTP readiness; its freshly allocated port has no prior owner.
+    const portOwner = vi.spyOn(localServiceSupervisor, "readLocalServicePortOwner").mockResolvedValue(null);
+    const adoption = vi.spyOn(localServiceSupervisor, "findAdoptableLocalService").mockResolvedValue(null);
+    const runtimeOutput: string[] = [];
     let startedServices: Awaited<ReturnType<typeof startRuntimeServicesForWorkspaceControl>> = [];
     try {
       const startPromise = startRuntimeServicesForWorkspaceControl({
@@ -3750,9 +3757,11 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           },
         },
         adapterEnv: {},
+        onLog: async (stream, chunk) => { runtimeOutput.push(`${stream}: ${chunk}`); },
       });
 
-      await Promise.race([
+      try {
+        await Promise.race([
         waitForPath(runtimeStartedMarker),
         startPromise.then(
           () => {
@@ -3762,7 +3771,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
             throw error;
           },
         ),
-      ]);
+        ]);
+      } catch (error) {
+        const activity = await db.execute(sql`select state, wait_event_type, wait_event,
+          left(query, 240) as query from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid()`);
+        throw new Error(`Runtime activation did not reach its process marker. Output: ${runtimeOutput.join("") || "<none>"}. Database activity: ${JSON.stringify(activity)}`, { cause: error });
+      }
 
       const reconcileErrorPromise = svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
         mode: "override",
@@ -3800,12 +3815,17 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         },
       });
     } finally {
-      await stopRuntimeServicesForExecutionWorkspace({
-        db,
-        executionWorkspaceId,
-        workspaceCwd: worktreePath,
-      });
-      await fs.rm(runtimeStartedMarker, { force: true });
+      try {
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId,
+          workspaceCwd: worktreePath,
+        });
+        await fs.rm(runtimeStartedMarker, { force: true });
+      } finally {
+        portOwner.mockRestore();
+        adoption.mockRestore();
+      }
     }
 
     const [workspace] = await db

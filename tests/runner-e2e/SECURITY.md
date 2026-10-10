@@ -342,3 +342,14 @@ descriptor launches with synthetic owned processes and no provider credentials;
 it does not qualify paid Pi behavior or change previous failed grades.
 
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
+
+## Task workspace fixture source
+
+The explicit task-workspaces cells fetch the existing public octocat/Hello-World
+repository through normal anonymous repository preparation. They do not clone the
+Paperclip checkout, copy its Git credentials, create remote repositories or push.
+The agent's synthetic commit remains in the disposable task workspace. Independent
+Git reads validate that workspace's canonical path is inside the isolated instance
+before examining history. The existing credential redactor, private evidence
+packager and task-only screenshot allowlist remain authoritative. Each cell has a
+single attempt, three requested turns and company/agent budget hard stops.

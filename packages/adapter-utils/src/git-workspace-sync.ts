@@ -15,6 +15,8 @@ export interface GitCommandResult {
 export interface GitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
+  /** Selected remote captured with the Git generation; omitted on legacy descriptors. */
+  originUrl?: string | null;
   overlayPaths: WorkspacePaths;
   deletedPaths: WorkspacePaths;
   ignoredPaths: WorkspacePaths;
@@ -168,6 +170,33 @@ export function workspaceSnapshotTimeoutMs(): number {
   return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 86_400_000) : 30 * 60_000;
 }
 
+export async function readManagedWorkspaceRepositories(localDir: string, options: { signal?: AbortSignal } = {}): Promise<NonNullable<GitWorkspaceSnapshot["repositories"]>> {
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  try {
+
+      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (rootStat) {
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+        for await (const entry of await fs.opendir(root)) {
+          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
+          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+          repositories.push({ path: relative, snapshot });
+        }
+      }
+
+    return repositories;
+  } catch (error) {
+    for (const repo of repositories) await disposeGitWorkspaceSnapshot(repo.snapshot);
+    throw error;
+  }
+}
+
 export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true, options: { signal?: AbortSignal } = {}): Promise<GitWorkspaceSnapshot | null> {
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
   // Only repository discovery may report an ordinary directory. A failed
@@ -205,23 +234,7 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
   try {
-    if (includeRepositories) {
-      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
-      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      });
-      if (rootStat) {
-        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
-        for await (const entry of await fs.opendir(root)) {
-          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
-          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
-          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
-          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
-          repositories.push({ path: relative, snapshot });
-        }
-      }
-    }
+    if (includeRepositories) repositories.push(...await readManagedWorkspaceRepositories(localDir, options));
 
     const scan = async (args: string[], operation: string, category: string) => {
       const parser = new WorkspaceNulParser((record) => {
@@ -267,6 +280,7 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
     const branch = (settled[1] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
     const snapshot: GitWorkspaceSnapshot = {
       headCommit: head, branchName: branch && branch !== "HEAD" ? branch : null,
+      originUrl: await readSanitizedOriginRemoteUrl(localDir),
       overlayPaths: writer.paths("overlay"), deletedPaths: writer.paths("deleted"), ignoredPaths: writer.paths("ignored"),
       ...(repositories.length ? { repositories } : {}),
     };
@@ -573,7 +587,7 @@ export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<st
   }
 }
 
-async function copyCloneTree(source: string, target: string): Promise<void> {
+export async function copyCloneTree(source: string, target: string): Promise<void> {
   await fs.mkdir(target, { recursive: true });
   for await (const entry of await fs.opendir(source)) {
     const from = path.join(source, entry.name);
@@ -594,7 +608,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
-    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
+    const originUrl = input.snapshot.originUrl !== undefined ? input.snapshot.originUrl : await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,

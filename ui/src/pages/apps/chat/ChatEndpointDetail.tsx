@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { SlackToolsSettings, SlackSearchAccess } from "./SlackToolSettings";
 import { defaultSlackAppName } from "./slack-app-name";
 import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
+import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import { SlackAvatarSettings } from "./SlackAvatarStep";
 import { agentsApi } from "@/api/agents";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
@@ -310,7 +311,7 @@ export function ChatEndpointDetail() {
       </div>
     );
   if (endpoint.provider === "agentmail" && activeTab === "settings")
-    return <EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} />;
+    return <div className="space-y-7"><EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} /><EndpointExecutionDefaults endpoint={endpoint} /></div>;
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
     !(endpoint.provider === "slack" && endpoint.setup?.step === "test") &&
@@ -368,6 +369,7 @@ export function ChatEndpointDetail() {
         <GitHubBotManagement key={endpoint.id} endpoint={endpoint} view={activeTab === "access" ? "access" : "settings"} />
       </div>}
       {activeTab === "settings" && endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
+      {activeTab === "settings" && <EndpointExecutionDefaults endpoint={endpoint} />}
       {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} reviewId={reviewId} />}
 {activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
 {activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
@@ -398,6 +400,19 @@ export function ChatEndpointDetail() {
       )}
     </div>
   );
+}
+
+function EndpointExecutionDefaults({ endpoint }: { endpoint: ChatEndpoint }) {
+  const queryClient = useQueryClient();
+  return <section className="max-w-3xl py-5"><ChatExecutionDefaults
+    key={endpoint.id}
+    companyId={endpoint.companyId}
+    value={endpoint.executionDefaults}
+    onSave={async (executionDefaults) => {
+      const next = await chatEndpointsApi.update(endpoint.id, { executionDefaults });
+      queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), next);
+    }}
+  /></section>;
 }
 
 function EmailAccess({ endpoint }: { endpoint: ChatEndpoint }) {
@@ -514,7 +529,8 @@ function Settings({
         ) : (
           <div className="divide-y divide-border border-y border-border">
             {destinationResources.map((resource) => (
-              <div key={resource.id} className="flex items-center gap-3 py-3">
+              <div key={resource.id} className="py-3 space-y-3">
+              <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
                     {resource.label}
@@ -538,6 +554,19 @@ function Settings({
                     toggleResource(resource, enabled)
                   }
                 />
+              </div>
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground">Task defaults</summary>
+                <div className="pt-3"><ChatExecutionDefaults
+                  companyId={endpoint.companyId}
+                  value={resource.executionDefaults}
+                  resource
+                  onSave={async (executionDefaults) => {
+                    const next = await chatEndpointsApi.updateResources(endpointId, [{ id: resource.id, executionDefaults }]);
+                    queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), next);
+                  }}
+                /></div>
+              </details>
               </div>
             ))}
             {endpoint.provider === "slack" && (

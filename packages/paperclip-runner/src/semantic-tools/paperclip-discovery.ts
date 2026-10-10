@@ -39,7 +39,7 @@ const NAMESPACE: Readonly<Record<PaperclipSemanticActionId, string>> =
     get_workspace_runtime: "workspace",
     control_workspace_service: "workspace",
     set_dependencies: "delegation", reassign_task: "delegation",
-    create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+    create_skill: "skills", update_skill: "skills", create_task: "delegation", get_workspace: "workspace", list_workspaces: "workspace", select_workspace: "workspace", prepare_repository: "workspace", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
     request_approval: "governance",
     decide_approval: "governance",
     comment_on_approval: "governance",

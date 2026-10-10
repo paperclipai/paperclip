@@ -276,6 +276,11 @@ do not change workspace isolation or grant credentials or connection access.
 task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
 None of these restrictive modes is the default.
 
+`prepare_repository` requires a provider permission decision in restrictive
+modes, including `approve-paperclip`: repository acquisition can clone onto the
+controller and is not automatically approved as a planning action. Full auto
+still allows it; repository acquisition currently has no cumulative disk quota.
+
 Restrictive profiles route supported permission decisions through durable runtime
 requests and the existing task interaction controls. Requests are persisted
 before presentation; answers are checked against the offered decisions and

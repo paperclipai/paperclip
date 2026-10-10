@@ -1890,6 +1890,236 @@
       "planning",
       "skill_test"
     ],
+    "description": "Inspect current task files, repositories, pending selection, binding revision, and preparation capabilities. AGENT_HOME is personal instructions and memory; task outputs belong in the workspace.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "get_workspace",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Inspect task workspace",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List authorized reusable workspaces. A project is optional; choosing a workspace does not assign a project.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_workspaces",
+    "outputSchema": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List available workspaces",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Request a different task workspace at the next normal admission. Does not interrupt or wake the current run. Inspect the binding revision first and reuse requestKey on retries; existing files stay in their current folder.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedBindingRevision": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requestKey": {
+          "description": "Stable retry key.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "selection": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "task_directory"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "existing"
+                },
+                "workspaceId": {
+                  "description": "Existing authorized workspace ID.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "configured_source"
+                },
+                "mode": {
+                  "enum": [
+                    "shared",
+                    "managed_isolated"
+                  ]
+                },
+                "projectWorkspaceId": {
+                  "description": "Configured source workspace ID.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "projectWorkspaceId",
+                "mode"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "selection",
+        "expectedBindingRevision",
+        "requestKey"
+      ],
+      "type": "object"
+    },
+    "operationId": "select_workspace",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Select task workspace",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Request an authorized repository inside task files at the next normal admission, without creating a project. Discover repository IDs first. Does not interrupt or wake the current run. Reuse requestKey; a conflicting ref never resets existing work.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "description": "Optional Git branch, tag, or commit. Default HEAD is pinned once.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "description": "Authorized ID from list_project_repositories.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "catalog"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "url"
+                },
+                "url": {
+                  "description": "Existing HTTPS GitHub repository URL; uncataloged URLs use public anonymous access only.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "url"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "requestKey": {
+          "description": "Stable retry key.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "requestKey"
+      ],
+      "type": "object"
+    },
+    "operationId": "prepare_repository",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Prepare task repository",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
     "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.",
     "effect": "read",
     "inputSchema": {

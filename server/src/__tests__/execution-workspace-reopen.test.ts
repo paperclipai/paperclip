@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
@@ -48,7 +49,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-reopen-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -261,6 +262,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
 
     expect(result.ok).toBe(true);
@@ -282,6 +284,22 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(issueRow?.executionWorkspaceId).toBe(workspaceId);
   });
 
+  it("reopens the persisted source after the task leaves its organizational project", async () => {
+    const { companyId, projectId, projectWorkspaceId } = await seedCompanyProject();
+    const cwd = await makeExistingDir();
+    const workspaceId = await seedClosedWorkspace({ companyId, projectId, projectWorkspaceId, cwd });
+    const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4105 });
+    await db.update(issues).set({ projectId: null }).where(eq(issues.id, issueId));
+    const result = await executionWorkspaceService(db).reopenClosedIsolatedExecutionWorkspaceForIssue({
+      workspaceId,
+      issue: { id: issueId, companyId, projectId: null },
+      actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
+    });
+    expect(result.ok).toBe(true);
+    expect((await readWorkspace(workspaceId))?.projectId).toBe(projectId);
+  });
+
   it("keeps access for every issue that shares the reopened row", async () => {
     const { companyId, projectId, projectWorkspaceId } = await seedCompanyProject();
     const cwd = await makeExistingDir();
@@ -294,6 +312,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: firstIssueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
     expect(result.ok).toBe(true);
 
@@ -324,6 +343,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
 
     expect(result.ok).toBe(false);
@@ -369,6 +389,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
         workspaceId,
         issue: { id: issueId, companyId, projectId },
         actor: { agentId: null, actorType: "user" },
+        authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
       });
 
       expect(result.ok).toBe(true);
@@ -406,6 +427,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       // The issue belongs to a different company than the workspace.
       issue: { id: randomUUID(), companyId: second.companyId, projectId: second.projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
 
     expect(result.ok).toBe(false);
@@ -434,6 +456,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
 
     expect(result.ok).toBe(true);
@@ -497,6 +520,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
     expect(reopenResult.ok).toBe(true);
     if (!reopenResult.ok) throw new Error("reopen failed");
@@ -558,6 +582,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
     });
     expect(reopenResult.ok).toBe(true);
     if (!reopenResult.ok) throw new Error("reopen failed");

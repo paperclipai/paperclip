@@ -11,7 +11,6 @@ import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { issueService } from "../issues.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
 import { prepareHeartbeatWorkspace, type HeartbeatWorkspacePreparationInput } from "./workspace-preparation.js";
@@ -63,7 +62,7 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     const resolver = createHeartbeatWorkspaceResolver(db);
     const input: HeartbeatWorkspacePreparationInput = {
       run, agent,
-      task: { issueRef: issue, issueId: issue.id, context: { issueId: issue.id, projectId: project.id }, executionProjectId: project.id, responsibleUserId: null, previousSessionParams: null },
+      task: { issueRef: issue, issueId: issue.id, context: { issueId: issue.id, projectId: project.id }, responsibleUserId: null, previousSessionParams: null },
       policy: {
         trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         isolatedWorkspacesEnabled: true,
@@ -76,7 +75,7 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
       environment: { selectedEnvironmentId: localEnvironment.id, localEnvironment, selectedEnvironmentForConfig: localEnvironment, environmentResolution: { environmentId: localEnvironment.id, source: "default" }, resolvedInstanceSettings: await instanceSettingsService(db).get() },
       config: { mergedConfig: isolated ? { workspaceStrategy: { type: "git_worktree", baseRef: "main", branchTemplate: "test-{{issue.identifier}}" } } : {}, configSnapshot: null, secretManifest: [] },
       reuse: { requestedShouldReuseExisting: false, existingExecutionWorkspace: null, reusableExistingExecutionWorkspace: null, workspaceReuseRequest: resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: null, issueExecutionWorkspacePreference: null, existingExecutionWorkspaceStatus: null }), nativeRecoveryExecutionWorkspaceId: null, persistedNativeExecutionInput: null, isDotRun: false, runOptions: {} },
-      services: { envOrchestrator, executionWorkspacesSvc: executionWorkspaceService(db), workspaceOperationsSvc: workspaceOperationService(db), issuesSvc: issueService(db), ...resolver, appendRunEvent: vi.fn() },
+      services: { envOrchestrator, executionWorkspacesSvc: executionWorkspaceService(db), workspaceOperationsSvc: workspaceOperationService(db), ...resolver, appendRunEvent: vi.fn() },
       controllerLease: { assertOwned: vi.fn(async () => {}) }, nativeRunnerPreparationSpans: [],
     };
     return { input, source, issue, run, envOrchestrator };
@@ -108,7 +107,31 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(result.persistedExecutionWorkspace).toMatchObject({ companyId: issue.companyId, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId, mode: "shared_workspace" });
     expect(await leases(input.run.id)).toMatchObject([{ status: "active", executionWorkspaceId: result.persistedExecutionWorkspace!.id }]);
     expect(input.nativeRunnerPreparationSpans.map(span => span.name)).toEqual(["environment.acquire", "environment.workspace.realize"]);
+    expect(input.nativeRunnerPreparationSpans.every(span => span.parentName === "task.provider_session")).toBe(true);
     expect(input.controllerLease.assertOwned).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists and reuses task-owned files without adopting the organizational project as their source", async () => {
+    const { input, issue } = await fixture();
+    await db.update(issues).set({ projectWorkspaceId: null,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "task_directory" } },
+    }).where(eq(issues.id, issue.id));
+    input.task.issueRef = await readIssue(issue.id);
+    const bind = vi.spyOn(input.services.executionWorkspacesSvc, "bindTaskWorkspace");
+    const first = await prepareHeartbeatWorkspace(db, input);
+    expect(first.persistedExecutionWorkspace).toMatchObject({ projectId: null, projectWorkspaceId: null, sourceIssueId: issue.id });
+    expect(bind).toHaveBeenCalled();
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(first.persistedExecutionWorkspace!.id);
+    await writeFile(join(first.executionWorkspace.cwd, "retained.txt"), "task files");
+    const [organization] = await db.insert(projects).values({ companyId: issue.companyId, name: "New organization" }).returning();
+    await db.update(issues).set({ projectId: organization.id }).where(eq(issues.id, issue.id));
+    input.task.issueRef = await readIssue(issue.id);
+    await reuse(input, first.persistedExecutionWorkspace!);
+    const next = await prepareHeartbeatWorkspace(db, input);
+    expect(next.persistedExecutionWorkspace).toMatchObject({ id: first.persistedExecutionWorkspace!.id, projectId: null });
+    expect(next.executionWorkspace.cwd).toBe(first.executionWorkspace.cwd);
+    expect(await readFile(join(next.executionWorkspace.cwd, "retained.txt"), "utf8")).toBe("task files");
+    expect((await readIssue(issue.id)).projectId).toBe(organization.id);
   });
 
   it("creates a real isolated worktree and reuses its recorded workspace", async () => {
