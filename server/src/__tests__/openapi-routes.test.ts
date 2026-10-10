@@ -294,6 +294,27 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("publishes non-empty request bodies for preprocess and prefault schemas", () => {
+    const document = buildOpenApiSpec() as any;
+
+    // createIssueSchema and createChildIssueSchema wrap the object schema in
+    // z.preprocess, whose pipe input side is `unknown`.
+    const createIssue = document.paths["/api/companies/{companyId}/issues"].post
+      .requestBody.content["application/json"].schema;
+    expect(createIssue.properties).toHaveProperty("title");
+    expect(createIssue.properties).toHaveProperty("status");
+
+    const createChild = document.paths["/api/issues/{id}/children"].post
+      .requestBody.content["application/json"].schema;
+    expect(createChild.properties).toHaveProperty("title");
+
+    // deleteToolProfileSchema is a z.object(...).prefault({}).
+    const deleteProfile = document.paths["/api/tool-profiles/{profileId}"].delete
+      .requestBody.content["application/json"].schema;
+    expect(deleteProfile.properties).toHaveProperty("force");
+    expect(deleteProfile.properties).toHaveProperty("reassignToProfileId");
+  });
+
   it("documents only writable agent update fields and lifecycle status requests", () => {
     const document = buildOpenApiSpec() as any;
     const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;

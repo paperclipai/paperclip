@@ -360,14 +360,23 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   if (
     def.type === "optional" ||
     def.type === "default" ||
+    def.type === "prefault" ||
     def.type === "catch"
   ) {
     return unwrapSchema(def.innerType as z.ZodTypeAny);
   }
   // A `.transform()` or `.pipe()` becomes a pipe. Read the input schema so the
-  // published contract describes the value a client sends.
+  // published contract describes the value a client sends. A `z.preprocess`
+  // pipe is the exception: its input side is a bare transform, which carries
+  // no publishable contract, so read the output schema — the shape the
+  // preprocessed value must match — instead of publishing an empty schema.
   if (def.type === "pipe") {
-    return unwrapSchema(def.in as z.ZodTypeAny);
+    const input = unwrapSchema(def.in as z.ZodTypeAny);
+    const inputType = zodTypeName(input);
+    if (inputType === "unknown" || inputType === "any" || inputType === "transform") {
+      return unwrapSchema(def.out as z.ZodTypeAny);
+    }
+    return input;
   }
   return schema;
 }
@@ -377,11 +386,19 @@ function isOptionalSchema(schema: z.ZodTypeAny): boolean {
   if (
     def.type === "optional" ||
     def.type === "default" ||
+    def.type === "prefault" ||
     def.type === "catch"
   ) {
     return true;
   }
   if (def.type === "pipe") {
+    // Mirror unwrapSchema: a preprocess pipe's bare-transform input side says
+    // nothing about whether the value may be omitted, so ask the output side.
+    const input = unwrapSchema(def.in as z.ZodTypeAny);
+    const inputType = zodTypeName(input);
+    if (inputType === "unknown" || inputType === "any" || inputType === "transform") {
+      return isOptionalSchema(def.out as z.ZodTypeAny);
+    }
     return isOptionalSchema(def.in as z.ZodTypeAny);
   }
   if (def.type === "nullable") {
