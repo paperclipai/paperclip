@@ -400,12 +400,53 @@ function looksLikeShellCommand(command: string): boolean {
   return /\s/.test(command.trim());
 }
 
-async function findCommandOnPath(binName: string): Promise<string | null> {
-  const pathValue = process.env.PATH ?? "";
-  for (const segment of pathValue.split(path.delimiter)) {
+const DEFAULT_WINDOWS_PATH_EXTENSIONS = ".EXE;.CMD;.BAT;.COM";
+
+/**
+ * Command names to probe inside one PATH segment, in order. Windows resolves
+ * executables through PATHEXT, so a global install on PATH is `codex-acp.exe`
+ * while the bare `codex-acp` never exists; probing only the bare name always
+ * misses. Each extension is probed lowercase first because PATHEXT is
+ * conventionally uppercase while installed files are conventionally lowercase,
+ * and Windows filesystems are only optionally case-insensitive. The bare name
+ * stays first so every resolution that works today (including npm-style `.bin`
+ * shims) keeps winning and this can only turn a miss into a hit. When PATHEXT
+ * is unset or empty, fall back to the extensions a shim is realistically
+ * installed as.
+ */
+export function commandPathCandidates(
+  binName: string,
+  platform: NodeJS.Platform = process.platform,
+  pathExt: string | undefined = process.env.PATHEXT,
+): string[] {
+  if (platform !== "win32") return [binName];
+  const extensions =
+    pathExt && pathExt.trim().length > 0 ? pathExt : DEFAULT_WINDOWS_PATH_EXTENSIONS;
+  const names = [binName];
+  for (const extension of extensions.split(";")) {
+    const trimmed = extension.trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    names.push(`${binName}${lower}`);
+    if (trimmed !== lower) names.push(`${binName}${trimmed}`);
+  }
+  return names;
+}
+
+export async function findCommandOnPath(
+  binName: string,
+  probe: { platform?: NodeJS.Platform; pathValue?: string; pathExt?: string } = {},
+): Promise<string | null> {
+  const platform = probe.platform ?? process.platform;
+  const pathValue = probe.pathValue ?? process.env.PATH ?? "";
+  const candidates = commandPathCandidates(binName, platform, probe.pathExt);
+  // Windows PATH entries are `;`-separated even when a probe runs on POSIX.
+  for (const segment of pathValue.split(platform === "win32" ? ";" : ":")) {
     if (!segment) continue;
-    const candidate = path.join(segment, binName);
-    if (await pathExists(candidate)) return candidate;
+    for (const candidate of candidates) {
+      const resolved = path.join(segment, candidate);
+      if (await pathExists(resolved)) return resolved;
+    }
   }
   return null;
 }
