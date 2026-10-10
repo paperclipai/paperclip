@@ -9,7 +9,7 @@ export const museBinding: MuseBinding = {
   contactPersistenceLagMs: 10000, clientVersion: "1", qualification: null,
   liveAssignments: 0, uncertainOperations: 0, pendingInputs: 0,
   cleanup: { pending: false, detectorRemoved: false, workerQuiescenceReported: false, expiresAt: null },
-  stop: { status: "none", nativeEffectsUnknown: false, boundary: null },
+  stop: { status: "none", nativeEffectsUnknown: false, boundary: null, bindingRevision: null },
 };
 export const museConnection: MuseConnection = {
   enabled: true, publicOrigin: "https://paperclip.example", agentStatus: "idle", agentLifecycleState: "verifying",
@@ -28,4 +28,4 @@ export const museStopBoundary: MuseStopBoundary = {
 export const stoppedMuseConnection: MuseConnection = { ...museConnection, enabled: false, agentStatus: "paused", agentLifecycleState: "paused",
   binding: { ...museBinding, status: "revoked", liveAssignments: 1, uncertainOperations: 1, pendingInputs: 1,
     cleanup: { pending: true, detectorRemoved: true, workerQuiescenceReported: false, expiresAt: "2026-10-11T14:00:00Z" },
-    stop: { status: "cannot_confirm", nativeEffectsUnknown: true, boundary: museStopBoundary } } };
+    stop: { status: "cannot_confirm", nativeEffectsUnknown: true, boundary: museStopBoundary, bindingRevision: museBinding.revision } } };

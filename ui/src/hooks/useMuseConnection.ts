@@ -61,6 +61,6 @@ export function useMuseConnection(companyId: string | undefined, agentId: string
   const currentPairing = pairing && pairing.bindingId === binding?.id && pairing.generation === binding.generation
     && pairing.revision === binding.revision && !binding.paired ? pairing : null;
   return { state, binding, pairing: currentPairing, pair, verify, revoke, attest,
-    repair: () => pair.mutate(binding ? { replaceBindingId: binding.id, expectedRevision: binding.revision } : {}),
+    repair: () => pair.mutate(binding && binding.status !== "revoked" ? { replaceBindingId: binding.id, expectedRevision: binding.revision } : {}),
     key, identity, refresh };
 }

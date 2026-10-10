@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MuseConnectionDetails } from "./MuseRunnerConnection";
+import { MuseConnectionDetails, MuseRunnerConnection } from "./MuseRunnerConnection";
 import { MuseConnectionChecks } from "./new-agent/ExternalAgentInviteContent";
 import { museConnectionState } from "@/hooks/useMuseConnection";
-import { museConnection, stoppedMuseConnection, museStopBoundary } from "../../storybook/stories/external-agent-invite/muse-fixtures";
+import { museConnection, stoppedMuseConnection, museStopBoundary, musePairing } from "../../storybook/stories/external-agent-invite/muse-fixtures";
+import { museInvitationsApi } from "@/api/museInvitations";
 import type { MuseConnection } from "@paperclipai/shared";
 
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "operator", settled: true, failed: false }) }));
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-let container: HTMLDivElement; let root: Root;
+let container: HTMLDivElement; let root: Root; let cache: QueryClient | null;
 const handlers = { onTest: vi.fn(), onRepair: vi.fn(), onPause: vi.fn(), onDisconnect: vi.fn(), onRefresh: vi.fn(), onAttest: vi.fn() };
-beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); vi.clearAllMocks(); });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); cache = null; vi.clearAllMocks(); });
+afterEach(async () => { await act(async () => root.unmount()); cache?.clear(); vi.restoreAllMocks(); container.remove(); });
 const button = (name: string) => [...container.querySelectorAll("button")].find(b => b.textContent === name)!;
 async function render(connection = museConnection) { await act(async () => root.render(<MuseConnectionDetails connection={connection} {...handlers} />)); }
 
@@ -47,15 +51,17 @@ it("retains cleanup and precise worker attestation while disabled without resolv
   expect(button("Confirm worker stopped").disabled).toBe(true);
   await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
   await act(async () => button("Confirm worker stopped").click());
-  expect(handlers.onAttest).toHaveBeenCalledWith({ boundary: museStopBoundary, expectedRevision: stoppedMuseConnection.binding!.revision, workerStopped: true });
+  expect(handlers.onAttest).toHaveBeenCalledWith({ boundary: museStopBoundary, expectedRevision: stoppedMuseConnection.binding!.stop.bindingRevision, workerStopped: true });
   expect(container.textContent).toContain("does not resolve or replay those effects");
   expect(button("Connect Muse").disabled).toBe(true);
 });
-it("withdraws an attestation when the server boundary or revision changes", async () => {
+it.each(["boundary", "revision"])("withdraws an attestation when the server %s changes", async change => {
   await render(stoppedMuseConnection);
   await act(async () => button("Attest this worker stopped").click());
   await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-  await render({ ...stoppedMuseConnection, binding: { ...stoppedMuseConnection.binding!, revision: 8 } });
+  const stop = { ...stoppedMuseConnection.binding!.stop, ...(change === "revision" ? { bindingRevision: 8 }
+    : { boundary: { ...museStopBoundary, stopNonce: "66666666-6666-4666-8666-666666666666" } }) };
+  await render({ ...stoppedMuseConnection, binding: { ...stoppedMuseConnection.binding!, stop } });
   expect(container.querySelector('[aria-label="Attest this Muse worker stopped"]')).toBeNull();
   expect(handlers.onAttest).not.toHaveBeenCalled();
 });
@@ -74,4 +80,54 @@ it("distinguishes a detector removal request from acknowledged removal", async (
   expect(container.textContent).toContain("Detector removal requested; completion is not confirmed");
   expect(container.textContent).toContain("Detector removal: not confirmed");
   expect(container.textContent).not.toContain("Detector removal: acknowledged");
+});
+
+it("uses the stop boundary's old binding revision across a repaired connection refresh", async () => {
+  const repaired: MuseConnection = { ...stoppedMuseConnection, binding: { ...stoppedMuseConnection.binding!,
+    id: "55555555-5555-4555-8555-555555555555", generation: 3, revision: 1, status: "connected",
+    stop: { ...stoppedMuseConnection.binding!.stop, bindingRevision: 8 },
+  } };
+  await render(repaired);
+  await act(async () => button("Attest this worker stopped").click());
+  await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  await render({ ...repaired, binding: { ...repaired.binding!, revision: 2 } });
+  expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  await act(async () => button("Confirm worker stopped").click());
+  expect(handlers.onAttest).toHaveBeenCalledWith({ boundary: museStopBoundary, expectedRevision: 8, workerStopped: true });
+});
+
+it("disables attestation until the exact stop binding revision is available", async () => {
+  await render({ ...stoppedMuseConnection, binding: { ...stoppedMuseConnection.binding!,
+    stop: { ...stoppedMuseConnection.binding!.stop, bindingRevision: null },
+  } });
+  expect(button("Attest this worker stopped").disabled).toBe(true);
+  expect(container.textContent).toContain("Stop binding revision is unavailable");
+  await act(async () => button("Attest this worker stopped").click());
+  expect(container.querySelector('[aria-label="Attest this Muse worker stopped"]')).toBeNull();
+  expect(handlers.onAttest).not.toHaveBeenCalled();
+});
+
+it("connects after Disconnect without replacing the revoked historical binding", async () => {
+  const load = vi.spyOn(museInvitationsApi, "connection").mockResolvedValue(museConnection);
+  const revoke = vi.spyOn(museInvitationsApi, "revoke").mockImplementation(async () => {
+    load.mockResolvedValue({ ...museConnection, binding: { ...museConnection.binding!, status: "revoked", revision: 8 } });
+  });
+  const nextPairing = { ...musePairing, bindingId: "55555555-5555-4555-8555-555555555555", generation: 3, revision: 1,
+    expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() };
+  const pair = vi.spyOn(museInvitationsApi, "pair").mockImplementation(async () => {
+    load.mockResolvedValue({ ...museConnection, binding: { ...museConnection.binding!, id: nextPairing.bindingId,
+      generation: nextPairing.generation, revision: nextPairing.revision, status: "pairing", paired: false } });
+    return nextPairing;
+  });
+  cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () => root.render(<QueryClientProvider client={cache!}><MuseRunnerConnection companyId="company" agentId="agent" /></QueryClientProvider>));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+  await act(async () => button("Disconnect").click());
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+  expect(revoke).toHaveBeenCalledWith("company", "agent", { bindingId: museConnection.binding!.id, generation: museConnection.binding!.generation, expectedRevision: 7 });
+  expect(button("Connect Muse").disabled).toBe(false);
+  await act(async () => button("Connect Muse").click());
+  expect(pair).toHaveBeenCalledWith("company", "agent", {});
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+  expect(container.textContent).toContain("Copy setup prompt");
 });
