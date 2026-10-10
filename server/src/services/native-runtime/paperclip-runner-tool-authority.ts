@@ -2151,6 +2151,7 @@ export class PaperclipRunnerToolAuthority {
       const decision = await authorizationService(tx).decide({
         actor: this.#privacyActor(context.run), action: "issue:mutate",
         resource: { type: "issue", companyId: this.binding.companyId, issueId: context.issue.id,
+          projectId: context.issue.projectId, parentIssueId: context.issue.parentId,
           status: context.issue.status, assigneeAgentId: context.issue.assigneeAgentId, assigneeUserId: context.issue.assigneeUserId },
       });
       if (!decision.allowed) throw forbidden(decision.explanation);
