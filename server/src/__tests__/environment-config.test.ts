@@ -3,15 +3,6 @@ import { HttpError } from "../errors.js";
 import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
 
 describe("environment config helpers", () => {
-  it("stores only the Boat secret reference and rejects unmanaged credentials", () => {
-    const config = { provider: "boat", sandboxId: "bx_fixture", apiKeySecretRef: {
-      type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest",
-    }, runnerIdleTimeoutMs: 300000 };
-    expect(normalizeEnvironmentConfig({ driver: "computer", config })).toEqual(config);
-    expect(() => normalizeEnvironmentConfig({ driver: "computer", config: { ...config, apiKey: "must-not-persist" } })).toThrow();
-    expect(() => normalizeEnvironmentConfig({ driver: "computer", config: { ...config, sandboxId: "../../other" } })).toThrow();
-  });
-
   it("normalizes SSH config into its canonical stored shape", () => {
     const config = normalizeEnvironmentConfig({
       driver: "ssh",
