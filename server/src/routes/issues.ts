@@ -352,6 +352,7 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  bindCheckoutRunSourceIssueIfUnset,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
@@ -15923,6 +15924,17 @@ export function issueRoutes(
           updated.companyId,
           updated.id,
         );
+      }
+
+      // Bind the calling actor's own run at checkout time when it is still
+      // unbound. The first-write path remains the retry-safe fallback.
+      if (req.actor.type === "agent" && checkoutRunId) {
+        await bindCheckoutRunSourceIssueIfUnset(db, {
+          companyId: issue.companyId,
+          runId: checkoutRunId,
+          agentId: req.body.agentId,
+          issueId: issue.id,
+        });
       }
 
       await logActivity(db, {
