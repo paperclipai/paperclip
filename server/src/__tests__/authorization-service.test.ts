@@ -1768,6 +1768,63 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(await auth.decide({ actor, action: "agent:wake", resource: { ...resource, companyId: otherCompany.id } })).toMatchObject({ allowed: false });
   });
 
+  it("allows an agent to wake a direct report and a transitive reportee, and denies wake for a non-subordinate agent (SIA-1900)", async () => {
+    const company = await createCompany(db, "sia1900-cross-wake");
+    // top manager → middle manager → engineer
+    const manager = await createAgent(db, company.id, { role: "cto", reportsTo: null });
+    const middle = await createAgent(db, company.id, { role: "lead", reportsTo: manager.id });
+    const engineer = await createAgent(db, company.id, { role: "engineer", reportsTo: middle.id });
+    const peerOfEngineer = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+
+    const auth = authorizationService(db);
+    const baseActor = {
+      type: "agent" as const,
+      agentId: manager.id,
+      companyId: company.id,
+      keyId: null,
+      keyScope: { kind: "standard" as const },
+      permissions: {},
+      source: "api_key" as const,
+    };
+    // self wake (control)
+    expect(await auth.decide({
+      actor: baseActor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: manager.id },
+    })).toMatchObject({ allowed: true, reason: "allow_self" });
+
+    // direct reportee — allowed
+    expect(await auth.decide({
+      actor: baseActor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: middle.id },
+    })).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+    // transitive reportee — allowed
+    expect(await auth.decide({
+      actor: baseActor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: engineer.id },
+    })).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+    // peer (also managed by manager but NOT in manager's management subtree) — denied
+    // note: peerOfEngineer.reportsTo === manager.id → still in manager's subtree, so use engineer as a non-subordinate actor
+    const engineerActor = { ...baseActor, agentId: engineer.id };
+    expect(await auth.decide({
+      actor: engineerActor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: middle.id },
+    })).toMatchObject({ allowed: false });
+
+    // cross-company target — denied
+    const otherCompany = await createCompany(db, "sia1900-cross-wake-other");
+    expect(await auth.decide({
+      actor: baseActor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: otherCompany.id, agentId: middle.id },
+    })).toMatchObject({ allowed: false });
+  });
+
   it("limits viewer members to read-only visibility actions", async () => {
     const company = await createCompany(db, "BoardViewerVisibility");
     const userId = `user-${randomUUID()}`;

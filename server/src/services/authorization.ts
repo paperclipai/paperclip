@@ -2141,6 +2141,48 @@ export function authorizationService(db: Db | DbTransaction) {
       });
     }
 
+    // Cross-agent heartbeat/wake (SIA-1900): an active agent in the same
+    // company may invoke a wake on a direct or transitive reportee in its
+    // own management subtree. Falls back to other authorization rules
+    // (principal grants / low-trust boundaries / responsible-user ceiling)
+    // when the actor is not the target's manager.
+    if (
+      input.action === "agent:wake" &&
+      input.resource.type === "agent" &&
+      typeof input.resource.agentId === "string" &&
+      input.resource.agentId !== actorAgentId &&
+      typeof input.resource.companyId === "string" &&
+      input.resource.companyId === actorAgent.companyId
+    ) {
+      const targetAgentId = input.resource.agentId;
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active in the target company.",
+        });
+      }
+      const crossWakeHierarchy = await loadCompanyAgentHierarchy(db, actorAgent.companyId);
+      const targetRow = crossWakeHierarchy.get(targetAgentId);
+      if (!targetRow) {
+        return deny({
+          action: input.action,
+          reason: "deny_company_boundary",
+          explanation: "Wake target agent is not active in the actor's company.",
+        });
+      }
+      if (agentIsInSubtree(crossWakeHierarchy, actorAgentId, targetAgentId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor agent is the target's manager in the org chart.",
+        });
+      }
+      // Fall through to other authorization rules so board-granted
+      // cross-wake capabilities continue to work after the self-only
+      // hardcode is removed from the route.
+    }
+
     if (input.action === "tasks:assign") {
       if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
         return deny({
