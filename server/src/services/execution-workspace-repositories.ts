@@ -135,7 +135,9 @@ export function executionWorkspaceRepositoryService(db: Db) {
       const source = resolveTaskRepository(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId } : { kind: "url", url: row.repoUrl }, available);
       if (source.repositoryIdentity !== row.repositoryIdentity || row.relativePath !== taskRepositoryRelativePath(row.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
       const cwd = path.join(root, row.relativePath);
-      await withDirectoryMergeLock(cwd, async () => {
+      // A new checkout does not exist yet. Lock its validated, existing parent
+      // so publication and reuse serialize without creating an unowned target.
+      await withDirectoryMergeLock(repositoryRoot, async () => {
         const existing = await fs.lstat(cwd).catch(() => null);
         if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || await fs.realpath(cwd) !== cwd)) throw conflict("Repository checkout path is not a contained directory");
         if (existing) {

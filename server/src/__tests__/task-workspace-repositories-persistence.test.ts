@@ -2,7 +2,7 @@ import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile, readFile, realpath, open } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, realpath, open, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { constants as fsConstants } from "node:fs";
@@ -33,6 +33,58 @@ const support = await getEmbeddedPostgresTestSupport();
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { vi.unstubAllEnvs(); await temporary?.cleanup(); if (cwd) await rm(cwd, { recursive: true, force: true }); });
   const request = (requestKey: string, ref?: string) => executionWorkspaceRepositoryService(db).request({ companyId, issueId, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey, ...(ref ? { ref } : {}) } });
+  it("publishes a requested repository from an absent path through real admission locking and cloning", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-fresh-repository-"));
+    const previousPath = process.env.PATH;
+    const exec = promisify(execFileCallback);
+    try {
+      const realGit = (await exec("which", ["git"])).stdout.trim();
+      const source = path.join(root, "source"), taskRoot = path.join(root, "task"), bin = path.join(root, "bin");
+      await Promise.all([mkdir(source), mkdir(taskRoot), mkdir(bin)]);
+      const git = async (...args: string[]) => (await exec(realGit, ["-C", source, ...args])).stdout.trim();
+      await git("init", "--initial-branch=main");
+      await writeFile(path.join(source, "source.txt"), "original source\n");
+      await git("add", ".");
+      await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "source");
+      const pin = await git("rev-parse", "HEAD");
+      // Exercise actual Git and atomic publication without external networking.
+      // Only this fixture's exact remote is redirected; persist the real API origin.
+      await writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
+        `const { spawnSync } = require('node:child_process'); const args = process.argv.slice(2);\n` +
+        `const remote = args.includes('clone') ? args.at(-2) : null;\n` +
+        `if (remote && remote !== 'https://github.com/team/source') process.exit(97);\n` +
+        `if (remote) args[args.length - 2] = ${JSON.stringify(source)};\n` +
+        `const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\n` +
+        `if (result.status) process.exit(result.status);\n` +
+        `if (remote) process.exit(spawnSync(${JSON.stringify(realGit)}, ['-C', args.at(-1), 'remote', 'set-url', 'origin', remote], { stdio: 'inherit' }).status ?? 98);\n` +
+        `process.exit(result.status ?? 99);\n`, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Fresh task root", cwd: taskRoot,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Fresh repository", executionWorkspaceId: workspace.id }).returning();
+      const intent = await executionWorkspaceRepositoryService(db).request({ companyId, issueId: task.id, actor,
+        request: { repository: { kind: "catalog", id: "123" }, requestKey: "fresh-repository" } });
+      const checkout = path.join(taskRoot, intent.repository.relativePath);
+      expect(await lstat(checkout).catch(() => null)).toBeNull();
+      const admission = { companyId, issueId: task.id, workspaceId: workspace.id, cwd: taskRoot,
+        agentId, runId: randomUUID(), responsibleUserId: "local-board" };
+      // New service instances emulate the controller restart between request
+      // and admission; concurrent admissions must publish one owned checkout.
+      const results = await Promise.all([1, 2].map(() => executionWorkspaceRepositoryService(db).prepareForAdmission(admission)));
+      for (const prepared of results) expect(prepared).toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
+      expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("original source\n");
+      expect(JSON.parse(await readFile(path.join(checkout, ".git", "paperclip-workspace-owner.json"), "utf8")))
+        .toMatchObject({ repositoryId: intent.operationId, pinnedCommit: pin });
+      expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, intent.operationId)))[0])
+        .toMatchObject({ state: "ready", pinnedCommit: pin, failureCode: null });
+      await writeFile(path.join(checkout, "source.txt"), "retained dirty work\n");
+      await executionWorkspaceRepositoryService(db).prepareForAdmission(admission);
+      expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("retained dirty work\n");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("converges concurrent requests and persists each retry key without creating a project", async () => {
     const [peerIssue] = await db.insert(issues).values({ companyId, title: "Peer task sharing the root", executionWorkspaceId: workspaceId }).returning();
     await db.update(executionWorkspaces).set({ sourceIssueId: issueId }).where(eq(executionWorkspaces.id, workspaceId));
