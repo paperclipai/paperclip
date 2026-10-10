@@ -10273,21 +10273,76 @@ export async function stageRemoteRunnerFile(input: {
     ]);
     return;
   }
-  const bytes = readFileSync(input.sourcePath);
-  const directory = posix.dirname(input.targetPath);
-  const script =
-    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
-    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
-    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: bytes.toString("base64"),
-    bypassSession: true,
-    timeoutMs: 180_000,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error(`runner_remote_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const run = async (script: string, stdin?: string) => {
+    const result = await runner.execute({
+      command: "sh", args: ["-c", script], stdin,
+      bypassSession: true, timeoutMs: 180_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error(`runner_remote_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
+    }
+  };
+  if (lstatSync(input.sourcePath).size <= 4 * 1024 * 1024) {
+    await run(`umask 077; mkdir -p ${quote(posix.dirname(input.targetPath))} && ` +
+      `base64 -d > ${quote(input.targetPath)} && chmod ${input.mode.toString(8)} ${quote(input.targetPath)}`,
+      readFileSync(input.sourcePath).toString("base64"));
+    return;
+  }
+  const remoteUpload = `${input.targetPath}.upload-${randomUUID()}`;
+  try {
+    await uploadRemoteRunnerFileChunks({ sourcePath: input.sourcePath, remotePath: remoteUpload, run });
+    await run(`chmod ${input.mode.toString(8)} ${quote(remoteUpload)} && mv -f ${quote(remoteUpload)} ${quote(input.targetPath)}`);
+  } finally {
+    await run(`rm -f ${quote(remoteUpload)}`).catch(() => undefined);
+  }
+}
+
+async function uploadRemoteRunnerFileChunks(input: {
+  sourcePath: string;
+  remotePath: string;
+  run: (script: string, stdin?: string) => Promise<void>;
+  onProgress?: (completedBytes: number, totalBytes: number) => Promise<void>;
+}): Promise<void> {
+  const { run, remotePath } = input;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const pending: Promise<void>[] = [];
+  let uploadError: unknown;
+  try {
+    await run(`umask 077; mkdir -p ${quote(posix.dirname(remotePath))} && : > ${quote(remotePath)}`);
+    const digest = createHash("sha256");
+    const totalBytes = lstatSync(input.sourcePath).size;
+    let completedBytes = 0;
+    let progressAt = Date.now();
+    await input.onProgress?.(0, totalBytes);
+    let chunkIndex = 0;
+    const stream = createReadStream(input.sourcePath, { highWaterMark: 4 * 1024 * 1024 });
+    for await (const bytes of stream) {
+      const chunk = bytes as Buffer;
+      digest.update(chunk);
+      completedBytes += chunk.length;
+      // Disjoint fixed offsets permit bounded parallel upload and idempotent
+      // writes. The final digest rejects missing, duplicated, or partial bytes.
+      pending.push(run(`base64 -d | dd of=${quote(remotePath)} bs=4194304 seek=${chunkIndex++} conv=notrunc 2>/dev/null`,
+        chunk.toString("base64")).catch((error) => { uploadError ??= error; }));
+      if (pending.length === 4) {
+        await Promise.all(pending);
+        pending.length = 0;
+        if (uploadError) throw uploadError;
+        if (Date.now() - progressAt >= 15_000) {
+          await input.onProgress?.(completedBytes, totalBytes);
+          progressAt = Date.now();
+        }
+      }
+    }
+    await Promise.all(pending);
+    if (uploadError) throw uploadError;
+    await input.onProgress?.(totalBytes, totalBytes);
+    const expectedDigest = digest.digest("hex");
+    await run(`test "$(if command -v sha256sum >/dev/null 2>&1; then sha256sum ${quote(remotePath)}; else shasum -a 256 ${quote(remotePath)}; fi | cut -d ' ' -f 1)" = ${quote(expectedDigest)}`);
+  } finally {
+    // Do not remove or rename the upload while another offset write is active.
+    await Promise.all(pending);
   }
 }
 
@@ -10369,8 +10424,6 @@ export async function stageRemoteRunnerDirectory(input: {
       throw new Error(`runner_remote_directory_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
     }
   };
-  const pending: Promise<void>[] = [];
-  let uploadError: unknown;
   try {
     // Provider packs can exceed a gigabyte. Keep compression off the event loop
     // and transfer from disk in bounded chunks instead of buffering the archive.
@@ -10379,41 +10432,12 @@ export async function stageRemoteRunnerDirectory(input: {
         { maxBuffer: 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } },
         (error) => error ? reject(error) : resolve());
     });
-    await run(`umask 077; mkdir -p ${quote(posix.dirname(remoteArchive))} && : > ${quote(remoteArchive)}`);
-    const digest = createHash("sha256");
-    const totalBytes = lstatSync(archivePath).size;
-    let completedBytes = 0;
-    let progressAt = Date.now();
-    await input.onProgress?.(0, totalBytes);
-    let chunkIndex = 0;
-    const stream = createReadStream(archivePath, { highWaterMark: 4 * 1024 * 1024 });
-    for await (const bytes of stream) {
-      const chunk = bytes as Buffer;
-      digest.update(chunk);
-      completedBytes += chunk.length;
-      // Disjoint fixed offsets permit bounded parallel upload and idempotent
-      // writes. The final digest rejects missing, duplicated, or partial bytes.
-      pending.push(run(`base64 -d | dd of=${quote(remoteArchive)} bs=4194304 seek=${chunkIndex++} conv=notrunc 2>/dev/null`,
-        chunk.toString("base64")).catch((error) => { uploadError ??= error; }));
-      if (pending.length === 4) {
-        await Promise.all(pending);
-        pending.length = 0;
-        if (uploadError) throw uploadError;
-        if (Date.now() - progressAt >= 15_000) {
-          await input.onProgress?.(completedBytes, totalBytes);
-          progressAt = Date.now();
-        }
-      }
-    }
-    await Promise.all(pending);
-    if (uploadError) throw uploadError;
-    await input.onProgress?.(totalBytes, totalBytes);
-    const expectedDigest = digest.digest("hex");
-    await run(`test "$(if command -v sha256sum >/dev/null 2>&1; then sha256sum ${quote(remoteArchive)}; else shasum -a 256 ${quote(remoteArchive)}; fi | cut -d ' ' -f 1)" = ${quote(expectedDigest)} && ` +
-      `umask 077 && mkdir -p ${quote(input.targetPath)} && ` +
+    await uploadRemoteRunnerFileChunks({
+      sourcePath: archivePath, remotePath: remoteArchive, run, onProgress: input.onProgress,
+    });
+    await run(`umask 077 && mkdir -p ${quote(input.targetPath)} && ` +
       `tar -xzf ${quote(remoteArchive)} -C ${quote(input.targetPath)} && chmod ${input.mode.toString(8)} ${quote(input.targetPath)}`);
   } finally {
-    await Promise.all(pending);
     rmSync(stagingRoot, { recursive: true, force: true });
     await run(`rm -f ${quote(remoteArchive)}`).catch(() => undefined);
   }

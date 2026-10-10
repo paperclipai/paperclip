@@ -2483,6 +2483,44 @@ describe("remote provider checkpoint restores", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it.each([false, true])("uploads a binary in bounded chunks and preserves the installed binary on corruption=%s", async (corrupt) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runner-large-file-"));
+    const sourcePath = join(root, "source");
+    const targetPath = join(root, "remote runner's binary");
+    const bytes = randomBytes(9 * 1024 * 1024 + 17);
+    await writeFile(sourcePath, bytes);
+    await writeFile(targetPath, "previous verified binary");
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const execute = vi.fn(async (request: { command: string; args: string[]; stdin?: string }) => {
+      expect(request.stdin?.length ?? 0).toBeLessThanOrEqual(Math.ceil(4 * 1024 * 1024 / 3) * 4);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const stdin = corrupt && request.stdin ? Buffer.from("corrupt").toString("base64") : request.stdin;
+        execFileSync(request.command, request.args, { input: stdin });
+        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+      } finally { inFlight--; }
+    });
+    try {
+      const stage = stageRemoteRunnerFile({
+        target: { kind: "remote", transport: "computer" } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o700,
+      });
+      if (corrupt) {
+        await expect(stage).rejects.toThrow();
+        expect(await readFile(targetPath, "utf8")).toBe("previous verified binary");
+      } else {
+        await stage;
+        expect(await readFile(targetPath)).toEqual(bytes);
+        expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);
+      }
+      expect(maxInFlight).toBe(3);
+      expect((await readdir(root)).some((name) => name.includes(".upload-"))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it.each([{ sizeMiB: 0, corrupt: false }, { sizeMiB: 65, corrupt: false }, { sizeMiB: 0, corrupt: true }])("stages a $sizeMiB MiB provider pack through a command-only computer runner (corrupt=$corrupt)", async ({ sizeMiB, corrupt }) => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-computer-pack-"));
     const sourcePath = join(root, "source");
