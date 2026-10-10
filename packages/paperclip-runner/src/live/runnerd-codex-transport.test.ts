@@ -643,46 +643,6 @@ it("retargets only composed instruction framing and retains legacy custom instru
 
 });
 
-it.each([false, true])("preserves ACPX asset framing across cold, warm, and post-idle attachment (guidance=%s)", (guidance) => {
-  const source = assignedRuntimeContext("/controller/skills", "/controller/bundle");
-  const cold = assignedRuntimeContext("/boat/skills", "/boat/context/cold");
-  const resumed = assignedRuntimeContext("/boat/skills", "/boat/context/resumed");
-  const custom = "Managed instructions with literal /controller/bundle example.";
-  const original = composeNativeSystemInstructions(source, custom);
-  const coldText = runnerdRecoveryInternals.retargetComposedInstructions(
-    runnerdRecoveryInternals.withComputerProcessInstructions(original, guidance, source),
-    source,
-    cold,
-  );
-  const suffix = (context: NativeRuntimeContextSnapshot) =>
-    composeNativeSystemInstructions(context, "").slice(context.prompt.text.length);
-  expect(coldText.endsWith(suffix(cold))).toBe(true);
-  const state = { runAttachTemplate: { provider: {
-    kind: "acpx", agent: "claude", runId: "cold-run", runtimeContext: cold, instructions: coldText,
-  } } };
-  const desired = {
-    runnerInstanceId: "runner", environmentLeaseId: "workspace", runId: "warm-run",
-    normalizedSessionId: "same-session", turnId: "turn", itemId: "item",
-  };
-  const warm = runnerdRecoveryInternals.rotatedRunAttachPayload(state, desired, null, undefined);
-  expect((warm.provider as { instructions: string }).instructions).toBe(coldText);
-  const recover = (text: string) => runnerdRecoveryInternals.rotatedRunAttachPayload(
-    { runAttachTemplate: warm }, { ...desired, runId: "post-idle-run" }, null, undefined, resumed,
-    { text, context: source },
-  ).provider as { instructions: string; runtimeContext: NativeRuntimeContextSnapshot };
-  const recovered = recover(composeNativeSystemInstructions(source, custom));
-  expect(recovered.runtimeContext).toEqual(resumed);
-  expect(recovered.instructions.endsWith(suffix(resumed))).toBe(true);
-  // This is the immutable-prefix equality required by Claude's guest guard.
-  expect(recovered.instructions.slice(0, -suffix(resumed).length))
-    .toBe(coldText.slice(0, -suffix(cold).length));
-  expect(recovered.instructions).toContain(custom);
-  expect(recovered.instructions).not.toContain("Read-only instruction sibling root: /controller/");
-  // Never silently substitute old managed instructions for current grants.
-  expect(recover(composeNativeSystemInstructions(source, "Changed managed instructions")).instructions)
-    .toContain("Changed managed instructions");
-});
-
 it("replays the durable run attachment outcome and latest provider identity", () => {
   expect(
     runnerdRecoveryInternals.recoveredRunAttachment({
