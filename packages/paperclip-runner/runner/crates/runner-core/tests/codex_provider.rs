@@ -4383,7 +4383,7 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
     assert_eq!(stopped.result["providerExitConfirmed"], true);
     for id in [provider_pid.to_string(), format!("-{provider_pid}")] {
         assert!(
-            !std::process::Command::new("/bin/kill")
+            !std::process::Command::new("kill")
                 .args(["-0", "--", &id])
                 .output()
                 .unwrap()
@@ -4515,7 +4515,7 @@ fn assert_durable_stop_prepares_resumed_provider(ended_before_resume: bool) {
         .expect("durably record renewed provider ownership");
     let resumed_pid = resumed_event["payload"]["processId"].as_u64().unwrap();
     let process_exists = |group: bool| {
-        std::process::Command::new("/bin/kill")
+        std::process::Command::new("kill")
             .arg("-0")
             .arg("--")
             .arg(if group {
@@ -5769,7 +5769,7 @@ fn structured_question_round_trips_through_the_normalized_backend() {
     #[cfg(unix)]
     impl Drop for PausedTestProvider {
         fn drop(&mut self) {
-            let _ = std::process::Command::new("/bin/kill")
+            let _ = std::process::Command::new("kill")
                 .args(["-CONT", "--", &self.0.to_string()])
                 .output();
         }
@@ -5779,7 +5779,7 @@ fn structured_question_round_trips_through_the_normalized_backend() {
     #[cfg(unix)]
     let paused_provider = {
         let pid = _opened.result["processId"].as_u64().unwrap();
-        assert!(std::process::Command::new("/bin/kill")
+        assert!(std::process::Command::new("kill")
             .args(["-STOP", "--", &pid.to_string()])
             .output()
             .unwrap()

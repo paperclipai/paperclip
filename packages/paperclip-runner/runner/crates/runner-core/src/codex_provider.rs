@@ -4470,7 +4470,7 @@ done
             provider: "codex".to_owned(),
             driver: "codex_app_server".to_owned(),
             provider_version: "fixture".to_owned(),
-            command: PathBuf::from("/bin/cat"),
+            command: PathBuf::from("cat"),
             args: Vec::new(),
             cwd: std::env::current_dir()
                 .unwrap()
