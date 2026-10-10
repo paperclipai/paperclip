@@ -5,10 +5,11 @@ import { accessService } from "./access.js";
 import { executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type WorkspaceAccessContext = { write?: boolean; issueId?: string | null; parentIssueId?: string | null };
 
 /** Filesystem source scope is independent of a task's organizational project. */
 export async function assertTaskWorkspaceSourceProjectAccess(
-  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null, options: { write?: boolean } = {},
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null, options: WorkspaceAccessContext = {},
 ) {
   if (!projectId) return;
   const decision = await accessService(db as Db).decide({
@@ -21,7 +22,10 @@ export async function assertTaskWorkspaceSourceProjectAccess(
     const assigneeAgentId = actor.type === "agent" ? actor.agentId ?? null : null;
     const assignment = await accessService(db as Db).decide({
       actor, action: "tasks:assign",
-      resource: { type: "issue", companyId, projectId, assigneeAgentId },
+      resource: { type: "issue", companyId, projectId, assigneeAgentId,
+        issueId: options.issueId, parentIssueId: options.parentIssueId },
+      // Lineage proves low-trust containment; grants must still cover the source
+      // project independently of the task's organizational project.
       scope: { projectId, assigneeAgentId },
     });
     if (!assignment.allowed) throw forbidden(assignment.explanation);
@@ -30,14 +34,14 @@ export async function assertTaskWorkspaceSourceProjectAccess(
 
 /** Retained files keep every task's authorization boundary after rebinding. */
 export async function assertTaskWorkspaceAccess(
-  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, workspaceId: string, options: { write?: boolean } = {},
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, workspaceId: string, options: WorkspaceAccessContext = {},
 ) {
   const [workspace] = await db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId),
     await executionWorkspaceReadSqlCondition(db, actor),
   ));
   if (!workspace) throw forbidden("Task workspace access is no longer available");
-  await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, workspace.projectId, { write: options.write && workspace.mode === "shared_workspace" });
+  await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, workspace.projectId, { ...options, write: options.write && workspace.mode === "shared_workspace" });
   const retainedIssueIds = Object.keys(workspace.metadata?._issuePrivacySources ?? {});
   if (workspace.sourceIssueId) retainedIssueIds.push(workspace.sourceIssueId);
   const sources = await db.select({ id: issues.id }).from(issues).where(and(

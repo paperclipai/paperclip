@@ -301,9 +301,16 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(tasks.create(f.companyId, { title: "Denied legacy binding", createdByAgentId: agent.id,
         executionWorkspaceId: shared.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
 
+      const [organization] = await db.insert(projects).values({ companyId: f.companyId, name: "Task organization" }).returning();
+      await db.update(issues).set({ projectId: organization.id }).where(eq(issues.id, f.issueId));
       const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
-        principalId: agent.id, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: agent.id } }).returning();
+        principalId: agent.id, permissionKey: "tasks:assign_scope", scope: { projectId: organization.id, assigneeAgentId: agent.id } }).returning();
       const selectionRequest = { ...f, actor, selection: sharedSelection, expectedBindingRevision: 0, requestKey: "authorized-shared" };
+      // Task lineage and organizational-project authority cannot grant writes
+      // to an independently protected source project's folder.
+      await expect(svc.selectTaskWorkspace(selectionRequest)).rejects.toThrow(/protected/);
+      await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: agent.id } })
+        .where(eq(principalPermissionGrants.id, grant.id));
       await expect(svc.selectTaskWorkspace(selectionRequest)).resolves.toMatchObject({ kind: "scheduled" });
       expect(await tasks.create(f.companyId, { title: "Authorized shared source", createdByAgentId: agent.id,
         workspaceSelection: sharedSelection, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });

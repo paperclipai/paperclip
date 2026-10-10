@@ -76,7 +76,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       // Serialize receipts across tasks without blocking unchanged-ID foreign-key reads.
       const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, issue.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId))).for("no key update");
       if (!workspace || workspace.status !== "active") throw conflict("Execution workspace is unavailable");
-      await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, workspace.id, { write: true });
+      await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId });
       const existing = await tx.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id), or(eq(executionWorkspaceRepositories.repositoryIdentity, source.repositoryIdentity), sql`${executionWorkspaceRepositories.requestKeys} ? ${parsed.requestKey}`)));
       for (const row of existing) assertRepositoryRetryMatches(row, source.repositoryIdentity, requestedRef);
       if (existing[0]) {
@@ -99,7 +99,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
   }
   /** Logical rows may deliberately name one physical folder. Reuse bytes only
    * after validating every published owner's retained privacy and source intent. */
-  async function sharedPublicationPin(input: { row: RepositoryRow; root: string; actor: AuthorizationActor; ownership: { repositoryId?: string; pinnedCommit?: string } | null }) {
+  async function sharedPublicationPin(input: { issueId: string; row: RepositoryRow; root: string; actor: AuthorizationActor; ownership: { repositoryId?: string; pinnedCommit?: string } | null }) {
     const candidates = await db.select({ repository: executionWorkspaceRepositories, workspace: executionWorkspaces })
       .from(executionWorkspaceRepositories).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, executionWorkspaceRepositories.executionWorkspaceId))
       .where(and(eq(executionWorkspaceRepositories.companyId, input.row.companyId), eq(executionWorkspaces.companyId, input.row.companyId),
@@ -113,7 +113,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       if (await fs.realpath(workspace.cwd).catch(() => null) !== input.root) continue;
       assertRepositoryRetryMatches(repository, input.row.repositoryIdentity, input.row.requestedRef);
       if (!(await canActorReadExecutionWorkspace(db, input.actor, workspace.id))) throw forbidden("The shared repository retains files from a workspace outside this actor's access");
-      await assertTaskWorkspaceAccess(db, input.actor, input.row.companyId, workspace.id, { write: true });
+      await assertTaskWorkspaceAccess(db, input.actor, input.row.companyId, workspace.id, { write: true, issueId: input.issueId });
       if (pin && pin !== candidatePin) throw conflict("Shared repository publication receipts disagree; repair is required before reuse");
       pin = candidatePin;
     }
@@ -129,7 +129,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       // local-board is a server identity, not a membership record. Preserve the
       // agent's own authority rather than promoting it to a board actor.
       onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId };
-    await assertTaskWorkspaceAccess(db, actor, input.companyId, input.workspaceId, { write: true });
+    await assertTaskWorkspaceAccess(db, actor, input.companyId, input.workspaceId, { write: true, issueId: input.issueId });
     const root = await fs.realpath(input.cwd);
     const repositoryRoot = path.join(root, ".paperclip-repositories");
     await fs.mkdir(repositoryRoot, { recursive: true });
@@ -194,7 +194,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
             } catch { return null; } finally { await handle.close(); }
           };
           const initialOwnership = await readOwnership();
-          const authorizedPin = await sharedPublicationPin({ row, root, actor, ownership: initialOwnership });
+          const authorizedPin = await sharedPublicationPin({ issueId: input.issueId, row, root, actor, ownership: initialOwnership });
           if (existing && !authorizedPin && initialOwnership?.repositoryId !== row.id) {
             throw conflict("Repository directory has no matching preparation receipt; repair it before retrying");
           }

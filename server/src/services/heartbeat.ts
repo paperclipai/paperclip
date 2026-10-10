@@ -3205,10 +3205,10 @@ export function heartbeatService(
       if (!persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
         const workspaceRequiringAccess = reusableExistingExecutionWorkspace ?? boundSourceWorkspace;
         if (workspaceRequiringAccess) {
-          await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true });
+          await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true, issueId });
         } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || projectContext?.hasWorkspace)) {
           // Check source authority before resolution can clone or expose files.
-          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: requestedExecutionWorkspaceMode === "shared_workspace" });
+          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: requestedExecutionWorkspaceMode === "shared_workspace", issueId });
         }
       }
       const requestedReusableExecutionWorkspaceConfig =
@@ -3483,7 +3483,7 @@ export function heartbeatService(
       if (taskWorkspaceIntentRow?.intent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
         await executionWorkspacesSvc.validateSelection({ companyId: agent.companyId,
           actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
-          selection: taskWorkspaceIntentRow.intent.selection });
+          selection: taskWorkspaceIntentRow.intent.selection, issueId });
       }
       const explicitTaskDirectory = taskWorkspaceIntentRow?.intent?.selection.kind === "task_directory";
       const useIsolatedTaskDirectory = issueRef !== null && shouldUseIsolatedTaskDirectory({

@@ -1288,7 +1288,7 @@ const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseRe
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   /** Validate intent without allocating files or changing a task binding. */
-  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection }, reader: Db | DbTransaction = db) {
+  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null }, reader: Db | DbTransaction = db) {
     const selection = taskWorkspaceSelectionSchema.parse(input.selection);
     if (selection.kind === "existing") {
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
@@ -1297,7 +1297,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         await executionWorkspaceReadSqlCondition(reader, input.actor),
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
-      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true });
+      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId, parentIssueId: input.parentIssueId });
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
@@ -1308,7 +1308,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           await projectReadSqlCondition(reader, input.actor),
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
-      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, { write: selection.mode === "shared" });
+      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, { write: selection.mode === "shared", issueId: input.issueId, parentIssueId: input.parentIssueId });
       return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
         executionWorkspaceSettings: { mode: selection.mode === "shared" ? "shared_workspace" : "isolated_workspace" } };
     }

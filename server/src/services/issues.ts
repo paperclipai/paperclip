@@ -10166,7 +10166,7 @@ export function issueService(db: Db) {
         if (workspaceSelection && (workspaceSelectionSource === "explicit" || !inheritedWorkspaceSelection)) {
           const projection = await executionWorkspaceService(db).validateSelection({ companyId,
             actor: workspaceActor,
-            selection: workspaceSelection }, tx);
+            selection: workspaceSelection, parentIssueId: issueData.parentId }, tx);
           projectWorkspaceId = projection.projectWorkspaceId;
           executionWorkspaceId = projection.executionWorkspaceId;
           executionWorkspacePreference = projection.executionWorkspacePreference;
@@ -10266,6 +10266,7 @@ export function issueService(db: Db) {
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
           await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId, {
+            parentIssueId: issueData.parentId,
             write: !executionWorkspaceId && resolveExecutionWorkspaceMode({
               projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(readableSource.executionWorkspacePolicy), isolatedWorkspacesEnabled),
               issueSettings: parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings),
@@ -10277,7 +10278,7 @@ export function issueService(db: Db) {
           const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
           if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
-          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true });
+          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true, parentIssueId: issueData.parentId });
         }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
