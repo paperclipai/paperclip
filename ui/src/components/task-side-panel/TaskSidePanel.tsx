@@ -619,6 +619,15 @@ export function TaskSidePanel({
     const sections: SidePanelLauncherSection[] = [
       { id: "open", label: "Open", items: primary },
     ];
+    if (computerQuery.isError) {
+      sections.push({
+        id: "computer-error",
+        label: "Computer",
+        error: "Could not load the computer.",
+        items: [{ id: "retry-computer", label: "Retry", searchText: "computer", icon: <Monitor />,
+          disabled: computerQuery.isFetching }],
+      });
+    }
     if (documentItems.length > 0) {
       sections.push({ id: "documents", label: "Task documents", items: documentItems });
     }
@@ -641,11 +650,12 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [browsersQuery.data, computerQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [browsersQuery.data, computerQuery.data, computerQuery.isError, computerQuery.isFetching, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
-    if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
+    if (item.id === "retry-computer") void computerQuery.refetch();
+    else if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
     else if (item.id.startsWith("computer:")) controller.openTab(taskPanelComputerTab(item.id.slice(9)));
     else if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
     else if (item.id === "subtasks") {
