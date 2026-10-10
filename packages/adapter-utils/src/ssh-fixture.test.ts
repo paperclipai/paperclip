@@ -360,6 +360,31 @@ describe("ssh env-lab fixture", () => {
     expect(processIsRunning(workerPid)).toBe(false);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("keeps the run token out of reach of the caller's environment", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH run token env test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    const result = await runChildProcess(
+      `ssh-run-token-${process.pid}`,
+      "sh",
+      ["-c", 'echo "$PAPERCLIP_SSH_RUN"'],
+      {
+        cwd: process.cwd(),
+        env: { PAPERCLIP_SSH_RUN: "chosen-by-the-caller" },
+        timeoutSec: 20,
+        graceSec: 1,
+        onLog: async () => {},
+        remoteExecution: { ...config, remoteCwd: started.workspaceDir },
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("does not start a remote command whose run was stopped before it recorded itself", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");

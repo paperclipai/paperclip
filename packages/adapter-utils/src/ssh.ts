@@ -1380,7 +1380,9 @@ export async function buildSshSpawnTarget(input: {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    // The run token's name is reserved: a caller's value would replace the
+    // generated one and hide the command's processes from the stop.
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[0] !== REMOTE_RUN_TOKEN_ENV)
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   // Killing the local ssh client does not stop the remote command: without a
