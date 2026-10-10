@@ -125,6 +125,22 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
   });
 
   it.each([
+    { name: "successful terminal cleanup", expected: "succeeded", patch: {} },
+    { name: "real auth failure", expected: "failed", patch: { errorCode: "claude_auth_required", errorMessage: "Failed to authenticate" } },
+    { name: "forced cleanup", expected: "failed", patch: { resultJson: { subtype: "success", is_error: false, unmanagedBackgroundTask: { kind: "terminal_result_cleanup", stopped: true, terminalResultSeen: true, signal: "SIGKILL", forceKilled: true } } } },
+    { name: "explicit stop", expected: "cancelled", patch: {}, stop: true },
+  ])("records $name without rewriting the physical cleanup exit", async ({ expected, patch, stop }) => {
+    const f = await fixture(); f.agent.adapterType = "claude_local";
+    Object.assign(f.input.adapterResult, { exitCode: 143, signal: null, timedOut: false, errorMessage: null,
+      resultJson: { type: "result", subtype: "success", is_error: false, unmanagedBackgroundTask: {
+        kind: "terminal_result_cleanup", stopped: true, terminalResultSeen: true, signal: "SIGTERM", forceKilled: false,
+      } }, ...patch });
+    if (stop) f.controller.abort();
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: expected, exitCode: 143 });
+  });
+
+  it.each([
     { timedOut: true, expected: "timed_out", errorCode: "timeout" },
     { signal: "SIGTERM", expected: "failed", errorCode: "adapter_failed" },
     { errorMessage: "provider quota", errorCode: "provider_quota", expected: "failed" },
