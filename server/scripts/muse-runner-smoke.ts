@@ -112,6 +112,18 @@ async function signal() {
 }
 async function assignment(): Promise<Json> {
   return until<Json>("an offered assignment", async () => {
+    const runs = rows(await board(`/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}&limit=100`));
+    const terminal = runs.find(run => !runIds.includes(string(run.id))
+      && (run.issueId === issueId || run.nativeIssueId === issueId || object(run.contextSnapshot ?? {}).issueId === issueId)
+      && ["failed", "cancelled", "timed_out"].includes(String(run.status)));
+    if (terminal) {
+      const run = object(await board(`/api/heartbeat-runs/${string(terminal.id)}`));
+      evidence.nativeStartupFailure = { runId: run.id, status: run.status, runtimeMode: run.runtimeMode,
+        driverKind: run.driverKind, nativePhase: run.nativePhase, errorCode: run.errorCode, error: run.error,
+        createdAt: run.createdAt, startedAt: run.startedAt, finishedAt: run.finishedAt };
+      step("native-startup-failed", { runId: run.id, status: run.status });
+      throw new Error(`Native run ${string(run.id)} ended before an offered assignment; inspect nativeStartupFailure`);
+    }
     const mailbox = await query({ query: "mailbox", after: 0 });
     const item = rows(mailbox.items).find(row => row.kind === "assignment" && !runIds.includes(string(object(row.references).runId)));
     return item ? query({ query: "assignment.read", assignmentId: object(item.references).assignmentId }) : {};
@@ -250,10 +262,13 @@ try {
   await finish(second, "Applied the synthetic follow-up to the report.");
   await delay(1500);
   const runs = rows(await board(`/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}&limit=100`)).filter(run =>
-    run.nativeIssueId === issueId || object(run.contextSnapshot ?? {}).issueId === issueId);
+    run.issueId === issueId || run.nativeIssueId === issueId || object(run.contextSnapshot ?? {}).issueId === issueId);
   assert.equal(runs.length, 2, "Unread follow-up must not create a third run"); assert.ok(runs.every(run => run.status === "succeeded"));
-  evidence.runs = runs.map(run => ({ id: run.id, status: run.status, runtimeMode: run.runtimeMode, driverKind: run.driverKind,
-    createdAt: run.createdAt, finishedAt: run.finishedAt, finalizationPhase: object(run.resultJson ?? {}).finalizationPhase }));
+  const completedRuns = await Promise.all(runs.map(async run => object(await board(`/api/heartbeat-runs/${string(run.id)}`))));
+  evidence.runs = completedRuns.map(run => ({ id: run.id, status: run.status, runtimeMode: run.runtimeMode, driverKind: run.driverKind,
+    createdAt: run.createdAt, startedAt: run.startedAt, finishedAt: run.finishedAt,
+    nativeInputSchema: object(object(run.runnerProfileJson).nativeExecutionInput).schema,
+    finalizationPhase: object(run.resultJson ?? {}).finalizationPhase }));
   assert.equal(detectorError, false); evidence.detector = { syntheticContacts: detectorRequests, cadenceMs: 5000,
     signalMode: evidence.signalMode, secretUsed: evidence.signalMode === "authenticated_synthetic",
     realHooksInstalled: false, liveMuseCompatible: evidence.liveMuseDetectorCompatible };
