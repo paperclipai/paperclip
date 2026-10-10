@@ -3,7 +3,7 @@
  * surfaces. It is not a registered Product E2E campaign or live Muse qualification.
  * pnpm --filter @paperclipai/server exec tsx scripts/muse-runner-smoke.ts --run --base http://127.0.0.1:3311 \
  *   --auth-file /private/path/operator.json --company <uuid> --agent <uuid> \
- *   --server-source-sha <40-char-sha> --evidence-dir /private/path/evidence
+ *   --instance <instance-id> --server-source-sha <40-char-sha> --evidence-dir /private/path/evidence
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -27,7 +27,7 @@ function option(name: string): string {
   return process.argv[index + 1];
 }
 if (process.argv.includes("--help")) {
-  console.log("Synthetic Muse smoke: --run --base <loopback-url> --auth-file <private-json> --company <uuid> --agent <uuid> --server-source-sha <sha> --evidence-dir <private-dir>");
+  console.log("Synthetic Muse smoke: --run --base <loopback-url> --auth-file <private-json> --company <uuid> --agent <uuid> --instance <instance-id> --server-source-sha <sha> --evidence-dir <private-dir>");
   process.exit(0);
 }
 assert.ok(process.argv.includes("--run"), "Pass --run for this bounded synthetic smoke");
@@ -35,7 +35,7 @@ const base = new URL(option("--base"));
 assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(base.hostname), "Use an isolated loopback server");
 assert.ok(["http:", "https:"].includes(base.protocol) && !base.username && !base.password && base.pathname === "/");
 const authFile = option("--auth-file"), companyId = option("--company"), agentId = option("--agent");
-const serverSourceSha = option("--server-source-sha");
+const serverSourceSha = option("--server-source-sha"), instanceId = option("--instance");
 assert.match(serverSourceSha, /^[a-f0-9]{40}$/);
 assert.match(companyId, /^[a-f0-9-]{36}$/); assert.match(agentId, /^[a-f0-9-]{36}$/);
 const evidenceDirectory = resolve(option("--evidence-dir"));
@@ -151,7 +151,21 @@ async function finish(work: Json, summary: string): Promise<void> {
   step("server-finalized", { turn: runIds.length, runId });
 }
 try {
+  const health = object(await board("/api/health")); assert.equal(health.status, "ok"); assert.equal(health.authReady, true);
+  assert.equal(health.commit, serverSourceSha, "Use the stable isolated checkout SHA for this smoke");
+  if (health.devServer && typeof object(health.devServer).restartRequired === "boolean") assert.equal(object(health.devServer).restartRequired, false, "Restart the isolated dev server before this smoke");
+  const settings = object(await board("/api/instance/settings/experimental"));
+  assert.equal(settings.enableMuse, true); assert.equal(settings.enableNativeRunner, true);
+  assert.equal(settings.enableWorktreeRunExecution, true, "Activate isolated worktree execution before creating this issue");
+  assert.equal(settings.worktreeRunExecutionActivationInstanceId, instanceId, "Activation must match the isolated instance");
+  const cutoff = string(settings.worktreeRunExecutionActivatedAt);
+  assert.ok(Number.isFinite(Date.parse(cutoff)) && Date.parse(cutoff) <= Date.now(), "Execution cutoff must be armed");
   const initial = object(await board(bindingPath)); assert.equal(initial.enabled, true);
+  const publicOrigin = new URL(string(initial.publicOrigin));
+  assert.equal(publicOrigin.protocol, "https:", "Configure the synthetic public setup origin before pairing");
+  assert.ok(!publicOrigin.username && !publicOrigin.password && publicOrigin.pathname === "/" && !publicOrigin.search && !publicOrigin.hash);
+  evidence.preflight = { instanceId, armedWorktreeExecution: true, executionCutoff: cutoff, publicOrigin: publicOrigin.origin,
+    observedCurrentCheckoutSha: health.commit, processStartedAt: object(health.serverInfo).processStartedAt, normalBoardOrigin: base.origin };
   if (initial.binding) {
     const existing = object(initial.binding);
     assert.equal(existing.liveAssignments, 0, "Do not replace active work");
