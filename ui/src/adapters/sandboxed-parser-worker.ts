@@ -16,7 +16,20 @@
 /** Messages sent from the main thread to the worker. */
 export type SandboxRequest =
   | { type: "init"; source: string }
-  | { type: "parse"; id: number; line: string; ts: string };
+  | {
+      type: "parse";
+      id: number;
+      line: string;
+      ts: string;
+      /**
+       * Identity of the transcript build this line belongs to. When it
+       * changes, the worker drops the previous build's parser instance and
+       * creates a fresh one, so a stateful parser never carries Reasoning-box
+       * (or similar) state across transcript builds. Omitted by callers that
+       * use the legacy stateless `parseStdoutLine` contract.
+       */
+      buildId?: number;
+    };
 
 /** Messages sent from the worker back to the main thread. */
 export type SandboxResponse =
@@ -85,6 +98,23 @@ let parseStdoutLine = null;
 let createStdoutParser = null;
 let fallbackParser = null;
 
+// Per-transcript-build parser instance for modules that export
+// createStdoutParser. A stateful parser (e.g. Hermes Reasoning-box tracking)
+// advances across lines, so a fresh build must start from a fresh instance
+// instead of inheriting the previous build's or run's state.
+let streamParser = null;
+let lastBuildId = null;
+
+function resolveParserFor(msg) {
+  if (msg.buildId === undefined) return parseStdoutLine;
+  if (msg.buildId !== lastBuildId) {
+    lastBuildId = msg.buildId;
+    streamParser =
+      typeof createStdoutParser === "function" ? createStdoutParser() : null;
+  }
+  return streamParser ? streamParser.parseLine : parseStdoutLine;
+}
+
 // ── 3. Message handler ──────────────────────────────────────────────────────
 
 self.onmessage = function (e) {
@@ -144,7 +174,8 @@ self.onmessage = function (e) {
 
   if (msg.type === "parse") {
     try {
-      const entries = parseStdoutLine ? parseStdoutLine(msg.line, msg.ts) : [];
+      const parser = resolveParserFor(msg);
+      const entries = parser ? parser(msg.line, msg.ts) : [];
       self.postMessage({ type: "result", id: msg.id, entries: entries || [] });
     } catch (err) {
       self.postMessage({ type: "result", id: msg.id, entries: [] });
