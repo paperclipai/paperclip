@@ -261,12 +261,23 @@ with open(os.path.join(root,'lock'),'a') as lock:
       );
     return url;
   }
-  function stopReceipt(value: any, expectedId?: string): {id:string;status:string} {
-    if (!value || typeof value.id !== "string" || !/^stop_[a-zA-Z0-9]+$/.test(value.id) ||
-        (expectedId && value.id !== expectedId) || !["pending", "failing", "completed", "superseded"].includes(value.status)) {
-      throw new ComputerError("provider_error", "Boat returned an invalid stop receipt");
+  function stopReceipt(
+    value: any,
+    expectedId?: string,
+  ): { id: string; status: string } {
+    if (
+      !value ||
+      typeof value.id !== "string" ||
+      !/^stop_[a-zA-Z0-9]+$/.test(value.id) ||
+      (expectedId && value.id !== expectedId) ||
+      !["pending", "failing", "completed", "superseded"].includes(value.status)
+    ) {
+      throw new ComputerError(
+        "provider_error",
+        "Boat returned an invalid stop receipt",
+      );
     }
-    return {id:value.id,status:value.status};
+    return { id: value.id, status: value.status };
   }
   return {
     inspect,

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { computers, companies, type Db } from "@paperclipai/db";
+import { computers, companies, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   ComputerError,
   type ComputerRecord,
@@ -18,10 +18,19 @@ export function computerRepository(db: Db): ComputerRepository {
     );
   return {
     async create(record) {
-      await db.transaction(async tx => {
-        const [company] = await tx.select({id:companies.id}).from(companies).where(eq(companies.id,record.companyId)).for("update");
+      await db.transaction(async (tx) => {
+        const [company] = await tx
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.id, record.companyId))
+          .for("update");
         if (!company) throw new ComputerError("not_found", "Company not found");
-        await tx.insert(computers).values({...record,ledger:record.ledger as unknown as Record<string,unknown>});
+        await tx
+          .insert(computers)
+          .values({
+            ...record,
+            ledger: record.ledger as unknown as Record<string, unknown>,
+          });
       });
     },
     async get(scope) {
@@ -56,6 +65,28 @@ export function computerRepository(db: Db): ComputerRepository {
           .where(eq(computers.id, row.id));
         return result;
       });
+    },
+    async runState(scope, runId, agentId) {
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, scope.companyId),
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.agentId, agentId),
+          ),
+        );
+      if (!run) return "missing";
+      return [
+        "succeeded",
+        "interrupted",
+        "failed",
+        "cancelled",
+        "timed_out",
+      ].includes(run.status)
+        ? "terminal"
+        : "active";
     },
     async all() {
       return (await db.select().from(computers)).map(decode);

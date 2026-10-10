@@ -59,9 +59,7 @@ export function createComputerService(
     let record: ComputerRecord;
     try {
       record = await repository.get(input);
-      if (
-        record.providerId !== input.sandboxId
-      )
+      if (record.providerId !== input.sandboxId)
         throw new ComputerError(
           "conflict",
           "Environment already attaches another computer",
@@ -85,12 +83,21 @@ export function createComputerService(
       };
       await repository.create(record);
     }
-    if (JSON.stringify(record.ledger.secretRef) !== JSON.stringify(input.apiKeySecretRef)) {
+    if (
+      JSON.stringify(record.ledger.secretRef) !==
+      JSON.stringify(input.apiKeySecretRef)
+    ) {
       const candidate = structuredClone(record);
       candidate.ledger.secretRef = input.apiKeySecretRef;
       const status = await backend.inspect(candidate);
-      if (!status.snapshots) throw new ComputerError("invalid", "Boat snapshots must remain enabled");
-      await repository.update(input, current => { current.ledger.secretRef = input.apiKeySecretRef; });
+      if (!status.snapshots)
+        throw new ComputerError(
+          "invalid",
+          "Boat snapshots must remain enabled",
+        );
+      await repository.update(input, (current) => {
+        current.ledger.secretRef = input.apiKeySecretRef;
+      });
       record = candidate;
     }
     if (record.ledger.status === "detaching" || record.ledger.action)
@@ -118,17 +125,31 @@ export function createComputerService(
     async function processScope() {
       if (!pinnedProcess) return scoped({ ...record, owner: ownerRef });
       const latest = await repository.get(record);
-      const candidate = latest.ledger.owners.find(value => value.id === owner.id);
-      if (!candidate?.process || !["active", "starting", "warm"].includes(candidate.phase) ||
-        candidate.process.nonce !== pinnedProcess.nonce || candidate.process.unitName !== pinnedProcess.unitName ||
-        candidate.process.bootId !== pinnedProcess.bootId || candidate.process.launchGeneration !== pinnedProcess.launchGeneration) {
-        throw new ComputerError("conflict", "Computer process capability has expired");
+      const candidate = latest.ledger.owners.find(
+        (value) => value.id === owner.id,
+      );
+      if (
+        !candidate?.process ||
+        !["active", "starting", "warm"].includes(candidate.phase) ||
+        candidate.process.nonce !== pinnedProcess.nonce ||
+        candidate.process.unitName !== pinnedProcess.unitName ||
+        candidate.process.bootId !== pinnedProcess.bootId ||
+        candidate.process.launchGeneration !== pinnedProcess.launchGeneration
+      ) {
+        throw new ComputerError(
+          "conflict",
+          "Computer process capability has expired",
+        );
       }
-      return {record:latest,owner:candidate};
+      return { record: latest, owner: candidate };
     }
-    const runnerFor = (processScoped: boolean): CommandManagedRuntimeRunner => ({
+    const runnerFor = (
+      processScoped: boolean,
+    ): CommandManagedRuntimeRunner => ({
       execute: async (input) => {
-        const current = await (processScoped ? processScope() : scoped({ ...record, owner: ownerRef }));
+        const current = await (processScoped
+          ? processScope()
+          : scoped({ ...record, owner: ownerRef }));
         if (!["active", "starting", "warm"].includes(current.owner.phase))
           throw new ComputerError("conflict", "Computer owner is retired");
         // Start a command unit under the same owner slice while holding the remote tombstone lock.
@@ -185,9 +206,13 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       runner: runnerFor(false),
       process: {
         runner: runnerFor(true),
-        async ingress(input?: {port?:number;path?:string}) {
+        async ingress(input?: { port?: number; path?: string }) {
           const current = await processScope();
-          return backend.ingress(current.record,input?.port??current.owner.port,input?.path??"/");
+          return backend.ingress(
+            current.record,
+            input?.port ?? current.owner.port,
+            input?.path ?? "/",
+          );
         },
       },
       listenerPort: owner.port,
@@ -200,8 +225,10 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
         cwd?: string;
         env?: Record<string, string>;
       }) {
-        const before = await scoped({...record,owner:ownerRef});
-        const existing = before.owner.process ? await backend.inspectProcess(before.record,before.owner) : null;
+        const before = await scoped({ ...record, owner: ownerRef });
+        const existing = before.owner.process
+          ? await backend.inspectProcess(before.record, before.owner)
+          : null;
         const claimed = await repository.update(record, (current) => {
           const o = exactOwner(current, ownerRef);
           if (o.phase !== "active" && o.phase !== "starting")
@@ -252,7 +279,8 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     },
   ) {
     segment(input.agentId);
-    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.sessionKey)) throw new ComputerError("invalid", "Invalid computer session key");
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.sessionKey))
+      throw new ComputerError("invalid", "Invalid computer session key");
     timeout(input.idleTimeoutMs);
     const result = await repository.update(input, (record) => {
       assertAdmission(record.ledger);
@@ -277,6 +305,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
         owner.generation++;
         owner.phase = "starting";
         owner.runId = input.runId;
+        owner.admittedAt = now().toISOString();
         owner.deadline = new Date(now().getTime() + 120_000).toISOString();
       } else {
         owner = {
@@ -286,6 +315,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
           phase: "starting",
           agentId: input.agentId,
           runId: input.runId,
+          admittedAt: now().toISOString(),
           sessionKey: input.sessionKey,
           port: nextPort(record.ledger.owners),
           deadline: new Date(now().getTime() + 120_000).toISOString(),
@@ -349,18 +379,17 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     });
   }
   async function retire(input: Scope & { owner: OwnerRef }) {
-    const before = await repository.get(input);
-    const previous = before.ledger.owners.find(
-      (o) => o.id === input.owner.ownerId,
-    );
-    if (before.id !== input.owner.computerId || !previous)
-      throw new ComputerError("not_found", "Computer owner not found");
-    if (previous.generation !== input.owner.generation) return { retired: false };
     const state = await repository.update(input, (record) => {
-      const owner = exactOwner(record, input.owner);
+      const owner = record.ledger.owners.find(
+        (value) => value.id === input.owner.ownerId,
+      );
+      if (record.id !== input.owner.computerId || !owner)
+        throw new ComputerError("not_found", "Computer owner not found");
+      if (owner.generation !== input.owner.generation) return null;
       if (owner.phase !== "retired") owner.phase = "retiring";
       return { record: structuredClone(record), owner: structuredClone(owner) };
     });
+    if (!state) return { retired: false };
     if (state.owner.phase === "retired") return { retired: true };
     if (state.owner.kind === "runner") {
       const status = await backend.inspect(state.record);
@@ -542,9 +571,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       ) {
         return writeBytes(path, Buffer.from(content), expectedSha256);
       },
-      async list(
-        path = "",
-      ): Promise<
+      async list(path = ""): Promise<
         Array<{
           name: string;
           kind: "file" | "directory";
@@ -671,6 +698,28 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
   }
   async function reconcileRecord(record: ComputerRecord) {
     if (record.ledger.status === "attaching") return;
+    // A crash can happen after admission but before an environment lease exists.
+    // Run identity, rather than lease presence, decides whether that active owner
+    // still has work to recover. Warm owners keep their own idle deadline.
+    for (const owner of liveOwners(record.ledger)) {
+      const admittedAt = owner.admittedAt ? Date.parse(owner.admittedAt) : 0;
+      if (
+        owner.kind === "runner" &&
+        owner.phase === "active" &&
+        owner.runId &&
+        owner.agentId &&
+        now().getTime() - admittedAt >= 120_000
+      ) {
+        const runState = await repository.runState(
+          record,
+          owner.runId,
+          owner.agentId,
+        );
+        if (runState !== "active")
+          await retire({ ...record, owner: ref(record, owner) });
+      }
+    }
+    record = await repository.get(record);
     for (const owner of liveOwners(record.ledger))
       if (owner.phase === "retiring" || expired(owner, now()))
         await retire({ ...record, owner: ref(record, owner) });
@@ -738,7 +787,16 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       );
   }
   return {
-    async list(companyId: string) { return (await repository.all()).filter(record => record.companyId === companyId).map(record => ({ computerId: record.id, environmentId: record.environmentId, sandboxId: record.providerId, status: record.ledger.status })); },
+    async list(companyId: string) {
+      return (await repository.all())
+        .filter((record) => record.companyId === companyId)
+        .map((record) => ({
+          computerId: record.id,
+          environmentId: record.environmentId,
+          sandboxId: record.providerId,
+          status: record.ledger.status,
+        }));
+    },
     attach,
     admit,
     recover,

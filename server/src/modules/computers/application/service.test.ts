@@ -28,6 +28,7 @@ function fixture() {
       return result;
     },
     all: async () => (record ? [structuredClone(record)] : []),
+    runState: vi.fn(async () => "active" as const),
   };
   const backend: ComputerBackend = {
     inspect: vi.fn(async () => ({ state, snapshots: true, stop: null })),
@@ -215,12 +216,59 @@ describe("computer ownership", () => {
     expect(f.backend.inspect).not.toHaveBeenCalled();
   });
   it("keeps process capabilities across attempt generations only for the exact same process", async () => {
-    const f=fixture();await f.attach();const first=await f.admit();await first.launch({command:"runnerd"});
-    await f.service.retainWarm({...f.scope,owner:first.owner,idleTimeoutMs:60_000});await f.admit();
-    await expect(first.ingress()).rejects.toMatchObject({code:"conflict"});
+    const f = fixture();
+    await f.attach();
+    const first = await f.admit();
+    await first.launch({ command: "runnerd" });
+    await f.service.retainWarm({
+      ...f.scope,
+      owner: first.owner,
+      idleTimeoutMs: 60_000,
+    });
+    await f.admit();
+    await expect(first.ingress()).rejects.toMatchObject({ code: "conflict" });
     await expect(first.process.ingress()).resolves.toHaveProperty("url");
-    await f.repository.update(f.scope,record=>{record.ledger.owners[0]!.process!.nonce="replacement-process";});
-    await expect(first.process.ingress()).rejects.toMatchObject({code:"conflict"});
+    await f.repository.update(f.scope, (record) => {
+      record.ledger.owners[0]!.process!.nonce = "replacement-process";
+    });
+    await expect(first.process.ingress()).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
 
+  it.each(["terminal", "missing"] as const)(
+    "retires an orphan active owner with a %s run after admission grace",
+    async (state) => {
+      const f = fixture();
+      await f.attach();
+      await f.admit();
+      vi.mocked(f.repository.runState).mockResolvedValue(state);
+      f.advance(119_000);
+      await f.service.reconcile();
+      expect(f.backend.retire).not.toHaveBeenCalled();
+      f.advance(1_001);
+      await f.service.reconcile();
+      expect(f.backend.retire).toHaveBeenCalledOnce();
+      expect(f.backend.stop).toHaveBeenCalledOnce();
+    },
+  );
+  it("preserves recoverable running owners and gives completed warm owners their idle interval", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    f.advance(180_000);
+    await f.service.reconcile();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    await f.service.retainWarm({
+      ...f.scope,
+      owner: binding.owner,
+      idleTimeoutMs: 60_000,
+    });
+    vi.mocked(f.repository.runState).mockResolvedValue("terminal");
+    await f.service.reconcile();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    f.advance(60_001);
+    await f.service.reconcile();
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+  });
 });

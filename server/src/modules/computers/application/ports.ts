@@ -16,11 +16,14 @@ export interface ComputerRepository {
     fn: (record: ComputerRecord) => T,
   ): Promise<T>;
   all(): Promise<ComputerRecord[]>;
+  runState(
+    scope: { companyId: string },
+    runId: string,
+    agentId: string,
+  ): Promise<"active" | "terminal" | "missing">;
 }
 export interface ComputerBackend {
-  inspect(
-    record: ComputerRecord,
-  ): Promise<{
+  inspect(record: ComputerRecord): Promise<{
     state: string;
     snapshots: boolean;
     stop: null | { id: string; status: string };
