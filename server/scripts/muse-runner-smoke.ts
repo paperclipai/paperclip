@@ -214,7 +214,8 @@ try {
   const documentBody = `# Synthetic Muse report\n\nMarker: ${marker}\n\n17 + 25 = 42.\n`;
   await command({ command: "tool", assignmentId: first.assignmentId, name: "write_document", arguments: {
     key: "report", title: "Synthetic Muse report", body: documentBody, baseRevisionId: null, idempotencyKey: randomUUID() } });
-  const document = object(await board(`/api/issues/${issueId}/documents/report`)); assert.equal(document.body, documentBody);
+  const document = object(await board(`/api/issues/${issueId}/documents/report`)); assert.equal(document.body, documentBody.trim());
+  step("native-document-written", { runId: runIds[0], canonicalBody: true });
   const nativeRequestId = `smoke-question-${randomUUID()}`;
   await command({ command: "request_user_input", assignmentId: first.assignmentId, nativeRequestId,
     questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "environment", prompt: "Which synthetic environment?", required: true,
@@ -257,7 +258,7 @@ try {
   const revised = `${documentBody}\nFollow-up acknowledged.\n`;
   await command({ command: "tool", assignmentId: second.assignmentId, name: "write_document", arguments: {
     key: "report", title: "Synthetic Muse report", body: revised, baseRevisionId: latest.latestRevisionId, idempotencyKey: randomUUID() } });
-  assert.equal(object(await board(`/api/issues/${issueId}/documents/report`)).body, revised);
+  assert.equal(object(await board(`/api/issues/${issueId}/documents/report`)).body, revised.trim());
   evidence.followUp = { reopenCommentId: reopen.id, activeCommentId: followUp.id, mailboxReference: true, successfulHistoryReceipt: true, reportRevised: true };
   await finish(second, "Applied the synthetic follow-up to the report.");
   await delay(1500);
@@ -293,6 +294,13 @@ try {
     } else cleanup.noAuthorityCreated = true;
     if (credentials) await http("/api/muse/v1/detector-cleanup", "POST", { version: 1, requestId: randomUUID(), bindingId: credentials.bindingId, generation: credentials.generation, detectorRemoved: true }, string(credentials.detectorCleanupToken));
     cleanup.normalAuthorityRevoked = true; cleanup.syntheticDetectorStopped = true;
+    if (createdBindingId) {
+      const after = object(object(await board(bindingPath)).binding);
+      assert.equal(after.id, createdBindingId);
+      const stop = object(after.stop);
+      cleanup.stopStatus = stop.status; cleanup.nativeEffectsUnknown = stop.nativeEffectsUnknown;
+      if (stop.status !== "none" || after.uncertainOperations !== 0) cleanup.requiresOperatorReview = true;
+    }
   } catch { cleanup.completed = false; cleanup.requiresOperatorReview = true; }
   evidence.cleanup = cleanup; evidence.completedAt = new Date().toISOString();
   await writeFile(join(evidenceDirectory, "evidence.json"), JSON.stringify(evidence, null, 2), { mode: 0o600 });
