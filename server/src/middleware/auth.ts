@@ -223,7 +223,77 @@ interface ActorMiddlewareOptions {
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
 
+// Public bootstrap routes an unauthenticated agent must be able to reach: an
+// agent accepting an invite and an agent claiming the key it was just issued
+// have no bearer yet by construction. Each of these routes performs its own
+// credential check on the secret carried in the request body and records the
+// action as `system`, so letting them through here exposes no board write.
+// Keep this list minimal and exact; every other /api route stays guarded below.
+const publicAgentBootstrapPath =
+  /^\/api\/(?:invites\/[^/]+\/accept|join-requests\/[^/]+\/claim-api-key)\/?$/i;
+
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+
+/**
+ * State-changing HTTP methods. Reads are intentionally left reachable without a
+ * credential: in `local_trusted` the loopback board cannot authenticate at all,
+ * so requiring a principal on GET would break every page load.
+ */
+const mutatingMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function isMutatingMethod(method: string | undefined): boolean {
+  return mutatingMethods.has((method ?? "").toUpperCase());
+}
+
+/**
+ * True when the request declares an agent run.
+ *
+ * Presence of the header is the signal, not a non-empty value: the run marker is
+ * what tells us this writer is a machine acting inside a run, so a client that
+ * sends the header at all must present a credential that resolves to that run.
+ */
+function declaresAgentRun(req: Request): boolean {
+  return req.header("x-paperclip-run-id") !== undefined;
+}
+
+/**
+ * True for the board UI's own same-origin navigations — the one writer that is
+ * legitimately credential-less in `local_trusted`.
+ *
+ * Two signals are accepted, and deliberately no others:
+ *
+ * - `Origin`, when its host equals the `Host` the request actually reached. A
+ *   browser attaches `Origin` to every same-origin non-GET request, so this
+ *   covers the board. Comparing the host stops a foreign origin from riding in
+ *   on a forged header value.
+ * - `Sec-Fetch-Site: same-origin`, but only when `Origin` is absent. These are
+ *   forbidden header names in the Fetch standard: a browser sets them and page
+ *   JavaScript cannot forge them, so they survive when a browser omits `Origin`.
+ *
+ * A bare `Sec-Fetch-Mode` is deliberately NOT accepted. Node's built-in `fetch()`
+ * sets `Sec-Fetch-Mode: cors` on every credential-less request, so accepting that
+ * header would let any ordinary Node script pass the guard and write as
+ * `local-board` without forging anything. `Sec-Fetch-Site` is the signal that
+ * actually separates the board from a server-side client, and Node does not
+ * synthesise it.
+ *
+ * `Referer` is intentionally ignored. It is missing often enough to be useless
+ * and trivial to forge, which is exactly how the origin guard in #7763 was
+ * bypassed. Relying on it here would reintroduce that bypass.
+ */
+function isBrowserBoardRequest(req: Request): boolean {
+  const origin = req.header("origin");
+  if (origin) {
+    const host = req.header("host");
+    if (!host) return false;
+    try {
+      return new URL(origin).host.toLowerCase() === host.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+  return (req.header("sec-fetch-site") ?? "").toLowerCase() === "same-origin";
+}
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -248,6 +318,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    // An agent's first two authenticated requests are its invite acceptance and
+    // its initial key claim. Neither can present a bearer, because neither has a
+    // key yet, so gating them on a resolved principal here means the guard runs
+    // before the route's own secret check and the request can never succeed.
+    // Let those two exact routes reach the checks they already implement.
+    if (req.method === "POST" && publicAgentBootstrapPath.test(req.path)) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
+
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
@@ -266,6 +347,40 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     }
 
     if (!hasBearerCredentials) {
+      if (opts.deploymentMode === "local_trusted" && isMutatingMethod(req.method)) {
+        // The actor seeded above is the *human's* identity. Letting a
+        // credential-less write through would file it under `local-board`, so a
+        // writer that lost its credential, was never given one, or had it
+        // rejected upstream would not fail loudly — it would succeed and leave a
+        // record that reads back as if the human wrote it. Require a resolved
+        // principal for every write instead of defaulting one.
+        //
+        // The browser board in this mode holds no session and sends no
+        // Authorization header, so it cannot be gated on a credential. It is
+        // identified by being a same-origin browser navigation instead.
+        //
+        // See paperclipai/paperclip#8019 and #15027.
+        if (declaresAgentRun(req)) {
+          next(
+            unauthorized(
+              `Run ${req.header("x-paperclip-run-id")} presented no agent credentials. ` +
+                "Refusing to attribute this write to the board. Retry with a valid " +
+                "Authorization: Bearer credential for this run.",
+            ),
+          );
+          return;
+        }
+        if (!isBrowserBoardRequest(req)) {
+          next(
+            unauthorized(
+              "Unauthenticated write refused. local_trusted has no session to fall back on, " +
+                "and this request carries neither an agent credential nor the browser " +
+                "navigation headers of the board UI. Nothing was written.",
+            ),
+          );
+          return;
+        }
+      }
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
