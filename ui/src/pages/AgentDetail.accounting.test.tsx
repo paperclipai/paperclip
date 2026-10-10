@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import type { HeartbeatRun } from "@paperclipai/shared";
-import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AgentActionButtons } from "../components/AgentActionButtons";
+import type { Agent, HeartbeatRun } from "@paperclipai/shared";
+import { describe, expect, it, vi } from "vitest";
 import { RunAccountingMetrics } from "./AgentDetail";
-import { hasUnavailableProviderAccounting } from "../lib/utils";
+import { hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
+
+vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("../context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
 
 const unavailable = { providerAccounting: { usage: null, cost: null, externallyBilled: true } };
 const run = (usageJson: HeartbeatRun["usageJson"], resultJson: HeartbeatRun["resultJson"] = null) => ({ usageJson, resultJson } as HeartbeatRun);
@@ -30,5 +36,38 @@ describe("run accounting provenance", () => {
     expect(hasUnavailableProviderAccounting(null)).toBe(false);
     expect(hasUnavailableProviderAccounting({ providerAccounting: { usage: null, cost: null } })).toBe(false);
     expect(hasUnavailableProviderAccounting({ providerAccounting: { usage: { inputTokens: 2 }, cost: 1, externallyBilled: true } })).toBe(false);
+  });
+});
+
+
+describe("provider trace support", () => {
+  const renderActions = (provider: string, isAdmin: boolean) => {
+    const agent: Agent = {
+      id: "agent-1", companyId: "company-1", name: "Researcher", urlKey: "researcher", role: "researcher",
+      title: null, icon: null, status: "active", reportsTo: null, capabilities: null,
+      adapterType: "paperclip_runner", adapterConfig: { provider }, runtimeConfig: {},
+      budgetMonthlyCents: 0, spentMonthlyCents: 0, permissions: { canCreateAgents: false },
+      pauseReason: null, pausedAt: null, lastHeartbeatAt: null, metadata: null,
+      createdAt: new Date("2026-10-10T00:00:00Z"), updatedAt: new Date("2026-10-10T00:00:00Z"),
+    };
+    return renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentActionButtons agent={agent} canRunWithProviderTrace={isAdmin && supportsRawProviderTrace(agent.adapterType, agent.adapterConfig)} />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("keeps normal Muse actions but removes the unsupported raw traffic promise", () => {
+    const markup = renderActions("muse", true);
+    expect(markup).toContain("Run now");
+    expect(markup).toContain("Pause");
+    expect(markup).not.toContain("Run with provider trace");
+    expect(markup).not.toContain("Capture exact provider traffic");
+  });
+
+  it("retains other provider tracing only for authorized administrators", () => {
+    expect(renderActions("codex", true)).toContain("Run with provider trace");
+    expect(renderActions("openai_dot", true)).toContain("Run with provider trace");
+    expect(renderActions("codex", false)).not.toContain("Run with provider trace");
   });
 });

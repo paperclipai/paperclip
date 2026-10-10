@@ -65,7 +65,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -1288,7 +1288,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            canRunWithProviderTrace={canUseProviderTrace}
+            canRunWithProviderTrace={canUseProviderTrace && supportsRawProviderTrace(currentAgent.adapterType, currentAgent.adapterConfig)}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -3453,6 +3453,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
   const paperclipDeveloperMode =
     experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const canRerunWithProviderTrace = canUseProviderTrace && supportsRawProviderTrace(adapterType, adapterConfig);
   const { data: providerTraceRows } = useQuery({
     queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
     queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
@@ -3698,7 +3699,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 runId={run.id}
                 enabled={paperclipDeveloperMode && canUseProviderTrace}
               />
-              {canUseProviderTrace && !["queued", "running"].includes(run.status) ? (
+              {canRerunWithProviderTrace && !["queued", "running"].includes(run.status) ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3979,7 +3980,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         open={inspectorOpen}
         onOpenChange={setInspectorOpen}
         onRerunWithTrace={
-          canUseProviderTrace && !["queued", "running"].includes(run.status)
+          canRerunWithProviderTrace && !["queued", "running"].includes(run.status)
             ? () => rerunWithTrace.mutate()
             : undefined
         }
