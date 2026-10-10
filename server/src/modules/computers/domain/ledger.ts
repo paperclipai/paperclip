@@ -23,6 +23,8 @@ export interface Owner {
   port: number;
   deadline: string | null;
   absoluteDeadline: string | null;
+  /** Bounded graceful shutdown reservation; only pinned process control remains valid. */
+  retirementDeadline?: string | null;
   process: ProcessClaim | null;
 }
 export interface Ledger {

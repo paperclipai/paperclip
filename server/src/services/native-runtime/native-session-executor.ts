@@ -473,35 +473,51 @@ type WarmNativeSession = {
   lastActivityAt: string;
 };
 
+/** A scoped preparation failure is retryable only after exact retirement fences
+ * queued commands. A process claim or invoked launcher keeps normal recovery. */
+export async function retireUnlaunchedComputerAttempt(
+  target: AdapterExecutionTarget | null | undefined,
+  launchAttempted: boolean,
+): Promise<void> {
+  if (target?.kind !== "remote" || target.transport !== "computer" || launchAttempted) return;
+  const process = await target.inspectProcess();
+  if (process.running || process.claim !== null) return;
+  if (!(await target.retire())) throw new NativeSessionCleanupQuarantinedError();
+}
+
 class ComputerOwnerSupersededError extends Error {
   constructor() { super("computer_owner_retirement_superseded"); }
 }
 
 async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, preserveInstructionsForRunId?: string) {
-  // Computer admission can advance while an old idle timer is firing. Only
-  // the exact durable owner may stop the runner or its controller transport.
-  if (entry.computerTarget && !(await entry.computerTarget.retire())) {
+  let closeFailure: unknown;
+  let closeCompleted = false;
+  const close = async () => {
+    try { await entry.session.close({ reason }); closeCompleted = true; }
+    catch (error) { closeFailure = error; throw error; }
+  };
+  // Reserve the exact generation before protocol close. A winning admission
+  // must never receive a stale controller's suspend/kill command. The module
+  // always hard-retires descendants after the bounded graceful window.
+  if (entry.computerTarget && !(await entry.computerTarget.retire({ beforeStop: close }))) {
     throw new ComputerOwnerSupersededError();
   }
-  // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
   try {
     try {
-      if (entry.computerTarget && entry.session.detachControllerForRestart) {
-        await entry.session.detachControllerForRestart();
-      } else {
-        await entry.session.close({ reason });
+      if (!entry.computerTarget) await close();
+      if (closeFailure || !closeCompleted) {
+        await entry.session.detachControllerForRestart?.();
+        throw closeFailure ?? new NativeSessionCleanupQuarantinedError();
       }
-    }
-    catch (error) {
+    } catch (error) {
       try { await entry.instructionWorkingCopy?.retirementFailed?.(); }
       catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
       throw error;
     }
     await entry.instructionWorkingCopy?.collectStopped();
     if (entry.instructionCopy?.runId !== preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
-  }
-  finally { await stopping; }
+  } finally { await stopping; }
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -8746,6 +8762,8 @@ async function executePaperclipNativeSessionWithinScope(
           },
         }
       : input.execution;
+  let remoteLaunchAttempted = false;
+  let remoteBackendPreparationStarted = false;
   const leaseRenewal = startNativeSessionExecutionLeaseRenewal({
     db: input.db,
     runId: input.execution.binding.runId,
@@ -8773,6 +8791,7 @@ async function executePaperclipNativeSessionWithinScope(
       input.db,
       input.execution.binding,
     );
+    remoteBackendPreparationStarted = input.useRunnerd === true && input.backend === undefined;
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
@@ -8783,6 +8802,7 @@ async function executePaperclipNativeSessionWithinScope(
             execution: input.execution,
             runnerInstanceId: effectiveRunnerInstanceId,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+            onRemoteLaunchAttempt: () => { remoteLaunchAttempted = true; },
             trace,
             toolTrace,
           })
@@ -9167,6 +9187,15 @@ async function executePaperclipNativeSessionWithinScope(
       // provider failure and must not overwrite the shutdown adoption record
       // with a retry or release the still-live runner's lease.
       throw new NativeControllerDetachedForRestartError();
+    }
+    if (remoteBackendPreparationStarted) {
+      try {
+        await retireUnlaunchedComputerAttempt(input.runnerExecutionTarget, remoteLaunchAttempted);
+      } catch {
+        // Failure to establish the exact tombstone leaves queued commands or
+        // a lost launch acknowledgement ambiguous. Never retry that owner.
+        error = new NativeSessionCleanupQuarantinedError();
+      }
     }
     const protocolIntegrityFailure =
       error instanceof NativeSessionProtocolIntegrityError ? error : null;
@@ -10823,6 +10852,134 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   }
 }
 
+/** A dead computer runner may retain a ready checkpoint after controller loss.
+ * Match the local quiescent-recovery proof before sealing it for normal rotation.
+ */
+export function retiredComputerCheckpointIsSettled(input: {
+  execution: NativeExecutionInput;
+  priorExecution: NativeExecutionInput;
+  identity: RunnerdDurableIdentity;
+  runner: Record<string, unknown>;
+  control: Record<string, unknown>;
+  provider: Record<string, unknown>;
+  checkpoint: Record<string, unknown>;
+  currentCheckpoint: Record<string, unknown>;
+}): boolean {
+  const { execution, priorExecution, identity, runner, control, provider, checkpoint, currentCheckpoint } = input;
+  if (execution.provider.kind !== "codex" || priorExecution.provider.kind !== "codex") return false;
+  const events = control.committedEvents;
+  const commands = control.commands;
+  const terminal = record(record(Array.isArray(events) ? events.at(-1) : null).envelope);
+  const fields = ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"] as const;
+  if (runner.schema !== RUNNERD_STATE_SCHEMA || runner.lifecycle !== "ready" ||
+      fields.some(key => runner[key] !== identity[key] || record(control.identity)[key] !== identity[key]) ||
+      !Array.isArray(runner.outbox) || runner.outbox.length !== 0 || runner.pendingTerminalDelivery !== null ||
+      !Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
+      !Array.isArray(events) || record(events.at(-1)).eventType !== "run.terminal" ||
+      terminal.runId !== identity.runId || terminal.normalizedSessionId !== identity.normalizedSessionId ||
+      provider.completedTurnAuthoritative !== true || priorExecution.binding.runId !== identity.runId ||
+      priorExecution.binding.issueId !== execution.binding.issueId ||
+      nativeSessionScopeKey(priorExecution) !== nativeSessionScopeKey(execution) ||
+      nativeSessionConfigDigest(priorExecution) !== nativeSessionConfigDigest(execution)) return false;
+  const providerIdentity = providerSessionIdentityFromDurableProviderState({ execution: priorExecution, providerState: provider });
+  if (!providerIdentity.providerSessionId) return false;
+  return [checkpoint, currentCheckpoint].every((value, index) => {
+    const binding = record(value.identity);
+    return value.providerSessionId === providerIdentity.providerSessionId &&
+      value.driverKind === priorExecution.session.driverKind && value.activeTurnId === null &&
+      Array.isArray(value.pendingRuntimeRequests) && value.pendingRuntimeRequests.length === 0 &&
+      binding.runId === (index === 0 ? identity.runId : execution.binding.runId) &&
+      binding.sessionId === identity.normalizedSessionId && binding.companyId === execution.binding.companyId &&
+      binding.agentId === execution.binding.agentId && binding.issueId === execution.binding.issueId;
+  });
+}
+
+async function sealRetiredComputerRunnerState(input: {
+  db: Db; execution: NativeExecutionInput; root: string;
+  target: Extract<AdapterExecutionTarget, { transport: "computer" }>;
+  runner: CommandManagedRuntimeRunner; stateDirectory: string;
+}): Promise<void> {
+  const identity = readRunnerdDurableIdentity(input.root);
+  if (!identity || identity.runId === input.execution.binding.runId || input.execution.provider.kind !== "codex") return;
+  if (!durableIdentityMatchesSession(identity, input.execution)) throw new Error("runner_remote_retirement_scope_mismatch");
+  const controlPath = resolve(input.root, "control-plane", "control-plane-state.json");
+  const controlBytes = readBoundedNativeFile(controlPath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "recovery_state_too_large");
+  const runnerPath = posix.join(input.stateDirectory, "runner-state.json");
+  const providerPath = posix.join(input.stateDirectory, runnerProviderStateFilename(input.execution));
+  const read = await input.runner.execute({ command: "python3", args: ["-c", String.raw`
+import sys,os,stat,json,base64
+rows=[]
+for p in sys.argv[1:]:
+ s=os.lstat(p)
+ if not stat.S_ISREG(s.st_mode) or s.st_size>16777216:raise RuntimeError('unsafe recovery state')
+ with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:data=f.read(16777217)
+ if len(data)>16777216:raise RuntimeError('unsafe recovery state')
+ rows.append(base64.b64encode(data).decode())
+print(json.dumps(rows))`, runnerPath, providerPath], bypassSession: true, timeoutMs: 10_000 });
+  if (read.exitCode !== 0 || read.timedOut) throw new Error("runner_remote_retirement_state_unavailable");
+  const [runnerBytes, providerBytes] = (JSON.parse(read.stdout) as string[]).map(value => Buffer.from(value, "base64"));
+  const runner = record(JSON.parse(runnerBytes!.toString("utf8")));
+  if (runner.lifecycle === "suspended") return;
+  const runs = await input.db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+      eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+      inArray(heartbeatRuns.id, [identity.runId, input.execution.binding.runId])));
+  const prior = runs.find(run => run.id === identity.runId);
+  const current = runs.find(run => run.id === input.execution.binding.runId);
+  if (!prior || !current || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.status))
+    throw new Error("runner_remote_retirement_authority_unverified");
+  const profile = record(prior.runnerProfileJson);
+  const previous = parseNativeExecutionInput(profile.nativeExecutionInput);
+  if (!retiredComputerCheckpointIsSettled({ execution: input.execution, priorExecution: previous, identity, runner,
+      control: record(JSON.parse(controlBytes.toString("utf8"))), provider: record(JSON.parse(providerBytes!.toString("utf8"))),
+      checkpoint: record(profile.sessionCheckpoint), currentCheckpoint: record(record(current.runnerProfileJson).sessionCheckpoint) }) ||
+      await verifyPriorRunnerdStateForSessionScope({ db: input.db, root: input.root, identity, execution: input.execution,
+        allowVerifiedBackup: false, allowRetainedWarmRunner: false, remoteRunnerState: true, runnerExecutionTarget: input.target }) !== "verified")
+    throw new Error("runner_remote_retirement_checkpoint_unsettled");
+  // Recheck exact durable retirement after all awaited reads; never infer death
+  // from a missing PID or turn status. The compare-and-swap preserves ambiguity.
+  const workspace = readNativeComputerWorkspaceReference(profile.nativeComputerWorkspace);
+  if (!workspace || !input.target.environmentId || !(await computerService(input.db).isRetired({
+    companyId: input.execution.binding.companyId, environmentId: input.target.environmentId,
+    owner: workspace.computerOwner, agentId: input.execution.binding.agentId, runId: identity.runId,
+  })) || !controlBytes.equals(readBoundedNativeFile(controlPath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "recovery_state_too_large")))
+    throw new Error("runner_remote_retirement_evidence_changed");
+  await compareAndSealRetiredComputerCheckpoint({ runner: input.runner, runnerPath, providerPath,
+    runnerBytes: runnerBytes!, providerBytes: providerBytes! });
+}
+
+/** Exact retirement is checked by the caller; publication must still compare
+ * the complete bytes so a changed or interrupted checkpoint is never rotated. */
+export async function compareAndSealRetiredComputerCheckpoint(input: {
+  runner: CommandManagedRuntimeRunner; runnerPath: string; providerPath: string;
+  runnerBytes: Buffer; providerBytes: Buffer;
+}): Promise<void> {
+  const result = await input.runner.execute({ command: "python3", args: ["-c", String.raw`
+import sys,os,stat,json,hashlib,tempfile
+runner,provider,expected_runner,expected_provider=sys.argv[1:]
+for p,digest in [(runner,expected_runner),(provider,expected_provider)]:
+ s=os.lstat(p)
+ if not stat.S_ISREG(s.st_mode) or s.st_size>16777216:raise RuntimeError('unsafe recovery state')
+ with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:data=f.read(16777217)
+ if len(data)>16777216:raise RuntimeError('unsafe recovery state')
+ if hashlib.sha256(data).hexdigest()!=digest:raise RuntimeError('recovery evidence changed')
+ if p==runner:state=json.loads(data)
+state['lifecycle']='suspended'
+fd,tmp=tempfile.mkstemp(prefix='.retired-checkpoint-',dir=os.path.dirname(runner))
+try:
+ with os.fdopen(fd,'w') as f:json.dump(state,f,separators=(',',':'));f.flush();os.fsync(f.fileno())
+ # Recheck immediately before publication, including the provider checkpoint.
+ for p,digest in [(runner,expected_runner),(provider,expected_provider)]:
+  with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:current=f.read(16777217)
+  if hashlib.sha256(current).hexdigest()!=digest:raise RuntimeError('recovery evidence changed')
+ os.replace(tmp,runner)
+finally:
+ if os.path.exists(tmp):os.unlink(tmp)
+`, input.runnerPath, input.providerPath, createHash("sha256").update(input.runnerBytes).digest("hex"), createHash("sha256").update(input.providerBytes).digest("hex")],
+    bypassSession: true, timeoutMs: 10_000 });
+  if (result.exitCode !== 0 || result.timedOut) throw new Error("runner_remote_retirement_checkpoint_cas_failed");
+}
+
 async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
@@ -11100,9 +11257,11 @@ export function createRemoteRunnerProcessLauncher(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   trace?: NativeRunTrace;
   onRunnerProcessSpawned?: () => void;
+  onLaunchAttempt?: () => void;
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
   return (spec) => {
+    input.onLaunchAttempt?.();
     let launchedIdentity: {
       nonce: string;
       pid: number;
@@ -11404,6 +11563,7 @@ export async function createRunnerdBackend(input: {
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   restartRecovery?: NativeRestartRecoveryClaim;
   durableEnvironmentLeaseId?: string;
+  onRemoteLaunchAttempt?: () => void;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -13064,6 +13224,10 @@ async function createRunnerdBackendWithinSessionClaim(
       if (incompleteFailure) throw incompleteFailure;
       return;
     }
+    // The computer ledger and exact remote placement are the recovery authority.
+    // Its durable provider state stays on the persistent machine; importing the
+    // sandbox archive would create a second authority and delay bounded shutdown.
+    if (remoteTarget?.transport === "computer") return;
     const backupSpanAttributes = {
       provider: input.execution.provider.kind,
       harness: input.execution.session.driverKind,
@@ -13207,6 +13371,10 @@ async function createRunnerdBackendWithinSessionClaim(
             runnerIngressAuthorized: input.runnerIngressAuthorized === true,
           });
           await ensureRemoteRunner(false);
+          if (remoteTarget.transport === "computer" && remoteStateDirectory) {
+            await sealRetiredComputerRunnerState({ db: input.db, execution: input.execution, root,
+              target: remoteTarget, runner: remoteCommandRunner, stateDirectory: remoteStateDirectory });
+          }
         }
       : undefined;
   const archiveExternalRunnerState =
@@ -13277,6 +13445,7 @@ async function createRunnerdBackendWithinSessionClaim(
           onLog: input.onLog,
           trace: input.trace,
           onRunnerProcessSpawned: () => resolveRemoteRunnerProcessSpawned?.(),
+          onLaunchAttempt: input.onRemoteLaunchAttempt,
         })
       : undefined;
   const runnerExecution: NativeExecutionInput = remoteTarget

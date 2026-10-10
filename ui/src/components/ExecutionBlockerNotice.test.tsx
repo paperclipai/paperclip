@@ -36,8 +36,7 @@ describe("stopped task recovery notice", () => {
     const notice = container.querySelector('[role="status"][aria-label="Task recovery"]')!;
     expect(notice.textContent).toContain("Recorded work is preserved");
     expect(notice.textContent).toContain("Retry");
-    expect(notice.classList.contains("border")).toBe(true);
-    expect(notice.classList.contains("bg-muted")).toBe(true);
+    expect(notice.classList.contains("task-context-notice")).toBe(true);
     expect(notice.querySelector("a")?.getAttribute("href")).toBe("/agents/agent/runs/failed-run");
   });
   it.each([false, true])("explains cancelled runs and saved input; continue eligibility %s", async canContinue => {

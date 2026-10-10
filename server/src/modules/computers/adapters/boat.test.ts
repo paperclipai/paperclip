@@ -180,13 +180,13 @@ describe("confined computer files", () => {
     const chunk = Buffer.alloc(1024 * 1024, 19);
     for (const offset of [0, chunk.length]) expect(f.call({ action: "seed-chunk", seedId, path: "memory/data", offset, base64: chunk.toString("base64") })).toEqual({});
     expect(existsSync(f.root)).toBe(false);
-    const staging = readdirSync(f.temp).find(name => name.startsWith(".paperclip-seed-"))!;
+    const staging = readdirSync(f.temp).find(name => name.startsWith(".paperclip-seed-") && statSync(join(f.temp, name)).isDirectory())!;
     expect(statSync(join(f.temp, staging)).mode & 0o777).toBe(0o700);
     expect(statSync(join(f.temp, staging, "tree", "memory", "data")).mode & 0o777).toBe(0o600);
     expect(f.call({ action: "seed-chunk", seedId, path: "memory/data", offset: 0, base64: "" })).toEqual({ error: "conflict" });
     expect(f.call({ action: "seed-commit", seedId })).toEqual({ seeded: true });
     expect(readFileSync(join(f.root, "memory", "data"))).toEqual(Buffer.concat([chunk, chunk]));
-    expect(readdirSync(f.temp)).toEqual(["home"]);
+    expect(readdirSync(f.temp)).toEqual([".paperclip-seed-home.lock", "home"]);
     expect(f.call({ action: "seed-begin", seedId: randomUUID() })).toEqual({ started: false });
     const g = fixture(); const partial = randomUUID();
     g.call({ action: "seed-begin", seedId: partial });
@@ -194,7 +194,7 @@ describe("confined computer files", () => {
     expect(g.call({ action: "seed-chunk", seedId: partial, path: "large", offset: 0, base64: Buffer.alloc(1024 * 1024 + 1).toString("base64") })).toEqual({ error: "invalid" });
     expect(g.call({ action: "seed-abort", seedId: partial })).toEqual({});
     expect(existsSync(g.root)).toBe(false);
-    expect(readdirSync(g.temp)).toEqual([]);
+    expect(readdirSync(g.temp)).toEqual([".paperclip-seed-home.lock"]);
   });
   it("does not replace a home created while its initial upload was in progress", () => {
     const f = fixture(); const seedId = randomUUID();
@@ -203,7 +203,49 @@ describe("confined computer files", () => {
     mkdirSync(f.root);
     expect(f.call({ action: "seed-commit", seedId })).toEqual({ seeded: false });
     expect(readdirSync(f.root)).toEqual([]);
-    expect(readdirSync(f.temp)).toEqual(["home"]);
+    expect(readdirSync(f.temp)).toEqual([".paperclip-seed-home.lock", "home"]);
+  });
+  it("reclaims only the expired receipted upload after an interrupted seed", () => {
+    const f = fixture(); const first = randomUUID(); const next = randomUUID();
+    const receiptPath = join(f.temp, ".paperclip-seed-home.json");
+    const oldStage = join(f.temp, `.paperclip-seed-home-${first}`);
+    const unrelated = join(f.temp, `.paperclip-seed-home-${randomUUID()}`);
+    mkdirSync(unrelated); writeFileSync(join(unrelated, "user-file"), "keep");
+    expect(f.call({ action: "seed-begin", seedId: first })).toEqual({ started: true });
+    expect(f.call({ action: "seed-chunk", seedId: first, path: "partial", offset: 0, base64: Buffer.alloc(1024 * 1024).toString("base64") })).toEqual({});
+    expect(f.call({ action: "seed-begin", seedId: next })).toEqual({ error: "conflict" });
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    expect(receipt.seedId).toBe(first); expect(receipt.updatedAt).toBeGreaterThan(0);
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, updatedAt: Date.now() / 1000 - 180 }));
+    expect(f.call({ action: "seed-begin", seedId: next })).toEqual({ error: "conflict" });
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, updatedAt: 0 }));
+    expect(f.call({ action: "seed-begin", seedId: next })).toEqual({ started: true });
+    expect(existsSync(oldStage)).toBe(false);
+    expect(f.call({ action: "seed-chunk", seedId: first, path: "late", offset: 0, base64: "" })).toEqual({ error: "conflict" });
+    expect(readFileSync(join(unrelated, "user-file"), "utf8")).toBe("keep");
+    expect(f.call({ action: "seed-abort", seedId: first })).toEqual({});
+    expect(JSON.parse(readFileSync(receiptPath, "utf8")).seedId).toBe(next);
+    expect(f.call({ action: "seed-chunk", seedId: next, path: "complete", offset: 0, base64: Buffer.from("done").toString("base64") })).toEqual({});
+    expect(f.call({ action: "seed-commit", seedId: next })).toEqual({ seeded: true });
+    expect(readFileSync(join(f.root, "complete"), "utf8")).toBe("done");
+    expect(existsSync(receiptPath)).toBe(false);
+  });
+  it("cleans abandoned upload receipts on home admission but preserves unverified content", () => {
+    const f = fixture(); const seedId = randomUUID();
+    const receiptPath = join(f.temp, ".paperclip-seed-home.json");
+    const stage = join(f.temp, `.paperclip-seed-home-${seedId}`);
+    f.call({ action: "seed-begin", seedId });
+    f.call({ action: "seed-chunk", seedId, path: "partial", offset: 0, base64: Buffer.from("partial").toString("base64") });
+    mkdirSync(f.root); writeFileSync(join(f.root, "user-file"), "keep");
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, updatedAt: 0 }));
+    writeFileSync(join(stage, "owner.json"), JSON.stringify({ purpose: "user-owned" }));
+    expect(f.call({ action: "list", limit: 1 })).toEqual({ error: "invalid" });
+    expect(readFileSync(join(stage, "tree", "partial"), "utf8")).toBe("partial");
+    writeFileSync(join(stage, "owner.json"), JSON.stringify({ purpose: receipt.purpose, root: receipt.root, seedId }));
+    expect(f.call({ action: "list", limit: 1 }).entries[0].name).toBe("user-file");
+    expect(existsSync(stage)).toBe(false); expect(existsSync(receiptPath)).toBe(false);
+    expect(readFileSync(join(f.root, "user-file"), "utf8")).toBe("keep");
   });
   it("hashes and deletes files over the read limit while fencing changed bytes", () => {
     const f = fixture();
@@ -530,5 +572,31 @@ describe("Boat SSH admission", () => {
     const settled = await Promise.allSettled(Array.from({ length: 12 }, () => admission(runner, { command: "once", timeoutMs: 1000 }, false)));
     expect(settled.every((entry) => entry.status === "rejected")).toBe(true);
     expect(runner.execute).toHaveBeenCalledTimes(12);
+  });
+});
+
+
+describe("remote graceful retirement fence", () => {
+  it("records the exact generation deadline and blocks late launch or generation reuse", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "computer-grace-")));
+    roots.push(root);
+    const owners = join(root, "owners");
+    const boot = join(root, "boot");
+    writeFileSync(boot, "boot-id");
+    const code = processProgram.replaceAll("/home/user/.paperclip-owners", owners)
+      .replaceAll("/proc/sys/kernel/random/boot_id", boot);
+    const invoke = (action: string, owner: Record<string, unknown>) => {
+      const result = spawnSync("python3", ["-c", code], { input: JSON.stringify({ action, owner }), encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+    const owner = { id: "owned", generation: 7, phase: "retiring", retirementDeadline: "2099-01-01T00:00:00Z" };
+    expect(invoke("advance", owner)).toEqual({});
+    const marker = readFileSync(join(owners, "owned", "retiring.json"), "utf8");
+    expect(JSON.parse(marker).deadline).toBe(Date.parse(owner.retirementDeadline));
+    expect(invoke("launch", owner)).toEqual({ error: "conflict" });
+    expect(invoke("advance", { ...owner, phase: "active", generation: 8 })).toEqual({ error: "conflict" });
+    expect(invoke("advance", { ...owner, generation: 6 })).toEqual({ error: "conflict" });
+    expect(readFileSync(join(owners, "owned", "retiring.json"), "utf8")).toBe(marker);
   });
 });

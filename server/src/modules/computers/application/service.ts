@@ -23,6 +23,8 @@ class ComputerSessionBusyError extends ComputerError {
   }
 }
 
+// This is shutdown time only; admission and ordinary work stop at the warm deadline.
+const RETIREMENT_GRACE_MS = 30_000;
 type Scope = { companyId: string; environmentId: string };
 export function createComputerService(
   repository: ComputerRepository,
@@ -38,6 +40,15 @@ export function createComputerService(
     ownerId: owner.id,
     generation: owner.generation,
   });
+  const retirements = new Map<string, Promise<{ retired: boolean }>>();
+  const retirementGraceOpen = (owner: Owner) => owner.phase === "retiring" &&
+    !!owner.retirementDeadline && Date.parse(owner.retirementDeadline) > now().getTime();
+  const warmShutdownGraceOpen = (owner: Owner) => owner.kind === "runner" && owner.phase === "warm" &&
+    !!owner.deadline && Date.parse(owner.deadline) + RETIREMENT_GRACE_MS > now().getTime();
+  const processControlAllowed = (owner: Owner) =>
+    ((owner.phase === "active" || owner.phase === "starting") && !expired(owner, now())) ||
+    (owner.phase === "warm" && (!expired(owner, now()) || warmShutdownGraceOpen(owner))) ||
+    retirementGraceOpen(owner);
   const base = (record: ComputerRecord) =>
     `/home/user/paperclip/${segment(record.companyId)}`;
   async function admitRecord<T>(
@@ -173,14 +184,19 @@ export function createComputerService(
     const control = await backend.runner(record, { control: true });
     let pinnedProcess = owner.process ? structuredClone(owner.process) : null;
     async function processScope() {
-      if (!pinnedProcess) return scoped({ ...record, owner: ownerRef });
+      if (!pinnedProcess) {
+        const current = await scoped({ ...record, owner: ownerRef });
+        if (!["active", "starting", "warm"].includes(current.owner.phase) || expired(current.owner, now()))
+          throw new ComputerError("conflict", "Computer process capability has expired");
+        return current;
+      }
       const latest = await repository.get(record);
       const candidate = latest.ledger.owners.find(
         (value) => value.id === owner.id,
       );
       if (
         !candidate?.process ||
-        !["active", "starting", "warm"].includes(candidate.phase) ||
+        !processControlAllowed(candidate) ||
         candidate.process.nonce !== pinnedProcess.nonce ||
         candidate.process.unitName !== pinnedProcess.unitName ||
         candidate.process.bootId !== pinnedProcess.bootId ||
@@ -200,7 +216,8 @@ export function createComputerService(
         const current = await (processScoped
           ? processScope()
           : scoped({ ...record, owner: ownerRef }));
-        if (!["active", "starting", "warm"].includes(current.owner.phase))
+        if ((!["active", "starting", "warm"].includes(current.owner.phase) || expired(current.owner, now())) &&
+            !(processScoped && pinnedProcess && processControlAllowed(current.owner)))
           throw new ComputerError("conflict", "Computer owner is retired");
         // Start a command unit under the same owner slice while holding the remote tombstone lock.
         // The lock is released only after systemd knows the unit, so retirement cannot miss a delayed launch.
@@ -235,6 +252,9 @@ try:
  with open(root+'/lock','a') as lock:
   fcntl.flock(lock,fcntl.LOCK_EX)
   if os.path.exists(root+'/retired'):raise RuntimeError('computer owner retired')
+  if os.path.exists(root+'/retiring.json'):
+   with open(root+'/retiring.json') as retirement:deadline=json.load(retirement)['deadline']
+   if not p.get('processClaim') or time.time()*1000>=deadline:raise RuntimeError('computer owner is retiring')
   if p.get('processClaim'):
    claim=json.load(open(root+'/claim.json'))
    if any(claim[k]!=p['processClaim'][k] for k in ['nonce','unitName','bootId','launchGeneration']) or claim['bootId']!=open('/proc/sys/kernel/random/boot_id').read().strip():raise RuntimeError('computer process superseded')
@@ -347,7 +367,7 @@ finally:
       },
       async ingress(input?: { port?: number; path?: string }) {
         const current = await scoped({ ...record, owner: ownerRef });
-        if (current.owner.phase === "retired")
+        if (!["active", "starting", "warm"].includes(current.owner.phase) || expired(current.owner, now()))
           throw new ComputerError("conflict", "Computer owner retired");
         return backend.ingress(
           current.record,
@@ -389,10 +409,7 @@ finally:
       if (owner && owner.phase !== "warm")
         throw new ComputerSessionBusyError(owner.runId, owner.agentId);
       if (owner && expired(owner, now()))
-        throw new ComputerError(
-          "conflict",
-          "Computer warm session is retiring",
-        );
+        throw new ComputerSessionBusyError(owner.runId, owner.agentId);
       if (owner) {
         owner.generation++;
         owner.phase = "starting";
@@ -504,19 +521,53 @@ finally:
       owner.runId === input.runId,
     );
   }
-  async function retire(input: Scope & { owner: OwnerRef }) {
+  async function retire(input: Scope & { owner: OwnerRef; beforeStop?: () => Promise<void> }) {
+    const key = `${input.companyId}:${input.environmentId}:${input.owner.computerId}:${input.owner.ownerId}:${input.owner.generation}`;
+    const existing = retirements.get(key);
+    if (existing) return existing;
+    const pending = performRetirement(input);
+    retirements.set(key, pending);
+    try { return await pending; }
+    finally { if (retirements.get(key) === pending) retirements.delete(key); }
+  }
+  async function performRetirement(input: Scope & { owner: OwnerRef; beforeStop?: () => Promise<void> }) {
     const state = await repository.update(input, (record) => {
-      const owner = record.ledger.owners.find(
-        (value) => value.id === input.owner.ownerId,
-      );
+      const owner = record.ledger.owners.find((value) => value.id === input.owner.ownerId);
       if (record.id !== input.owner.computerId || !owner)
         throw new ComputerError("not_found", "Computer owner not found");
       if (owner.generation !== input.owner.generation) return null;
-      if (owner.phase !== "retired") owner.phase = "retiring";
-      return { record: structuredClone(record), owner: structuredClone(owner) };
+      if (retirementGraceOpen(owner))
+        throw new ComputerError("conflict", "Computer graceful retirement is pending");
+      const retirementDeadline = owner.phase === "warm" && owner.deadline
+        ? Math.min(now().getTime() + RETIREMENT_GRACE_MS, Date.parse(owner.deadline) + RETIREMENT_GRACE_MS)
+        : now().getTime() + RETIREMENT_GRACE_MS;
+      const graceful = owner.phase !== "retiring" && owner.phase !== "retired" &&
+        owner.kind === "runner" && !!owner.process && !!input.beforeStop && retirementDeadline > now().getTime();
+      if (owner.phase !== "retired") {
+        owner.phase = "retiring";
+        owner.retirementDeadline = graceful ? new Date(retirementDeadline).toISOString() : null;
+      }
+      return { record: structuredClone(record), owner: structuredClone(owner), graceful };
     });
     if (!state) return { retired: false };
     if (state.owner.phase === "retired") return { retired: true };
+    if (state.graceful) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          (async () => {
+            await backend.advance(state.record, state.owner);
+            if (retirementGraceOpen(state.owner)) await input.beforeStop!();
+          })(),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, Date.parse(state.owner.retirementDeadline!) - now().getTime())); }),
+        ]);
+      } catch {
+        // Graceful provider shutdown is best effort; physical retirement is mandatory.
+      } finally { if (timer) clearTimeout(timer); }
+      await repository.update(input, (record) => {
+        exactOwner(record, input.owner).retirementDeadline = null;
+      });
+    }
     if (state.owner.kind === "runner") {
       const status = await backend.inspect(state.record);
       if (!["stopped", "archived"].includes(status.state))
@@ -526,6 +577,7 @@ finally:
       const owner = exactOwner(record, input.owner);
       owner.phase = "retired";
       owner.deadline = null;
+      owner.retirementDeadline = null;
     });
     return { retired: true };
   }
@@ -885,7 +937,8 @@ finally:
     }
     record = await repository.get(record);
     for (const owner of liveOwners(record.ledger))
-      if (owner.phase === "retiring" || expired(owner, now()))
+      if (owner.phase === "retiring" ? !retirementGraceOpen(owner)
+          : expired(owner, now()) && !warmShutdownGraceOpen(owner))
         await retire({ ...record, owner: ref(record, owner) });
     await repository.update(record, (current) => {
       current.ledger.owners = current.ledger.owners.filter(

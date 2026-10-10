@@ -247,7 +247,7 @@ export interface AdapterComputerExecutionTarget extends Omit<AdapterSandboxExecu
   inspectProcess(): Promise<{ running: boolean; claim: unknown }>;
   retainWarm(idleTimeoutMs: number): Promise<void>;
   /** False means admission superseded this owner; callers must not close its process. */
-  retire(): Promise<boolean>;
+  retire(options?: { beforeStop?: () => Promise<void> }): Promise<boolean>;
   computerTool: { command: string; args: string[] };
 }
 

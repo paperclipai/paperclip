@@ -1,4 +1,4 @@
-import { nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
+import { compareAndSealRetiredComputerCheckpoint, retiredComputerCheckpointIsSettled, retireUnlaunchedComputerAttempt, nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
 import { prepareHeartbeatGitHubLaunchers } from "../heartbeat-github-launchers.js";
 import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
@@ -7698,7 +7698,7 @@ describe("native warm session supervision", () => {
       const name = `computer-owner-${suffix}`;
       const current = { ...execution, binding: { ...execution.binding, runId: name, agentId: name, executionWorkspaceId: name },
         session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
-      const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async () => true);
+      const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { await options?.beforeStop?.(); return true; });
       const target = { kind: "remote" as const, transport: "computer" as const, environmentId: "shared-computer",
         remoteCwd: `/home/user/${name}`, listenerPort: suffix === "a" ? 45001 : 45002,
         resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: name, generation: 1 },
@@ -7731,7 +7731,7 @@ describe("native warm session supervision", () => {
     const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
       session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
     const firstClose = vi.fn(async () => undefined), secondClose = vi.fn(async () => undefined);
-    const firstRetire = vi.fn(async () => true), secondRetire = vi.fn(async () => true);
+    const firstRetire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { await options?.beforeStop?.(); return true; }), secondRetire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { await options?.beforeStop?.(); return true; });
     const target = { kind: "remote", transport: "computer", environmentId: name, remoteCwd: `/home/user/${name}`,
       resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: "prior-owner", generation: 1 },
       retainWarm: vi.fn(async () => undefined), retire: firstRetire };
@@ -7768,7 +7768,7 @@ describe("native warm session supervision", () => {
     const detachControllerForRestart = vi.fn(async () => undefined);
     const session = { close, detachControllerForRestart };
     let generation = 1;
-    const retire = vi.fn(async () => generation === 1);
+    const retire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { if (generation !== 1) return false; await options?.beforeStop?.(); return true; });
     const target = { kind: "remote", transport: "computer", environmentId: name, remoteCwd: `/home/user/${name}`,
       resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: name, generation: 1 },
       retainWarm: vi.fn(async () => undefined), retire };
@@ -7796,14 +7796,14 @@ describe("native warm session supervision", () => {
       expect(close).not.toHaveBeenCalled();
       expect(detachControllerForRestart).not.toHaveBeenCalled();
       const next = { ...current, binding: { ...current.binding, runId: `${name}-two` } };
-      const nextRetire = vi.fn(async () => true);
+      const nextRetire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { await options?.beforeStop?.(); return true; });
       await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
         runnerEnvironment: await environmentForRun(next.binding.runId),
         runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, generation: 2 }, retire: nextRetire } as never });
       await closeWarmNativeSessionsForRun({ runId: next.binding.runId, reason: "fixture cleanup" });
       expect(nextRetire).toHaveBeenCalledOnce();
-      expect(detachControllerForRestart).toHaveBeenCalledOnce();
-      expect(close).not.toHaveBeenCalled();
+      expect(detachControllerForRestart).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
     } finally { vi.useRealTimers(); }
   });
 
@@ -13512,6 +13512,49 @@ describe("runnerd provider runtime wiring", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("keeps computer checkpoints remote through close and the next session preparation", async () => {
+    const remoteRoot = "/remote/persistent-agent";
+    const runnerId = "persistent-computer-runner";
+    const runnerState = { schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended", runnerInstanceId: runnerId,
+      normalizedSessionId: execution.session.normalizedSessionId, runId: execution.binding.runId };
+    const providerState = { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open", threadId: "durable-thread",
+      activeProviderTurnId: null, config: { provider: "codex", driver: "codex_app_server" } };
+    const syncOut = vi.fn(async () => { throw new Error("persistent checkpoint must not copy back"); });
+    const syncIn = vi.fn(async () => { throw new Error("persistent checkpoint must not restore host history"); });
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      const script = command.args?.[1] ?? "";
+      let stdout = "";
+      if (command.args?.[0] === "--build-metadata") stdout = JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd", packageName: "@paperclipai/paperclip-runner",
+        binaryContractVersion: 2, durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      });
+      else if (command.args?.[0] === "--version") stdout = "codex-cli 0.160.0";
+      else if (script.includes("command -v paperclip-runnerd")) stdout = "/usr/bin/paperclip-runnerd\n";
+      else if (script.includes("command -v codex")) stdout = "/usr/bin/codex\n";
+      else if (script.includes("base64 <")) stdout = Buffer.from(JSON.stringify(script.endsWith("codex-provider-state.json'") ? providerState : runnerState)).toString("base64");
+      if (script.includes("tar ")) throw new Error("persistent checkpoint must not archive");
+      return { exitCode: 0, timedOut: false, signal: null, stdout, stderr: "" };
+    });
+    const target = { kind: "remote", transport: "computer", environmentId: "environment", leaseId: "lease", providerKey: "boat",
+      remoteCwd: remoteRoot, listenerPort: 43127, effectiveCapabilities: { runnerWebSocketIngress: true },
+      fileAuthority: { kind: "remote-persistent", root: remoteRoot, agentHome: remoteRoot, placementId: "placement" },
+      runner: { execute: remoteExecute, syncIn, syncOut }, processRunner: { execute: remoteExecute, syncIn, syncOut },
+      getRunnerIngressEndpoint: async () => ({ url: "wss://example.test/runner", close: async () => undefined }) };
+    await createRunnerdBackend({ db: leaseDb(execution), execution, runnerInstanceId: runnerId,
+      runnerIngressAuthorized: true, runnerExecutionTarget: target as never });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: (authority: unknown) => Promise<{ checkpoint: (settlement: string) => Promise<void> }>;
+      prepareExternalRunnerState: () => Promise<void>;
+    };
+    const registration = await transport.controlPlaneRegistration({});
+    await expect(registration.checkpoint("settled")).resolves.toBeUndefined();
+    expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.endsWith("codex-provider-state.json'"))).toBe(true);
+    await expect(transport.prepareExternalRunnerState()).resolves.toBeUndefined();
+    expect(syncOut).not.toHaveBeenCalled(); expect(syncIn).not.toHaveBeenCalled();
+    await expect(access(join(transport.stateDirectory!, "failover-backups", "current"))).rejects.toThrow();
+  });
+
   it.each([
     { override: undefined, expected: "@openai/codex@0.160.0" },
     { override: "@openai/codex@0.159.0", expected: "@openai/codex@0.159.0" },
@@ -13790,5 +13833,147 @@ describe("computer provider-pack bootstrap policy", () => {
   ] as const)("bounds only %s on %s", (provider, transport, expected) => {
     const target = transport === "local" ? undefined : { kind: "remote" as const, transport };
     expect(nativeSessionBootstrapTimeoutMs(provider, target)).toBe(expected);
+  });
+});
+
+describe("computer idle authority transition", () => {
+  function settled() {
+    const identity = { runId: execution.binding.runId, normalizedSessionId: execution.session.normalizedSessionId!,
+      runnerInstanceId: "prior-runner", environmentLeaseId: "prior-lease", turnId: "turn", itemId: "item" };
+    const current = { ...execution, binding: { ...execution.binding, runId: "next-run" } };
+    const checkpoint = { driverKind: "codex_app_server", providerSessionId: "thread", activeTurnId: null,
+      pendingRuntimeRequests: [], identity: { ...execution.binding, sessionId: execution.session.normalizedSessionId } };
+    return { identity, execution: current, priorExecution: execution,
+      runner: { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready", outbox: [], pendingTerminalDelivery: null },
+      control: { identity, commands: [{ status: "completed" }], committedEvents: [{ eventType: "run.terminal", envelope: identity }] },
+      provider: { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open", threadId: "thread",
+        config: { provider: "codex", driver: "codex_app_server" }, activeProviderTurnId: null, completedTurnAuthoritative: true },
+      checkpoint, currentCheckpoint: { ...checkpoint, identity: { ...checkpoint.identity, runId: current.binding.runId } } };
+  }
+
+  it("requires a terminal provider checkpoint with matching prior and successor scope", () => {
+    expect(retiredComputerCheckpointIsSettled(settled())).toBe(true);
+  });
+  it.each(["pending-command", "pending-event", "unsettled-provider", "wrong-run", "wrong-thread", "active-turn", "config-change", "acpx"])(
+    "does not manufacture suspension from %s evidence", (condition) => {
+      const input = settled();
+      if (condition === "pending-command") input.control.commands[0]!.status = "pending";
+      if (condition === "pending-event") (input.runner.outbox as unknown[]).push({ event: "unacked" });
+      if (condition === "unsettled-provider") input.provider.completedTurnAuthoritative = false;
+      if (condition === "wrong-run") input.currentCheckpoint.identity.runId = "foreign";
+      if (condition === "wrong-thread") input.currentCheckpoint.providerSessionId = "foreign";
+      if (condition === "active-turn") Object.assign(input.currentCheckpoint, { activeTurnId: "active" });
+      if (condition === "config-change") input.execution = { ...input.execution, provider: { ...input.execution.provider, model: "changed" } };
+      if (condition === "acpx") input.execution = { ...input.execution, provider: { ...input.execution.provider, kind: "acpx" } } as typeof input.execution;
+      expect(retiredComputerCheckpointIsSettled(input)).toBe(false);
+    });
+
+  it.each(["unchanged", "runner-changed", "provider-changed", "symlink", "interrupted"])(
+    "atomically seals only the unchanged remote bytes (%s)", async (condition) => {
+      const root = await mkdtemp(join(tmpdir(), "computer-retired-cas-"));
+      const runnerPath = join(root, "runner.json"), providerPath = join(root, "provider.json");
+      const runnerBytes = Buffer.from(JSON.stringify(settled().runner)), providerBytes = Buffer.from(JSON.stringify(settled().provider));
+      await writeFile(runnerPath, runnerBytes); await writeFile(providerPath, providerBytes);
+      const runner = { execute: async (command: { command: string; args?: string[] }) => {
+        if (condition === "runner-changed") await writeFile(runnerPath, JSON.stringify({ lifecycle: "active" }));
+        if (condition === "provider-changed") await writeFile(providerPath, JSON.stringify({ activeTurn: "new" }));
+        if (condition === "symlink") { await rm(runnerPath); await symlink(providerPath, runnerPath); }
+        if (condition === "interrupted") return { exitCode: null, signal: "SIGTERM", timedOut: true, stdout: "", stderr: "" };
+        try { return { exitCode: 0, signal: null, timedOut: false, stderr: "", stdout: execFileSync(command.command, command.args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) }; }
+        catch { return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "CAS refused" }; }
+      } };
+      try {
+        const action = compareAndSealRetiredComputerCheckpoint({ runner: runner as never, runnerPath, providerPath, runnerBytes, providerBytes });
+        if (condition === "unchanged") {
+          await expect(action).resolves.toBeUndefined();
+          expect(JSON.parse(await readFile(runnerPath, "utf8"))).toEqual({ ...settled().runner, lifecycle: "suspended" });
+        } else {
+          await expect(action).rejects.toThrow("runner_remote_retirement_checkpoint_cas_failed");
+          expect(JSON.parse(await readFile(runnerPath, "utf8")).lifecycle).not.toBe("suspended");
+        }
+        expect((await readdir(root)).filter(name => name.startsWith(".retired-checkpoint-"))).toEqual([]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+  it.each(["unlaunched", "launched", "claimed", "unknown", "superseded"])(
+    "permits same-run admission retry only after exact prelaunch retirement (%s)", async condition => {
+      let active = true;
+      const retire = vi.fn(async () => { if (condition === "superseded") return false; active = false; return true; });
+      const inspectProcess = vi.fn(async () => {
+        if (condition === "unknown") throw new Error("inspection unavailable");
+        return { running: false, claim: condition === "claimed" ? { nonce: "prior-process" } : null };
+      });
+      const target = { kind: "remote", transport: "computer", inspectProcess, retire } as never;
+      const action = retireUnlaunchedComputerAttempt(target, condition === "launched");
+      if (["unknown", "superseded"].includes(condition)) await expect(action).rejects.toThrow();
+      else await expect(action).resolves.toBeUndefined();
+      const admitSameRun = () => { if (active) throw new Error("Computer session already has an active turn"); };
+      if (condition === "unlaunched") expect(admitSameRun).not.toThrow();
+      else expect(admitSameRun).toThrow("active turn");
+      if (["launched", "claimed", "unknown"].includes(condition)) expect(retire).not.toHaveBeenCalled();
+    });
+});
+
+describe("computer graceful idle reservation", () => {
+  it.each(["codex", "acpx"])("suspends %s before retiring descendants and admits the next idle turn", async kind => {
+    const name = `graceful-idle-${kind}`;
+    const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name },
+      provider: kind === "codex" ? execution.provider : { kind: "acpx", agent: "claude", model: null },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    let phase = "active";
+    let checkpoint = "ready";
+    const close = vi.fn(async () => { expect(phase).toBe("retiring"); checkpoint = "suspended"; });
+    const target = { kind: "remote", transport: "computer", environmentId: name, remoteCwd: "/remote/agent",
+      resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: name, generation: 1 },
+      retainWarm: async () => { phase = "warm"; },
+      retire: vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => {
+        phase = "retiring";
+        await options?.beforeStop?.();
+        expect(checkpoint).toBe("suspended");
+        phase = "retired";
+        return true;
+      }) };
+    const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: name,
+      normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1", nativeEventCount: 1,
+      highestContiguousSourceSeq: 1, usage: null };
+    state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession?.({ close }); return result; })
+      .mockImplementationOnce(async options => { expect(options.existingSession).toBeUndefined(); expect(checkpoint).toBe("suspended"); return result; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(phase).toBe("retired"); expect(close).toHaveBeenCalledOnce();
+      const next = { ...current, binding: { ...current.binding, runId: `${name}-two` } };
+      await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: `${name}-fresh`,
+        runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, ownerId: "new-owner" } } as never });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["failed-close", "expired-reservation", "superseded"])("does not report clean close when %s", async condition => {
+    const name = `graceful-${condition}`;
+    const current = { ...execution, binding: { ...execution.binding, runId: name, agentId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    const close = vi.fn(async () => { throw new Error("protocol close failed"); });
+    const detach = vi.fn(async () => undefined);
+    let retired = false;
+    const retire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => {
+      if (condition === "superseded") return false;
+      if (condition === "failed-close") await options?.beforeStop?.().catch(() => undefined);
+      retired = true;
+      return true;
+    });
+    state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession?.({ close, detachControllerForRestart: detach });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: name,
+        normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1", nativeEventCount: 1,
+        highestContiguousSourceSeq: 1, usage: null }; });
+    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name,
+      runnerExecutionTarget: { kind: "remote", transport: "computer", environmentId: name, remoteCwd: "/remote/agent",
+        resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: name, generation: 1 },
+        retainWarm: async () => undefined, retire } as never });
+    const result = await closeWarmNativeSessionsForRun({ runId: name, reason: "cancel exact task" });
+    expect(result.failed).toBe(1);
+    expect(retired).toBe(condition !== "superseded");
+    if (condition === "superseded") { expect(close).not.toHaveBeenCalled(); expect(detach).not.toHaveBeenCalled(); }
+    else expect(detach).toHaveBeenCalledOnce();
   });
 });
