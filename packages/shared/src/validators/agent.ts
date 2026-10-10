@@ -7,7 +7,7 @@ import {
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
-import { envConfigSchema } from "./secret.js";
+import { envBindingSchema, envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
@@ -56,6 +56,19 @@ const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "adapterConfig.env must be a map of valid env bindings",
+      path: ["env"],
+    });
+  }
+});
+
+const adapterConfigPatchSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
+  const envValue = value.env;
+  if (envValue === undefined) return;
+  const parsed = z.record(z.string(), envBindingSchema.nullable()).safeParse(envValue);
+  if (!parsed.success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "adapterConfig.env must be a map of valid env bindings or null deletions",
       path: ["env"],
     });
   }
@@ -152,6 +165,7 @@ export const updateAgentSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    adapterConfig: adapterConfigPatchSchema.optional(),
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),

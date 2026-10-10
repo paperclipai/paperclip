@@ -972,10 +972,10 @@ export function secretService(db: Db | DbTransaction) {
 
   type NormalizeEnvOptions = {
     strictMode?: boolean;
+    strictModeKeys?: ReadonlySet<string>;
     fieldPath?: string;
   };
-  type NormalizeAdapterConfigOptions = {
-    strictMode?: boolean;
+  type NormalizeAdapterConfigOptions = NormalizeEnvOptions & {
     adapterType?: string | null;
     actor?: { userId?: string | null; agentId?: string | null };
   };
@@ -1903,7 +1903,10 @@ export function secretService(db: Db | DbTransaction) {
 
       const binding = canonicalizeBinding(parsed.data as EnvBinding);
       if (binding.type === "plain") {
-        if (opts?.strictMode && isSensitiveEnvKey(key) && binding.value.trim().length > 0) {
+        const strictModeApplies =
+          opts?.strictMode === true
+          && (opts.strictModeKeys === undefined || opts.strictModeKeys.has(key));
+        if (strictModeApplies && isSensitiveEnvKey(key) && binding.value.trim().length > 0) {
           throw unprocessable(
             `Strict secret mode requires secret references for sensitive key: ${key}`,
           );

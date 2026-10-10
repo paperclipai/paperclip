@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentRoutes } from "../routes/agents.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -90,39 +92,6 @@ vi.mock("../adapters/index.js", () => ({
   listAdapterModels: vi.fn(),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
-    agentService: () => mockAgentService,
-    agentInstructionsService: () => mockAgentInstructionsService,
-    accessService: () => mockAccessService,
-    approvalService: () => ({}),
-    builtInAgentService: () => mockBuiltInAgentService,
-    companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
-    budgetService: () => ({}),
-    heartbeatService: () => ({}),
-    issueApprovalService: () => ({}),
-    issueService: () => ({}),
-    logActivity: mockLogActivity,
-    secretService: () => mockSecretService,
-    syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
-    workspaceOperationService: () => ({}),
-  }));
-
-  vi.doMock("../services/secrets.js", () => ({
-    secretService: () => mockSecretService,
-  }));
-
-  vi.doMock("../services/environments.js", () => ({
-    environmentService: () => mockEnvironmentService,
-  }));
-
-  vi.doMock("../adapters/index.js", () => ({
-    findServerAdapter: mockFindServerAdapter,
-    findActiveServerAdapter: mockFindServerAdapter,
-    listAdapterModels: vi.fn(),
-  }));
-}
-
 function boardActor() {
   return {
     type: "board",
@@ -134,10 +103,6 @@ function boardActor() {
 }
 
 async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = {}) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -212,11 +177,6 @@ function makeReflectionCoachAgent(overrides: Record<string, unknown> = {}) {
 
 describe("agent instructions bundle routes", () => {
   beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockAuthorizeInstructionRead.mockImplementation(async (_db, actor) => actor);
     mockInstructionRevisions.readCurrent.mockResolvedValue(null);
@@ -812,6 +772,173 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("merges adapter environment bindings by key for ordinary PATCH requests", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          CODEX_HOME: { type: "plain", value: "/paperclip/codex-home" },
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            CODEX_HOME: { type: "plain", value: "/paperclip/codex-home" },
+            KEEP_ME: { type: "plain", value: "keep" },
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.any(Object),
+      expect.objectContaining({
+        strictModeKeys: new Set(["NEW_KEY"]),
+      }),
+    );
+  });
+
+  it("deletes only environment bindings explicitly set to null", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          DELETE_ME: { type: "plain", value: "remove" },
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: {
+            DELETE_ME: null,
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            KEEP_ME: { type: "plain", value: "keep" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("merges environment bindings by key while switching adapters", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.4",
+        env: {
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "claude_local",
+        adapterConfig: expect.objectContaining({
+          env: {
+            KEEP_ME: { type: "plain", value: "keep" },
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+    const updateInput = mockAgentService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updateInput.adapterConfig).not.toHaveProperty("model");
+  });
+
+  it("limits strict secret validation to an empty key set when PATCH omits env", async () => {
+    const previousStrictMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = "true";
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "legacy-value" },
+        },
+      },
+    });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementationOnce(
+      async (_companyId: string, config: Record<string, unknown>, options?: {
+        strictMode?: boolean;
+        strictModeKeys?: ReadonlySet<string>;
+      }) => {
+        if (
+          options?.strictMode
+          && (options.strictModeKeys === undefined || options.strictModeKeys.has("OPENAI_API_KEY"))
+        ) {
+          throw new Error("Strict secret mode requires secret references for sensitive key: OPENAI_API_KEY");
+        }
+        return config;
+      },
+    );
+
+    try {
+      const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+        .send({
+          adapterConfig: {
+            command: "codex --profile engineer",
+          },
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    } finally {
+      if (previousStrictMode === undefined) {
+        delete process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+      } else {
+        process.env.PAPERCLIP_SECRETS_STRICT_MODE = previousStrictMode;
+      }
+    }
+  });
+
   it("replaces adapter config when replaceAdapterConfig is true", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
@@ -842,6 +969,47 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("replaces the complete environment map when replaceAdapterConfig is true", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          OLD_KEY: { type: "plain", value: "old" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.any(Object),
+      expect.not.objectContaining({ strictModeKeys: expect.anything() }),
+    );
   });
 });
 
