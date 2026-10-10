@@ -18,6 +18,7 @@ import {
   toolCallEvents,
   toolConnections,
   toolInvocations,
+  toolMcpGateways,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -165,6 +166,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.delete(toolCallEvents);
     await db.delete(toolAccessAuditEvents);
     await db.delete(toolPolicies);
+    await db.delete(toolMcpGateways);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfiles);
@@ -886,6 +888,71 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(first.replayed).toBe(false);
     expect(replay.replayed).toBe(true);
     expect(replay.invocation.id).toBe(first.invocation.id);
+  });
+
+  it("atomically creates one gateway-scoped invocation and rejects cross-gateway replay", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `gateway-${randomUUID()}`,
+      name: `Gateway ${randomUUID()}`,
+    }).returning().then((rows) => rows[0]!);
+    const [gateway, otherGateway] = await db.insert(toolMcpGateways).values([
+      {
+        companyId: company.id,
+        name: `Gateway ${randomUUID()}`,
+        slug: `gateway-${randomUUID()}`,
+        profileId: profile.id,
+      },
+      {
+        companyId: company.id,
+        name: `Other gateway ${randomUUID()}`,
+        slug: `other-${randomUUID()}`,
+        profileId: profile.id,
+      },
+    ]).returning();
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review gateway writes",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      runContext: { gatewayId: gateway!.id },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        toolName: "send_email",
+        arguments: { to: "ops@example.com", body: "ship it" },
+        sideEffecting: true,
+        idempotencyKey: `gateway-call-${randomUUID()}`,
+      },
+    };
+    const service = toolAccessPolicyService(db);
+    const decision = await service.decide(input);
+    const results = await Promise.all([
+      service.recordInvocation(input, decision),
+      service.recordInvocation(input, decision),
+    ]);
+
+    expect(results.map((result) => result.replayed).sort()).toEqual([false, true]);
+    expect(new Set(results.map((result) => result.invocation.id)).size).toBe(1);
+    expect(results[0]!.invocation.gatewayId).toBe(gateway!.id);
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
+    expect(await db.select().from(toolActionRequests)).toHaveLength(1);
+
+    const otherInput = {
+      ...input,
+      runContext: { gatewayId: otherGateway!.id },
+    };
+    const otherDecision = await service.decide(otherInput);
+    await expect(service.recordInvocation(otherInput, otherDecision)).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it("derives a canonical idempotency key for side-effecting calls without caller-supplied keys", async () => {

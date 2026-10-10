@@ -1710,7 +1710,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(refreshed).toEqual(upstreamFailure ? [grants[1]!.id] : [grants[1]!.id, grants[0]!.id]);
   });
 
-  it.each([true, false])("resumes one Govna-approved exact call and never replays it (receipt: %s)", async (includeReceipt) => {
+  it.each([
+    { authorityState: "approved" as const, includeReceipt: true },
+    { authorityState: "approved" as const, includeReceipt: false },
+    { authorityState: "denied" as const, includeReceipt: false },
+  ])(
+    "resumes one Govna exact call without replay (state: $authorityState, receipt: $includeReceipt)",
+    async ({ authorityState, includeReceipt }) => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     const hostKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -1916,8 +1922,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
           iat: issuedAt,
           nbf: issuedAt,
           exp: issuedAt + 30,
-          state: "approved",
-          ticket_generation: 1,
+          state: authorityState,
+          ...(authorityState === "approved" ? { ticket_generation: 1 } : {}),
           decision_actor_id: "usr_01j0000000e008000000000002",
           decision_at: issuedAt,
           decision_evidence_id: "evt_01j0000000e008000000000001",
@@ -1928,17 +1934,22 @@ describeEmbeddedPostgres("tool gateway service", () => {
           approval_url: null,
           safe_summary: null,
         });
-        const ticket = signGovnaStatement(statementKeys.privateKey, "govna-dispatch-ticket+jwt", {
-          ...decision,
-          jti: govnaDigest(3),
-        });
-        if (!bearerRotated) {
+        const ticket = authorityState === "approved"
+          ? signGovnaStatement(statementKeys.privateKey, "govna-dispatch-ticket+jwt", {
+              ...decision,
+              jti: govnaDigest(3),
+            })
+          : null;
+        if (authorityState === "approved" && !bearerRotated) {
           bearerRotated = true;
           await secretService(db).rotate(bearerSecret.id, {
             value: "rotated-after-authority-proof",
           });
         }
-        return new Response(JSON.stringify({ authority, ticket }), {
+        return new Response(JSON.stringify({
+          authority,
+          ...(ticket ? { ticket } : {}),
+        }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -2026,17 +2037,38 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })).rejects.toMatchObject({ status: 409 });
     expect(dispatches).toHaveLength(0);
 
-    const resumed = gateway.executeTool({
+    await expect(gateway.executeTool({
       ...call,
       parameters: { query: "tampered", nested: { limit: 999 } },
-    });
-    if (includeReceipt) expect((await resumed).status).toBe("completed");
+      idempotencyKey: pendingInvocation!.idempotencyKey,
+    })).rejects.toMatchObject({ status: 409 });
+    expect(dispatches).toHaveLength(0);
+
+    const resumed = gateway.executeTool(call);
+    if (authorityState === "denied") {
+      await expect(resumed).rejects.toMatchObject({ reasonCode: "govna_denied" });
+    } else if (includeReceipt) expect((await resumed).status).toBe("completed");
     else await expect(resumed).rejects.toMatchObject({ reasonCode: "govna_outcome_unknown" });
-    expect(dispatches).toHaveLength(1);
-    expect(sessionRequests).toEqual(["initialize", "notifications/initialized"]);
+    expect(dispatches).toHaveLength(authorityState === "approved" ? 1 : 0);
+    expect(sessionRequests).toEqual(authorityState === "approved"
+      ? ["initialize", "notifications/initialized"]
+      : []);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     const [invocation] = await db.select().from(toolInvocations);
-    if (includeReceipt) {
+    if (authorityState === "denied") {
+      expect(operation).toMatchObject({ state: "denied", completedAt: expect.any(Date) });
+      expect(invocation).toMatchObject({
+        status: "denied",
+        approvalState: "rejected",
+        errorCode: "govna_denied",
+        resultSummary: null,
+      });
+      const completedAt = invocation!.completedAt;
+      await expect(gateway.executeTool(call)).rejects.toMatchObject({ reasonCode: "govna_denied" });
+      const [replayedTerminal] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation!.id));
+      expect(replayedTerminal?.completedAt).toEqual(completedAt);
+      expect(dispatches).toHaveLength(0);
+    } else if (includeReceipt) {
       expect(operation).toMatchObject({ state: "succeeded" });
       expect(invocation).toMatchObject({ status: "succeeded", upstreamRequestId: "gcl_exact_call_1" });
       await expect(gateway.executeTool(call)).resolves.toMatchObject({

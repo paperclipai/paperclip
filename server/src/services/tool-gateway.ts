@@ -10757,6 +10757,7 @@ export function createToolGatewayService(
             catalogEntryId: tool.catalogEntryId ?? null,
             toolName: tool.name,
             upstreamToolName: tool.upstreamToolName ?? tool.name,
+            argumentsHash: stableHash(effectiveParameters),
           })}`;
           decisionInput = {
             ...decisionInput,
@@ -10766,10 +10767,7 @@ export function createToolGatewayService(
         const recorded = await policyService.recordInvocation(
           decisionInput,
           accessDecision,
-          {
-            createActionRequest: !govnaConfig,
-            allowArgumentDriftOnReplay: Boolean(govnaConfig && !input.idempotencyKey),
-          },
+          { createActionRequest: !govnaConfig },
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
@@ -11171,6 +11169,10 @@ export function createToolGatewayService(
           normalizedError instanceof Error
             ? normalizedError.message
             : String(normalizedError);
+        const govnaTerminalDecision =
+          reasonCode === "govna_denied" ||
+          reasonCode === "govna_expired" ||
+          reasonCode === "govna_revoked";
         if (reasonCode === "elicitation_required") {
           throw normalizedError;
         }
@@ -11198,23 +11200,25 @@ export function createToolGatewayService(
           }
           govnaOutcomeRecorded = true;
         }
-        await db
-          .update(toolInvocations)
-          .set({
-            status:
-              status === 504
-                ? "timed_out"
-                : status === 429
-                  ? "rate_limited"
-                  : "failed",
-            errorCode: reasonCode,
-            errorMessage: message,
-            upstreamRequestId:
-              failedExecution?.response?.upstreamRequestId ?? null,
-            completedAt,
-            updatedAt: completedAt,
-          })
-          .where(eq(toolInvocations.id, invocationId));
+        if (!govnaTerminalDecision) {
+          await db
+            .update(toolInvocations)
+            .set({
+              status:
+                status === 504
+                  ? "timed_out"
+                  : status === 429
+                    ? "rate_limited"
+                    : "failed",
+              errorCode: reasonCode,
+              errorMessage: message,
+              upstreamRequestId:
+                failedExecution?.response?.upstreamRequestId ?? null,
+              completedAt,
+              updatedAt: completedAt,
+            })
+            .where(eq(toolInvocations.id, invocationId));
+        }
         void emitConnectionInvoked(db, invocationId);
         if (input.approvedActionRequestId) {
           const [failedRequest] = await db
@@ -11240,7 +11244,7 @@ export function createToolGatewayService(
             });
           }
         }
-        await writeToolCallEvent({
+        if (!govnaTerminalDecision) await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
           session,

@@ -1581,10 +1581,7 @@ export function toolAccessPolicyService(db: Db) {
   async function recordInvocation(
     input: ToolAccessDecisionInput,
     accessDecision: ToolAccessDecision,
-    options: {
-      createActionRequest?: boolean;
-      allowArgumentDriftOnReplay?: boolean;
-    } = {},
+    options: { createActionRequest?: boolean } = {},
   ) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
@@ -1592,11 +1589,20 @@ export function toolAccessPolicyService(db: Db) {
     const argumentsHash = redaction.summary.sha256 ?? sha256(input.request.arguments ?? {});
     const idempotencyKey = input.request.idempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
-    if (idempotencyKey) {
-      const [existing] = await db.select().from(toolInvocations).where(and(
-        eq(toolInvocations.companyId, input.companyId),
-        eq(toolInvocations.idempotencyKey, idempotencyKey),
-      ));
+    const status = accessDecision.decision === "allow"
+      ? "authorized"
+      : accessDecision.decision === "require_approval"
+        ? "awaiting_approval"
+        : accessDecision.decision === "rate_limited"
+          ? "rate_limited"
+          : "denied";
+    const persist = async (database: Db) => {
+      const [existing] = idempotencyKey
+        ? await database.select().from(toolInvocations).where(and(
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.idempotencyKey, idempotencyKey),
+        ))
+        : [];
       if (existing) {
         const sameBinding =
           existing.actorType === ctx.actorType &&
@@ -1608,66 +1614,69 @@ export function toolAccessPolicyService(db: Db) {
           existing.applicationId === ctx.applicationId &&
           existing.connectionId === ctx.connectionId &&
           existing.catalogEntryId === ctx.catalogEntryId &&
+          existing.catalogVersionHash === ctx.catalogVersionHash &&
+          existing.catalogSchemaHash === ctx.catalogSchemaHash &&
           existing.providerType === ctx.providerType &&
           existing.applicationKey === ctx.applicationKey &&
           existing.upstreamToolName === ctx.upstreamToolName &&
           existing.toolName === ctx.toolName &&
-          (options.allowArgumentDriftOnReplay === true || existing.argumentsHash === argumentsHash);
+          existing.argumentsHash === argumentsHash;
         if (!sameBinding) {
           throw conflict("Tool invocation idempotency key is already bound to a different call context");
         }
         return { invocation: existing, replayed: true, actionRequest: null };
       }
-    }
-    const status = accessDecision.decision === "allow"
-      ? "authorized"
-      : accessDecision.decision === "require_approval"
-        ? "awaiting_approval"
-        : accessDecision.decision === "rate_limited"
-          ? "rate_limited"
-          : "denied";
-    const [invocation] = await db.insert(toolInvocations).values({
-      companyId: ctx.companyId,
-      idempotencyKey,
-      actorType: ctx.actorType,
-      actorId: ctx.actorId,
-      agentId: ctx.agentId,
-      issueId: ctx.issueId,
-      runId: ctx.heartbeatRunId,
-      applicationId: ctx.applicationId,
-      connectionId: ctx.connectionId,
-      catalogEntryId: ctx.catalogEntryId,
-      catalogVersionHash: ctx.catalogVersionHash,
-      catalogSchemaHash: ctx.catalogSchemaHash,
-      providerType: ctx.providerType,
-      applicationKey: ctx.applicationKey,
-      upstreamToolName: ctx.upstreamToolName,
-      riskLevel: ctx.riskLevel,
-      toolName: ctx.toolName,
-      argumentsHash,
-      argumentsSummary: redaction.summary,
-      policyDecision: accessDecision.decision,
-      matchedPolicyIds: accessDecision.matchedPolicyIds,
-      approvalState: accessDecision.decision === "require_approval" ? "pending" : "not_required",
-      status,
-      errorCode: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.reasonCode,
-      errorMessage: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.explanation,
-      completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
-    }).returning();
-    let actionRequest = null;
-    if (accessDecision.decision === "require_approval" && options.createActionRequest !== false) {
-      [actionRequest] = await db.insert(toolActionRequests).values({
+      const [invocation] = await database.insert(toolInvocations).values({
         companyId: ctx.companyId,
-        invocationId: invocation.id,
+        idempotencyKey,
+        actorType: ctx.actorType,
+        actorId: ctx.actorId,
+        agentId: ctx.agentId,
         issueId: ctx.issueId,
-        status: "pending",
-        canonicalArgumentsHash: invocation.argumentsHash ?? argumentsHash,
-        canonicalArgumentsSummary: redaction.summary,
-        requestedByAgentId: ctx.actorType === "agent" ? ctx.agentId : null,
-        requestedByUserId: ctx.actorType === "user" ? ctx.actorId : null,
+        runId: ctx.heartbeatRunId,
+        gatewayId: ctx.gatewayId,
+        applicationId: ctx.applicationId,
+        connectionId: ctx.connectionId,
+        catalogEntryId: ctx.catalogEntryId,
+        catalogVersionHash: ctx.catalogVersionHash,
+        catalogSchemaHash: ctx.catalogSchemaHash,
+        providerType: ctx.providerType,
+        applicationKey: ctx.applicationKey,
+        upstreamToolName: ctx.upstreamToolName,
+        riskLevel: ctx.riskLevel,
+        toolName: ctx.toolName,
+        argumentsHash,
+        argumentsSummary: redaction.summary,
+        policyDecision: accessDecision.decision,
+        matchedPolicyIds: accessDecision.matchedPolicyIds,
+        approvalState: accessDecision.decision === "require_approval" ? "pending" : "not_required",
+        status,
+        errorCode: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.reasonCode,
+        errorMessage: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.explanation,
+        completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
       }).returning();
-    }
-    return { invocation, replayed: false, actionRequest };
+      let actionRequest = null;
+      if (accessDecision.decision === "require_approval" && options.createActionRequest !== false) {
+        [actionRequest] = await database.insert(toolActionRequests).values({
+          companyId: ctx.companyId,
+          invocationId: invocation.id,
+          issueId: ctx.issueId,
+          status: "pending",
+          canonicalArgumentsHash: invocation.argumentsHash ?? argumentsHash,
+          canonicalArgumentsSummary: redaction.summary,
+          requestedByAgentId: ctx.actorType === "agent" ? ctx.agentId : null,
+          requestedByUserId: ctx.actorType === "user" ? ctx.actorId : null,
+        }).returning();
+      }
+      return { invocation, replayed: false, actionRequest };
+    };
+    if (!idempotencyKey) return persist(db);
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${
+        `paperclip:tool-invocation:${ctx.companyId}:${idempotencyKey}`
+      }, 0))`);
+      return persist(tx as unknown as Db);
+    });
   }
 
   async function matchingApprovedActionRequestCount(input: {
