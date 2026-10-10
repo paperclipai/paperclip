@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { agents, companies, heartbeatRuns, issues, issueComments, issueDocuments, documents, nativeRunFinalizations, agentWakeupRequests,
@@ -349,6 +349,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
   async function requestWork(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"work.request"|"turn.request"}>) {
     const b=await subjectBinding(s);
     const requestKey=`muse-work:${b.id}:${b.generation}:${c.requestId}`;
+    const requestDigest=externalOperationDigest("tool",{command:c});
     let issueId:string;
     if(c.command==="turn.request") {
       // Reserve and assign ordinary intake in the same task transaction, with
@@ -356,12 +357,37 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       const result=await idleMutation(s,{version:1,command:"task.create",requestId:c.requestId,title:c.prompt.slice(0,500),description:c.prompt},true);
       issueId=String(result.issueId);
     } else issueId=c.issueId;
+    const receipt=async()=>(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId,s.companyId),eq(agentWakeupRequests.agentId,s.agentId),eq(agentWakeupRequests.idempotencyKey,requestKey))).limit(1))[0];
+    const replay=async(row:typeof agentWakeupRequests.$inferSelect)=>{
+      if(row.source!=="assignment"||row.requestedByActorType!=="agent"||row.requestedByActorId!==s.agentId||row.payload?.issueId!==issueId||row.payload?.museRequestId!==c.requestId||row.payload?.museBindingId!==b.id||row.payload?.museBindingGeneration!==b.generation||row.payload?.museRequestDigest!==requestDigest)throw conflict("Request ID reused with changed input.");
+      await assertIssue(s,issueId);
+      const [run]=row.runId?await db.select({status:heartbeatRuns.status}).from(heartbeatRuns).where(and(eq(heartbeatRuns.id,row.runId),eq(heartbeatRuns.companyId,s.companyId),eq(heartbeatRuns.agentId,s.agentId))):[];
+      if(run&&["failed","cancelled","timed_out"].includes(run.status))return {status:"admission_failed",issueId,runId:row.runId,admissionStatus:run.status};
+      return {status:"requested",issueId,runId:row.runId};
+    };
+    // A retry reads its original receipt even after task completion. It never
+    // creates fresh admission authority or a replacement run.
+    const prior=await receipt();if(prior)return replay(prior);
     const issue=await assertIssue(s,issueId);
     if(issue.assigneeAgentId!==s.agentId||!["todo","in_progress"].includes(issue.status))throw conflict("Request work only for an eligible task assigned to this Muse agent.");
-    const [prior]=await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId,s.companyId),eq(agentWakeupRequests.agentId,s.agentId),eq(agentWakeupRequests.idempotencyKey,requestKey)));
-    if(prior){if(prior.payload?.issueId!==issueId)throw conflict("Request ID reused for another task.");return {status:"requested",runId:prior.runId};}
-    const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId},contextSnapshot:{issueId},idempotencyKey:requestKey,requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false});
-    return {status:"requested",issueId,runId:run?.id??null};
+    const hex=createHash("sha256").update(requestKey).digest("hex");
+    const receiptId=`${hex.slice(0,8)}-${hex.slice(8,12)}-8${hex.slice(13,16)}-${((parseInt(hex[16]!,16)&3)|8).toString(16)}${hex.slice(17,20)}-${hex.slice(20,32)}`;
+    try {
+      // The existing wake receipt PK reserves identity in the same transaction
+      // as its queued run, including requests competing under different issues.
+      const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId,museBindingId:b.id,museBindingGeneration:b.generation,museRequestDigest:requestDigest},contextSnapshot:{issueId},idempotencyKey:requestKey,requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false,
+        durableMuseRequest:{id:receiptId,companyId:s.companyId,agentId:s.agentId,issueId,requestId:c.requestId,idempotencyKey:requestKey,requestedAt:new Date(),bindingId:b.id,bindingGeneration:b.generation,requestDigest}});
+      const reserved=await receipt();return reserved?replay(reserved):{status:"requested",issueId,runId:run?.id??null};
+    } catch(error) {
+      // Replay only this reservation's unique-key race, never an unrelated DB
+      // failure or an uncertain native effect.
+      let cause:unknown=error;
+      for(let depth=0;depth<5&&cause&&typeof cause==="object";depth++){
+        if((cause as {code?:string}).code==="23505"){const reserved=await receipt();if(reserved?.id===receiptId)return replay(reserved);break;}
+        cause=(cause as {cause?:unknown}).cause;
+      }
+      throw error;
+    }
   }
   return broker;
 }
