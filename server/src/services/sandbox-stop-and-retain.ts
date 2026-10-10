@@ -2,12 +2,42 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { hasNativeWorkspaceExportResume, readNativeWorkspaceExportResume, settleNativeWorkspaceExportResume } from "./native-runtime/native-workspace-export-resume.js";
 
 type Lease = Pick<typeof environmentLeases.$inferSelect,
   "id" | "companyId" | "heartbeatRunId" | "provider" | "providerLeaseId" | "metadata">;
 export const SANDBOX_STOP_AND_RETAIN_KEY = "sandboxStopAndRetain";
+
+/** A successful stop is not by itself proof that the allocation was retained.
+ * Require the dedicated stop-only dispatch receipt and its independent stop
+ * confirmation, both bound to the original lease. No provider work is allowed. */
+export function hasConfirmedSandboxStopAndRetain(lease: typeof environmentLeases.$inferSelect): boolean {
+  const value = lease.metadata?.sandboxStopAndRetainReceipt;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  const termination = lease.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
+  if (lease.status !== "released" || !hasRemoteTerminationReceipt(lease)
+    || termination?.state !== "stopped" || hasStopOnlyCleanup(lease)
+    || lease.metadata?.pendingCleanupInFlight === true
+    || (lease.expiresAt !== null && lease.expiresAt.getTime() <= Date.now())
+    || receipt.schema !== "paperclip.sandbox-stop-and-retain-receipt.v1"
+    || receipt.companyId !== lease.companyId || receipt.runId !== lease.heartbeatRunId
+    || receipt.leaseId !== lease.id || receipt.provider !== lease.provider
+    || receipt.providerLeaseId !== lease.providerLeaseId
+    || typeof receipt.requestId !== "string" || !receipt.requestId.trim()
+    || typeof receipt.confirmedAt !== "string" || receipt.confirmedAt !== termination.confirmedAt) return false;
+  const confirmedAt = Date.parse(receipt.confirmedAt);
+  if (!Number.isFinite(confirmedAt) || confirmedAt < lease.acquiredAt.getTime()
+    || confirmedAt > lease.releasedAt!.getTime()) return false;
+  if (receipt.builtinProvider !== undefined) {
+    return receipt.builtinProvider === lease.provider && isBuiltinSandboxProvider(lease.provider!)
+      && receipt.method === "builtin.stopLease" && receipt.pluginId === undefined
+      && lease.metadata?.pluginId == null && !lease.metadata?.sandboxProviderPlugin;
+  }
+  return receipt.method === "environmentStopLease" && typeof receipt.pluginId === "string"
+    && !!receipt.pluginId.trim() && receipt.pluginId === lease.metadata?.pluginId;
+}
 
 export function hasStopOnlyCleanup(lease: Pick<Lease, "metadata">): boolean {
   return hasNativeWorkspaceExportResume(lease)
