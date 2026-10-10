@@ -23,7 +23,7 @@
         "customer",
         "dcr"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Sign in to Sentry to investigate errors and issues through its hosted MCP server.",
       "defaults": {
         "serverUrl": "https://mcp.sentry.dev/mcp",
         "discoveryUrl": "https://sentry.io/.well-known/oauth-authorization-server",

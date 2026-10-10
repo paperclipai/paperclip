@@ -22,7 +22,7 @@
         "customer",
         "dcr"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Sign in to Notion to read and update workspace pages through its hosted MCP server.",
       "defaults": {
         "serverUrl": "https://mcp.notion.com/mcp",
         "scopesHint": [

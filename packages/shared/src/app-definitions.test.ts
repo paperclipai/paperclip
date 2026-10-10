@@ -751,6 +751,22 @@ describe("AppDefinition catalog", () => {
       scopesHint: ["default"],
     });
   });
+  it.each([
+    ["arcade", "mcp", /Arcade MCP gateway URL/],
+    ["composio", "mcp", /Composio Connect.*MCP session URL/],
+    ["executor", "mcp", /Executor MCP URL/],
+    ["github", "mcp-key", /GitHub personal access token/],
+    ["linear", "mcp-oauth", /Linear through OAuth/],
+    ["notion", "mcp-oauth", /Sign in to Notion/],
+    ["sentry", "mcp-oauth", /Sign in to Sentry/],
+    ["slack", "mcp-oauth", /Slack app through OAuth/],
+  ])("explains the connection method for %s/%s", (slug, key, explanation) => {
+    const method = APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
+      (candidate) => candidate.key === key,
+    );
+    expect(method?.whenToUse).toMatch(explanation);
+    expect(method?.whenToUse).not.toContain("quickest setup");
+  });
   it("preserves required Linear OAuth scopes", () =>
     expect(
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
