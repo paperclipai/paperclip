@@ -22,6 +22,7 @@ import {
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  formatSpawnEnvSizeStartLogLine,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
@@ -4282,6 +4283,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await ctx.onLog(
           "stderr",
           `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
+        );
+        // State the spawn environment's size for the same reason: this is the
+        // other input `execve` measures, and an oversized entry fails the spawn
+        // before any child exists to report it.
+        await ctx.onLog(
+          "stderr",
+          `[paperclip] ${formatSpawnEnvSizeStartLogLine(prepared.env)}\n`,
         );
         await hostStore.evictIdle(now());
 
