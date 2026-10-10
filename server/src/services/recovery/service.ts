@@ -678,7 +678,11 @@ export function classifyAdapterFailureForRecovery(
     };
   }
 
-  const parsedClockReset = parseProviderQuotaClockReset(error, now);
+  // The adapter sets this when the provider reported a quota that has no reset
+  // time of its own, so a reset elsewhere in the run text is not this quota's.
+  const parsedClockReset = asBoolean(resultJson.providerQuotaResetUnknown, false)
+    ? null
+    : parseProviderQuotaClockReset(error, now);
   if (parsedClockReset) {
     return {
       kind: "provider_quota",

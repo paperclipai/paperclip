@@ -369,7 +369,10 @@ export interface AcpxRemoteManagedHomeResult {
 export type AcpxTerminalFailureClassification = Pick<
   AdapterExecutionResult,
   "errorCode" | "errorFamily" | "retryNotBefore"
->;
+> & {
+  /** The provider quota has no reset time of its own; recovery must not take one from the failure text. */
+  providerQuotaResetUnknown?: boolean;
+};
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
@@ -5157,6 +5160,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                     : {}),
                 }
               : {}),
+            ...(classifiedFailure?.providerQuotaResetUnknown ? { providerQuotaResetUnknown: true } : {}),
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,

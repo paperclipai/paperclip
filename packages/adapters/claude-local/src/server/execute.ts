@@ -72,6 +72,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
+  claudeProviderQuotaResetFields,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
@@ -1069,6 +1070,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
+      const providerQuotaResetFields = providerQuota
+        ? claudeProviderQuotaResetFields({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : {};
       const errorCode = proc.errorCode
         // Forward the transport-level error code from the run-disposition seam
         // first, even on the unparsed path. A lost duplex control channel
@@ -1121,6 +1130,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...(providerQuota && transientRetryNotBefore
             ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
+          ...providerQuotaResetFields,
           ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
         },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
@@ -1217,6 +1227,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
+    const providerQuotaResetFields = providerQuota
+      ? claudeProviderQuotaResetFields({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        })
+      : {};
     const resolvedErrorCode = proc.errorCode
       // Forward the transport-level error code from the run-disposition seam
       // first. A lost duplex control channel surfaces the typed
@@ -1258,6 +1276,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...providerQuotaResetFields,
       ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
     };
 

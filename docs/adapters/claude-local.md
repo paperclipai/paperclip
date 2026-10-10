@@ -17,6 +17,12 @@ and run log retain only the generic failure message, recovery labels, and reset
 timestamp. Context, turn, rate, and configured budget limits are not treated as
 subscription quota exhaustion merely because ACP labels them `limit`.
 
+The extra-usage spend limit (“You've hit your monthly spend limit”) is a
+provider quota on both the CLI and ACP paths. It clears when the account owner
+raises it, not at a set time. Claude can append another limit's reset to the
+same message (“your weekly limit resets …”), so recovery ignores that time and
+uses the one-hour quota backoff.
+
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
