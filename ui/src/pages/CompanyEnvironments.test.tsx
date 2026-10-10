@@ -798,6 +798,11 @@ describe("CompanyEnvironments — test provider button", () => {
     const page = getEnvironmentFormPage()!;
     const nameInput = Array.from(page.querySelectorAll<HTMLInputElement>("input"))
       .find((input) => input.value === "Boat")!;
+    expect(Array.from(page.querySelectorAll<HTMLSelectElement>("select"))
+      .find((select) => select.value === "computer")?.disabled).toBe(true);
+    expect(Array.from(page.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.value === "bx_existing")?.readOnly).toBe(true);
+    expect(page.textContent).toContain("To attach a different Boat, add a separate environment.");
     await act(async () => setInputValue(nameInput, "Renamed Boat"));
     await act(async () => click(findButton(page, "Save environment")));
     await waitForAssertion(() => {

@@ -272,11 +272,10 @@ per-command deadlines remain unchanged.
 
 The native Claude warm follow-up `199cb94d-d6c0-4675-9719-d65b2daf761b`
 succeeded in 89 seconds and read the same file hash. Runner PID 51467
-(start ticks 89621), runner identity `34cbf0a2`, listener 43127, and provider
-processes remained the same; owner generation advanced from 1 to 2 while launch
-generation stayed 1. Evidence: [Claude warm follow-up](assets/2026-10-10-boat/native-claude-warm.jpg).
+(start ticks 89621), runner identity `34cbf0a2`, and listener 43127 remained
+the same. Owner generation advanced from 1 to 2 while launch generation stayed 1. Claude provider subprocesses restarted for the second turn,
+while the provider conversation and isolated home persisted. Evidence: [Claude warm follow-up](assets/2026-10-10-boat/native-claude-warm.jpg).
 
 Required remaining evidence includes post-idle task continuation,
-exact last-owner process retirement, and the
-same matrix on the final source revision at the designated staging instance.
+exact last-owner process retirement, and the same matrix on the final source revision at the designated staging instance.
 Provider-only smoke checks do not substitute for these product journeys.

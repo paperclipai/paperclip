@@ -2264,6 +2264,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 <select
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                   value={environmentForm.driver}
+                  disabled={Boolean(editingEnvironmentId) && environmentForm.driver === "computer"}
                   onChange={(e) =>
                     setEnvironmentForm((current) => ({
                       ...current,
@@ -2288,16 +2289,24 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     <option value="sandbox">Sandbox</option>
                   ) : null}
                   <option value="ssh">SSH</option>
-                  {(experimentalSettings?.enableBoatEnvironments || environmentForm.driver === "computer") && <option value="computer">Boat</option>}
+                  {(experimentalSettings?.enableBoatEnvironments || environmentForm.driver === "computer") && <option value="computer" disabled={Boolean(editingEnvironmentId) && environmentForm.driver !== "computer"}>Boat</option>}
                   {environmentForm.driver === "local" ? (
                     <option value="local">Local</option>
                   ) : null}
                 </select>
+                {editingEnvironmentId && (experimentalSettings?.enableBoatEnvironments || environmentForm.driver === "computer") ? (
+                  <p className="text-sm text-muted-foreground">
+                    {environmentForm.driver === "computer"
+                      ? "To attach a different Boat, add a separate environment."
+                      : "To use Boat, add a separate environment."}
+                  </p>
+                ) : null}
               </Field>
 
               {environmentForm.driver === "computer" && <>
-                <Field label="Boat ID" hint="Attach an existing Boat with persistent storage enabled.">
+                <Field label="Boat ID" hint={editingEnvironmentId ? "This environment is attached to this Boat." : "Attach an existing Boat with persistent storage enabled."}>
                   <Input value={environmentForm.boatId} placeholder="bx_…"
+                    readOnly={Boolean(editingEnvironmentId)}
                     onChange={(event) => setEnvironmentForm(current => ({ ...current, boatId: event.target.value }))} />
                 </Field>
                 <Field label="Boat API key" hint={environmentForm.boatApiKeySecretRef ? "A key is saved. Leave blank to keep it." : "Stored as an encrypted secret."}>
