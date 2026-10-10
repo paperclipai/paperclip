@@ -1,6 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
+import {
+  segmentTaskChatFocusRows,
+  TaskChatFocusFold,
+  useTaskChatFocusMode,
+} from "./focus-mode";
 import { Check, ChevronRight, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type {
@@ -76,6 +81,18 @@ export function TaskChatTurn({
   leading,
 }: TaskChatTurnProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const focusMode = useTaskChatFocusMode();
+  const renderTimelineRow = (child: TaskChatTurnChildItem) => (
+    <div
+      className="min-w-0"
+      key={child.id}
+      data-testid="task-chat-turn-timeline-row"
+      data-timeline-row-id={child.id}
+      data-thread-anchor={child.id}
+    >
+      {renderChild(child)}
+    </div>
+  );
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
   // timeline. The Worked/Stopped row is its stable header, so it stays directly
@@ -83,6 +100,9 @@ export function TaskChatTurn({
   // request receipts, and plan artifacts. The classic task interface continues
   // to use the run-wide fold below.
   if (item.standaloneHeader) {
+    // Chronological segments, same rule as the live Runner turn: expanding the
+    // folds must restore the exact timeline order around persistent rows.
+    const focusSegments = segmentTaskChatFocusRows(item.items);
     return (
       <div
         data-testid="task-chat-turn"
@@ -113,17 +133,22 @@ export function TaskChatTurn({
             className="flex min-w-0 flex-col gap-2 py-1"
             data-testid="task-chat-turn-timeline"
           >
-            {item.items.map((child) => (
-              <div
-                className="min-w-0"
-                key={child.id}
-                data-testid="task-chat-turn-timeline-row"
-                data-timeline-row-id={child.id}
-                data-thread-anchor={child.id}
-              >
-                {renderChild(child)}
-              </div>
-            ))}
+            {focusMode ? (
+              focusSegments.map((segment) =>
+                segment.kind === "fold" ? (
+                  <TaskChatFocusFold
+                    key={`focus-fold:${segment.rows[0]?.id ?? "empty"}`}
+                    stepCount={segment.rows.length}
+                  >
+                    {segment.rows.map(renderTimelineRow)}
+                  </TaskChatFocusFold>
+                ) : (
+                  renderTimelineRow(segment.row)
+                ),
+              )
+            ) : (
+              item.items.map(renderTimelineRow)
+            )}
           </div>
         ) : null}
         {item.finalResponse ? (

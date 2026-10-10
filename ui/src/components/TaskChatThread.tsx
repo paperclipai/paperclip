@@ -132,6 +132,14 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
+import {
+  readTaskChatViewMode,
+  saveTaskChatViewMode,
+  taskChatThreadHasFocusTurns,
+  TaskChatViewModeProvider,
+  TaskChatViewModeToggle,
+  type TaskChatViewMode,
+} from "@/components/task-chat/focus-mode";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 
@@ -790,6 +798,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       liveWorkLinks,
     ],
   );
+
+  const [viewMode, setViewMode] = useState<TaskChatViewMode>(readTaskChatViewMode);
+  const changeViewMode = (mode: TaskChatViewMode) => {
+    setViewMode(mode);
+    saveTaskChatViewMode(mode);
+  };
 
   const threadHeaderWithBlockers =
     threadHeader || blockerLinks || liveWorkLinks ? (
@@ -2634,6 +2648,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           item.author === "human" &&
           item.optimistic === "pending",
       ));
+  const showViewModeToggle =
+    paperclipRunnerTail ||
+    optimisticRunnerStartup ||
+    taskChatThreadHasFocusTurns(items);
 
   // Feedback votes keyed by the comment they target (targetType
   // "issue_comment"), mirroring IssueChatThread — the redesign attaches the
@@ -2955,6 +2973,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >
+          <TaskChatViewModeProvider mode={viewMode}>
           <div
             className={cn(
               "flex flex-col",
@@ -3007,6 +3026,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 )}
                 inert={!historyRevealed}
               >
+                {showViewModeToggle ? (
+                  <div
+                    className={cn(
+                      "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2",
+                      streamlinedUiEnabled && "md:px-0",
+                    )}
+                  >
+                    <TaskChatViewModeToggle
+                      mode={viewMode}
+                      onChange={changeViewMode}
+                    />
+                  </div>
+                ) : null}
                 {items.length === 0 && !tailRunId ? (
                   <div
                     className={
@@ -3265,6 +3297,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               </TaskChatComposerDock>
             ) : null}
           </div>
+          </TaskChatViewModeProvider>
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
