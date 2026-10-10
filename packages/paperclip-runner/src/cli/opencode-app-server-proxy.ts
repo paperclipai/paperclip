@@ -13,6 +13,7 @@ import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import { openCodeProxyTaskEnvelope } from "./opencode-proxy-task-envelope.js";
 import {
   openCodeProxyItemNotification,
+  openCodeProxyToolNotification,
   openCodeProxyTerminalNotification,
   shouldAnnounceOpenCodeProxyTurn,
   shouldForwardOpenCodeProxyItem,
@@ -192,7 +193,11 @@ function announceTurnStarted(opened: HarnessSession, turnId: string): void {
 async function pumpEvents(opened: HarnessSession): Promise<void> {
   for await (const event of opened.events()) {
     const payload = record(event.payload);
-    if (event.eventType === "turn.started") {
+    const toolActivity = openCodeProxyToolNotification({ eventType: event.eventType,
+      threadId: opened.ids().driverSessionId, turnId: event.turnId, payload });
+    if (toolActivity) {
+      send(toolActivity);
+    } else if (event.eventType === "turn.started") {
       if (typeof event.turnId === "string")
         announceTurnStarted(opened, event.turnId);
     } else if (

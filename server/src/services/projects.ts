@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
+  projectAccessMembers,
   projectGoals,
   goals,
   issues,
@@ -58,6 +59,69 @@ type CreateWorkspaceInput = {
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+
+export async function ensureProjectAccessMember(
+  dbOrTx: any,
+  input: {
+    companyId: string;
+    projectId: string;
+    subjectType: "user" | "agent";
+    subjectId: string;
+  },
+) {
+  return dbOrTx
+    .insert(projectAccessMembers)
+    .values(input)
+    .onConflictDoNothing()
+    .returning()
+    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+}
+
+/**
+ * Concurrency-safe lazy creation for the per-user private parking project.
+ * The partial unique index is the final arbiter; the advisory lock avoids
+ * wasting project ids and keeps the membership insert in the same transaction.
+ */
+export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: string, userId: string) {
+  const lockKey = `personal-private-project:${companyId}:${userId}`;
+  await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+  let project = await dbOrTx
+    .select()
+    .from(projects)
+    .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+    .limit(1)
+    .then((rows: ProjectRow[]) => rows[0] ?? null);
+  if (!project) {
+    project = await dbOrTx
+      .insert(projects)
+      .values({
+        companyId,
+        name: "My private tasks",
+        description: "Private tasks visible only to people and agents explicitly granted access.",
+        status: "in_progress",
+        visibility: "private",
+        personalOwnerUserId: userId,
+        privacyOwnerUserId: userId,
+      })
+      .onConflictDoNothing()
+      .returning()
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+    project ??= await dbOrTx
+      .select()
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+      .limit(1)
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+  }
+  if (!project) throw new Error("Failed to create personal private project");
+  await ensureProjectAccessMember(dbOrTx, {
+    companyId,
+    projectId: project.id,
+    subjectType: "user",
+    subjectId: userId,
+  });
+  return project;
+}
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
@@ -925,12 +989,30 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        if (updates.visibility !== undefined) {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
+        }
+        const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();
+        if (updated?.visibility === "private" && updates.visibility === "private") {
+          const protectedRows = await tx.execute(sql`with recursive protected_tasks as (
+            select i.id from issues i where i.project_id = ${id} and i.company_id = ${updated.companyId}
+            union
+            select i.id from issues i join protected_tasks p on i.parent_id = p.id or i.privacy_parent_issue_id = p.id
+              where i.company_id = ${updated.companyId}
+          ) update issues i set visibility = 'private', privacy_root_issue_id = coalesce(i.privacy_root_issue_id, i.id),
+              privacy_parent_issue_id = coalesce(i.privacy_parent_issue_id, i.parent_id), updated_at = now()
+            from protected_tasks p where i.id = p.id returning i.id`);
+          // Assignment access stays with the task after unassignment.
+          if (protectedRows.length) await tx.execute(sql`insert into issue_access_grants (issue_id, subject_type, subject_id, source)
+            select i.id, principal.kind, principal.id, 'assignment' from issues i
+            cross join lateral (values ('agent', i.assignee_agent_id::text), ('user', i.assignee_user_id)) principal(kind, id)
+            where i.id in (${sql.join(protectedRows.map(row => sql`${row.id}`), sql`, `)}) and principal.id is not null
+              and not exists (select 1 from issue_access_grants g where g.issue_id = i.id
+                and g.subject_type = principal.kind and g.subject_id = principal.id and g.revoked_at is null)`);
+        }
+        return updated ?? null;
+      });
       if (!row) return null;
 
       if (ids !== undefined) {

@@ -224,6 +224,12 @@ pub fn project_acpx_state_event(
                     ));
                 }
             }
+            let origin = match details.get("origin") {
+                Some(origin) => project_runtime_request_origin(Some(origin))?,
+                None => {
+                    json!({"adapter":"acpx-runtime-sidecar", "provider":"acpx", "method":"session/request_permission"})
+                }
+            };
             one(
                 "runtime_request.created",
                 EventPriority::P0,
@@ -232,11 +238,12 @@ pub fn project_acpx_state_event(
                     "requestId":request_id, "turnId":context.turn_id, "itemId":context.item_id,
                     "type":"permission", "status":"pending", "prompt":title, "choices":choices,
                     "details":details,
-                    "origin":{"adapter":"acpx-runtime-sidecar","provider":"acpx","method":"session/request_permission"},
+                    "origin":origin,
                 }}),
             )
         }
         AcpxProviderStateEvent::InputRequest {
+            tool_call_id,
             request_id,
             question_set,
             origin,
@@ -265,7 +272,7 @@ pub fn project_acpx_state_event(
                         "requestKind": "runtime",
                         "requestId": request_id,
                         "turnId": context.turn_id,
-                        "itemId": context.item_id,
+                        "itemId": tool_call_id.as_ref().map(|id| acpx_opaque_item_id(id, &context.item_id, "tool")).unwrap_or_else(|| context.item_id.to_owned()),
                         "type": "input",
                         "status": "pending",
                         "prompt": prompt,
@@ -276,6 +283,7 @@ pub fn project_acpx_state_event(
             )
         }
         AcpxProviderStateEvent::RuntimeRequestEnded {
+            tool_call_id,
             request_id,
             question_set,
             origin,
@@ -295,6 +303,7 @@ pub fn project_acpx_state_event(
                     context,
                     &AcpxProviderStateEvent::InputRequest {
                         request_id: request_id.clone(),
+                        tool_call_id: tool_call_id.clone(),
                         question_set: question_set.clone(),
                         origin: origin.clone(),
                     },
@@ -317,6 +326,7 @@ pub fn project_acpx_state_event(
                 "reason":reason, "replayAllowed":false, "adapter":"acpx-runtime-sidecar",
             });
             if let Some(request) = request {
+                payload["itemId"] = request["itemId"].clone();
                 payload["request"] = request;
             }
             one(
@@ -865,7 +875,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "text": bounded_text(string(params.get("delta")), MAX_TEXT_CHARS),
             }),
         ),
-        "item/started" | "item/completed" => {
+        "item/started" | "item/updated" | "item/completed" => {
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
@@ -873,12 +883,12 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let completed = method == "item/completed";
             if matches!(
                 item_type,
-                "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "builtinToolCall"
             ) {
                 let mut payload = json!({
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
-                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", _ => "process" },
+                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
                     "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "target": Value::Null,
@@ -903,6 +913,8 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     &mut events,
                     if completed {
                         "tool.execution.completed"
+                    } else if method == "item/updated" {
+                        "tool.execution.progressed"
                     } else {
                         "tool.execution.started"
                     },
@@ -1740,6 +1752,36 @@ mod tests {
         assert_eq!(events[0].payload["outputTruncated"], true);
         assert_eq!(events[0].payload["outputBytes"], 32);
         assert!(!events[0].payload.to_string().contains("top-secret"));
+    }
+
+    #[test]
+    fn preserves_opencode_builtin_tool_activity_and_bounded_errors() {
+        for (method, event_type, status) in [
+            ("item/started", "tool.execution.started", "running"),
+            ("item/updated", "tool.execution.progressed", "running"),
+            ("item/completed", "tool.execution.completed", "failed"),
+        ] {
+            let events = normalize_codex_notification(
+                method,
+                &json!({
+                    "threadId": "session-1", "turnId": "turn-1", "item": {
+                        "id": "part-invalid", "type": "builtinToolCall", "tool": "invalid",
+                        "status": status, "output": "Tool not found: fixture_missing; token=top-secret",
+                    }
+                }),
+            );
+            assert_eq!(events[0].event_type, event_type);
+            assert_eq!(events[0].payload["executionId"], "part-invalid");
+            assert_eq!(events[0].payload["transport"], "builtin");
+            assert_eq!(events[0].payload["name"], "invalid");
+            assert_eq!(events[0].payload["status"], status);
+            assert!(events[0].payload["output"]
+                .as_str()
+                .unwrap()
+                .contains("fixture_missing"));
+            assert!(!events[0].payload.to_string().contains("top-secret"));
+            assert!(events[0].payload.get("callId").is_none());
+        }
     }
 
     #[test]

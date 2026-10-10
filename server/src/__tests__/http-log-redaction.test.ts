@@ -12,6 +12,29 @@ import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
+  it.each([200, 400, 500])("keeps Slack setup credentials and provider echoes out of %i logs", async status => {
+    const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((req, res, next) => {
+      if (status === 500) { next(new Error(canaries.join(" "))); return; }
+      res.status(status).json({ ok: status === 200 });
+    });
+    app.use(errorHandler);
+    const responses = [];
+    for (const suffix of ["registration", "install", "resume"]) {
+      responses.push(await request(app).post(`/api/chat-endpoints/endpoint/slack/${suffix}`).send({
+        credentials: { configurationToken: canaries[0], signingSecret: canaries[1], clientSecret: canaries[2], botToken: canaries[3] },
+      }));
+    }
+    responses.push(await request(app).get("/api/chat-slack/oauth/callback").query({ code: canaries[4], error_description: canaries[5] }));
+    for (const response of responses) expect(response.status).toBe(status);
+    const output = JSON.stringify({ logs: chunks, responses: responses.map(response => response.body) });
+    for (const canary of canaries) expect(output).not.toContain(canary);
+  });
   it("redacts inbound MCP OAuth codes, PKCE verifiers, refresh tokens and redirect credentials", async () => {
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });

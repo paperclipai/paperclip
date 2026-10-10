@@ -269,9 +269,9 @@ environment variables: `SENTRY_DSN_FRONTEND` for the browser and
 `SENTRY_DSN_BACKEND` for the server. Each variable is optional. A
 specific variable always wins for its own component; a legacy variable,
 `SENTRY_DSN`, supplies a component that has no specific value set. An
-empty string counts as absent for all three variables. The feature uses
-built-in Sentry options only. It adds no `beforeSend` hook and no custom
-filter code.
+empty string counts as absent for all three variables. SDK configuration uses
+built-in Sentry options only. It adds no `beforeSend` hook. The run-failure
+reporter selects reportable outcomes before calling the SDK, as described below.
 
 The server is inactive when the backend DSN resolves to `null`; then it
 imports no Sentry package. The browser is inactive when the front-end DSN
@@ -434,6 +434,74 @@ They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
 
+Known missing-secret configuration blockers are kept in the task's run log,
+blocked state, and owner recovery action, without a Sentry run-failure event.
+This requires a failed `configuration_incomplete` run in the preparing stage,
+a setup-phase report, explicit proof that provider work did not start, and a
+nonempty list of recognized missing or inactive secret bindings. Process exit
+evidence, unknown binding reasons, secret-provider failures, ambiguous missing
+secret-definition lookups remain reportable. This filter does not change task
+recovery, credentials, or execution policy.
+
+AI account selection also stays local when the selection service proves a
+missing responsible user, personal default, or selected connection; an
+incompatible selection; an account that needs reconnection; or an active
+responsible user who lacks the selected credential's human sharing permission.
+The sharing rejection keeps its existing HTTP 403 and does not grant access.
+Other permission denials, including absent identity and inactive membership,
+remain outside this sharing classification. The service marks the original error,
+and setup preserves its closed `selectionFailure` reason.
+The same failed/preparing/setup/bootstrap checks apply, and resumed native runs
+with persisted provider input remain reportable. The generic
+`ai_connection_unavailable` wrapper alone is insufficient: database, credential
+provider, controller, and unclassified errors still report. Failed runs, blocked
+tasks, and account-repair actions remain unchanged.
+
+A workspace policy conflict also stays local when the resolver proves that an
+explicit `local_path` or `non_git_path` project workspace has no repository URL,
+Git confirms the selected directory is not a repository, and the task requests
+a Git worktree. The run must fail during setup before provider work starts.
+Its existing validation error, blocked task and board recovery action remain.
+Local Git command failures, permissions, corrupt repositories, fallback paths,
+and generic missing or unrestorable workspaces remain reportable. The error text
+or `workspace_validation_failed` code alone never suppresses them.
+
+Recognized external connection failures also stay in the local run result instead
+of producing application-error events in Sentry. Their producer records a closed
+`connectionFailure` descriptor: schema version, provider, operation, and reason.
+It contains no URL, host, path, credential, or remote response. This classification
+does not change the run's failed state, task recovery action, retry policy, or
+whether remote work may have been accepted.
+
+- Managed remote Git clones classify known authentication, repository access,
+  invalid URL, DNS (including machine-specific SSH aliases), connection, TLS,
+  rate-limit, and upstream failures from the actual clone subprocess. Setup must
+  fail before provider work starts. Every failed workspace candidate must have
+  proven connection evidence; a mixed or unknown failure remains reportable.
+  Local/file clones, credential-provider exceptions, local checkout or copy
+  failures, process signals, and repository corruption remain reportable. Remote
+  fetch failures already return workspace warnings; their classification is not
+  transferred to a later failure resolving a local base ref.
+- Hermes gateway configuration validation and the initial create-run request use
+  exact config, HTTP, or structured transport evidence. Missing configuration,
+  rejected credentials, unavailable endpoints, rate limits, and upstream outages
+  remain visible to the run owner. Unknown protocol/parser errors, missing run
+  identifiers, untyped terminal failures, and timeouts after accepted work remain
+  reportable. Stream/poll errors retain their existing retry and logging behavior.
+
+Expected pre-provider waits for a shared project workspace, a credential rotation
+lock, or an exhausted AI connection pool carry a server-owned expected
+cancellation receipt. They retain existing retry and lock behavior without a
+Sentry cancellation event. A later failed retry still reports its actual error;
+the wait code alone is not sufficient to suppress an event.
+
+MCP tool discovery records recognized outbound HTTP/transport failures through
+server-only provenance. These failures preserve the response status, stored
+connection health, audit record, local context, and first-party telemetry while
+skipping only Sentry. A proven missing OAuth scope returns an actionable 422
+response with its reconnect guidance. Unknown responses, parsing errors, local
+callbacks, database errors, and unproven network-looking messages still report.
+
 The `run_failure` context also includes the recorded process `exitCode` and
 `signal`, so a generic adapter error can still distinguish a nonzero exit from
 a signal termination. Exit codes must fit the database's signed 32-bit integer;
@@ -515,6 +583,40 @@ and native runs:
 - `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
   statuses, and request IDs for a caught exception and up to three causes.
 
+When a Daytona acquisition fails with pending allocation cleanup, the immediate
+setup-failure report can include `environmentAcquisitionPhase`,
+`environmentAcquisitionElapsedMs`, and `environmentAcquisitionBudgetMs` in
+`run_execution`. The phase is one of `create`, `workspace`, `shell`, `expiry`,
+or `sentinel`. It records the first acquisition failure observation, before
+inline cleanup, not the cause of the failure. Elapsed time measures acquisition
+start to that observation; if cleanup later consumes the deadline, this time
+still describes the earlier failure. The overall error message is unchanged.
+Elapsed time is bounded to seven days, and the budget to one day. Unknown or
+malformed optional values are omitted without invalidating cleanup ownership.
+
+These fields cross the existing creation-cleanup RPC envelope only for lease
+acquisition. The host accepts them only from an actual RPC error with matching
+company, environment, and run ownership. A private receipt binds the report to
+that run; arbitrary error fields and saved result JSON do not supply evidence.
+Raw provider causes, output, paths, URLs, and cleanup ownership identifiers are
+not copied into these diagnostic fields. This does not change timeout budgets,
+commands, cleanup, retries, task status, or Sentry filtering. The receipt is
+process-local: post-restart reports without the original error cannot recover
+these observations. Existing saved runs and leases are not backfilled.
+
+The orphan reaper records a bounded `processLossDiagnostic` before status writes
+or cleanup. For `process_lost` failures, `run_execution` includes
+`processLossPidRecorded`, `processLossGroupRecorded`, and `processLossLocalCheck`
+(`not_observed_alive`, `not_checked`, or `no_identifiers`). It also includes
+`processLossRunPredatesObserver`, `processLossObserverUptimeMs`, and
+`processLossLastOutputAgeMs` when the timestamps are available and valid. Ages
+above seven days are omitted. These are observations, not proof of an OOM,
+provider failure, or deployment. The last-output age can include system output.
+`processLossRetryEligible` records eligibility for the existing process-loss retry
+at detection; it does not claim that a retry was queued or succeeded. This data
+contains no process IDs, task text, paths, or credentials and changes no recovery
+or ownership decisions.
+
 ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
 `acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before
 usage reads, error logging, and cleanup. The age measures time since the last
@@ -541,6 +643,43 @@ or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
 pre-restore result data are not included. A later successful run does not, by
 itself, establish that an earlier failed restore recovered the workspace files.
 
+For `configuration_incomplete` with `workspace_base_ref_unresolved`,
+`run_execution` includes `workspaceBaseRefRemoteLookup`, `workspaceBaseRefAuthLookup`,
+`workspaceBaseRefFetch`, and `workspaceBaseRefRefResolution` when producer evidence
+is available. These closed outcomes distinguish skipped operations, auth lookup
+failure, and failed or completed Git commands. Optional `workspaceBaseRefFetchExitCode`
+and `workspaceBaseRefRefExitCode` are integers from 0 through 255.
+`workspaceBaseRefFetchFailureKind` is a coarse, bounded Git diagnostic category;
+unknown, mixed, truncated, or oversized command output remains `unknown`.
+A failed fetch that prints “remote ref not found” is an observation, not
+authoritative proof of user error. These failures remain reportable. The fields
+add no Git calls and do not change authentication, retries, task blocking,
+recovery actions, or Sentry filtering. They never contain repository URLs,
+configured refs, command output, paths, or credentials.
+
+For `workspace_validation_failed` with `git_worktree_not_reusable`, `run_execution`
+includes `workspaceValidationReason` and an allowlisted `workspaceValidationReasonCode`:
+`missing_worktree`, `not_a_git_checkout`, `not_registered`, `wrong_repository_root`,
+`branch_mismatch`, or `git_inspection_failed`. The last code distinguishes an
+unsuccessful or truncated Git registration inspection from confirmed absence in
+a complete list. Its optional `workspaceValidationInspection*` fields identify
+the fixed command `worktree_list`, failure (`spawn_failed`, `nonzero_exit`, or
+`output_truncated`), an allowlisted OS error code (or `unknown`), and an exit code
+from 1 through 255. No paths, repository or branch names, IDs, command output, or
+arbitrary messages enter these fields. Validation still blocks reuse; it does
+not repair Git metadata, change the selected repository, or retry the task.
+
+For explicit reuse of a retained Git workspace, `persisted_workspace_source_conflict`
+uses the same two fields with the fixed reason codes `source_scope_mismatch`,
+`explicit_project_workspace_conflict`, `source_path_unproven`,
+`source_registration_unproven`, `source_repository_mismatch`, or
+`source_repository_unavailable`. These distinguish an unverified original source
+from a missing Git registration. Paths, repository URLs, and workspace IDs stay
+out of the diagnostic fields. The task remains blocked until its original source
+is available or the owner intentionally selects a different workspace. A failed
+Git registration probe retains `git_inspection_failed` and the same bounded
+inspection fields, including when it occurs during original-source selection.
+
 When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
 `workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
 `workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.
@@ -554,6 +693,31 @@ integers from 1 through 255. These fields accompany a known restore failure code
 only. They omit error messages, raw command lines, paths, process output, and arbitrary
 cause data. Git error wrappers preserve only these safe codes and numbers for
 diagnostics, without adding the original error as a cause.
+Native sandbox `environmentSyncOut` failures carry the same allowlisted codes
+and bounded HTTP/exit statuses across the plugin worker RPC boundary. The host
+revalidates that optional envelope and retains it only for restore diagnostics.
+The envelope excludes provider messages, response bodies, names, paths, and
+credentials. The existing RPC error message and code remain unchanged, as do
+restore classification, retries, and source retention. Older workers without the
+envelope still report `unknown` when no structured cause is available.
+For native transfers, optional `workspaceRestoreTransferStep` identifies
+`sandbox_access`, `sandbox_guard`, `file_download`, `file_finalize`,
+`archive_create`, `archive_download`, `archive_validate`, or `archive_extract`.
+`workspaceRestoreTransferFailureKind` distinguishes a producer-confirmed
+`command_failed`, `download_failed`, `download_missing`, `unsafe_archive`,
+`listing_timeout`, `listing_entry_limit`, `listing_byte_limit`,
+`listing_line_limit`, or `listing_stderr_limit`. These labels are fixed values,
+not classifications inferred from provider message text. Missing labels remain
+absent. A listing deadline records `ETIMEDOUT`; sandbox and listing commands
+retain bounded nonzero exit codes even when their error text is wrapped.
+`workspaceRestoreRpcCode` retains only known numeric plugin RPC error codes from
+a typed error at the host's sync-out boundary. In particular, RPC `TIMEOUT`
+(`-32003`) is separate from the model execution's `timedOut` value; successful
+model execution does not exclude a later transfer timeout. Transfer evidence is
+isolated per outbound request and per restore settlement, then independently
+revalidated before persistence and Sentry projection. These fields only accompany
+`workspace_transfer` or `asset_restore` diagnostics and do not authorize cleanup
+or retries. Older workers remain compatible.
 For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
 command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
 `commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is

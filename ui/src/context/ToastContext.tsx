@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "@paperclipai/shared";
 import {
   createContext,
   useCallback,
@@ -19,6 +20,14 @@ export interface ToastAction {
   onClick?: () => void;
 }
 
+export type ToastActor = {
+  type: "user" | "agent";
+  id: string;
+  name: string;
+  image?: string | null;
+  appearance?: AgentAppearance | null;
+};
+
 export interface ToastInput {
   id?: string;
   dedupeKey?: string;
@@ -27,6 +36,7 @@ export interface ToastInput {
   tone?: ToastTone;
   ttlMs?: number;
   action?: ToastAction;
+  actor?: ToastActor;
 }
 
 export interface ToastItem {
@@ -36,6 +46,7 @@ export interface ToastItem {
   tone: ToastTone;
   ttlMs: number;
   action?: ToastAction;
+  actor?: ToastActor;
   createdAt: number;
 }
 
@@ -134,6 +145,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           tone,
           ttlMs,
           action: input.action,
+          actor: input.actor,
           createdAt: now,
         };
 

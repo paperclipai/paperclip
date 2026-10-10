@@ -37,8 +37,9 @@ These decisions close open questions from `SPEC.md` for V1.
 | Company model | Company is first-order; all business entities are company-scoped |
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
-| Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
+| Visibility | Issues remain company-open by default. Opt-in `private` issues use task ACLs; deployment exposure flags remain independent of work-object privacy. |
 | Communication | Tasks + comments only (no separate chat system) |
+| Experimental voice transport | Speko browser voice can create or resume a task through the existing chat-connection delivery/publication pipeline. The selected Paperclip agent retains execution authority. Phone support remains gated on live continuation qualification. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence and reconsider saved post-stop user messages after cleanup; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
@@ -220,6 +221,8 @@ Invariant: at least one root `company` level goal per company.
 - `goal_id` uuid fk `goals.id` null
 - `name` text not null
 - `description` text null
+- `visibility` enum-like text: `open | private`, default `open`
+- `personal_owner_user_id` text null; unique with `company_id` when present
 - `status` enum: `backlog | planned | in_progress | completed | cancelled`
 - `lead_agent_id` uuid fk `agents.id` null
 - `target_date` date null
@@ -258,6 +261,9 @@ retain their titles and default to no generation request.
 - `project_workspace_id` uuid fk `project_workspaces.id` null
 - `goal_id` uuid fk `goals.id` null
 - `parent_id` uuid fk `issues.id` null
+- `visibility` enum-like text: `open | private`, default `open`
+- `privacy_root_issue_id` uuid fk `issues.id` null; private-boundary metadata
+- `privacy_parent_issue_id` uuid fk `issues.id` null; downward access inheritance, including standalone run-created handoffs
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
@@ -310,11 +316,39 @@ Invariants:
 - `author_user_id` uuid fk `users.id` null
 - `body` text not null
 
+## 7.7.1 `issue_access_grants`
+
+- `issue_id` uuid fk `issues.id` not null
+- `subject_type` enum-like text: `user | agent`
+- `subject_id` text not null
+- `source` enum-like text: `explicit | assignment | project`
+- `granted_by_user_id` text null
+- `granted_by_agent_id` uuid fk `agents.id` null
+- `created_at` timestamptz not null
+- `revoked_at` timestamptz null
+
+An issue is readable when it is open outside a private project, the actor is an implicit principal (`responsible_user_id`, `created_by_user_id`, `assignee_user_id`, or current `assignee_agent_id`), the actor has an unrevoked grant on the issue or a private ancestor, or the actor is an access member of its private project. This is one canonical predicate shared by detail, list, count, search, and run-derived reads. Instance administrators retain platform-wide access; company owner/admin roles do not imply private-issue read access. Sharing a child covers that child and descendants; ancestors and siblings require separate access. Agent reads also require the responsible user to qualify. A private parent protects existing and newly created descendants; making a parent public does not publish private descendants.
+
+## 7.7.2 `project_access_members`
+
+Authorization membership for private projects, distinct from the personal-sidebar `project_memberships` table:
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null
+- `project_id` uuid fk `projects.id` not null
+- `subject_type` enum-like text: `user | agent`
+- `subject_id` text not null
+- `created_at` timestamptz not null
+- unique `(project_id, subject_type, subject_id)`
+
+Private projects are absent from list and search results for non-members, and direct reads return `404`. An issue-level grant can still expose its issue without exposing the containing project. A user's `My private tasks` project is created lazily and concurrency-safely on their first unprojected private task; the owning user is its initial and non-removable project member. An agent-created private root also grants that creator issue-level access while retaining the responsible user as the human principal.
+
 ## 7.8 `heartbeat_runs`
 
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `agent_id` uuid fk not null
+- `issue_id` uuid fk `issues.id` null; first-class binding for issue-scoped run confidentiality
 - `invocation_source` enum: `scheduler | manual | callback`
 - `status` enum: `queued | running | succeeded | failed | cancelled | timed_out`
 - `started_at` timestamptz null
@@ -417,6 +451,7 @@ Operational policy:
 - `cost_events(company_id, occurred_at)`
 - `cost_events(company_id, agent_id, occurred_at)`
 - `heartbeat_runs(company_id, agent_id, started_at desc)`
+- `heartbeat_runs(company_id, issue_id, created_at)`
 - `approvals(company_id, status, type)`
 - `activity_log(company_id, created_at desc)`
 - `assets(company_id, created_at desc)`
@@ -453,6 +488,7 @@ Operational policy:
   - Attachment reads are company-scoped and expose stable path metadata: `contentPath`/`openPath` for inline-safe viewing and `downloadPath` for forced download.
   - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
   - Script-capable content such as HTML is always served as an attachment with `X-Content-Type-Options: nosniff` and a sandboxed, deny-by-default CSP; it is never rendered inline on the Paperclip origin.
+  - The board can fetch bounded HTML source for a rich preview in an opaque-origin iframe (`sandbox="allow-scripts"`, without `allow-same-origin`). A trusted CSP precedes artifact markup and blocks remote subresources, API connections, forms, and embeds. Rendered/raw icons sit beside Download. Workspace HTML previews return UTF-8 inside JSON under the existing text limits. See `doc/html-artifact-previews.md`.
   - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
 - Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
 - Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
@@ -507,6 +543,32 @@ Decision-desk triage uses company-scoped sidecars rather than adding queue field
 - `decision_retention` stores the attention source's last observed activity timestamp, monotonic version, Keep flag, and reversible archive provenance. Queue `retention_days` overrides use the shortest assigned queue threshold; otherwise the shelf threshold is 30 days.
 - `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
 - Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
+
+## 7.17 Personal primary agent (2026-10-07)
+
+`user_company_preferences` has a unique company/user key, nullable `primary_agent_id`,
+and sticky `primary_agent_initialized` flag. GET/PUT
+`/api/companies/:companyId/primary-agent/me` derives the human identity from auth,
+checks company access and agent visibility, rejects agent actors, and audits changes.
+PUT accepts an approved, non-terminated agent; choosing a previously left agent
+rejoins it under the existing membership rules. There is no explicit removal UI or
+nullable PUT. Leaving, termination, and deletion clear the reference without
+allowing a later creation to initialize it again. Pausing and errors retain it.
+
+Initialization runs in the human-attributed creation transaction, including
+onboarding, with uniqueness arbitrating concurrent creation. System provisioning
+and agent-authored hires cannot initialize a human preference. Migration backfill
+uses the earliest attributable human creation, preserving empty initialized state
+when the original is gone, terminated, or left; unknown ownership stays unset.
+
+The profile is the only setting surface. Replacing a primary requires the reviewed
+avatar-to-avatar confirmation. A first choice has no modal. Only the profile and
+roster show the accessible crown; the Agents sidebar pins the primary first without
+duplication. Tasks preserve explicit/draft assignments, then choose a recent
+eligible assignee, the eligible primary, or the existing fallback. Chat preserves
+a valid recent conversation, then opens the primary, then retains its chooser.
+Navigation alone does not create an execution. Failed preference mutations restore
+the previous state and offer retry. Preferences and caches are company/user scoped.
 
 ## 8. State Machines
 
@@ -706,7 +768,7 @@ changes so both agent and board edits are visible in the issue activity stream.
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 
-Paperclip V1 keeps a company-scoped visibility model as the default because centralized authorization and scoped work-object controls are not yet a core V1 control surface.
+Paperclip keeps company-scoped visibility as the default. The task-ACL foundation adds opt-in private issues while preserving `open` for all existing and unspecified issues.
 
 The approved term set is:
 
@@ -720,8 +782,8 @@ The approved term set is:
 ## 9.5 Core V1 Rule: what “private” means
 
 - A **private marker** on an agent profile (where represented) does **not** make company-visible work private.
-- Company-visible work objects (issues, comments, work products, costs, activity, project/task state) remain visible to the board and in-company agents by default.
-- Project/issue-level privacy, scoped assignment-only object visibility, and organization-wide custom ACLs are deferred to Pro/Enterprise controls.
+- Work objects remain company-open by default. An issue or project can opt into the shared private-read predicate.
+- Organization-wide custom ACL policy remains deferred to Pro/Enterprise controls.
 
 ## 9.6 V1 vs Pro/Enterprise Controls (recommended target split)
 
@@ -732,7 +794,7 @@ The approved term set is:
 | Profile visibility | Full profile visibility for coordination and audit | Optional profile redaction / selective sharing for external surfaces |
 | Config visibility | Board full read with redacted secret fields; agent config read/write constrained by own agent identity | Scoped config visibility controls and central policy enforcement |
 | Assignment/invocation | Assignment creates execution authority; board can reassign or force release | Delegation policies and scoped invokers with deny-listed tool classes |
-| Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
+| Work-object visibility | Company-open by default; opt-in private issues/projects with explicit user or agent access | Policy-driven ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
 | Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
 | Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; explicit cross-user access requires saved target-user opt-in or `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
@@ -1054,6 +1116,7 @@ Core authorization follows these rules:
 - A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
 - An agent targeting any user other than its resolved responsible user requires either a materialized target-user policy that permits that agent (`open` or matching `allowlist`) or an explicit `inbox:manage` grant. The implicit default-open policy for a missing row remains responsible-user-only, so it never becomes a blanket cross-user grant. Grants may be unscoped or constrained by `scope.userIds` and act as administrative overrides, including over a disabled target-user policy.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
+- Concurrent archives keep the newest archive time and its actor attribution. An earlier request must not undo an archive written by human completion while it waited. Unarchive removes that state so a later archive starts fresh.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
@@ -1139,6 +1202,9 @@ Invites tab does not hide this Cloud action.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `GET /issues/:issueId/access-grants`
+- `POST /issues/:issueId/access-grants`
+- `POST /issues/:issueId/access-grants/:grantId/revoke`
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
@@ -1198,6 +1264,11 @@ assignee/run ownership checks, and the `issue.released` activity event still app
 - `POST /companies/:companyId/projects`
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
+- `GET /projects/:projectId/access-members`
+- `POST /projects/:projectId/access-members`
+- `DELETE /projects/:projectId/access-members/:memberId`
+
+Project list, search, direct reads, and nested project routes apply private-project access. Non-members receive the same not-found behavior as missing projects.
 
 ## 10.6 Current-user Resource Memberships
 
@@ -1485,6 +1556,20 @@ for contracts, recovery behavior, Storybook, and acceptance workflows.
 
 Board may override by raising budget or explicitly resuming agent.
 
+Native runs retain final usage receipts during a bounded accounting-only drain
+after a governed wait cancels provider work. This does not accept late messages,
+tool calls, or new completion proposals. Missing or incomplete receipts continue
+to block budget admission.
+A controller that detaches for server restart loses checkpoint and completion
+write authority. A closing event stream is not proof that the governed run
+finished; the replacement controller must adopt and settle the original run.
+
+Complete direct Anthropic API receipts for `claude-sonnet-5` can use a versioned
+list-price estimate when the provider supplies no run price. The receipt records
+the rates and assumptions. Aggregate cache writes use the one-hour rate because
+their TTL is unknown. Estimates are not invoices. Other models, billers, unknown
+billing types, and incomplete receipts remain unpriced.
+
 ## 13.3 Cost Event Ingestion
 
 `POST /companies/:companyId/cost-events` body:
@@ -1540,6 +1625,18 @@ or sending a newer message clears its form from the composer without resolving
 the saved question. Questions do not contribute to composer pending counts.
 Dismissal persists locally for the person and task across reloads; reopening
 restores the original form and draft. Approval and permission gates are unchanged.
+
+A saved ordinary question becomes historical when a newer human task message
+moves it out of the current composer. Agent context, completion feedback, and
+native finalization apply the same rule. The historical question remains pending
+and answerable, including after completion; a later human answer records history
+without reopening the task or waking its agent. Its presence alone does not
+request another answer or prevent completion. Cancellation still expires pending
+questions. Agents continue work that does not need the missing input and withdraw
+obsolete questions when later evidence satisfies them. A real current input
+blocker must identify what is still needed. Approval, permission, connection,
+and configured review gates remain active. No server-side UI dismissal record
+is required.
 
 ## 15. Operational Requirements
 
@@ -1958,6 +2055,13 @@ configuration, plugin packages and outstanding hosted release gates. The
 [delivery plan](plans/2026-09-30-paperclip-public-mcp-and-plugins.md) separates
 external agent participation and granted third-party tools into later releases.
 
+The experimental OpenAI Dot Runner provider uses a separate `/mcp/runner`
+agent OAuth resource. It reuses the public gateway's browser/device consent,
+client metadata verification and signed event delivery, but requires one-use
+agent pairing and normal run admission. Personal grants cannot authorize
+Runner operations. See [OpenAI Dot Runner](openai-dot-runner.md) for the
+self-hosted release boundary and remaining account qualification.
+
 ### Experimental AI connection routing
 
 Opt-in plugin routers may represent a pool as an AI runtime binding. Core keeps
@@ -1978,6 +2082,16 @@ remove stale instructions after edits or access revocation. See
 [Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
 UI conventions, custom adapter integration, and initial memory templates.
 
+### Remote Codex model compatibility
+
+Fresh remote Codex Runner preparation can replace a model whose verified CLI
+minimum exceeds the supported image CLI version. It selects a compatible older
+model in the same class, then the stable Runner default, and saves that effective
+model before checkpoint selection. A visible task warning and local run-log event
+record the substitution. This does not change agent settings, rewrite admitted
+executions, or bypass artifact, ownership, permission, and budget gates. See
+[remote Codex compatibility](execution-semantics.md#remote-codex-model-compatibility).
+
 ### Native provider capacity retry
 
 Committed, run-bound Codex `serverOverloaded` terminal failures display the model
@@ -1996,3 +2110,9 @@ as free-form text in the instance database. Legacy agents use the default
 in standard, ask, and planning modes. Submission never changes task disposition
 or routes feedback externally. See [Agent commentary](agent-commentary.md) for
 authentication, replay, document-sized limits, inspection, and deletion semantics.
+
+## Company decision-model service
+
+Company Settings → General can configure one shared API-key connection for optional internal decisions. V1 supports OpenAI Decisions and Jev through OpenRouter. Companies start unconfigured; background sponsorship defaults on when configured, while an explicit off setting persists. Human and agent calls retain current responsible-user, connection audience, resource, and agent installation checks. Only explicitly registered internal background features can use company sponsorship.
+
+The internal service provides local-only availability and bounded, reauthorized execution. It records metadata-only invocation history and independent fractional service charges in the existing cost ledger, applying company and applicable agent/project budgets under the accounting lock. Unknown dispatch charges retain reservations until audited resolution. Settings/testing require connection management permission; history uses existing cost visibility. See [decision-models.md](decision-models.md) for the contract, supported models, accounting, privacy, and endpoints.

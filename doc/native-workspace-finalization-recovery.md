@@ -28,6 +28,24 @@ start time rather than trusted by PID alone.
 
 ## Unverified copyback after controller replacement
 
+Generic orphan recovery does not turn a missing provider PID into `process_lost`
+while the native coordinator is `workspace_finalizing` with an accepted result
+bound to the same company, issue, and run. The finalizer owns that unfinished
+suffix, including the interval before it acquires its physical owner receipt.
+The heartbeat's phase or profile alone does not establish this authority.
+The conditional orphan write rechecks the durable result and the heartbeat's
+PostgreSQL tuple version, so a result published while the write waits on its row
+lock cannot be overwritten using an older statement snapshot. Result publishers
+lock and update that heartbeat in the same transaction as acceptance.
+
+The running run keeps its source lease while the existing finalizer either
+completes, records its bounded failure policy, or requires operator stop
+verification. A new queued run or a healthy child task cannot clear an
+unverified copyback hold. Verified finalization clears the matching run's hold
+after commitment. Existing terminal-task dispositions and explicit cancellation
+remain unchanged; this does not recover a source already destroyed by an older
+controller or claim that an unfinished export succeeded.
+
 The controller cannot verify a process on a foreign or unknown host, or orphaned
 copyback children after an abrupt parent death before the success barrier. It surfaces
 `native_workspace_finalization_owner_unverified` as board-owned recovery, with no

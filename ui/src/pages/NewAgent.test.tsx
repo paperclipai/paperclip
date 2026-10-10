@@ -200,6 +200,28 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("creates Dot through its independent choice without CLI or model setup, then routes to pairing", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true, enablePublicMcp: true });
+    await render("paperclip_runner", "openai_dot");
+    expect(container.textContent).toContain("OpenAI Dot");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    expect(container.textContent).not.toContain("Connect a model");
+    expect(container.textContent).toContain("Check prerequisites");
+    expect(container.textContent).not.toContain("runtime and model can respond");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Acknowledge external provider billing");
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: {
+      provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: true, dotWorkspaceAccess: false, dotAttachmentAccess: false,
+    } }));
+    expect(container.textContent).toContain("Your Dot agent has been created");
+    await click("Pair Dot");
+    expect(state.navigate).toHaveBeenLastCalledWith("/agents/atlas/runtime");
+    expect(state.openNewIssue).not.toHaveBeenCalled();
+  });
+
   it.each(["claude_local", "codex_local"])("can choose a sign-in environment in Configure before connecting %s", async (adapterType) => {
     settings.get.mockResolvedValue({ defaultEnvironmentId: "no-login" });
     envApi.list.mockResolvedValue([

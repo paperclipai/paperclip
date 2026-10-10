@@ -1,3 +1,4 @@
+import { registerRuntimeCommands } from "./commands/runtime.js";
 import { registerEmailCommands } from "./commands/client/email.js";
 import { registerMcpCommands } from "./commands/mcp.js";
 import { Command } from "commander";
@@ -102,6 +103,7 @@ program
   .action(updateCommand);
 
 program.hook("preAction", async (_thisCommand, actionCommand) => {
+  if (actionCommand.parent?.name() === "runtime") return; // Public runtime setup never reads instance config or credentials.
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
   let dataDirOptions: DataDirOptionLike = options;
   if (actionCommand.name() === "test-drive") {
@@ -125,6 +127,7 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
 });
 
 registerTestDriveCommand(program);
+registerRuntimeCommands(program);
 
 program
   .command("onboard")

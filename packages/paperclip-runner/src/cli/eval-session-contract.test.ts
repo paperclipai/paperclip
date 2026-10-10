@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createCapabilityFixtureState } from "../mock-core/capability-control-plane-types.js";
 
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
+import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
   evalSessionUsage,
@@ -35,6 +37,7 @@ function request(overrides: Record<string, unknown> = {}): unknown {
       maxEstimatedCostNanodollars: 100_000_000,
     },
     session: {},
+    ...(overrides.acpxAgent === "pi" ? { piThinkingLevel: "low", session: { piThinkingLevel: "low" } } : {}),
     ...overrides,
   };
 }
@@ -66,7 +69,7 @@ function agentCoreProfile(overrides: Record<string, unknown> = {}) {
 }
 
 describe("eval-session request contract", () => {
-  it.each(["pi", "cursor", "copilot"] as const)("admits %s only with the matching CLI diagnostic opt-in", (agent) => {
+  it.each(["copilot"] as const)("admits %s only with the matching CLI diagnostic opt-in", (agent) => {
     const value = request({ provider: "acpx", acpxAgent: agent, model: "explicit-provider-model" });
     expect(() => parseEvalSessionRequest(value)).toThrow("--candidate-profile");
     expect(parseEvalSessionRequest(value, { candidateProfile: agent })).toMatchObject({ acpxAgent: agent, model: "explicit-provider-model" });
@@ -76,13 +79,66 @@ describe("eval-session request contract", () => {
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, candidateProfile: agent }))).toThrow("--candidate-profile");
   });
 
+  it("admits Pi without a diagnostic flag and retains matching historical opt-in", () => {
+    const value = request({ provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" });
+    expect(parseEvalSessionRequest(value)).toMatchObject({ acpxAgent: "pi" });
+    expect(parseEvalSessionRequest(value, { candidateProfile: "pi" })).toMatchObject({ acpxAgent: "pi" });
+    expect(() => parseEvalSessionRequest(value, { candidateProfile: "cursor" })).toThrow("must match");
+  });
+
+  it("requires exact matching Pi mode in request and session and rejects aliases", () => {
+    const base = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
+    for (const value of [undefined, "medium", "minimal", "xhigh", ""]) expect(() => parseEvalSessionRequest(request({ ...base, piThinkingLevel: value }))).toThrow();
+    expect(() => parseEvalSessionRequest(request({ ...base, piThinkingLevel: "low", session: { piThinkingLevel: "high" } }))).toThrow(/must match/);
+    expect(() => parseEvalSessionRequest(request({ piThinkingLevel: "low" }))).toThrow(/only supported/);
+  });
+
   it("accepts only known diagnostic flags and rejects ambiguous repeated arguments", () => {
     const args = ["--request", "/tmp/request.json", "--output", "/tmp/result.json"];
-    expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toMatchObject({ candidateProfile: "pi" });
+    const expected = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
+    expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi", "--expected-acpx-profile", JSON.stringify(expected)]))
+      .toMatchObject({ candidateProfile: "pi", expectedAcpxProfile: expected });
+    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toThrow("require --expected-acpx-profile");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, or copilot");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile"])).toThrow("missing");
     expect(() => parseEvalSessionCliArgs([...args, "--request", "/tmp/other.json"])).toThrow("duplicate");
     expect(() => parseEvalSessionRequest(request(), { candidateProfile: "pi" })).toThrow("must match");
+    for (const invalid of ["null", "[]", "true", "{", JSON.stringify("text")]) {
+      expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", invalid])).toThrow("JSON object");
+    }
+    expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", " ".repeat(4097)])).toThrow("4096-byte bound");
+  });
+
+  it.each(["pi", "cursor", "copilot"] as const)("rejects stale or incomplete %s identities before runtime construction", async (agent) => {
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-profile-"));
+    const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-provider-model";
+    const expected = resolveQualifiedAcpxProfile(agent, model);
+    const requestPath = join(workspace, "request.json");
+    const args = ["--request", requestPath, "--output", join(workspace, "output.json"), "--candidate-profile", agent];
+    const serviceFactory = vi.fn(() => { throw new Error("provider must not start"); });
+    try {
+      await writeFile(requestPath, JSON.stringify(request({ provider: "acpx", acpxAgent: agent, model,
+        runnerd: { path: join(workspace, "missing-runnerd"), sha256: "a".repeat(64) },
+        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) },
+      })));
+      const { commandDigest: _removed, ...incomplete } = expected;
+      for (const stale of [
+        {}, incomplete, { ...expected, unexpected: true },
+        { ...expected, agentProfileVersion: expected.agentProfileVersion - 1 },
+        { ...expected, commandDigest: `sha256:${"0".repeat(64)}` },
+        { ...expected, reportedModelId: "another-model" },
+        { ...expected, agentServerVersion: "previous-binary" },
+      ]) {
+        await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(stale)], { serviceFactory }))
+          .rejects.toThrow("does not match the built runner profile");
+      }
+      await expect(runEvalSessionCli(args, { serviceFactory })).rejects.toThrow("require --expected-acpx-profile");
+      // A matching identity reaches the independent runner-binary digest gate.
+      await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(expected)], { serviceFactory }))
+        .rejects.toThrow("ENOENT");
+      expect(serviceFactory).not.toHaveBeenCalled();
+      expect(await readdir(workspace)).toEqual(["request.json"]);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
   it("materializes a production-v3 runtime context for direct live providers", async () => {
@@ -103,6 +159,7 @@ describe("eval-session request contract", () => {
       expect(systemInstructions).toContain("Paperclip direct live evaluation");
       expect(systemInstructions).toContain("Task-state changes in this mock control plane use finish_task and block_task");
       expect(systemInstructions).toContain("The current user request defines the work for this turn");
+      expect(systemInstructions).toContain("read only the context needed for that request, perform the requested action, and end the turn");
       expect(systemInstructions).toContain("Do not finish or block the mock task unless the current request asks for that state change");
       expect(systemInstructions).toContain(
         `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
@@ -168,11 +225,12 @@ describe("eval-session request contract", () => {
     })))).toBe("17");
   });
 
-  it("requires explicit Pi diagnosis and accepts both qualified remote provider profiles", () => {
-    expect(() => parseEvalSessionRequest(request({
+  it("admits Pi and both qualified remote provider profiles", () => {
+    expect(parseEvalSessionRequest(request({
       provider: "acpx",
       acpxAgent: "pi",
-    }))).toThrow("--candidate-profile");
+      piThinkingLevel: "low",
+    }))).toMatchObject({ acpxAgent: "pi", piThinkingLevel: "low" });
     expect(parseEvalSessionRequest(request({
       provider: "aws_agentcore",
       driver: "aws_agentcore_harness_api",
@@ -414,7 +472,7 @@ describe("eval-session usage", () => {
 });
 
 describe("eval-session budget settlement", () => {
-  it.each(["no_receipt", "grok_no_receipt", "unpriced", "mixed", "over_limit"] as const)("retains the completed provider outcome while failing %s accounting", async (kind) => {
+  it.each(["no_receipt", "grok_no_receipt", "unpriced", "mixed", "over_limit", "suspension"] as const)("retains evidence while failing %s settlement", async (kind) => {
     const workspace = await mkdtemp(join(tmpdir(), "eval-budget-settlement-"));
     try {
       const binary = join(workspace, "runnerd");
@@ -438,19 +496,40 @@ describe("eval-session budget settlement", () => {
       } as unknown as CapabilityLiveSessionSnapshot;
       const sendMessage = vi.fn(async () => ({ turnId: "turn-1", status: "completed", assistantText: "Retained actual provider response", snapshot }));
       const completeAttempt = vi.fn(async () => undefined);
-      const shutdown = vi.fn(async () => { snapshot.status = "closed"; });
+      const shutdown = vi.fn(async () => {
+        snapshot.status = "closed";
+        if (kind === "suspension") throw new NativeSessionCloseUnrecoverableError({
+          runnerSuspended: false, providerDrained: true,
+          suspensionState: { commandStatus: "pending", runnerLifecycle: "ready", runnerIdentityMatches: true },
+          semanticTools: { privateToolId: "private-value-must-not-be-copied" },
+          unrelated: "private-value-must-not-be-copied",
+        });
+      });
       const input = request({ provider: "acpx", acpxAgent: agent, model,
         runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
-        session: { workingDirectory: workspace }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
+        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
       });
       const requestPath = join(workspace, "request.json");
       const outputPath = join(workspace, "output.json");
       await writeFile(requestPath, JSON.stringify(input));
-      const exitCode = await runEvalSessionCli(["--request", requestPath, "--output", outputPath, ...(agent === "grok" ? [] : ["--candidate-profile", "copilot"])], {
+      const exitCode = await runEvalSessionCli(["--request", requestPath, "--output", outputPath, ...(agent === "grok" ? [] : ["--candidate-profile", "copilot", "--expected-acpx-profile", JSON.stringify(resolveQualifiedAcpxProfile("copilot", model))])], {
         serviceFactory: () => ({ create: async () => ({ sendMessage, completeAttempt, shutdown, snapshot: () => snapshot }) }) as never,
       });
       const artifact = JSON.parse(await readFile(outputPath, "utf8"));
       expect(exitCode).toBe(2);
+      if (kind === "suspension") {
+        expect(artifact.infrastructureFailure).toEqual({
+          class: "runner_infrastructure_failure", category: "runner_infrastructure", retryable: false,
+          diagnostics: { runnerSuspended: false, providerDrained: true,
+            suspensionCommandStatus: "pending", runnerLifecycle: "ready", runnerIdentityMatches: true },
+        });
+        expect(JSON.stringify(artifact)).not.toContain("private-value-must-not-be-copied");
+        expect(artifact.snapshot.terminalTurns).toEqual([{ turnId: "turn-1", status: "completed" }]);
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        expect(shutdown).toHaveBeenCalledTimes(1);
+        expect(completeAttempt).toHaveBeenCalledWith("succeeded", null);
+        return;
+      }
       expect(artifact).not.toHaveProperty("infrastructureError");
       expect(artifact.accountingFailure).toMatchObject({ class: kind === "over_limit" ? "provider_budget_reached" : "provider_budget_coverage_unknown", retryable: false });
       expect(artifact.turn).toMatchObject({ status: "completed", assistantText: "Retained actual provider response" });

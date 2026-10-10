@@ -83,7 +83,7 @@
     {
       "id": "wake_scheduling",
       "description": "Schedule a bounded continuation wake when the current task owns the future check.",
-      "operationIds": ["schedule_wake"]
+      "operationIds": ["schedule_wake", "set_task_monitor"]
     },
     {
       "id": "routines",
@@ -305,12 +305,12 @@
       "legacyGroup": 16,
       "name": "Wake situations",
       "owner": "control plane + always context/history tools",
-      "operationIds": ["get_task_context", "get_task_history", "schedule_wake"],
+      "operationIds": ["get_task_context", "get_task_history", "schedule_wake", "set_task_monitor"],
       "controlPlaneOperationIds": ["select_work", "route_wake"],
       "realSurface": "wakeup requests, heartbeat context, comment/interaction/approval/blocker wake routing, and scheduled wake services",
       "mockStateDomains": ["wake", "task", "comments", "interactions", "approvals", "blockers", "run"],
       "prpEvidence": "attention request routing/resolution plus resumed session/run causality",
-      "gap": "Production scheduling binding is unbound; control-plane routing remains non-callable."
+      "gap": "set_task_monitor binds the one-shot monitor scheduler in production; schedule_wake remains mock-backed. Control-plane routing remains non-callable."
     }
   ],
   "rules": {

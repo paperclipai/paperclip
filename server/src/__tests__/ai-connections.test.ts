@@ -2,20 +2,30 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+// Background plan observations have their own provider-fixture coverage. Runtime
+// auth tests must not send the selected fixture credentials to a real provider.
+vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import { promises as fs } from "node:fs";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
+import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
+import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -54,6 +64,644 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
+    const owner = "selection-blocker-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const expectSelectionFailure = async (promise: Promise<unknown>, reason: string) => {
+      const error = await promise.catch((error: unknown) => error);
+      expect(error).toMatchObject({ status: 422, details: { code: reason } });
+      expect(readAiConnectionConfigurationFailure(error)).toBe(reason);
+    };
+    await expectSelectionFailure(service.select({ ...input, userId: null }), "ai_connection_responsible_user_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, adapterType: "codex_local" }), "ai_connection_incompatible");
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_default_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, binding: {
+      ...binding, mode: "delegated", connectionId: randomUUID(), grantId: randomUUID(),
+    } }), "ai_connection_missing");
+    const account = await create(owner, "Selection blocker account");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
+  });
+
+  it("persists first-time recovery directories before consuming a single-use token", async () => {
+    const owner = "quota-durable-path";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { account_id: owner, access_token: "expired", refresh_token: "single-use" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
+    const recoveryRoot = path.dirname(path.dirname(file));
+    await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    const synced: string[] = [];
+    let rejectRoot = true;
+    const realOpen = fs.open.bind(fs);
+    const open = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      const handle = await realOpen(...args);
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => {
+        if (rejectRoot && args[0] === recoveryRoot) throw new Error("Injected recovery directory flush failure");
+        await sync(); synced.push(String(args[0]));
+      });
+      return handle;
+    });
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      expect(synced).toContain(recoveryRoot);
+      expect(synced).toContain(path.dirname(recoveryRoot));
+      return Response.json({ access_token: "fresh-durable", refresh_token: "replacement-durable" });
+    });
+    try {
+      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("Injected recovery directory flush failure");
+      expect(request).not.toHaveBeenCalled();
+      expect(await service.credential(row)).toBe(original);
+      rejectRoot = false;
+      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-durable", refresh_token: "replacement-durable" } });
+    } finally { open.mockRestore(); request.mockRestore(); }
+  });
+
+  it.each(["timeout", "unexpected"] as const)("classifies a manual probe's %s lock failure before starting the provider", async (kind) => {
+    const owner = `manual-probe-lock-${kind}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const probe = vi.fn().mockResolvedValue("ok");
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    const failure = Object.assign(new Error("injected private lock diagnostic"), { code: kind === "timeout" ? WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE : "EACCES" });
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockRejectedValueOnce(failure);
+    try {
+      const error = await withManagedAiProbe(db, input, probe).then(() => { throw new Error("Probe must not start"); }, error => error);
+      if (kind === "timeout") {
+        expect(isAiConnectionBusy(error)).toBe(true);
+        expect(error).toMatchObject({ status: 422, message: "AI credentials are being updated. Retry shortly.", details: { code: "ai_connection_busy" } });
+      } else expect(error).toBe(failure);
+      expect(probe).not.toHaveBeenCalled();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
+    } finally { lock.mockRestore(); }
+    expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(await service.credential(row)).toBe(auth);
+  });
+
+  it("keeps quota refresh outside a manual probe until its rotated credential is saved", async () => {
+    const owner = "manual-probe-race";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const entered = deferredSignal(), release = deferredSignal();
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Quota must not exchange the probe's token"));
+    const probing = withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} }, async runtime => {
+      entered.resolve(); await release.promise;
+      await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth("11"));
+    });
+    let refreshing: Promise<string> | undefined;
+    let lock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await entered.promise;
+      lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
+      // Start outside the probe's async scope; it is a separate HTTP request.
+      refreshing = service.refreshQuotaCredential(row, auth("10"), new AbortController().signal);
+      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      expect(request).not.toHaveBeenCalled();
+      release.resolve(); await probing;
+      expect(await refreshing).toBe(auth("11"));
+      expect(await service.credential(row)).toBe(auth("11"));
+      expect(request).not.toHaveBeenCalled();
+    } finally { release.resolve(); await Promise.allSettled([probing, refreshing]); lock?.mockRestore(); request.mockRestore(); }
+  });
+
+  it("rejects preparation when reconnect replaces the selected credential reference", async () => {
+    const owner = "replaced-ref-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (id: string) => JSON.stringify({ tokens: { account_id: id, access_token: id, refresh_token: id } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("old-account"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const definition = await secretService(db).createUserSecretDefinition(companyId, { key: "replacement_credential", name: "Replacement", provider: "local_encrypted" }, { userId: owner });
+    const replacement = await secretService(db).createCurrentUserSecretValue(companyId, owner, { definitionId: definition.id, value: auth("new-account") }, { userId: owner });
+    const prepare = () => prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    const original = codexAdapter.withAccountHomeSecretMutationLock;
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementationOnce(async (env, company, callback) => {
+      await db.update(connectionGrants).set({ credentialSecretRefs: row.grant.credentialSecretRefs.map(ref => ref.configPath === "ai.credential" ? { ...ref, secretId: replacement.id } : ref) }).where(eq(connectionGrants.id, row.grant.id));
+      await syncConnectionCredentialBindings(db, row.connection);
+      return original(env, company, callback);
+    });
+    try { await expect(prepare()).rejects.toThrow("AI credential changed during preparation"); }
+    finally { lock.mockRestore(); }
+    const runtime = await prepare();
+    try {
+      expect(runtime.sessionIdentity).toContain(replacement.id);
+      expect(await readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth("new-account"));
+    } finally { await runtime.cleanup(); }
+  });
+
+  it("caches quota after a real secret read but invalidates credential rotation and revocation", async () => {
+    const owner = "quota-cache-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Quota cache account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "quota-cache-original");
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+    const secretId = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+    const [before] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 42 } })));
+    try {
+      const first = await fetchCompanyQuotaWindows(db, companyId, owner);
+      const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
+      expect(after.lastResolvedAt).not.toBeNull();
+      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+      expect(first[0].ok).toBe(true);
+      expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await secretService(db).rotate(secretId, { value: "quota-cache-rotated" });
+      const rotated = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(rotated[0].ok).toBe(true);
+      expect(rotated[0].accountKey).not.toBe(first[0].accountKey);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSpy).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer quota-cache-rotated" }) }));
+      await db.update(userSecretDefinitions).set({ status: "disabled" }).where(eq(userSecretDefinitions.id, before.userSecretDefinitionId!));
+      const disabled = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(disabled[0]).toMatchObject({ ok: false, errorFamily: "credentials_unavailable", windows: [] });
+      expect(disabled[0].accountKey).not.toBe(rotated[0].accountKey);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      await db.update(userSecretDefinitions).set({ status: "active" }).where(eq(userSecretDefinitions.id, before.userSecretDefinitionId!));
+      expect((await fetchCompanyQuotaWindows(db, companyId, owner))[0].ok).toBe(true);
+      await db.update(companySecretVersions).set({ status: "disabled", revokedAt: new Date() }).where(and(eq(companySecretVersions.secretId, secretId), eq(companySecretVersions.version, 2)));
+      const revoked = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(revoked[0].ok).toBe(false);
+      expect(revoked[0].windows).toEqual([]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("caches refreshed quota under the saved grant and secret revision", async () => {
+    const owner = "quota-refreshed-cache-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired-cache", refresh_token: "single-use", account_id: "cache-account" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: "Refreshed cache", loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/oauth/token")) return Response.json({ access_token: "fresh-cache", refresh_token: "replacement" });
+      if (new Headers(options?.headers).get("authorization") === "Bearer expired-cache") return new Response("Expired", { status: 401 });
+      return Response.json({ rate_limit: { primary_window: { used_percent: 42 } } });
+    });
+    try {
+      const first = await fetchCompanyQuotaWindows(db, companyId, owner);
+      expect(first[0]).toMatchObject({ ok: true, windows: [{ usedPercent: 42 }] });
+      expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
+      expect(request).toHaveBeenCalledTimes(3); // rejected quota, OAuth, refreshed quota
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["rotation", "secret_metadata", "activity", "commit"] as const)("recovers exchanged OAuth tokens after %s persistence failure without another exchange", async (failure) => {
+    const owner = `quota-rollback-${failure}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: `expired-${failure}`, refresh_token: "single-use", account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const table = failure === "secret_metadata" ? "company_secrets" : failure === "activity" ? "activity_log" : "company_secret_versions";
+    const condition = failure === "secret_metadata" ? `new.id = '${ref.secretId}'::uuid and new.latest_version > old.latest_version` : failure === "activity" ? `new.action = 'ai_connection.credential_refreshed'` : `new.secret_id = '${ref.secretId}'::uuid`;
+    await db.execute(sql.raw(`create function quota_save_failure() returns trigger language plpgsql as $$ begin
+      if ${condition} then raise exception 'injected quota save failure'; end if; return new; end $$;
+      create ${failure === "commit" ? "constraint " : ""}trigger quota_save_failure ${failure === "commit" ? "after" : "before"} ${failure === "secret_metadata" ? "update" : "insert"} on ${table}
+      ${failure === "commit" ? "deferrable initially deferred" : ""} for each row execute function quota_save_failure();`));
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: `fresh-${failure}`, refresh_token: `replacement-${failure}` }));
+    const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
+    let triggerDropped = false;
+    try {
+      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow();
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(await service.credential(row)).toBe(original);
+      const encrypted = await readFile(file, "utf8");
+      expect(encrypted).not.toContain(`fresh-${failure}`);
+      expect(encrypted).not.toContain(`replacement-${failure}`);
+      await db.execute(sql.raw(`drop trigger quota_save_failure on ${table}; drop function quota_save_failure();`));
+      triggerDropped = true;
+      // A new service instance recovers from disk, without an in-memory cache.
+      const recovered = aiConnectionService(db);
+      await recovered.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(JSON.parse(await recovered.credential(row))).toMatchObject({ tokens: { access_token: `fresh-${failure}`, refresh_token: `replacement-${failure}` } });
+      expect(request).toHaveBeenCalledTimes(1);
+      await expect(access(file)).rejects.toThrow();
+      expect((await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, ref.secretId))).map(version => version.version).sort()).toEqual([1, 2]);
+    } finally {
+      request.mockRestore();
+      if (!triggerDropped) await db.execute(sql.raw(`drop trigger quota_save_failure on ${table}; drop function quota_save_failure();`));
+    }
+  });
+
+  it.each(["company_file", "grant_row", "secret_row"] as const)("defers runtime preparation on a contended %s lock and succeeds once it clears", async (kind) => {
+    const owner = `runtime-lock-${kind}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { access_token: "valid-access", refresh_token: "valid-refresh", account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const prepare = () => prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    const held = deferredSignal(), release = deferredSignal();
+    const lock = kind === "company_file" ? vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+      .mockRejectedValueOnce(Object.assign(new Error("company lock held by another account"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE })) : undefined;
+    const holding = kind === "company_file" ? Promise.resolve() : db.transaction(async tx => {
+      if (kind === "grant_row") await tx.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)).for("update");
+      else await tx.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId)).for("update");
+      held.resolve(); await release.promise;
+    });
+    try {
+      if (kind !== "company_file") await held.promise;
+      const error = await prepare().then(() => { throw new Error("Runtime must defer"); }, error => error);
+      expect(isAiConnectionBusy(error)).toBe(true);
+      expect(error).toMatchObject({ status: 422, details: { code: "ai_connection_busy" } });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
+    } finally { release.resolve(); await holding; lock?.mockRestore(); }
+    const run = await prepare();
+    try { expect(await readFile(path.join(String(run.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth); }
+    finally { await run.cleanup(); }
+  });
+
+  it.each([
+    ["runtime", "rotation"], ["runtime", "commit"], ["failed_run", "rotation"], ["failed_run", "commit"],
+  ] as const)("recovers pending quota credentials before %s can reuse or invalidate the consumed token after %s failure", async (consumer, failure) => {
+    const owner = `quota-consumer-${consumer}-${failure}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string) => JSON.stringify({ tokens: { access_token: `${marker}-access`, refresh_token: `${marker}-refresh`, account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("old"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const prepare = () => prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    const oldRun = await prepare();
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const journal = quotaCredentialRecovery(companyId, row.grant.id);
+    await journal.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId,
+      baseHash: quotaCredentialHash(auth("old")), value: auth("new") });
+    const fail = () => service.markAuthenticationFailed({ companyId, agentId, runStartedAt: new Date(),
+      attribution: { ...oldRun.attribution, identity: oldRun.identity } });
+    await db.execute(sql.raw(`create function reject_consumer_recovery() returns trigger language plpgsql as $$ begin
+      if new.secret_id = '${ref.secretId}'::uuid then raise exception 'recovery unavailable'; end if; return new; end $$;
+      create ${failure === "commit" ? "constraint " : ""}trigger reject_consumer_recovery ${failure === "commit" ? "after" : "before"} insert on company_secret_versions
+      ${failure === "commit" ? "deferrable initially deferred" : ""} for each row execute function reject_consumer_recovery();`));
+    try {
+      if (consumer === "runtime") {
+        const error = await prepare().then(() => { throw new Error("Runtime must defer"); }, error => error);
+        expect(isAiConnectionBusy(error)).toBe(true);
+        expect(error).toMatchObject({ status: 422, details: { code: "ai_connection_busy" } });
+      } else await expect(fail()).rejects.toThrow();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
+      expect(await service.credential(row)).toBe(auth("old"));
+      expect(await journal.read()).not.toBeNull();
+    } finally {
+      await db.execute(sql`drop trigger reject_consumer_recovery on company_secret_versions; drop function reject_consumer_recovery()`);
+    }
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Recovery must not exchange again"));
+    let nextRun: Awaited<ReturnType<typeof prepare>> | undefined;
+    try {
+      if (consumer === "failed_run") await fail();
+      nextRun = await prepare();
+      expect(await readFile(path.join(String(nextRun.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth("new"));
+      expect(nextRun.sessionIdentity).toBe(oldRun.sessionIdentity);
+      await fail(); // A late failure of the old run cannot invalidate the recovered identity.
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
+      expect(await service.credential(row)).toBe(auth("new"));
+      expect(await journal.read()).toBeNull();
+      expect(request).not.toHaveBeenCalled();
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, ref.secretId))).toHaveLength(2);
+    } finally { request.mockRestore(); await oldRun.cleanup(); await nextRun?.cleanup(); await journal.clear(); }
+  });
+
+  it.each(["rollback", "lost_commit_reply"] as const)("automatically saves one exchanged token across %s", async (failure) => {
+    const owner = `quota-once-${failure}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use", account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const transaction = db.transaction.bind(db);
+    const interrupted = vi.spyOn(db, "transaction").mockImplementationOnce(async (work, config) => {
+      await transaction(async (tx) => {
+        await work(tx);
+        if (failure === "rollback") throw new Error("Injected rollback after writes");
+      }, config);
+      throw new Error("Injected lost commit response");
+    });
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "fresh-once", refresh_token: "replacement-once" }));
+    try {
+      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-once", refresh_token: "replacement-once" } });
+      expect(request).toHaveBeenCalledTimes(1);
+      await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toThrow();
+    } finally { interrupted.mockRestore(); request.mockRestore(); }
+  });
+
+  it("recovers the current credential's pending replacement before answering a delayed older poll", async () => {
+    const owner = "delayed-quota-poll";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "A", refresh_token: "refresh-A", account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const journal = quotaCredentialRecovery(companyId, row.grant.id);
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ access_token: "B", refresh_token: "refresh-B" }))
+      .mockResolvedValueOnce(Response.json({ access_token: "C", refresh_token: "refresh-C" }));
+    let triggerInstalled = false;
+    try {
+      const current = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      await db.execute(sql.raw(`create function delayed_quota_commit_failure() returns trigger language plpgsql as $$ begin
+        if new.secret_id = '${ref.secretId}'::uuid then raise exception 'injected delayed quota commit failure'; end if; return new; end $$;
+        create constraint trigger delayed_quota_commit_failure after insert on company_secret_versions deferrable initially deferred
+        for each row execute function delayed_quota_commit_failure();`));
+      triggerInstalled = true;
+      await expect(service.refreshQuotaCredential(row, current, new AbortController().signal)).rejects.toThrow();
+      expect(await service.credential(row)).toBe(current);
+      expect(JSON.parse((await journal.read())!.value).tokens.access_token).toBe("C");
+      await db.execute(sql`drop trigger delayed_quota_commit_failure on company_secret_versions; drop function delayed_quota_commit_failure()`);
+      triggerInstalled = false;
+      const recovered = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(JSON.parse(recovered).tokens).toMatchObject({ access_token: "C", refresh_token: "refresh-C" });
+      expect(await service.credential(row)).toBe(recovered);
+      expect(await journal.read()).toBeNull();
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      if (triggerInstalled) await db.execute(sql`drop trigger delayed_quota_commit_failure on company_secret_versions; drop function delayed_quota_commit_failure()`);
+      request.mockRestore(); await journal.clear();
+    }
+  });
+
+  it.each(["reconnected", "expired_reconnect", "revoked"] as const)("does not apply a pending refresh over a %s identity", async (change) => {
+    const owner = `quota-replay-${change}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use", account_id: owner } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const journal = quotaCredentialRecovery(companyId, row.grant.id);
+    await journal.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId, baseHash: quotaCredentialHash(original), value: "old-pending-replacement" });
+    const request = vi.spyOn(globalThis, "fetch");
+    try {
+      if (change === "reconnected") {
+        await secretService(db).rotate(ref.secretId, { value: "new-authorized-identity" });
+        expect(await service.refreshQuotaCredential(row, original, new AbortController().signal)).toBe("new-authorized-identity");
+        expect(await service.credential(row)).toBe("new-authorized-identity");
+        expect(await journal.read()).toBeNull();
+      } else if (change === "expired_reconnect") {
+        const reconnected = JSON.stringify({ tokens: { access_token: "expired-new-account", refresh_token: "new-account-refresh", account_id: owner } });
+        await secretService(db).rotate(ref.secretId, { value: reconnected });
+        request.mockResolvedValueOnce(Response.json({ access_token: "new-account-fresh", refresh_token: "new-account-replacement" }));
+        await service.refreshQuotaCredential(row, reconnected, new AbortController().signal);
+        expect(request).toHaveBeenCalledOnce();
+        expect(JSON.parse(String(request.mock.calls[0][1]?.body))).toMatchObject({ refresh_token: "new-account-refresh" });
+        expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "new-account-fresh", refresh_token: "new-account-replacement" } });
+        expect(await journal.read()).toBeNull();
+      } else {
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, row.grant.id));
+        await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("credentials_unavailable");
+        expect(await journal.read()).not.toBeNull();
+      }
+      if (change !== "expired_reconnect") expect(request).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); await journal.clear(); }
+  });
+
+  it("saves exchanged tokens when the quota deadline expires during response-body reading", async () => {
+    const owner = "quota-body-deadline-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use", account_id: "deadline-account" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: "Slow token body", loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const reading = deferredSignal(), releaseBody = deferredSignal(), quotaDeadline = new AbortController();
+    let refreshSignal: AbortSignal | null | undefined;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+      refreshSignal = options?.signal;
+      return { ok: true, json: async () => {
+        reading.resolve(); await releaseBody.promise;
+        refreshSignal?.throwIfAborted();
+        return { access_token: "fresh-after-deadline", refresh_token: "replacement" };
+      } } as Response;
+    });
+    const saving = service.refreshQuotaCredential(row, original, quotaDeadline.signal);
+    try {
+      await reading.promise;
+      quotaDeadline.abort();
+      expect(refreshSignal?.aborted).toBe(false);
+      releaseBody.resolve();
+      await saving;
+      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-after-deadline", refresh_token: "replacement" } });
+      await expect(service.refreshQuotaCredential(row, original, quotaDeadline.signal)).rejects.toThrow();
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally { releaseBody.resolve(); await saving.catch(() => {}); request.mockRestore(); }
+  });
+
+  it("retries another account's token write-back while a slow quota exchange holds the company lock", async () => {
+    const auth = (account: string, marker: string) => JSON.stringify({ tokens: { account_id: account, id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: marker === "old" ? "2026-09-10T10:00:00Z" : "2026-09-10T11:00:00Z" });
+    const quotaOwner = "slow-quota-owner", runOwner = "slow-quota-other-run";
+    await db.insert(companyMemberships).values([quotaOwner, runOwner].map(principalId => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
+    for (const owner of [quotaOwner, runOwner]) await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth(owner, "old"));
+    const [quotaRow] = await service.quotaAccounts(companyId, quotaOwner);
+    // Runtime credential reads now serialize with quota exchanges. Prepare this
+    // already-running, different account before testing its contended write-back.
+    const preparedRun = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: runOwner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    const started = deferredSignal(), release = deferredSignal();
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      started.resolve(); await release.promise;
+      return Response.json({ access_token: "quota-fresh", refresh_token: "quota-replacement" });
+    });
+    const refreshing = service.refreshQuotaCredential(quotaRow, auth(quotaOwner, "old"), new AbortController().signal);
+    let run: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    let cleaning: Promise<void> | undefined;
+    let lock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await started.promise;
+      run = preparedRun;
+      const authFile = path.join(String(run.config.env.CODEX_HOME), "auth.json");
+      await writeFile(authFile, auth(runOwner, "replacement"));
+      // Inject the two 30-second acquisition expirations, then use the real
+      // still-held lock and real Postgres write-back for the final attempt.
+      lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+        .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }))
+        .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
+      cleaning = run.cleanup();
+      await vi.waitFor(() => expect(lock).toHaveBeenCalledTimes(3));
+      expect(await readFile(authFile, "utf8")).toBe(auth(runOwner, "replacement"));
+      release.resolve();
+      await Promise.all([refreshing, cleaning]);
+      const [runRow] = await service.quotaAccounts(companyId, runOwner);
+      expect(await service.credential(runRow)).toBe(auth(runOwner, "replacement"));
+      expect(JSON.parse(await service.credential(quotaRow))).toMatchObject({ tokens: { access_token: "quota-fresh", refresh_token: "quota-replacement" } });
+      await expect(access(run.home!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { release.resolve(); await Promise.allSettled([refreshing, cleaning]); lock?.mockRestore(); request.mockRestore(); }
+  });
+
+  it.each(["new", "reconnect"])("retains a completed %s sign-in across two lock waits behind a quota refresh", async kind => {
+    const owner = `slow-quota-login-${kind}`, loginOwner = kind === "reconnect" ? owner : "contended-login-owner";
+    await db.insert(companyMemberships).values([...new Set([owner, loginOwner])].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
+    const original = JSON.stringify({ tokens: { account_id: owner, access_token: "old", refresh_token: "old-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [quotaRow] = await service.quotaAccounts(companyId, owner);
+    const [environment] = await db.insert(environments).values({ name: "Contended AI login", driver: "sandbox" }).returning();
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Contended sign-in", agentIds: [], allAgents: true, ...(kind === "reconnect" ? { connectionId: quotaRow.connection.id } : {}) } as const;
+    const sessionId = randomUUID();
+    await db.insert(adapterAuthSessions).values({ id: sessionId, publicSessionId: randomUUID(), companyId, environmentId: environment.id, adapterType: "codex_local", startedByUserId: loginOwner, status: "promoting", aiConnection: { ...intent, agentIds: [] }, expiresAt: new Date(Date.now() + 600_000) });
+    const started = deferredSignal(), release = deferredSignal();
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      started.resolve(); await release.promise;
+      return Response.json({ access_token: "quota-fresh", refresh_token: "quota-replacement" });
+    });
+    const refreshing = service.refreshQuotaCredential(quotaRow, original, new AbortController().signal);
+    let saving: ReturnType<typeof service.save> | undefined;
+    let lock: ReturnType<typeof vi.spyOn> | undefined;
+    const credential = JSON.stringify({ tokens: { account_id: "signed-in", access_token: "login-token", refresh_token: "login-refresh" } });
+    try {
+      await started.promise;
+      // Represent two expired 30-second acquisitions, then wait on the real
+      // held lock. The credential must survive until that final save commits.
+      lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+        .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }))
+        .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
+      saving = service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, sessionId);
+      void saving.catch(() => {});
+      await vi.waitFor(() => expect(lock).toHaveBeenCalledTimes(3));
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, sessionId)))[0].connectionId).toBeNull();
+      release.resolve();
+      const [, saved] = await Promise.all([refreshing, saving]);
+      const [row] = (await service.quotaAccounts(companyId, loginOwner)).filter(row => row.connection.id === saved.connectionId);
+      expect(await service.credential(row)).toBe(credential);
+      expect(await service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, sessionId)).toEqual(saved);
+      if (kind === "new") expect(JSON.parse(await service.credential(quotaRow))).toMatchObject({ tokens: { access_token: "quota-fresh", refresh_token: "quota-replacement" } });
+    } finally {
+      release.resolve(); await Promise.allSettled([refreshing, saving]); lock?.mockRestore(); request.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, sessionId));
+      await db.delete(environments).where(eq(environments.id, environment.id));
+    }
+  });
+
+  it.each(["quota", "recovery", "runtime"])("allows an in-flight reconnect after automatic %s credential rotation", async kind => {
+    const owner = `reconnect-refresh-${kind}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (label: string, hour: number) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${label}`, refresh_token: `refresh-${label}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true } as const;
+    const account = await service.save(companyId, owner, { ...intent, agentIds: [] }, auth("old", 10));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const before = (await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId)))[0];
+    const started = new Date();
+    if (kind === "quota") {
+      const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "access-fresh", refresh_token: "refresh-fresh" }));
+      try { await service.refreshQuotaCredential(row, auth("old", 10), new AbortController().signal); }
+      finally { request.mockRestore(); }
+    } else if (kind === "recovery") {
+      const recovery = quotaCredentialRecovery(companyId, row.grant.id);
+      await recovery.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId, baseHash: quotaCredentialHash(auth("old", 10)), value: auth("fresh", 11) });
+      expect(await service.runtimeCredential(row)).toBe(auth("fresh", 11));
+    } else {
+      const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+      await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth("fresh", 11));
+      await runtime.cleanup();
+    }
+    const after = (await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId)))[0];
+    expect(after.latestVersion).toBeGreaterThan(before.latestVersion);
+    expect(after.aiSessionEpoch).toBe(before.aiSessionEpoch);
+    const saved = await service.save(companyId, owner, { ...intent, agentIds: [], connectionId: account.connectionId }, auth("reconnected", 12), undefined, started);
+    expect(saved).toEqual(account);
+    expect(await service.credential(row)).toBe(auth("reconnected", 12));
+    await expect(service.save(companyId, owner, { ...intent, agentIds: [], connectionId: account.connectionId }, auth("older-login", 13), undefined, started)).rejects.toThrow("changed");
+    // A real later revocation still fences this same old reconnect attempt.
+    await db.update(connectionGrants).set({ status: "revoked", updatedAt: new Date() }).where(eq(connectionGrants.id, account.grantId));
+    await expect(service.save(companyId, owner, { ...intent, agentIds: [], connectionId: account.connectionId }, auth("stale", 13), undefined, started)).rejects.toThrow("changed");
+  });
+
+  it.each(["lock", "database"])("preserves replacement tokens after exhausted %s write-back and permits a later retry", async failure => {
+    const owner = `retained-writeback-${failure}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+    const authFile = path.join(String(run.config.env.CODEX_HOME), "auth.json");
+    await writeFile(authFile, auth("11"));
+    const injected = failure === "lock"
+      ? vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockRejectedValue(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }))
+      : vi.spyOn(db, "transaction").mockRejectedValue(new Error("database unavailable"));
+    try {
+      await expect(run.cleanup()).rejects.toThrow(failure === "lock" ? "lock timeout" : "database unavailable");
+      expect(injected).toHaveBeenCalledTimes(failure === "lock" ? 3 : 1);
+      expect(await readFile(authFile, "utf8")).toBe(auth("11"));
+    } finally { injected.mockRestore(); }
+    await run.cleanup();
+    const [row] = await service.quotaAccounts(companyId, owner);
+    expect(await service.credential(row)).toBe(auth("11"));
+    await expect(access(run.home!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("serializes quota exchange with a concurrent secret edit and runtime credential read", async () => {
+    const owner = "quota-race-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "old-access", refresh_token: "single-use", id_token: "identity", account_id: "race-account" } });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: "Racing refresh", loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const secretId = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+    const exchangeStarted = deferredSignal();
+    const releaseExchange = deferredSignal();
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      exchangeStarted.resolve(); await releaseExchange.promise;
+      return Response.json({ access_token: "new-access", refresh_token: "new-refresh" });
+    });
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    let lock: ReturnType<typeof vi.spyOn> | undefined;
+    const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal);
+    try {
+      await exchangeStarted.promise;
+      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
+      lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
+      const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
+      // Runtime reads now wait at the company file lock before touching the
+      // old credential. The returned home must contain the committed rotation.
+      let prepared = false;
+      void preparing.then(() => { prepared = true; });
+      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      expect(prepared).toBe(false);
+      releaseExchange.resolve();
+      const results = await Promise.all([refreshing, edit, preparing]);
+      runtime = results[2];
+      expect(JSON.parse(await readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8"))).toMatchObject({ tokens: { access_token: "new-access", refresh_token: "new-refresh" } });
+      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "new-access", refresh_token: "new-refresh" } });
+      expect((await secretService(db).getById(secretId))?.description).toBe("Changed during refresh");
+    } finally { releaseExchange.resolve(); await runtime?.cleanup(); request.mockRestore(); lock?.mockRestore(); }
+  }, 10_000);
+
+  it("serializes quota credential refresh, persists rotation, and defers while the provider is active", async () => {
+    const owner = "quota-refresh-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { access_token: "expired-access", refresh_token: "single-use", id_token: "identity", account_id: null } });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: "Refresh account", loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "rotated-once" })));
+    const signal = new AbortController().signal;
+    try {
+      // A pre-existing transaction may own a secret row before asking for the
+      // company file lock. Refresh must defer before exchanging its token.
+      await db.transaction(async tx => {
+        const secretId = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+        await tx.select().from(companySecrets).where(eq(companySecrets.id, secretId)).for("update");
+        await expect(service.refreshQuotaCredential(row, original, signal)).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
+      });
+      const activeId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: activeId, companyId, agentId, invocationSource: "on_demand", status: "running", contextSnapshot: { aiConnection: { grantId: account.grantId } } });
+      await expect(service.refreshQuotaCredential(row, original, signal)).rejects.toThrow("provider_unavailable");
+      expect(request).not.toHaveBeenCalled();
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, activeId));
+      const [first, second] = await Promise.all([
+        service.refreshQuotaCredential(row, original, signal),
+        service.refreshQuotaCredential(row, original, signal),
+      ]);
+      expect(first).toBe(second);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-access", refresh_token: "rotated-once", account_id: null } });
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      await expect(service.refreshQuotaCredential(row, first, signal)).rejects.toThrow("credentials_unavailable");
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally { request.mockRestore(); }
+  });
+
   it.each([
     ["openai", "codex_local", "responses"],
     ["anthropic", "claude_local", "messages"],
@@ -380,6 +1028,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
   });
 
+  it("lists quotas only for the current member's accessible subscription accounts", async () => {
+    const user = `quota-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "member" });
+    const subscription = await service.save(companyId, user, { provider: "openai", method: "subscription", ownership: "personal", name: "Private quota", loginSessionId: "fixture", allAgents: true, agentIds: [] }, JSON.stringify({ tokens: { access_token: "fixture", account_id: "fixture", refresh_token: "fixture" } }));
+    expect((await service.quotaAccounts(companyId, user)).some(row => row.connection.id === subscription.connectionId)).toBe(true);
+    expect((await service.quotaAccounts(companyId, "bob")).some(row => row.connection.id === subscription.connectionId)).toBe(false);
+    expect(await service.quotaAccounts(otherCompanyId, user)).toEqual([]);
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, user)));
+    expect(await service.quotaAccounts(companyId, user)).toEqual([]);
+  });
+
   it("repairs a teammate's missing onboarding key with their own inline AI connection", async () => {
     const userId = `new-teammate-${randomUUID()}`;
     const id = randomUUID();
@@ -574,7 +1233,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("uses human access for every selection; an agent delegation cannot override Just me", async () => {
     const personal = await service.select({ ...input, userId: "alice" });
     const delegated = { ...binding, mode: "delegated" as const, connectionId: personal.connection.id, grantId: personal.grant.id };
-    await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: delegated }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(rejection.details).toBeUndefined();
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     // Existing delegation records no longer confer an independent AI permission.
     await db.insert(connectionGrantDelegations).values({ companyId, grantId: personal.grant.id, agentId, createdByUserId: "alice" });
     await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
@@ -587,7 +1249,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const sharedBinding = { ...binding, mode: "shared" as const, ...shared };
     const tools = toolAccessService(db);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { userId: "alice" });
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(false);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { userId: "alice" });
     expect((await service.select({ ...input, userId: "bob", binding: sharedBinding })).grant.id).toBe(shared.grantId);
@@ -597,12 +1261,43 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     for (const userId of ["alice", "bob"]) {
       expect((await service.select({ ...input, userId, binding: sharedBinding })).grant.id).toBe(shared.grantId);
     }
-    await expect(service.select({ ...input, userId: null, binding: sharedBinding })).rejects.toThrow("not shared");
+    const missingIdentity = await service.select({ ...input, userId: null, binding: sharedBinding }).catch(error => error);
+    expect(missingIdentity).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(missingIdentity)).toBeNull();
+    const inactiveMember = await service.select({ ...input, userId: "inactive-user", binding: sharedBinding }).catch(error => error);
+    expect(inactiveMember).toMatchObject({ status: 403, message: "The responsible user is not an active company member" });
+    expect(readAiConnectionConfigurationFailure(inactiveMember)).toBeNull();
     // Human permission still cannot bypass the separate agent-access setting.
     await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, shared.connectionId));
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not permitted for this agent");
+    const missingAgentPermission = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(missingAgentPermission).toMatchObject({ status: 403 });
+    expect(missingAgentPermission.message).toContain("not permitted for this agent");
+    expect(readAiConnectionConfigurationFailure(missingAgentPermission)).toBeNull();
     expect(sharedBinding).toEqual({ ...binding, mode: "shared", ...shared });
   });
+  it.each(["inactive_owner", "wrong_binding_kind", "wrong_company_membership"] as const)(
+    "does not classify other credential authorization denials as sharing configuration: %s", async (cause) => {
+      const owner = `sharing-${cause}-owner`;
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const account = await create(owner, "Sharing permission fixture");
+      const selected = { ...binding, mode: cause === "wrong_binding_kind" ? "shared" as const : "delegated" as const, ...account };
+      let userId = "bob";
+      if (cause === "inactive_owner") {
+        await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, owner)));
+      }
+      if (cause === "wrong_company_membership") {
+        userId = "other-company-sharing-user";
+        await db.insert(companyMemberships).values({ companyId: otherCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      }
+      const error = await service.select({ ...input, userId, binding: selected }).catch(error => error);
+      expect(error).toMatchObject({ status: 403, message: cause === "inactive_owner"
+        ? "The account owner is no longer an active company member"
+        : cause === "wrong_binding_kind" ? "Select a company-shared account"
+        : "The responsible user is not an active company member" });
+      expect(readAiConnectionConfigurationFailure(error)).toBeNull();
+    },
+  );
+
   it("isolates concurrent homes and overrides ambient credentials without changing the model", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "ambient-never-use");
     const config = { model: "unchanged-model", env: { ANTHROPIC_API_KEY: "project-never-use" } };
@@ -715,6 +1410,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     try {
       expect(child.identity).toBe(parent.identity);
       expect(child.attribution.grantId).toBe(account.grantId);
+      expect(parent.attribution.subscriptionId).toEqual(expect.any(String));
+      expect(child.attribution.subscriptionId).toBe(parent.attribution.subscriptionId);
+      expect(child.config.managedAiConnection).toMatchObject({ subscriptionId: parent.attribution.subscriptionId });
     } finally {
       await Promise.all([parent.cleanup(), child.cleanup()]);
     }
@@ -857,6 +1555,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "agentmail" } }).success).toBe(true);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "slack" } }).success).toBe(false);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "runtime_auth", config: { provider: "agentmail" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "speko" } }).success).toBe(true);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "slack" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "chat_sdk", config: { provider: "speko" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "tool", transport: "voice", config: { provider: "speko" } }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "responsible_user" }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "shared", connectionId: randomUUID(), grantId: randomUUID() }).success).toBe(false);
     expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key", mode: "responsible_user" }, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
@@ -1237,7 +1939,7 @@ describe("AI connection recovery delivery", () => {
       const account = await create(userId, `Recovered ${scenario}`);
       expect((await intents.setupOptions(pending.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([account.connectionId]);
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason,
-        ...(reason === "secret_binding_missing" ? { missingBindings: [{ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
+        ...(reason === "secret_binding_missing" ? { agentId: recoveringAgentId, missingBindings: [{ bindingType: "user_secret_ref", consumerType: "agent", consumerId: recoveringAgentId, envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
       } } }).where(eq(heartbeatRuns.id, failedRunId));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
       await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `ai:${issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: failedRunId } });
@@ -1273,3 +1975,9 @@ describe("AI connection recovery delivery", () => {
     }, 30000,
   );
 });
+
+function deferredSignal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}

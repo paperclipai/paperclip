@@ -1,3 +1,4 @@
+import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { useEffect, useState } from "react";
 import { MessageCircle } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -17,6 +18,7 @@ export function AgentChats() {
 }
 
 function AgentChatsContent({ companyId, userId, enabled, loaded, agents, chats, session }: Pick<ReturnType<typeof useAgentChatNavigation>, "companyId" | "userId" | "enabled" | "loaded" | "agents" | "chats" | "session">) {
+  const primary = usePrimaryAgentPresentation(companyId);
   const openChat = useOpenAgentChat(companyId, userId);
   const navigate = useNavigate();
   const recentIds = useRecentAgentChats(companyId ?? "", userId);
@@ -41,13 +43,18 @@ function AgentChatsContent({ companyId, userId, enabled, loaded, agents, chats, 
       return null;
     }).find((path): path is string => path !== null)
     : undefined;
+  const primaryAgent = agents.data?.find(agent => agent.id === primary?.primaryAgentId
+    && agent.status !== "terminated" && agent.status !== "pending_approval");
+  const entryPath = recentChatPath ?? (loaded && enabled && !blockingError && !resolvingRecent
+    && agents.isFetched && session.isFetched && !primary?.loading && primaryAgent
+    ? `/chats/${encodeURIComponent(agentRouteRef(primaryAgent))}` : undefined);
   useEffect(() => {
-    if (recentChatPath) navigate(recentChatPath, { replace: true });
-  }, [navigate, recentChatPath]);
+    if (entryPath) navigate(entryPath, { replace: true });
+  }, [navigate, entryPath]);
   if (!loaded) return <p role="status" className="text-sm text-muted-foreground">Loading chat…</p>;
   if (!enabled) return <p className="text-sm text-muted-foreground">Agent Chat is disabled. Enable it in Experimental settings.</p>;
   if (!companyId) return <p className="text-sm text-muted-foreground">Select a company to start a conversation.</p>;
-  if (resolvingRecent || recentChatPath) return <p role="status" className="text-sm text-muted-foreground">Opening chat…</p>;
+  if (resolvingRecent || entryPath || primary?.loading) return <p role="status" className="text-sm text-muted-foreground">Opening chat…</p>;
   const error = blockingError ?? (recentIds.length > 0 ? chats.error : null);
   return <div className="mx-auto flex h-full max-w-xl flex-col justify-center gap-6 px-4 py-12">
     <div className="flex flex-col gap-3">

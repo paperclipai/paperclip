@@ -10,16 +10,11 @@ import { DEFAULT_JSON_BODY_LIMIT } from "../../http/body-limits.js";
 import { logActivity } from "../activity-log.js";
 import { hashMcpSecret, type McpPrincipal, type PublicMcpOAuth } from "./oauth.js";
 
-export class McpApiError extends Error {
-  constructor(readonly status: number) {
-    super(`Paperclip rejected the operation (HTTP ${status}). Check permissions, task state and agent availability in Paperclip.`);
-  }
-}
-
-/** Messages intentionally safe to return across the public tool boundary. */
-export class McpCapabilityError extends Error {}
-
-export type ApiDispatch = (principal: McpPrincipal, method: "GET" | "POST", path: string, body?: unknown) => Promise<unknown>;
+export { McpApiError, McpCapabilityError } from "./contracts.js";
+export type { ApiDispatch } from "./contracts.js";
+import { McpApiError, McpCapabilityError, type ApiDispatch, type Capability, company, task, requestId, boundedLimit, object, pick, rows, taskFields, commentFields, documentFields, pathId, stable } from "./contracts.js";
+import { fileTransferCapabilities, type PublicMcpTransfers } from "./file-transfers.js";
+import { expandedMcpCapabilities } from "./expanded-capabilities.js";
 
 /** Internal HTTP dispatch reuses domain authorization, validation, audit and scheduling.
  * Neither an arbitrary path nor an actor is accepted from the MCP client.
@@ -44,34 +39,19 @@ export function createMcpApiDispatch(api: Router): ApiDispatch {
     });
     if (response.statusCode >= 400) {
       // Keep upstream error details out of the public tool boundary.
-      throw new McpApiError(response.statusCode);
+      let payload: Record<string, unknown> = {};
+      try { payload = object(response.json()); } catch { /* Non-JSON upstream errors remain private. */ }
+      const details = object(payload.details);
+      const safe: Record<string, unknown> = {};
+      for (const key of ["code", "currentRevisionId", "latestRevisionId", "currentVersionId"]) {
+        const value = payload[key] ?? details[key];
+        if (typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value)) safe[key] = value;
+      }
+      throw new McpApiError(response.statusCode, safe);
     }
-    return response.json<unknown>();
+    return response.statusCode === 204 || !response.payload ? null : response.json<unknown>();
   };
 }
-
-const company = { companyId: z.uuid().describe("The company explicitly authorized by this connection. Copy the exact companyId from paperclip_connection and wait for that result before dependent tool calls. Never guess an ID or use a placeholder.") };
-const task = { ...company, taskId: z.uuid().describe("The exact task UUID returned by paperclip_search_tasks or paperclip_create_task. Search by title or human-readable identifier first; never derive a UUID from a title or identifier.") };
-const requestId = z.uuid().describe("A new UUID for this intended action. Reuse this UUID and identical arguments on retries; never invent a second ID after an uncertain result.");
-const boundedLimit = z.number().int().min(1).max(100).default(30);
-const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
-const pick = (v: unknown, keys: string[]) => Object.fromEntries(keys.filter((k) => k in object(v)).map((k) => [k, object(v)[k]]));
-const rows = (v: unknown) => Array.isArray(v) ? v : [];
-const taskFields = ["id", "companyId", "identifier", "title", "description", "status", "priority", "assigneeAgentId", "assigneeUserId", "projectId", "parentId", "createdAt", "updatedAt", "completedAt"];
-const commentFields = ["id", "issueId", "body", "authorUserId", "authorAgentId", "createdAt"];
-const documentFields = ["id", "issueId", "key", "title", "format", "body", "latestRevisionNumber", "updatedAt"];
-const pathId = (id: unknown) => encodeURIComponent(String(id));
-const stable = (v: unknown): string => JSON.stringify(v, (_k, value) => {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.fromEntries(Object.keys(value).sort().map((k) => [k, value[k]]));
-  }
-  return value;
-});
-
-type Capability = {
-  name: string; description: string; schema: z.ZodObject; write?: boolean;
-  run: (p: McpPrincipal, args: Record<string, unknown>, api: ApiDispatch, origin: string) => Promise<Record<string, unknown>>;
-};
 
 export const publicMcpCapabilities: Capability[] = [
   {
@@ -138,9 +118,10 @@ export const publicMcpCapabilities: Capability[] = [
     run: async (p, a, api) => ({ comment: pick(await api(p, "POST", `/issues/${pathId(a.taskId)}/comments`, { body: a.body, clientRequestId: a.requestId }), commentFields) }),
   },
   {
-    name: "paperclip_list_deliverables", description: "Retrieve task documents and deliverable references, including completed work from earlier conversations. Open files through their Paperclip task page; this tool does not fetch arbitrary URLs.",
+    name: "paperclip_list_deliverables", description: "Retrieve task documents, uploaded attachments and deliverable references, including completed work from earlier conversations. Download attachments with paperclip_get_download_url or through the task page; this tool does not fetch arbitrary URLs.",
     schema: z.object(task).strict(),
     run: async (p, a, api, origin) => ({
+      attachments: rows(await api(p, "GET", `/issues/${pathId(a.taskId)}/attachments`)).map((v) => pick(v, ["id", "issueId", "originalFilename", "contentType", "byteSize", "sha256", "createdAt"])),
       documents: rows(await api(p, "GET", `/issues/${pathId(a.taskId)}/documents`)).map((v) => pick(v, documentFields)),
       deliverables: rows(await api(p, "GET", `/issues/${pathId(a.taskId)}/work-products`)).map((v) => pick(v, ["id", "type", "title", "url", "status", "summary", "updatedAt"])),
       taskUrl: origin + "/" + pathId(p.company.issuePrefix) + "/issues/" + pathId(a.taskId),
@@ -159,19 +140,39 @@ export const publicMcpCapabilities: Capability[] = [
       url: origin + "/" + pathId(p.company.issuePrefix) + "/approvals/" + pathId(object(v).id),
     })) }),
   },
+  ...expandedMcpCapabilities, ...fileTransferCapabilities,
 ];
 
-export function createPublicMcpExecutor(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch) {
+publicMcpCapabilities.push({
+  name: "paperclip_search_api", description: "Search the allowed Paperclip work and configuration API operations and their exact argument schemas. These are the same authorized operations as the named tools; other REST endpoints are not callable.",
+  schema: z.object({ ...company, query: z.string().max(200).default("") }).strict(),
+  run: async (_p, a) => ({ operations: publicMcpCapabilities.filter(c => !["paperclip_search_api", "paperclip_call_api"].includes(c.name) && String(a.query).toLowerCase().split(/\s+/).every(word => (c.name + " " + c.description).toLowerCase().includes(word))).slice(0, 40).map(c => ({ operationId: c.name, description: c.description, scope: c.configure ? "paperclip:configure" : c.write ? "paperclip:write" : "paperclip:read", inputSchema: z.toJSONSchema(c.schema) })) }),
+}, {
+  name: "paperclip_call_api", write: true, destructive: true, description: "Call an operation returned by paperclip_search_api using its exact arguments, including companyId and requestId for writes. Same permissions, company checks and retry identity as the named tool. No arbitrary URLs, headers or additional REST operations.",
+  schema: z.object({ ...company, operationId: z.string().min(1).max(100), arguments: z.record(z.string(), z.unknown()) }).strict(),
+  run: async () => { throw new McpCapabilityError("Resolve the registered operation before dispatch."); },
+});
+
+export function createPublicMcpExecutor(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch, transfers?: PublicMcpTransfers) {
   return async (accessToken: string, name: string, input: unknown) => {
     // Recheck membership, pause/archive state, expiry and revocation at invocation.
     const principal = await oauth.authenticate(accessToken);
+    if (name === "paperclip_call_api") {
+      const envelope = publicMcpCapabilities.find(c => c.name === name)!.schema.parse(input);
+      if (envelope.companyId !== principal.grant.companyId) throw new McpCapabilityError("Company does not match the authorized connection.");
+      name = String(envelope.operationId);
+      if (["paperclip_call_api", "paperclip_search_api"].includes(name)) throw new McpCapabilityError("Choose a discovered operation.");
+      input = envelope.arguments;
+    }
     const capability = publicMcpCapabilities.find((c) => c.name === name);
     if (!capability) throw new McpCapabilityError("Unknown Paperclip operation.");
     const args = capability.schema.parse(input);
     if (args.companyId !== undefined && args.companyId !== principal.grant.companyId) throw new McpCapabilityError("Company does not match the authorized connection.");
     if (!principal.grant.scopes.includes("paperclip:read")) throw new McpCapabilityError("Read permission is required.");
-    if (!capability.write) return capability.run(principal, args, api, oauth.config.origin);
-    if (!principal.grant.scopes.includes("paperclip:write") || principal.actor.memberships?.[0]?.membershipRole === "viewer") throw new McpCapabilityError("Write permission is required.");
+    if (!capability.write && !capability.configure) return capability.run(principal, args, api, oauth.config.origin, transfers);
+    const scope = capability.configure ? "paperclip:configure" : "paperclip:write";
+    if (!principal.grant.scopes.includes(scope) || principal.actor.memberships?.[0]?.membershipRole === "viewer") throw new McpCapabilityError(`${scope} permission is required. Reconnect and approve this permission.`);
+    if (capability.ephemeral) return capability.run(principal, args, api, oauth.config.origin, transfers);
 
     const key = { grantId: principal.grant.id, userId: principal.grant.userId, operation: name, requestId: String(args.requestId) };
     const argumentsHash = hashMcpSecret(stable(args));
@@ -185,12 +186,12 @@ export function createPublicMcpExecutor(db: Db, oauth: PublicMcpOAuth, api: ApiD
     try {
       await logActivity(db, { companyId: principal.grant.companyId, actorType: "user", actorId: principal.grant.userId,
         action: "mcp.tool_called", entityType: "mcp_connection", entityId: principal.grant.id, details: { clientId: principal.grant.clientId, operation: name, requestId: key.requestId } });
-      const result = await capability.run(principal, args, api, oauth.config.origin);
+      const result = await capability.run(principal, args, api, oauth.config.origin, transfers);
       await db.update(mcpMutationReceipts).set({ status: "completed", result }).where(eq(mcpMutationReceipts.id, receipt.id));
       return result;
     } catch (error) {
       if (error instanceof McpApiError && error.status < 500) {
-        const result = { outcome: "rejected", requestId: key.requestId, status: error.status, message: error.message };
+        const result = { outcome: "rejected", requestId: key.requestId, status: error.status, message: error.message, ...error.details };
         await db.update(mcpMutationReceipts).set({ status: "completed", result }).where(eq(mcpMutationReceipts.id, receipt.id));
         return result;
       }

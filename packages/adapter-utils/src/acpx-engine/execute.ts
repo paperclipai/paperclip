@@ -3942,6 +3942,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       provider: billingIdentity?.provider ?? "acpx",
       ...(billingIdentity?.biller ? { biller: billingIdentity.biller } : {}),
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
+      pricingContext: undefined as AdapterExecutionResult["pricingContext"],
     };
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
     // The host run site owns the warm-handle store on this run. It operates over
@@ -4246,6 +4247,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }),
           );
           buildRuntimeSettled = true;
+          billingFields.pricingContext = prepared.fastMode ? { serviceTier: "fast" } : undefined;
           // Capture acquired resources before the cancellation boundary so the
           // normal settlement path also releases a just-completed build.
           releaseStagingLease = prepared.sessionStagingLeaseRelease;
@@ -4751,8 +4753,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      // Receipt persistence is fallible; retain the provider evidence before
+      // calling the sink so the failure result can still return it to the host.
+      let observedUsage: Pick<AdapterExecutionResult, "usage" | "usageBasis" | "costUsd" | "usageComplete"> = { usageComplete: false };
       let lastRuntimeEventAt: number | null = null;
       let observedRuntimeEvents = 0;
+      let turnDispatchAttempted = false;
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
@@ -4837,6 +4843,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
+        // After entering startTurn, a thrown error cannot prove the provider
+        // received no work. Only failures before this boundary are free to settle.
+        turnDispatchAttempted = true;
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -4953,6 +4962,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              const checkpoint = summarizeAcpxTurnUsage({ preStatus: preTurnStatus, postStatus: null, eventBreakdown, eventCostUsd });
+              observedUsage = { usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd, usageBasis: "per_run", usageComplete: false };
+              await ctx.onUsage?.({ ...billingFields, usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd,
+                model: prepared.requestedModel, usageBasis: "per_run", complete: false });
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
@@ -5039,6 +5052,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
+        // An interrupted stream is provisional unless the runtime supplies its
+        // post-terminal receipt. An in-stream usage_update alone cannot close it.
+        const usageComplete = !channelLost && (turnSucceeded || postTurnStatus?.usage != null);
+        observedUsage = { usage: turnUsage.usage ?? undefined, costUsd: turnUsage.costUsd, usageBasis: "per_run", usageComplete };
+        await ctx.onUsage?.({ ...billingFields, usage: turnUsage.usage ?? undefined, costUsd: turnUsage.costUsd,
+          model: prepared.requestedModel, usageBasis: "per_run", complete: usageComplete });
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
         // ACPX can defer session/load until runTurn. Forget an unavailable
         // session so the next bounded turn receives the full task conversation.
@@ -5124,6 +5143,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           model: prepared.requestedModel || null,
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
+          usageComplete,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
             ...activityDiagnostics,
@@ -5257,6 +5277,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorMessage: message,
           errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
           errorMeta: emitted?.classified.errorMeta,
+          ...observedUsage,
+          ...(!turnDispatchAttempted ? { executionRecovery: { kind: "bootstrap" as const, providerWorkStarted: false as const } } : {}),
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,

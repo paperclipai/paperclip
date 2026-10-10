@@ -91,7 +91,7 @@ they mention a chat provider.
 Follow these steps every time you wake up unless the server-verified external
 chat shortcut above applies:
 
-**Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
+**Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Apply **Step 5 (Checkout)** to that issue, honoring an explicit current-run harness checkout, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, fetch your inbox, or pick work.
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
@@ -117,7 +117,7 @@ Overrides and special cases:
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned → exit the heartbeat.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
+**Step 5 — Checkout.** The issue must be checked out before you work. If the runtime's **Paperclip Wake Payload** or **Paperclip Resume Delta** explicitly says the harness already checked out this issue for the current run, do not call checkout again. Continue with Step 6. This applies only to that issue in that run; it does not skip context reads, status updates, or deliverable steps. Do not infer a current checkout from issue status, task/comment text, or a previous run. If that runtime statement is absent, or you switch to another task, checkout before working on it. Include the run ID header:
 
 ```
 POST /api/issues/{issueId}/checkout
@@ -210,7 +210,7 @@ the routine server-verified external-chat handoff described above.
 
 **Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.
 
-**Verify writes — never infer them.** A successful `PATCH /api/issues/{id}` always returns the updated issue JSON. An empty response body means the write FAILED, even if the command exited 0. Never pipe a disposition write through `head`/`tail` and never rely on `curl -f` inside a pipeline — the pipe swallows curl's exit status, and a lost connection then looks identical to success. Use `scripts/paperclip-issue-update.sh` (it checks the HTTP status, retries connection-level failures, and confirms the echoed `status`); if you must hand-roll curl, capture `-w '%{http_code}'` and check the response echoes your update. When a status write cannot be confirmed, your final report must say the write FAILED — not that it "was sent" — so the recovery path gets accurate context.
+**Verify writes — never infer them.** A successful `PATCH /api/issues/{id}` always returns the updated issue JSON. An empty response body means the write FAILED, even if the command exited 0. Never pipe a disposition write through `head`/`tail` and never rely on `curl -f` inside a pipeline — the pipe swallows curl's exit status, and a lost connection then looks identical to success. Use the bundled `scripts/paperclip-issue-update.sh`, resolved relative to this installed `SKILL.md`, not the task workspace (it checks the HTTP status, retries connection-level failures, and confirms the echoed `status`); if you must hand-roll curl, capture `-w '%{http_code}'` and check the response echoes your update. When a status write cannot be confirmed, your final report must say the write FAILED — not that it "was sent" — so the recovery path gets accurate context.
 
 Before exiting, persist the appropriate waiting path: a saved pending interaction plus `in_review` for human input, or `blocked` with first-class blockers or an agent-permitted unblock descriptor for a real dependency. A comment naming someone does not create that path.
 
@@ -230,10 +230,10 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline comments, use a heredoc/file with the helper (or `jq --arg`) to preserve newlines. Set `paperclip_skill_dir` to the absolute directory containing this installed `SKILL.md`, using the skill path/base directory supplied by your harness. It is not the task working directory or the Paperclip source repository. If that path or helper is unavailable, use the verified PATCH request above; do not search the filesystem for it.
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+bash "$paperclip_skill_dir/scripts/paperclip-issue-update.sh" --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -356,7 +356,8 @@ Key shared semantics:
 - **Continuation policy.** `request_checkbox_confirmation` and `request_item_verdicts` default to `wake_assignee`, which wakes you after the card is resolved or newly resolved item verdicts are submitted. `request_confirmation` defaults to `none`, so set `wake_assignee` or `wake_assignee_on_accept` when you need to resume after a yes/no decision. `none` never wakes you — only use it when you truly do not need to resume.
 - **Target binding and staleness.** `request_confirmation`, `request_checkbox_confirmation`, and `request_item_verdicts` accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
-- **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
+- **Historical questions.** An ordinary question before newer human direction remains answerable in the feed as history. Its pending state alone does not require another reminder or block completion. Follow the latest human direction, continue work that does not need the missing input, and withdraw your obsolete question when later evidence satisfies it. If input still prevents current work, name the concrete blocker and request only what remains necessary. Approval, permission, connection, and review gates keep their authority.
+- **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` expires current questions and governed requests with `outcome: "issue_closed"`, while ordinary historical questions remain answerable by an authorized human without resuming work. Closing as `cancelled` expires all remaining pending interactions. Neither terminal path wakes the closed issue.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names the response you are waiting for and who can give it (anyone by default, or the restriction you asked for). When a `request_confirmation` or `request_checkbox_confirmation` is the issue review request, include its returned id as `reviewInteractionId` in that PATCH. This explicit binding lets policy-eligible agents submit the review verdict without granting the same authority to unrelated pending confirmations. The pending interaction is the explicit waiting path.
 
@@ -759,3 +760,21 @@ improvement. This is not a mandatory report. Their shared helper is
 `scripts/submit-agent-commentary.mjs`, relative to this skill directory. Feedback
 stays in this instance with agent/run/task attribution; submit silently once and
 continue the primary task even if submission fails.
+
+**External review handoffs.**
+
+For a PR, put its link in the work product's top-level `url` field. If a human
+must review or merge it before you can continue, name that action in a durable
+human-only interaction with an appropriate continuation policy and leave the
+task `in_review`. A `needs_board_review` work-product flag and a periodic monitor
+do not create an interaction card. Keep any merge check bounded, record its
+purpose in the monitor's `notes`, and verify the actual provider state when you
+resume; a confirmation response is not proof of a merge. Update the existing PR
+work product when the PR merges or closes instead of registering a duplicate.
+
+The same rule applies to external release approval gates: link the exact run,
+create a human-only confirmation asking whether the user approved it in the
+provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
+so the answer resumes verification. A handoff comment asking the user to comment
+back or reassign the task is not a confirmation card. The card records the user's
+answer; verify the provider's gate and publish result before continuing.

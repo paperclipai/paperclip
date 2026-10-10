@@ -39,7 +39,8 @@ const MAX_SETTLED_CALL_IDS: usize = 65_536;
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
-const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake, summary, and idempotencyKey.";
+const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
+const QUESTION_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Required fields: idempotencyKey, interactionKind, title, prompt, and continuationPolicy. For questions, use payload.version=1 and a complete payload.questionSet matching the authorized schema. Preserve the supplied question and option IDs.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -242,6 +243,7 @@ impl ProviderBridgeError {
         let safe_provider_message = match operation_id {
             "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
+            "request_human_input" => Some(QUESTION_INPUT_SCHEMA_HINT),
             _ => None,
         };
         Self {
@@ -251,7 +253,7 @@ impl ProviderBridgeError {
     }
 
     fn with_schema_locations(mut self, validator: &jsonschema::Validator, input: &Value) -> Self {
-        // Only completion tools have a provider-safe hint. Report bounded paths
+        // Only the reserved tools above have a provider-safe hint. Report bounded paths
         // into the authorized schema, never the submitted values or unknown keys.
         if let Some(message) = self.safe_provider_message.as_mut() {
             let locations = validator

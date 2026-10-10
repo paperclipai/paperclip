@@ -3,14 +3,14 @@ import { expect, userEvent, within } from "storybook/test";
 import { GitHubChatPreview } from "../prototypes/github-chat/GitHubChatPreview";
 
 const meta = {
-  title: "Apps/GitHub chat & reviews",
+  title: "Historical/GitHub chat prototypes",
   component: GitHubChatPreview,
   parameters: {
     layout: "fullscreen",
     docs: {
       description: {
         component:
-          "Design approval preview. Provider handoffs, tool checks, identity events, tasks, and reviews are simulated. No backend behavior or live GitHub actions are implemented by these stories. Use Start here for the complete journey, then inspect alternate and management states.",
+          "Historical design prototype. Production onboarding now has Choose agent and Connect GitHub, with personal or organization App ownership and automatic completion. This historical prototype predates the wizard and is not its acceptance test. Use the running app to review the current setup flow. Provider handoffs, tool checks, identity events, tasks, and reviews here are simulated.",
       },
     },
   },

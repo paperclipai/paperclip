@@ -75,11 +75,11 @@ export const SubmitReadOnlyConsent: Story = { play: async context => {
   await userEvent.click(c.getByRole("checkbox"));
   await expect(c.getByRole("checkbox")).not.toBeChecked();
   await userEvent.click(c.getByRole("button", { name: "Connect organization" }));
-  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "approve", companyId: request.companies[0].id, allowWrites: false });
+  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "approve", companyId: request.companies[0].id, allowWrites: false, allowConfiguration: false });
 } };
 export const Cancel: Story = { play: async ({ canvasElement }) => {
   await userEvent.click(await within(canvasElement).findByRole("button", { name: "Cancel" }));
-  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "deny", companyId: request.companies[0].id, allowWrites: false });
+  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "deny", companyId: request.companies[0].id, allowWrites: false, allowConfiguration: false });
 } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile1", isRotated: false } }, parameters: { waitForViewport: true } };
 
@@ -92,7 +92,7 @@ export const HostedConsentCheck: Story = { ...HostedOrganization, play: async ({
   await expect(c.queryByText("Design Partners")).not.toBeInTheDocument();
   await expect(c.getByRole("checkbox")).toBeChecked();
   await userEvent.click(c.getByRole("button", { name: "Connect organization" }));
-  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "approve", companyId: request.companies[0].id, allowWrites: true });
+  await expect(consentSubmission).toHaveBeenCalledWith({ decision: "approve", companyId: request.companies[0].id, allowWrites: true, allowConfiguration: false });
 } };
 export const HostedReadOnly: Story = { parameters: { fixture: { request: { requestedCompanyId: request.companies[1].id, companies: [request.companies[1]] } } }, play: async ({ canvasElement }) => {
   const c = within(canvasElement);
@@ -110,3 +110,35 @@ export const HostedOrganizationUnavailable: Story = { parameters: { fixture: { r
   await expect(c.queryByRole("radio")).not.toBeInTheDocument();
   await expect(c.queryByRole("link", { name: "Create a hosted organization" })).not.toBeInTheDocument();
 } };
+
+
+export const ConfigurationConsent: Story = {
+  parameters: { fixture: { request: { requestedConfigure: true } } },
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    const write = await c.findByRole("checkbox", { name: "Write all of your Paperclip data" });
+    await expect(c.getAllByRole("checkbox")).toHaveLength(1);
+    await expect(write).toBeChecked();
+    await userEvent.click(c.getByRole("button", { name: "Connect organization" }));
+    await expect(consentSubmission).toHaveBeenCalledWith(expect.objectContaining({ allowConfiguration: true, allowWrites: true }));
+  },
+};
+export const ConfigurationReadOnlyRole: Story = {
+  parameters: { fixture: { request: { requestedConfigure: true, companies: [{ ...request.companies[0], canWrite: false }] } } },
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    await expect(await c.findByRole("checkbox", { name: "Write all of your Paperclip data" })).toBeDisabled();
+  },
+};
+
+export const ConfigurationOptOut: Story = {
+  parameters: { fixture: { request: { requestedConfigure: true } } },
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    await userEvent.click(await c.findByRole("checkbox", { name: "Write all of your Paperclip data" }));
+    await expect(c.getAllByRole("checkbox")).toHaveLength(1);
+    await expect(c.getByRole("checkbox")).not.toBeChecked();
+    await userEvent.click(c.getByRole("button", { name: "Connect organization" }));
+    await expect(consentSubmission).toHaveBeenCalledWith(expect.objectContaining({ allowConfiguration: false, allowWrites: false }));
+  },
+};

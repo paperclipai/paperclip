@@ -4,6 +4,8 @@ import { MINIMAL_VIEWPORTS } from "storybook/viewport";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   CONNECTABLE_APP_DEFINITIONS,
+  instanceExperimentalSettingsSchema,
+  instanceGeneralSettingsSchema,
   type WorkTimelineResult,
 } from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
@@ -152,15 +154,13 @@ function installStorybookApiFixtures() {
       });
     }
 
+    const experimentalSettings = () => instanceExperimentalSettingsSchema.parse({
+      enableIsolatedWorkspaces: true,
+      autoRestartDevServerWhenIdle: false,
+      enableManagedSandboxOnly: onboardingFixtureState.environments !== "local",
+    });
     if (url.pathname === "/api/instance/settings/experimental") {
-      return Response.json({
-        enableIsolatedWorkspaces: true,
-        autoRestartDevServerWhenIdle: false,
-        // The cloud-tenant shape, and what the onboarding connect step resolves
-        // its login environment through: without it the step looks for a local
-        // default and never finds the managed sandbox.
-        enableManagedSandboxOnly: onboardingFixtureState.environments !== "local",
-      });
+      return Response.json(experimentalSettings());
     }
 
     if (url.pathname === "/api/health") {
@@ -168,7 +168,15 @@ function installStorybookApiFixtures() {
     }
 
     if (url.pathname === "/api/instance/settings") {
-      return Response.json({});
+      // Full app-shell stories render pages that read these nested settings.
+      return Response.json({
+        id: "00000000-0000-4000-8000-000000000001",
+        defaultEnvironmentId: null,
+        general: instanceGeneralSettingsSchema.parse({}),
+        experimental: experimentalSettings(),
+        createdAt: "2026-10-08T00:00:00.000Z",
+        updatedAt: "2026-10-08T00:00:00.000Z",
+      });
     }
 
     // The connect step's provider sign-in is gated on a *sandbox* environment

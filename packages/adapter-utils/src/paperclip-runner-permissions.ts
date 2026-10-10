@@ -1,5 +1,5 @@
 export type PaperclipRunnerProvider =
-  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
@@ -103,6 +103,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     description:
       "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
   },
+  openai_dot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Dot uses the admitted Paperclip tool catalog. OpenAI manages its model and other tools; provider usage and global interruption are unavailable." },
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
@@ -147,7 +148,7 @@ export function isPaperclipRunnerProvider(
     value === "opencode" ||
     value === "claude_managed" ||
     value === "aws_agentcore" ||
-    value === "acpx"
+    value === "acpx" || value === "openai_dot"
   );
 }
 
@@ -160,6 +161,21 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? (value as PaperclipRunnerPermissionMode)
     : capability.defaultMode;
+}
+
+/** Native session behavior is independent of tool permission policy. */
+export function resolvePaperclipRunnerCursorMode(
+  provider: unknown,
+  agent: unknown,
+  value: unknown,
+): "agent" | "plan" | "ask" | undefined {
+  if (provider !== "acpx" || agent !== "cursor") {
+    if (value !== undefined) throw new Error("acpxSessionMode is supported only for Cursor");
+    return undefined;
+  }
+  if (value === undefined) return "agent";
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("Cursor session mode must be agent, plan, or ask");
 }
 
 export function resolvePaperclipRunnerModel(
@@ -228,7 +244,19 @@ export function normalizeLegacyRunnerProvider(
 export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
   { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
-  { value: "cursor", label: "Cursor", qualified: false, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
   { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
-  { value: "pi", label: "Pi", qualified: false, credentialEnvironment: ["OPENROUTER_API_KEY"] },
+  { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
 ] as const);
+
+/** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */
+export type PaperclipRunnerPiThinkingLevel = "off" | "low" | "high" | "max";
+export function resolvePaperclipRunnerPiThinkingLevel(provider: unknown, agent: unknown, value: unknown): PaperclipRunnerPiThinkingLevel | undefined {
+  if (provider !== "acpx" || agent !== "pi") {
+    if (value !== undefined) throw new Error("piThinkingLevel is supported only for Pi");
+    return undefined;
+  }
+  if (value === undefined) return "low";
+  if (value === "off" || value === "low" || value === "high" || value === "max") return value;
+  throw new Error("Pi thinking level must be off, low, high, or max");
+}

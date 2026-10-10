@@ -93,6 +93,10 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/dot-runner-broker.js", () => ({
+  dotRunnerBroker: () => ({ enabled: async () => true, bindingForAgent: async () => null }),
+}));
+
 const testEnvironmentSpy = vi.fn();
 
 const externalAdapter: ServerAdapterModule = {
@@ -110,12 +114,13 @@ const mockPrepareManagedAiRuntime = vi.hoisted(() => vi.fn());
 vi.mock("../services/ai-connection-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/ai-connection-runtime.js")>()),
   prepareManagedAiRuntime: mockPrepareManagedAiRuntime,
+  withManagedAiProbe: async (_db: unknown, input: unknown, probe: (runtime: unknown) => Promise<unknown>) => {
+    const runtime = await mockPrepareManagedAiRuntime(_db, input);
+    try { return await probe(runtime); } finally { await runtime.cleanup(); }
+  },
 }));
 const mockValidateAiApiKey = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("../routes/ai-connections.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../routes/ai-connections.js")>()),
-  validateAiApiKey: mockValidateAiApiKey,
-}));
+vi.mock("../services/ai-api-key-test.js", () => ({ validateAiApiKey: mockValidateAiApiKey }));
 const mockMarkAuthenticationFailed = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../services/ai-connections.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/ai-connections.js")>()),
@@ -246,6 +251,35 @@ describe("agent test-environment route", () => {
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
+  });
+
+  it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    const app = await createApp();
+    try {
+      const res = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.checks).toContainEqual(expect.objectContaining({ code: "dot_controller", level: "info" }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("fails the Cloud Dot check without a managed sandbox instead of probing the host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud");
+    const app = await createApp();
+    try {
+      const res = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe("fail");
+      expect(res.body.checks).toContainEqual(expect.objectContaining({ code: "dot_controller", level: "error" }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("tests the instance default sandbox when the agent inherits its environment", async () => {
@@ -1025,4 +1059,10 @@ describe("agent test-environment route", () => {
       expect(testEnvironmentSpy.mock.calls[0]?.[0]?.executionTarget ?? null).toBeNull();
     });
   });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
 });

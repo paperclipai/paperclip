@@ -10,7 +10,7 @@ export function mcpSetupUrl(serverUrl: string, companyId?: string) {
   return url.toString();
 }
 export function mcpInvitation(serverUrl: string, company?: { id: string; name: string }) {
-  return `Connect to my ${company ? `${company.name} ` : ""}Paperclip organization using the instructions at ${mcpSetupUrl(serverUrl, company?.id)}. Start authorization, give me the approval link, and verify the connection after I approve. This connects as me, not as a Paperclip agent.`;
+  return `Connect to my ${company ? `${company.name} ` : ""}Paperclip organization using the instructions at ${mcpSetupUrl(serverUrl, company?.id)}. Start authorization, give me the approval link, and verify the connection after I approve.`;
 }
 export function mcpSetupSteps(serverUrl: string, assistant: AssistantClient) {
   const quoted = `'${serverUrl.replaceAll("'", "'\"'\"'")}'`;
@@ -18,7 +18,7 @@ export function mcpSetupSteps(serverUrl: string, assistant: AssistantClient) {
   switch (assistant) {
     case "codex": return [
       { text: "Check for an existing Paperclip server first. Reuse it only if its URL matches this instance. Add the remote server with the Codex CLI.", code: `codex mcp add paperclip --url ${quoted}` },
-      { text: "Start browser authorization and give the user the approval link.", code: "codex mcp login paperclip --scopes paperclip:read,paperclip:write,offline_access" },
+      { text: "Start browser authorization and give the user the approval link.", code: "codex mcp login paperclip --scopes paperclip:read,paperclip:write,paperclip:configure,offline_access" },
       { text: "If the current conversation does not reload its MCP tools, start a new conversation or restart the client. Verify the connection with paperclip_connection before claiming success." },
     ];
     case "claude": return [

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { assets, issueAttachments, issueWorkProducts, type Db } from "@paperclipai/db";
+import { assets, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issueWorkProducts, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
 function evidenceRefs(value: unknown): string[] {
@@ -63,27 +63,107 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
  * an output requirement or erase a user's request for a file.
  */
 export function explicitlyRequestsFileOutput(objective: string): boolean {
-  return objective.split(/(?:[.!?](?:\s|$)|\n|[;,]|\bbut\b)/iu).some(clause => {
+  const sentences = objective.replaceAll("\\_", "_").split(/(?:[.!?](?:\s|$)|\n)/iu);
+  let precedingFileOutput = false;
+  return sentences.some((sentence, index) => {
     const file = /\b(?:files?|attachments?|downloads?|pdf|spreadsheets?|workbooks?|slide decks?|powerpoints?|docx|xlsx|csv)\b|\b[^\s/]+\.(?:md|txt|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip)\b/giu;
-    const create = /\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/iu.exec(clause);
-    if (create && /\b(?:do not|don't|never|no need to)\s*$/iu.test(clause.slice(0, create.index))) return false;
-    const output = create ? clause.slice(create.index + create[0].length) : "";
-    const fileObject = [...output.matchAll(file)].some(match => {
-      const prefix = output.slice(0, match.index);
-      const suffix = output.slice(match.index + match[0].length);
-      // "Create no files" is a prohibition, even though it contains a creation
-      // verb. Negate this object only; another explicit output can still count.
-      if (/\b(?:no|zero|without(?:\s+any)?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
-      // "Write a summary of this PDF" names input, not a requested file.
-      // Explicit export destinations still count after such input references.
-      const destination = /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu.test(prefix);
-      if (!destination && /\b(?:of|about|on|from|using|for|with)\b/iu.test(prefix)) return false;
-      if (/^files?$/iu.test(match[0]) && /^\s+(?:permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
-      return true;
+    const outputs = sentence.split(/(?:[;,]|\bbut\b)/iu).flatMap(clause => {
+      const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/giu)];
+      return creates.flatMap((create, createIndex) => {
+        const before = clause.slice(0, create.index);
+        if (/\b(?:do not|don't|never|no need to)\s*$/iu.test(before)) return [];
+        // Bind each object to its own verb. A denied write or "create no files"
+        // cannot suppress a separate requested report in this same clause.
+        const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index);
+        const objects = [...output.matchAll(file)].filter(match => {
+          const prefix = output.slice(0, match.index);
+          const suffix = output.slice(match.index + match[0].length);
+          // "Create no files" is a prohibition, even though it contains a creation
+          // verb. Negate this object only; another explicit output can still count.
+          if (/\b(?:no|zero|without(?:\s+any)?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
+          // "Write a summary of this PDF" names input, not a requested file.
+          // Explicit export destinations still count after such input references.
+          const destination = /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu.test(prefix);
+          if (!destination && /\b(?:of|about|on|from|using|for|with)\b/iu.test(prefix)) return false;
+          if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
+          return true;
+        });
+        // An explicit attachment/export request can refer to the file by
+        // pronoun. It still requires publication when its name is omitted.
+        const referencesOutput = /^(?:attach|export|send|provide|give|return)$/iu.test(create[0])
+          && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
+        const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
+        const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
+        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
+          && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
+        const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give)\b/iu.test(create[0] + output);
+        const deniedAttempt = create[0].toLowerCase() === "write" && objects.length === 1
+          && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
+          && /\b(?:must be denied|denial is (?:the )?expected|(?:this|the) negative test)\b/iu.test(objective);
+        if (objects.length === 0 && !downloadable && /^\s+(?:no|zero|without)\b/iu.test(output)) return [];
+        return [{ objects: objects.length, downloadable, publication, deniedAttempt,
+          referencesOutput, publicationReference: referencesOutput && !inline }];
+      });
     });
-    return fileObject ||
-      (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(clause) && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(clause));
+    // "This ..." qualifies a single requested file in the preceding sentence,
+    // even when a later clause checks it. Multiple files cannot share this
+    // exception and separate report requests still require publication.
+    const internal = outputs.reduce((count, output) => count + output.objects + Number(output.downloadable && output.objects === 0), 0) === 1
+      && /^\s*This is (?:an? )?(?:personal memory|internal (?:assertion|verification) file)\b[^.!?]*\bnot a (?:task )?deliverable\b/iu.test(sentences[index + 1] ?? "");
+    return outputs.some(output => {
+      const publicationReference = output.publicationReference && precedingFileOutput;
+      if (!output.referencesOutput) precedingFileOutput = output.objects > 0;
+      return (output.objects > 0 || output.downloadable || publicationReference)
+        && (output.publication || (!internal && !output.deniedAttempt));
+    });
   });
+}
+
+/** An explicitly requested document on the task must be published there. */
+export function explicitlyRequestsTaskDocumentOutput(objective: string): boolean {
+  // Keep comma-separated conditions with their imperative. This is a narrow
+  // unconditional-output guard, not an interpreter of whether a condition held.
+  return objective.split(/(?:[.!?](?:\s|$)|\n|;)/iu).some(statement => {
+    // Check conditions before separating contrastive instructions: "create a
+    // document, but only if ..." must not become an unconditional requirement.
+    if (/\b(?:if|unless|when|once|otherwise|provided that|in case)\b/iu.test(statement)) return false;
+    return statement.split(/\bbut\b/iu).some(clause => {
+      if (/\boptionally\b/iu.test(clause)) return false;
+      const create = /\b(?:create|make|write|save|publish|prepare|provide|attach)\b/iu.exec(clause);
+      if (!create) return false;
+      const before = clause.slice(0, create.index);
+      if (/\b(?:do not|don['’]t|never|no need to|may|could|can)\b/iu.test(before)) return false;
+      if (/\b(?:explain|describe|discuss|review)\b/iu.test(before)) return false;
+      const output = clause.slice(create.index + create[0].length);
+      return [...output.matchAll(/\b(?:document|doc)\b/giu)].some(match => {
+        const prefix = output.slice(0, match.index);
+        if (/\b(?:of|about|from|using|for|with|without|no|zero)\b/iu.test(prefix)) return false;
+        return /^\s+(?:on|to|in|attached to)\s+(?:this|the|current)\s+(?:task|issue)\b/iu.test(output.slice(match.index + match[0].length));
+      });
+    });
+  });
+}
+
+/** Current attached revisions with server-owned publication proof. Joining the
+ * revision to its originating run preserves completed work across continuations
+ * without accepting stale, foreign-task, or provider-invented document refs.
+ */
+export async function publishedTaskDocuments(db: Db, binding: { companyId: string; issueId: string }) {
+  const saved = await db.select({ id: documents.id, revisionId: documents.latestRevisionId,
+    key: issueDocuments.key, resultJson: heartbeatRuns.resultJson })
+    .from(issueDocuments)
+    .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, binding.companyId)))
+    .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId),
+      eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, binding.companyId)))
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, documentRevisions.createdByRunId),
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
+      eq(heartbeatRuns.runtimeMode, "native")))
+    .where(and(eq(issueDocuments.companyId, binding.companyId), eq(issueDocuments.issueId, binding.issueId)));
+  return saved.filter(document => Object.values(record(document.resultJson?.semanticToolReceipts)).some(value => {
+    const receipt = record(value), result = record(receipt.result), published = record(result.document);
+    return receipt.operationId === "write_document" && ["applied", "duplicate"].includes(String(result.disposition))
+      && published.id === document.id && published.latestRevisionId === document.revisionId;
+  })).map(({ id, revisionId, key }) => ({ id, revisionId, key }));
 }
 
 /** Files cited as completed output must be reachable outside the agent workspace. */
@@ -94,6 +174,8 @@ export async function validateNativeDeliverableEvidence(
 ): Promise<void> {
   if (result.reportedWorkDisposition !== "done") return;
   const fileRequested = explicitlyRequestsFileOutput(binding.objective);
+  const taskDocumentRequested = explicitlyRequestsTaskDocumentOutput(binding.objective);
+  const publishedTaskDocument = taskDocumentRequested && (await publishedTaskDocuments(db, binding)).length > 0;
   const artifactRefs = new Set(evidenceRefs(result.artifacts));
   const refs = new Set([
     ...evidenceRefs(result.evidence),
@@ -122,8 +204,8 @@ export async function validateNativeDeliverableEvidence(
       // this run published the newly requested output. The receipt survives a
       // controller restart of this run; a replacement can re-register preserved
       // workspace bytes internally rather than asking the user to confirm them.
-      if (fileRequested && attachment.originatingRunId !== binding.runId) continue;
-      if (fileRequested && !await hasCurrentPublicationReceipt(db, binding.companyId, binding.semanticToolReceipts, attachment)) {
+      if ((fileRequested || taskDocumentRequested) && attachment.originatingRunId !== binding.runId) continue;
+      if ((fileRequested || taskDocumentRequested) && !await hasCurrentPublicationReceipt(db, binding.companyId, binding.semanticToolReceipts, attachment)) {
         throw new Error("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
       }
       registeredAttachment = true;
@@ -133,9 +215,15 @@ export async function validateNativeDeliverableEvidence(
     // belong in verification; do not scan prose or upload files named by a model.
     const localFile = /^(?:file:|\.{0,2}\/|[a-z]:[\\/])/iu.test(ref)
       || (!/^[a-z][a-z0-9+.-]*:/iu.test(ref) && /^[^\r\n]+\.[a-z0-9]{1,16}(?::\d+(?::\d+)?)?$/iu.test(ref));
+    if (localFile && taskDocumentRequested && !publishedTaskDocument) {
+      throw new Error("The requested task document is only a workspace file. Publish it on this task with write_document, or attach the verified file with register_deliverable and cite deliverable:<attachmentId>. Reuse completed work; do not request a new completion approval.");
+    }
     if (localFile && (fileRequested || artifactRefs.has(value))) {
       throw new Error("Completion cites a workspace-only file that the user cannot download. Before finishing, use register_deliverable for requested file outputs and cite deliverable:<attachmentId> from the receipt, with /api/attachments/<attachmentId>/content as the download link. For repository changes, cite an accessible PR or registered work product instead. No human completion approval was created.");
     }
+  }
+  if (taskDocumentRequested && !publishedTaskDocument && !registeredAttachment) {
+    throw new Error("The requested document has not been published on this task. Use write_document, or register_deliverable with its verified attachment receipt. A workspace path or final message alone is not the requested task document. Reuse completed work without requesting a new completion approval.");
   }
   if (fileRequested && !registeredAttachment) {
     const products = refs.size ? await db.select().from(issueWorkProducts).where(and(

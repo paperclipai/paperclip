@@ -1,3 +1,4 @@
+import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -33,7 +34,7 @@ import { useToastActions } from "../context/ToastContext";
 import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeValue } from "../lib/assignees";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown } from "lucide-react";
+import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown, Lock } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { MentionOption } from "./MarkdownEditor";
 import { TaskChatComposer } from "./task-chat/TaskChatComposer";
@@ -113,6 +114,7 @@ function useVisualViewportLayout(enabled: boolean) {
 }
 
 interface IssueDraft {
+  isPrivate?: boolean;
   title: string;
   description: string;
   status: string;
@@ -305,6 +307,7 @@ export function NewIssueDialog() {
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [isPrivate, setIsPrivate] = useState(false);
   const { isMobile } = useSidebar();
   const [composerSettings, setComposerSettings] = useState<ComposerRunSettings | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -316,6 +319,7 @@ export function NewIssueDialog() {
   const defaultProjectPendingRef = useRef(false);
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
 
+  const primaryAgent = usePrimaryAgentPresentation(effectiveCompanyId);
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel =
     newIssueDefaults.parentIdentifier ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
@@ -387,6 +391,22 @@ export function NewIssueDialog() {
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && canChooseWorktrees,
     retry: false,
   });
+
+  const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
+    queryKey: queryKeys.issues.detail(newIssueDefaults.parentId ?? ""),
+    queryFn: () => issuesApi.get(newIssueDefaults.parentId!),
+    enabled: newIssueOpen && Boolean(newIssueDefaults.parentId),
+    retry: false,
+  });
+  const parentPrivacyUnresolved = isSubIssueMode && !privacyParent;
+  const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
+  const privateParentProject = privacyParent?.project?.visibility === "private" ? privacyParent.project : null;
+  const inheritedPrivateProject = privateParentProject ?? (!isPrivate && currentProject?.visibility === "private" ? currentProject : null);
+  const inheritedPrivacyReason = privacyParent?.visibility === "private"
+    ? `Subtask of private task ${privacyParent.title || newIssueDefaults.parentTitle || parentIssueLabel}`
+    : inheritedPrivateProject ? `In private project ${inheritedPrivateProject.name}` : undefined;
+  const effectivePrivate = isPrivate || inheritsPrivateAccess
+    || orderedProjects.some(project => project.id === projectId && project.visibility === "private");
 
   const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
@@ -513,6 +533,7 @@ export function NewIssueDialog() {
         executionWorkspaceMode,
         selectedExecutionWorkspaceId,
         workMode,
+        isPrivate,
         composerSettings,
       });
     },
@@ -534,6 +555,7 @@ export function NewIssueDialog() {
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
       workMode,
+      isPrivate,
       composerSettings,
     ],
   );
@@ -591,6 +613,7 @@ export function NewIssueDialog() {
     defaultProjectPendingRef.current = newIssueDefaults.projectId === undefined && !newIssueDefaults.parentId;
     defaultAssigneePendingRef.current = !newIssueDefaults.assigneeAgentId && !newIssueDefaults.assigneeUserId;
     setComposerSettings(null);
+    setIsPrivate(false);
     createIssue.reset();
     if (newIssueDefaults.parentId) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
@@ -654,6 +677,7 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
+      setIsPrivate(draft.isPrivate ?? false);
       setIssueText(draft.title, draft.description);
       setComposerSettings(draft.composerSettings ?? null);
       setStatus(draft.status || "todo");
@@ -756,6 +780,7 @@ export function NewIssueDialog() {
     setWorkMode("standard");
 
     setComposerSettings(null);
+    setIsPrivate(false);
 
     setStagedFiles([]);
     setIsFileDragOver(false);
@@ -767,7 +792,7 @@ export function NewIssueDialog() {
   async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
     const currentTitle = titleRef.current.trim();
     const currentDescription = body.trim();
-    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || worktreeSelectionIncomplete) return;
+    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeChrome ? "custom" : assigneeModelLane,
@@ -815,6 +840,7 @@ export function NewIssueDialog() {
       status,
       priority: priority || "medium",
       workMode: mode,
+      ...(effectivePrivate ? { visibility: "private" } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -955,7 +981,7 @@ export function NewIssueDialog() {
   // the queries were in flight or replacing an explicit/restored assignee.
   useEffect(() => {
     if (!newIssueOpen || !effectiveCompanyId || !defaultAssigneePendingRef.current
-      || !agents || !sessionFetched || !membersFetched) return;
+      || !agents || !sessionFetched || !membersFetched || primaryAgent?.loading) return;
     defaultAssigneePendingRef.current = false;
     const available = new Set(assigneeOptions.map((option) => option.id));
     const scopedRecents = getRecentAssigneeSelectionIds(effectiveCompanyId);
@@ -965,9 +991,10 @@ export function NewIssueDialog() {
       : getRecentAssigneeSelectionIds().filter((value) => value.startsWith("agent:"));
     const recent = recents.find((value) => available.has(value));
     const targets = agents.filter(isAgentTaskTarget);
-    const fallback = targets.find((agent) => agent.role === "ceo") ?? targets[0];
+    const fallback = targets.find((agent) => agent.id === primaryAgent?.primaryAgentId)
+      ?? targets.find((agent) => agent.role === "ceo") ?? targets[0];
     setAssigneeValue(recent ?? (fallback ? assigneeValueFromSelection({ assigneeAgentId: fallback.id }) : ""));
-  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched]);
+  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched, primaryAgent?.loading, primaryAgent?.primaryAgentId]);
   useEffect(() => {
     if (!newIssueOpen || !effectiveCompanyId || !defaultProjectPendingRef.current || !projects) return;
     defaultProjectPendingRef.current = false;
@@ -1156,6 +1183,18 @@ export function NewIssueDialog() {
                 value: description,
                 onChange: handleDescriptionChange,
                 onSubmit: handleSubmit,
+                privacy: parentPrivacyUnresolved ? undefined : {
+                  private: effectivePrivate,
+                  inherited: inheritedPrivacyReason,
+                  onChange: (checked) => {
+                    setIsPrivate(checked);
+                    if (!checked && currentProject?.visibility === "private") handleProjectChange("");
+                    if (checked && !projectId && currentUserId) {
+                      const personalProject = orderedProjects.find(project => project.personalOwnerUserId === currentUserId);
+                      if (personalProject) handleProjectChange(personalProject.id);
+                    }
+                  },
+                },
                 submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
@@ -1195,6 +1234,12 @@ export function NewIssueDialog() {
                   ) : undefined,
                 details: (
                   <>
+                    {parentPrivacyUnresolved ? (
+                      <div role={parentPrivacyError ? "alert" : "status"} className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{parentPrivacyError ? "Couldn't check parent access." : "Checking parent access…"}</span>
+                        {parentPrivacyError ? <Button variant="ghost" size="sm" onClick={() => void refetchParentPrivacy()}>Retry</Button> : null}
+                      </div>
+                    ) : null}
                     {worktreeSelectionIncomplete && !worktreesLoading ? (
                       <p role="alert" className="mb-2 text-xs text-destructive">
                         {worktreesError ? "Couldn't check the selected worktree. Retry in Worktrees or choose New worktree."
@@ -1334,7 +1379,7 @@ export function NewIssueDialog() {
                     ) : null}
                   </>
                 ),
-                submitDisabled: worktreeSelectionIncomplete,
+                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved,
                 contextBar: (
                   <>
                     <InlineEntitySelector
@@ -1358,6 +1403,7 @@ export function NewIssueDialog() {
                           <>
                             <Folder className="size-3.5 shrink-0" style={{ color: currentProject.color ?? "var(--project-seed)" }} aria-hidden />
                             <span className="truncate">{option.label}</span>
+                            {currentProject.visibility === "private" ? <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
                             <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
                           </>
                         ) : (
@@ -1374,7 +1420,8 @@ export function NewIssueDialog() {
                         return (
                           <>
                             <Folder className="size-4 shrink-0" style={{ color: project?.color ?? "var(--project-seed)" }} aria-hidden />
-                            <span className="truncate">{option.label}</span>
+                            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                            {project?.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
                           </>
                         );
                       }}

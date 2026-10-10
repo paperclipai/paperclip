@@ -1,3 +1,4 @@
+export { chatSlackRegistrations } from "./chat_slack_registrations.js";
 export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
 export { companyTransferRuns } from "./company_transfer_runs.js";
@@ -5,6 +6,7 @@ export { companyOnboardingSeeds } from "./company_onboarding_seeds.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
+export { chatVoiceCallbacks } from "./chat_voice_callbacks.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
 export { agents } from "./agents.js";
 export { builtInManagedResources } from "./built_in_managed_resources.js";
@@ -26,6 +28,7 @@ export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_session
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
+export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
@@ -41,6 +44,7 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
+export { issueAccessGrants } from "./issue_access_grants.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
@@ -207,6 +211,7 @@ export { toolActionDeliveries } from "./tool_action_deliveries.js";
 export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
 export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
 export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
+export { chatVoiceSessions, chatVoiceToolCalls, chatVoiceReplies } from "./chat_voice_sessions.js";
 export { chatGitHubConfigurations, chatGitHubRegistrations, chatGitHubReviews } from "./chat_github.js";
 
 export { aiConnectionDefaults } from "./ai_connection_defaults.js";
@@ -221,8 +226,10 @@ export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrows
 
 export * from "./company_skill_sources.js";
 export * from "./public_mcp.js";
+export * from "./dot_runner.js";
 
 
+export * from "./accounting.js";
 export * from "./ai_connection_routing.js";
 export { toolConnectionAppSnapshots } from "./tool_connection_app_snapshots.js";
 export { toolConnectionAppSyncs } from "./tool_connection_app_syncs.js";
@@ -230,3 +237,10 @@ export { agentCommentary } from "./agent_commentary.js";
 
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";
+
+export { chatVoiceReports } from "./chat_voice_reports.js";
+
+export { chatVoicePhoneLines, chatVoiceInboundCalls } from "./chat_voice_inbound.js";
+export * from "./decision_models.js";
+export { userCompanyPreferences } from "./user_company_preferences.js";
+export { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections } from "./ai_subscriptions.js";

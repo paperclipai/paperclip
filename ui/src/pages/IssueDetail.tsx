@@ -1,3 +1,6 @@
+import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
+import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
+import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
 import { useTaskBrowsers, useBrowserArrivals } from "@/hooks/useTaskBrowsers";
 import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
@@ -94,6 +97,7 @@ import {
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
+import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
@@ -174,6 +178,7 @@ import {
   formatDurationMs,
   formatTokens,
   visibleRunCostUsd,
+  visibleRunTokenTotal,
 } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -336,6 +341,8 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { IssuePrivacyActions } from "@/components/IssuePrivacyActions";
+import type { ShareSheetImplicitPrincipal } from "@/components/IssueShareSheet";
 import {
   deriveOriginatingActor,
   isClosedIsolatedExecutionWorkspace,
@@ -2692,6 +2699,7 @@ function IssueDetailActivityTab({
     let input = 0;
     let output = 0;
     let cached = 0;
+    let totalTokens = 0;
     let cost = 0;
     let runtimeMs = 0;
     let runCount = 0;
@@ -2716,6 +2724,7 @@ function IssueDetailActivityTab({
       input += runInput;
       output += runOutput;
       cached += runCached;
+      totalTokens += visibleRunTokenTotal(usage);
       cost += runCost;
 
       if (run.startedAt) {
@@ -2739,7 +2748,7 @@ function IssueDetailActivityTab({
       output,
       cached,
       cost,
-      totalTokens: input + output,
+      totalTokens,
       hasCost,
       hasTokens,
       runtimeMs,
@@ -2749,6 +2758,7 @@ function IssueDetailActivityTab({
   }, [linkedRuns]);
   const issueTreeCostTokens =
     (issueTreeCostSummary?.inputTokens ?? 0) +
+    (issueTreeCostSummary?.cachedInputTokens ?? 0) +
     (issueTreeCostSummary?.outputTokens ?? 0);
   const hasIssueTreeCost =
     !!issueTreeCostSummary &&
@@ -3276,34 +3286,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     isLoading: workProductsLoading,
     isError: workProductsError,
     refetch: refetchWorkProducts,
-  } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issueId!),
-    queryFn: () =>
-      issuesApi.listWorkProducts(issueId!, {
-        // Initial geometry needs stored artifacts, not a network round-trip to
-        // GitHub. Enrich PR status after the stored list has painted.
-        refreshPullRequests:
-          queryClient.getQueryData(queryKeys.issues.workProducts(issueId!)) !==
-          undefined,
-      }),
-    enabled: !!issueId,
-    refetchOnMount: "always",
-    placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(
-      issueId ?? "pending",
-    ),
-  });
-
-  const enrichedWorkProductsIssue = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      !issueId ||
-      enrichedWorkProductsIssue.current === issueId ||
-      !workProducts?.some((product) => product.type === "pull_request")
-    )
-      return;
-    enrichedWorkProductsIssue.current = issueId;
-    void refetchWorkProducts();
-  }, [issueId, workProducts, refetchWorkProducts]);
+  } = useIssueWorkProducts(issueId);
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
     {
@@ -3606,6 +3589,38 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
+  const canManagePrivacy = canManageIssuePrivacy(issue, currentUserId, boardAccess);
+  // Role-based principals for the share sheet's implicit rows (no revoke).
+  const privacyImplicitPrincipals = useMemo<ShareSheetImplicitPrincipal[]>(() => {
+    if (!issue) return [];
+    const list: ShareSheetImplicitPrincipal[] = [];
+    const seen = new Set<string>();
+    const pushUser = (userId: string | null, roleLabel: string) => {
+      if (!userId || seen.has(`user:${userId}`)) return;
+      seen.add(`user:${userId}`);
+      const profile = userProfileMap.get(userId);
+      list.push({
+        id: `user:${userId}`,
+        displayName: profile?.label ?? userId.slice(0, 5),
+        roleLabel,
+        avatarUrl: profile?.image ?? null,
+      });
+    };
+    const pushAgent = (agentId: string | null, roleLabel: string) => {
+      if (!agentId || seen.has(`agent:${agentId}`)) return;
+      seen.add(`agent:${agentId}`);
+      const agent = agentMap.get(agentId);
+      list.push({
+        id: `agent:${agentId}`,
+        displayName: agent?.name ?? agentId.slice(0, 8),
+        roleLabel,
+      });
+    };
+    pushUser(issue.responsibleUserId, "Owner");
+    pushAgent(issue.assigneeAgentId, "Assignee");
+    pushUser(issue.assigneeUserId, "Assignee");
+    return list;
+  }, [issue, userProfileMap, agentMap]);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
@@ -4553,7 +4568,30 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ],
   );
 
+  const cancelIssueMonitor = useMutation({
+    mutationKey: ["cancel-issue-monitor", issueId],
+    mutationFn: async () => {
+      const current = await issuesApi.get(issueId!);
+      const { monitor: _monitor, ...policy } = current.executionPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] };
+      return issuesApi.update(current.id, {
+        expectedExecutionPolicy: current.executionPolicy ?? null,
+        executionPolicy: {
+          ...policy,
+          mode: policy.mode ?? "normal",
+          commentRequired: policy.commentRequired ?? true,
+          stages: policy.stages ?? [],
+        },
+      });
+    },
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueRunState();
+      invalidateIssueCollections();
+    },
+  });
+
   const checkIssueMonitorNow = useMutation({
+    mutationKey: ["check-issue-monitor-now", issueId],
     mutationFn: () => issuesApi.checkMonitorNow(issueId!),
     onSuccess: () => {
       invalidateIssueDetail();
@@ -6890,7 +6928,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       return null;
     }
     const parent = ancestors.length > 0 ? ancestors[0] : null;
-    if (!parent) return null;
+    if (!parent || isLockedIssueStub(parent)) return null;
     const ref = parent.identifier ?? parent.id;
     return {
       identifier: parent.identifier ?? null,
@@ -7012,7 +7050,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         {[...ancestors].reverse().map((ancestor, i) => (
           <span key={ancestor.id} className="flex items-center gap-1">
             {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
-            <Link
+            {isLockedIssueStub(ancestor) ? <LockedIssueChip identifier={ancestor.identifier} /> : <Link
               to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
               state={resolvedIssueDetailState ?? location.state}
               onClickCapture={() =>
@@ -7026,7 +7064,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               title={ancestor.title}
             >
               {ancestor.title}
-            </Link>
+            </Link>}
           </span>
         ))}
         <ChevronRight className="h-3 w-3 shrink-0" />
@@ -7320,6 +7358,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 "absolute right-0 top-0 flex h-7 items-center",
             )}
           >
+            <IssuePrivacyActions
+                issue={issue}
+                companyId={issue.companyId}
+                canManage={canManagePrivacy}
+                closeMenu={() => setMoreOpen(false)}
+                implicitPrincipals={privacyImplicitPrincipals}
+>
+                {(privacyMenuItems) => (
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -7381,6 +7427,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     ) : null}
                   </>
                 ) : null}
+                {privacyMenuItems}
                 <TaskTreeControlMenuItems
                   scope={treeControlScope}
                   canPause={
@@ -7438,6 +7485,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 </button>
               </PopoverContent>
             </Popover>
+                )}
+              </IssuePrivacyActions>
           </div>
         </div>
       </div>
@@ -7460,7 +7509,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         : null}
 
       <IssueMonitorBanner
+        key={issue.id}
+        onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
+        workProducts={workProducts}
+        checkError={checkIssueMonitorNow.error?.message}
         onCheckNow={() => checkIssueMonitorNow.mutate()}
         checkingNow={checkIssueMonitorNow.isPending}
       />
@@ -7885,6 +7938,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}
               {resolvedDetailTab === "chat" ? (
+                <WorkspaceBaseRefRecoveryProvider issue={issue} agentMap={agentMap} onRepaired={() => { invalidateIssueDetail(); invalidateIssueCollections(); }}
+                  unavailableReason={!canManageBoardRuntime || !canResolveBoardRecoveryAction ? "You don’t have permission to repair this task’s workspace."
+                    : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
+                    : activePauseHold ? "Resume the task before retrying."
+                    : issue.project?.pausedAt ? "Resume the project before retrying."
+                    : interactions.some(i => i.status === "pending") ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
@@ -8014,6 +8073,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
+                        workProducts={workProducts}
+                        checkError={checkIssueMonitorNow.error?.message}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}
                         checkingNow={checkIssueMonitorNow.isPending}
                       />
@@ -8154,6 +8215,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   linkCaseReferences={casesChipsEnabled}
                 />
                 </DispositionRecoveryProvider>
+                </WorkspaceBaseRefRecoveryProvider>
               ) : null}
             </TabsContent>
 

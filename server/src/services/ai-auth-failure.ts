@@ -15,12 +15,16 @@ function missingPersonalAiCredentialProvider(run: AuthenticationFailure): AiProv
   if (run.errorCode !== "configuration_incomplete") return undefined;
   const gap = record(record(run.resultJson)?.configurationIncomplete);
   if (gap?.reason !== "secret_binding_missing" || !Array.isArray(gap.missingBindings) || !gap.missingBindings.length) return undefined;
+  if (typeof gap.agentId !== "string" || !gap.agentId) return undefined;
   const missingBindings = gap.missingBindings;
   return AI_PROVIDERS.find(provider => {
     const keys = new Set(Object.values(AI_CONNECTION_CAPABILITIES[provider].methods).map(method => method.envKey));
     return missingBindings.every((value: unknown) => {
       const binding = record(value);
       return binding?.bindingType === "user_secret_ref"
+        // Account repair replaces this agent's model credential. It cannot
+        // satisfy project, environment, routine, or another agent's bindings.
+        && binding.consumerType === "agent" && binding.consumerId === gap.agentId
         && ["user_secret_missing", "secret_inactive"].includes(String(binding.errorCode))
         && typeof binding.envKey === "string" && keys.has(binding.envKey)
         && binding.configPath === `env.${binding.envKey}`;
@@ -57,6 +61,7 @@ export function aiBindingForAuthRecovery(
   config: Record<string, unknown>,
   failure?: AuthenticationFailure,
 ): AiConnectionBinding | undefined {
+  if (failure?.errorCode === "configuration_incomplete" && !isAiConnectionConfigurationFailure(failure)) return undefined;
   const missingProvider = failure ? missingPersonalAiCredentialProvider(failure) : undefined;
   for (const provider of AI_PROVIDERS) {
     if (missingProvider && missingProvider !== provider) continue;

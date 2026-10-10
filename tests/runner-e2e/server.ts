@@ -1,3 +1,7 @@
+import { parseRestartRunnerIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
+import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
+import { runnerMatrix } from "./catalog.js";
+import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -5,6 +9,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prepareRunnerE2EServerConfig } from "./server-config.js";
+import { installedReleaseEnvironment, installedReleaseLaunch } from "./installed-release.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
@@ -24,6 +29,12 @@ const configPath = required("PAPERCLIP_CONFIG");
 const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts");
+const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
+const selectedExecutions = usesInstalledCli(process.env) ? executionIds.map(id => {
+  const execution = runnerMatrix.find(row => row.id === id);
+  if (!execution) throw new Error("Unknown installed CLI proof execution");
+  return execution;
+}) : [];
 const {
   controlDirectory,
   restartRequestPath,
@@ -31,7 +42,11 @@ const {
 } = runnerE2EServerControlPaths(temporaryRoot);
 const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
-const serverEnvironment = buildPaperclipServerEnvironment(process.env, {
+const installedRelease = process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI
+  ? installedReleaseLaunch(process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI) : null;
+const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
+  ? installedReleaseEnvironment(process.env, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
+  : process.env, {
   NODE_ENV: "test",
   PORT: port,
   // Keep provider caches attempt-private without changing Playwright's browser
@@ -118,21 +133,22 @@ function describeChildExit(candidate: ChildProcess) {
   return `server exited code=${String(candidate.exitCode)} signal=${String(candidate.signalCode)}`;
 }
 
-function startServer() {
+async function startServer() {
   if (shutdownRequested()) {
     throw new Error("Refusing to start Paperclip after wrapper shutdown");
   }
+  // Recheck bytes and dependency resolution on every controller restart.
+  const installed = await verifyInstalledCli(process.env, selectedExecutions);
   const candidate = spawn(
     process.execPath,
-    runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
+    installed ? [installed.entry, "onboard", "--yes", "--run"] : runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
     {
-      cwd: repositoryRoot,
+      cwd: installedRelease?.cwd ?? repositoryRoot,
       env: definedServerEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
-      // Stay in the launcher-created process group. That lets the launcher stop
-      // Playwright, this wrapper, Paperclip, embedded Postgres, and runner children
-      // as one verified tree even if graceful web-server shutdown stalls.
-      detached: false,
+      // Playwright signals the wrapper's group. Keep that signal from bypassing
+      // our single graceful stop; the launcher still tracks descendant groups.
+      detached: runnerE2EServerDetached,
     },
   );
   child = candidate;
@@ -165,13 +181,10 @@ function startServer() {
   // A shutdown may arrive in the synchronous interval around spawn. Never let
   // that race create an unowned replacement server.
   if (shutdownSignal) {
-    expectedStops.add(candidate);
-    try {
-      candidate.kill(shutdownSignal);
-    } catch {
-      // The process may have failed during spawn.
-    }
+    // The main/error path awaits this same promise and reports any failure.
+    void stopServer(candidate, shutdownSignal).catch(() => {});
   }
+  await stopServer.watch(candidate);
   return candidate;
 }
 
@@ -179,53 +192,13 @@ function delay(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForExit(candidate: ChildProcess, timeoutMs: number) {
-  if (childExited(candidate) || childErrors.has(candidate)) return true;
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (exited: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      candidate.off("exit", onExit);
-      candidate.off("error", onError);
-      resolve(exited);
-    };
-    const onExit = () => finish(true);
-    const onError = () => finish(true);
-    const timeout = setTimeout(() => finish(false), timeoutMs);
-    candidate.once("exit", onExit);
-    candidate.once("error", onError);
-  });
-}
-
-async function stopServer(
-  candidate: ChildProcess,
-  signal: NodeJS.Signals = "SIGTERM",
-) {
-  expectedStops.add(candidate);
-  if (childExited(candidate) || childErrors.has(candidate)) return;
-  try {
-    candidate.kill(signal);
-  } catch {
-    if (childExited(candidate) || childErrors.has(candidate)) return;
-    throw new Error("Could not signal the Paperclip server to stop");
-  }
-  if (await waitForExit(candidate, gracefulStopTimeoutMs)) return;
-
-  appendLog(
-    `\nPaperclip did not stop within ${gracefulStopTimeoutMs}ms; sending SIGKILL\n`,
-  );
-  try {
-    candidate.kill("SIGKILL");
-  } catch {
-    if (childExited(candidate) || childErrors.has(candidate)) return;
-    throw new Error("Could not force the Paperclip server to stop");
-  }
-  if (!(await waitForExit(candidate, 5_000))) {
-    throw new Error("Paperclip server did not exit after SIGKILL");
-  }
-}
+const stopServer = createRunnerE2EServerStopper({
+  gracefulTimeoutMs: gracefulStopTimeoutMs,
+  forcedTimeoutMs: 5_000,
+  hasSpawnError: (candidate) => childErrors.has(candidate),
+  markExpectedStop: (candidate) => { expectedStops.add(candidate); },
+  log: appendLog,
+});
 
 async function waitForHealth(candidate: ChildProcess) {
   const deadline = Date.now() + restartTimeoutMs;
@@ -275,6 +248,7 @@ async function waitForHealthToStop() {
 
 interface RestartRequest {
   requestId: string;
+  preserveRunner?: RestartRunnerIdentity;
 }
 
 async function readRestartRequest(): Promise<RestartRequest | null> {
@@ -300,7 +274,8 @@ async function readRestartRequest(): Promise<RestartRequest | null> {
   ) {
     return null;
   }
-  return { requestId };
+  const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
+  return { requestId, ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }) };
 }
 
 async function writeRestartAck(
@@ -322,12 +297,13 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer(requestId: string) {
+async function restartServer({ requestId, preserveRunner }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
   if (!previous) throw new Error("No Paperclip server is available to restart");
-  await stopServer(previous);
+  if (preserveRunner) await stopServer.forRestart(previous, preserveRunner);
+  else await stopServer(previous);
   if (child === previous) child = null;
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
@@ -337,7 +313,7 @@ async function restartServer(requestId: string) {
   }
 
   appendLog(`Restart request ${requestId}: starting Paperclip\n`);
-  const replacement = startServer();
+  const replacement = await startServer();
   await waitForHealth(replacement);
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
@@ -352,12 +328,9 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     if (shutdownSignal) return;
     shutdownSignal = signal;
     if (!child) return;
-    expectedStops.add(child);
-    try {
-      child.kill(signal);
-    } catch {
-      // The Paperclip process may already have exited.
-    }
+    // Begin immediately, including during a health/restart wait. The final
+    // cleanup joins this promise instead of sending a second graceful signal.
+    void stopServer(child, signal).catch(() => {});
   });
 }
 
@@ -373,20 +346,19 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  startServer();
+  await startServer();
   let lastRestartRequestId: string | null = null;
   while (!shutdownRequested()) {
     if (unexpectedChildFailure) throw unexpectedChildFailure;
     const request = await readRestartRequest();
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
-      await restartServer(request.requestId);
+      await restartServer(request);
     }
     await delay(200);
   }
 
-  const running = child;
-  if (running) await stopServer(running, shutdownSignal ?? "SIGTERM");
+  await stopServer.stopAll(shutdownSignal ?? "SIGTERM");
 }
 
 let exitCode = 0;
@@ -405,15 +377,10 @@ try {
       );
     }
   }
-  const running = child;
-  if (running) {
-    try {
-      await stopServer(running);
-    } catch (stopError) {
-      appendLog(
-        `Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`,
-      );
-    }
+  try {
+    await stopServer.stopAll();
+  } catch (stopError) {
+    appendLog(`Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`);
   }
 }
 

@@ -64,6 +64,8 @@ const ASANA_MANAGED = {
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
+const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -1207,7 +1209,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [BOX] });
+    listGalleryMock.mockResolvedValue({
+      apps: [BOX],
+      oauthCallbackUrl: "https://paperclip.example.test/api/tools/oauth/callback",
+    });
     mockParams.appKey = "box";
     await render();
     await passAccessStep();
@@ -1220,7 +1225,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
     expect(container.textContent).toContain("Paperclip callback URL");
     expect(container.textContent).toContain(
-      "http://localhost:3000/api/tools/oauth/callback",
+      "https://paperclip.example.test/api/tools/oauth/callback",
     );
     expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
 
@@ -2024,6 +2029,78 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
   });
 
+  it("connects Superagent with only an organization API key", async () => {
+    mockParams.appKey = "superagent";
+    listGalleryMock.mockResolvedValueOnce({ apps: [SUPERAGENT] });
+    await render();
+
+    expect(radioContaining("Sign in with")).toBeFalsy();
+    // The Ask-first advice must be visible on the key form, which renders the
+    // credential helper text rather than method warnings.
+    expect(container.textContent).toContain("set billable and destructive actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "sk_live_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "superagent",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "sk_live_test-key" },
+    }));
+  });
+
+  it("defaults Gauge to browser sign-in and connects an organization API key once entered", async () => {
+    mockParams.appKey = "gauge";
+    listGalleryMock.mockResolvedValueOnce({ apps: [GAUGE] });
+    await render();
+    // The publish warning must be visible on the default sign-in path, before
+    // the operator opens Advanced or switches to the API-key method.
+    expect(container.textContent).toContain("can publish to your connected CMS, including live");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Gauge")?.getAttribute("aria-checked")).toBe("true");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("set publish actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "gauge-test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "gauge",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "gauge-test-key" },
+    }));
+  });
+
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
     mockParams.appKey = "neon";
     listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });
@@ -2587,6 +2664,287 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
+  });
+
+  it("resumes a hidden provider draft only after matching its company-visible application", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: {},
+      }],
+    });
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId,
+      provider: "clickup",
+      authorizationUrl: "https://app.clickup.com/api?state=resumed",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Finish connecting ClickUp");
+    });
+    expect(getAppStoreDefinition("clickup")).toBeNull();
+    await act(async () => {
+      buttonByText("Finish with ClickUp")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+  });
+
+  it("keeps a resumed unauthenticated draft through its finish-time active transition", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    const draft = {
+      id: connectionId,
+      companyId: "company-1",
+      applicationId: "app-context7",
+      authKind: "none",
+      credentialPolicy: "shared",
+      status: "draft",
+      transport: "mcp_remote",
+      config: { sourceTemplateKey: "context7", connectionMethodKey: "mcp", url: "https://mcp.context7.com/mcp" },
+      transportConfig: { sourceTemplateKey: "context7" },
+    };
+    mockSearch.value = `source=context7&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValue({
+      applications: [{
+        id: "app-context7",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "context7" },
+      }],
+    });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [draft] })
+      .mockResolvedValue({ connections: [{ ...draft, status: "active" }] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId,
+      connection: draft,
+      application: { name: "Context7" },
+      catalog: [{ id: "tool-context7", name: "resolve-library-id", status: "active" }],
+      actions: { readOnly: [{ catalogEntryId: "tool-context7", riskLevel: "read" }], canMakeChanges: [] },
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Connect Context7"));
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(finishAppMock).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(container.textContent).not.toContain("This setup can’t be resumed");
+      expect(container.textContent).toContain("Context7 is ready.");
+    });
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connectionId }));
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.any(Object));
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    await act(async () => {
+      buttonByText("View connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenLastCalledWith(`/apps/${connectionId}/permissions`);
+  });
+
+  it("restores a valid completed resume URL to the exact connection permissions page", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    });
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a draft connection as completed from the URL stage", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Finish connecting ClickUp"));
+
+    expect(mockNavigate).not.toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    expect(container.textContent).not.toContain("ClickUp is ready.");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a mismatched active connection as completed from the URL stage", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-monday",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "monday" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-monday",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup can’t be resumed"));
+
+    expect(mockNavigate).not.toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a matching-provider resume when the saved connection was already active", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup can’t be resumed"));
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve a hidden provider when a resumed draft belongs to another provider", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-monday",
+        status: "active",
+        metadata: { sourceTemplateKey: "monday" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        applicationId: "app-monday",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: {},
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("This setup can’t be resumed");
+    });
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable hidden draft on the blocked recovery screen", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({ applications: [] });
+    listConnectionsMock.mockResolvedValueOnce({ connections: [] });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("The saved connection no longer exists");
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
   it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {

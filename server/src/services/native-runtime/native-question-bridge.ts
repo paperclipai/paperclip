@@ -333,7 +333,7 @@ export async function nativeQuestionRunToCancel(
  * Persist cancellation intent in the same transaction that closes the issue.
  * The post-commit fast path and the heartbeat recovery sweep both consume this
  * marker, so process exit or a transient process-termination failure cannot
- * strand a native run after its question has expired.
+ * strand a native run after the task closes, even if its question is retained.
  */
 export async function requestNativeQuestionRunCancellation(
   db: NativeQuestionMutationDb,

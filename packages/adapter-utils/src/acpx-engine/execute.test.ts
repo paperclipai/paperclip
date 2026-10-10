@@ -195,6 +195,7 @@ async function runExecutor(
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+  const receipts: unknown[] = [];
   const execute = createAcpxEngineExecutor({
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
@@ -233,10 +234,11 @@ async function runExecutor(
     onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
       events.push(event);
     },
+    onUsage: async (receipt: unknown) => { receipts.push(receipt); },
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
+  return { logs, meta, events, receipts, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real
@@ -540,7 +542,7 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
-    const { configOptions, meta } = await runExecutor({
+    const { configOptions, meta, receipts, result } = await runExecutor({
       agent: "codex",
       model: "gpt-5.6-sol",
       modelReasoningEffort: "high",
@@ -554,6 +556,8 @@ describe("shared ACPX engine runtime behavior", () => {
       features: { fast_mode: true },
     });
     expect(configOptions).toEqual([]);
+    expect(result.pricingContext).toEqual({ serviceTier: "fast" });
+    expect(receipts).toContainEqual(expect.objectContaining({ pricingContext: { serviceTier: "fast" }, complete: true }));
     expect(meta[0]?.commandNotes).toContain(
       "Requested ACPX model: gpt-5.6-sol (set via CODEX_CONFIG at startup).",
     );
@@ -1478,6 +1482,45 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  it.each(["checkpoint", "terminal"])("returns received usage after the %s receipt sink rejects and still closes the runtime", async (failedSave) => {
+    const root = await makeTempRoot();
+    const close = vi.fn(async () => {});
+    const cancel = vi.fn(async () => {});
+    let reads = 0;
+    const execute = createAcpxEngineExecutor({
+      resolveBillingIdentity: () => ({ provider: "anthropic", biller: "anthropic", billingType: "api" }),
+      createRuntime: () => ({
+        ...buildRuntime(),
+        getStatus: async () => ++reads === 1
+          ? { usage: { cost: { amount: 0.4, currency: "USD" } } }
+          : { usage: { cumulative: { inputTokens: 120, outputTokens: 4500, cachedReadTokens: 900, cachedWriteTokens: 30 }, cost: { amount: 1.15, currency: "USD" } } },
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "status", text: "usage", tag: "usage_update",
+              breakdown: { inputTokens: 100, outputTokens: 4000, cachedReadTokens: 800, cachedWriteTokens: 20 }, cost: { amount: 1.1, currency: "USD" } };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }), cancel,
+        }), close,
+      }) as never,
+    });
+    const onUsage = vi.fn(async (receipt: { complete: boolean }) => {
+      if (failedSave === "checkpoint" || receipt.complete) throw new Error("Receipt storage unavailable");
+    });
+    const result = await execute({ runId: `failed-${failedSave}-save`, agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onMeta: async () => {}, onLog: async () => {}, onUsage } as never);
+    expect(result).toMatchObject({ exitCode: 1, usageBasis: "per_run", usageComplete: failedSave === "terminal",
+      provider: "anthropic", biller: "anthropic", billingType: "api" });
+    expect(result.errorMessage).toContain("Receipt storage unavailable");
+    expect(result.usage).toEqual(failedSave === "terminal"
+      ? { inputTokens: 150, outputTokens: 4500, cachedInputTokens: 900 }
+      : { inputTokens: 120, outputTokens: 4000, cachedInputTokens: 800 });
+    expect(result.costUsd).toBeCloseTo(failedSave === "terminal" ? 0.75 : 0.7);
+    expect(onUsage).toHaveBeenCalledTimes(failedSave === "terminal" ? 2 : 1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to usage_update events when the runtime lacks getStatus", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1520,6 +1563,59 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
+    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
+    expect(result.usageBasis).toBe("per_run");
+    expect(result.costUsd).toBeCloseTo(0.31);
+    expect(result.provider).toBe("acpx");
+    expect(result.billingType).toBe("unknown");
+  });
+
+  it.each(["failed", "cancelled"] as const)("keeps %s in-stream usage provisional without a final receipt", async (status) => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "status",
+              text: "usage",
+              tag: "usage_update",
+              cost: { amount: 0.31, currency: "USD" },
+              breakdown: { inputTokens: 40, outputTokens: 700, cachedReadTokens: 60 },
+            };
+
+          })(),
+          result: Promise.resolve({ status, error: { code: "INTERNAL", message: "fixture failure" } }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const onUsage = vi.fn();
+    const result = await execute({
+      runId: "run-usage-event-fallback",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onUsage,
+    } as never);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.usageComplete).toBe(false);
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: false, costUsd: 0.31 }));
     expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
     expect(result.usageBasis).toBe("per_run");
     expect(result.costUsd).toBeCloseTo(0.31);
@@ -2814,7 +2910,9 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it.each(["claude", "codex", "grok", "gemini", "kimi"])("resumes %s with added and removed MCP servers and current credentials", async (agent) => {
     const root = await makeTempRoot();
-    const config = { agent, cwd: root, stateDir: path.join(root, "state"), paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+    // This fixture injects its runtime. Keep session identity independent of
+    // host CLI discovery/version probes while testing MCP credential changes.
+    const config = { agent, agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state"), paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
     const first = await runExecutor(config);
     const server = { name: "github", url: "https://example.test/github/mcp", connectionId: "github", token: "current-token" };
     const second = await runExecutor(config, {
@@ -6317,9 +6415,10 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
     expect(stagingLocks.size).toBe(0);
   });
 
-  it("test_prompt_build_failure_returns_error_result_with_phase_prepare_turn", async () => {
+  it.each(["prompt", "metadata", "dispatch"])("records whether provider work could have started on %s failure", async (failure) => {
     const root = await makeTempRoot();
     const close = vi.fn(async () => {});
+    const startTurn = vi.fn(() => { throw new Error("dispatch failed"); });
     const execute = createAcpxEngineExecutor({
       createRuntime: () =>
         ({
@@ -6328,11 +6427,7 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
             agentSessionId: "agent-session",
             runtimeSessionName: "runtime-session",
           }),
-          startTurn: () => ({
-            events: (async function* () {})(),
-            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-            cancel: async () => {},
-          }),
+          startTurn,
           close,
         }) as never,
     });
@@ -6343,7 +6438,8 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
     Object.defineProperty(context, "paperclipSessionHandoffMarkdown", {
       enumerable: false,
       get() {
-        throw new Error("prompt build boom");
+        if (failure === "prompt") throw new Error("prompt build boom");
+        return undefined;
       },
     });
 
@@ -6354,11 +6450,19 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
       config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
       context,
       onLog: async () => {},
-      onMeta: async () => {},
+      onMeta: async () => { if (failure === "metadata") throw new Error("metadata failed"); },
     } as never);
 
     expect(result.exitCode).toBe(1);
-    expect(result.resultJson?.phase).toBe("prepare_turn");
+    if (failure === "dispatch") {
+      expect(startTurn).toHaveBeenCalledTimes(1);
+      expect(result.executionRecovery).toBeUndefined();
+      expect(result.usageComplete).toBe(false);
+    } else {
+      expect(result.resultJson?.phase).toBe("prepare_turn");
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    }
     // The established runtime is closed on the pre-turn failure, so no session
     // leaks.
     expect(close).toHaveBeenCalledTimes(1);
@@ -7316,6 +7420,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // The lost channel overrides the nominally completed terminal to a failure.
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(result.usageComplete).toBe(false);
     // The message carries only the typed loss reason, not raw provider text.
     expect(result.errorMessage).toContain("provider_exit");
     expect(result.resultJson).toMatchObject({ status: "failed" });
@@ -7335,6 +7440,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
+    expect(result.usageComplete).toBe(true);
     // The atomic settle step marked the orderly completion for the
     // success-eligible terminal.
     expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);

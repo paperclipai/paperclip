@@ -776,7 +776,7 @@ type PaperclipWakeRecovery = {
 };
 
 export type PaperclipExternalChatProvider =
-  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | "speko";
 
 type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
@@ -1645,6 +1645,7 @@ const PAPERCLIP_EXTERNAL_CHAT_PROVIDERS =
     "discord",
     "microsoft-teams",
     "telegram",
+    "speko",
     "imessage-photon",
   ]);
 
@@ -2384,13 +2385,18 @@ function renderPaperclipWakePromptBody(
         ...(externalChatReaderTurn
           ? [
               "The inline comment batch is incomplete. Before answering, call `read_current_wake_comments` without a cursor, then pass each returned `nextCursor` until `complete` is true. That closed reader exposes only the exact comments accepted for this run. Attachment entries marked `metadata_only` are not readable bytes; state that limitation instead of inferring their contents.",
-              "After the complete read, answer every accepted comment in order. Make zero other Paperclip API calls: do not fetch broader task history, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
+              "After the complete read, answer every accepted comment in order. For a text answer that does not require structured human input, use the supplied context. Make zero other Paperclip API calls: do not fetch broader task history, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
             ]
           : [
-              "For a self-contained text request, answer directly from the supplied task and wake context. Make zero Paperclip API calls: do not refetch the issue, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
+              "For a self-contained text answer that does not require structured human input, answer directly from the supplied task and wake context. Make zero Paperclip API calls: do not refetch the issue, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
             ]),
         "The harness owns task state and persists your final assistant response. If the runtime offers a semantic completion operation, emit exactly one semantic completion and do not duplicate that response in a Paperclip comment or status update.",
         "The semantic completion summary is the user-visible final answer. Include every requested answer, exact value, description, and any actionable file-access or delivery limitation there; a statement that you read, checked, or prepared something is not a substitute. Private progress commentary is not delivered as the final answer.",
+        ...(normalized.externalChatProvider === "github"
+          ? [
+              "GitHub publication uses the task-scoped bot tools when they are available. Paperclip creates one working comment for this request. You may and should periodically edit that same comment with update_comment during longer work, reporting brief, factual progress or blockers before the final result. Use a distinct stable idempotency key for each update and reuse it for retries. Publish the final answer with comment, or a requested review with begin_review and submit_review; these replace the same working comment. This is the provider reply, not a Paperclip progress or completion comment. Your semantic completion remains internal to Paperclip and does not post another GitHub reply. Never substitute personal credentials or choose another comment, connection, or repository.",
+            ]
+          : []),
         "In a normal successful answer, omit routine file-preparation, unconfirmed-delivery, and waiting-for-next-message status; end after the requested content or a neutral file label. Report a genuine failure or required user action plainly, without claiming a delivery that has not been confirmed.",
         ...(externalChatQuestionResponseTurn
           ? [
@@ -4263,6 +4269,9 @@ export function normalizePaperclipRunnerAdapterConfig(
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
   config = normalizeLegacyRunnerProvider(config);
+  if (config.provider === "openai_dot") {
+    return normalizePaperclipOperationalSkillPreference(adapterType, { lifecycleMode: "per_turn", ...config });
+  }
   const next: Record<string, unknown> = {
     provider: "codex",
     codexPermissionMode:

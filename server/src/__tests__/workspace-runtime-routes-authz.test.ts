@@ -1,6 +1,15 @@
+import { sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Isolate runtime-management guards; real database privacy is covered by
+// privacy-production-review.test.ts.
+vi.mock("../services/authorization.js", async () => ({
+  ...(await vi.importActual<typeof import("../services/authorization.js")>("../services/authorization.js")),
+  executionWorkspaceReadSqlCondition: async () => sql<boolean>`true`,
+  canActorReadExecutionWorkspace: async () => true,
+}));
 
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),

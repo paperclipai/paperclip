@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
 
-test("missing onboarding key offers personal Claude setup in chat and resumes once", async ({ page, request }) => {
+test("a ready agent with a missing personal key offers Claude setup in chat and resumes once", async ({ page, request }) => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(os.tmpdir(), "personal-ai-recovery-"));
   const original = await json(await request.get("/api/instance/settings/experimental"));
@@ -16,12 +16,17 @@ test("missing onboarding key offers personal Claude setup in chat and resumes on
     }));
     await writeFile(path.join(root, "continued"), "ready");
     const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-      name: "Chief of Staff", role: "general", adapterType: "claude_local",
+      name: "Chief of Staff", role: "general", adapterType: "process",
+      adapterConfig: { command: process.execPath },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+    } }));
+    await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState).toBe("ready");
+    await json(await request.patch(`/api/agents/${agent.id}`, { data: {
+      adapterType: "claude_local",
       adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
         agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
         env: { ANTHROPIC_API_KEY: { type: "user_secret_ref", key: definition.key, version: "latest", required: true },
           PAPERCLIP_STOP_FIXTURE_ROOT: root } },
-      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
     } }));
     const chatPath = `/api/companies/${company.id}/chats/${agent.id}`;
     await page.goto(`/${company.issuePrefix}/chats/${agent.id}`);
@@ -61,7 +66,7 @@ test("missing onboarding key offers personal Claude setup in chat and resumes on
     const after = await json(await request.get(`/api/companies/${company.id}/heartbeat-runs`));
     const resumed = await json(await request.get(`/api/heartbeat-runs/${after.find((run: { id: string }) => run.id !== sourceRunId).id}`));
     expect(resumed.contextSnapshot.aiConnection).toMatchObject({ connectionId: accounts[0].id, responsibleUserId: "local-board" });
-    expect((await json(await request.get(`/api/issues/${chat.id}`))).status).toBe("in_review");
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${chat.id}`))).status).toBe("in_review");
     await page.reload();
     await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect Claude", exact: true })).toHaveCount(0);

@@ -1428,6 +1428,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
@@ -1512,6 +1514,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
@@ -1553,11 +1556,13 @@ type GitHubLauncherLocation = {
   runId: string; target: AdapterExecutionTarget | null | undefined;
 };
 
-function githubOperationLauncherDirectory(input: GitHubLauncherLocation): string {
+/** Keep sandbox housekeeping within the producer-owned Runner runtime. */
+export function githubOperationLauncherDirectory(input: GitHubLauncherLocation): string {
   // Only controller-generated run IDs may name a removable directory.
   if (!/^[a-zA-Z0-9_-]+$/.test(input.runId)) throw new Error("Invalid GitHub launcher run ID");
   return input.target?.kind === "remote"
-    ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime", "github", input.runId)
+    ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime",
+        ...(input.target.transport === "sandbox" ? ["paperclip-runner"] : []), "github", input.runId)
     : path.join(os.tmpdir(), "paperclip-github-runtime", input.runId);
 }
 
@@ -2165,6 +2170,26 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
   let pollTimer: NodeJS.Timeout | null = null;
+  let terminalEvidenceRecorded = false;
+  const recordTerminalEvidence = (
+    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    event: { type?: string; code?: number | null; signal?: string | null },
+  ) => {
+    if (terminalEvidenceRecorded) return;
+    terminalEvidenceRecorded = true;
+    // Remote frames are untrusted. Keep the retained diagnostic bounded and
+    // independent of messages, commands, paths, payloads, and provider errors.
+    const outcome = event.type === "exit" ? "exit" : "error";
+    const code = typeof event.code === "number" && Number.isInteger(event.code)
+      && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
+    const signal = typeof event.signal === "string" && [
+      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
+      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
+    ].includes(event.signal) ? event.signal : "unknown";
+    logFailureWithoutWaiting(
+      `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
+    );
+  };
   const pendingRemoteEvents: Array<{
     type?: string;
     stream?: "stdout" | "stderr";
@@ -2191,22 +2216,30 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
+    // `stopping` can already be set by a terminal frame buffered before auth.
+    // Use the socket's outbound state instead: once end() has been called,
+    // another write would destroy it and truncate the frame still draining.
+    // This also covers input-delivery failure, which ends the socket directly.
+    if (socket.writableEnded || socket.destroyed) return true;
     socket.write(jsonLine(event));
-    if (event.type === "exit") {
+    if (event.type === "exit" || event.type === "error") {
       stopping = true;
+      // Flush the terminal frame and all earlier output before closing. An
+      // immediate destroy can discard the cause and leave only connection_close.
       socket.end();
-    } else if (event.type === "error") {
-      stopping = true;
-      socket.destroy();
     }
     return true;
   };
 
-  const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+  const deliverRemoteEvent = (
+    event: (typeof pendingRemoteEvents)[number],
+    source: "remote_event" | "output_poll" | "output_stream" = "remote_event",
+  ) => {
     if (event.type === "shutdownAck") {
       signalShutdownAcknowledged();
       return;
     }
+    if (event.type === "exit" || event.type === "error") recordTerminalEvidence(source, event);
     if (socket) {
       writeRemoteEventToSocket(event);
       return;
@@ -2248,6 +2281,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     nextSocket.on("close", () => {
       clearTimeout(authTimer);
       liveSockets.delete(nextSocket);
+      if (authenticated && !stopping) recordTerminalEvidence("proxy_close", { type: "error" });
     });
     nextSocket.on("data", (chunk) => {
       connectionBuffer += chunk;
@@ -2304,11 +2338,17 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             } catch {
               stdinDeliveryFailed = true;
               stopping = true;
+              recordTerminalEvidence("input_delivery", { type: "error" });
               const message = "ACP process session input delivery failed.";
               // Flush the diagnostic before closing; destroy() can discard it
               // and leave only ACP's generic connection_close error. Do not
               // expose provider error text, which may contain a command payload.
-              nextSocket.end(jsonLine({ type: "error", message }));
+              // A remote terminal frame may already be draining while this
+              // accepted stdin write fails. end(data) would write after end
+              // and discard that first failure just like socket.write(data).
+              if (!nextSocket.writableEnded && !nextSocket.destroyed) {
+                nextSocket.end(jsonLine({ type: "error", message }));
+              }
               // stop() awaits this input chain before sending shutdown. Run-log
               // persistence must not hold teardown open when it stalls or fails.
               logFailureWithoutWaiting(`[paperclip] ${message}\n`);
@@ -2340,8 +2380,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
+      // A stuck log sink must not strand the adapter waiting for this failure.
+      deliverRemoteEvent({ type: "error", message }, "output_poll");
       return;
     } finally {
       if (!stopping) {
@@ -2467,14 +2507,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             deliverRemoteEvent({
               type: "exit",
               code: typeof result.exitCode === "number" ? result.exitCode : null,
-            });
+              signal: result.signal,
+            }, "output_stream");
           }
         } catch (error) {
           if (!stopping) {
             deliverRemoteEvent({
               type: "error",
               message: error instanceof Error ? error.message : String(error),
-            });
+            }, "output_stream");
           }
         }
       })();

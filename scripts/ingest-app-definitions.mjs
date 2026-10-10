@@ -185,7 +185,7 @@ const apps = [
     key: "email-agent", label: "Email with an agent", purpose: "channel", provider: "agentmail", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
     whenToUse: "Assign an inbox to an agent and manage email conversations in tasks.", credentialFields: [{ key: "apiKey", label: "AgentMail API key", type: "password", placeholder: "am_…", required: true, secret: true }],
     guidanceMd: "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
-    consoleLinks: { keys: "https://console.agentmail.to", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
+    consoleLinks: { keys: "https://console.agentmail.to/dashboard/api-keys", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
   }],
   [
     "zapier",
@@ -1017,6 +1017,7 @@ const categoryBySlug = {
   egnyte: "content",
   embat: "commerce",
   fireflies: "productivity",
+  gauge: "analytics",
   "hugging-face": "ai",
   jira: "productivity",
   kernel: "developer",
@@ -1043,7 +1044,9 @@ const categoryBySlug = {
   sentry: "developer",
   similarweb: "analytics",
   stripe: "commerce",
+  superagent: "developer",
   supabase: "data",
+  telem: "ai",
   "ticket-tailor": "commerce",
   ticktick: "productivity",
   todoist: "productivity",
@@ -1098,6 +1101,7 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "Paste your Coda API token",
   },
+  gauge: { name: "Authorization", prefix: "Bearer ", placeholder: "Paste your Gauge API key" },
   kernel: {
     name: "X-API-Key",
     prefix: null,
@@ -1142,6 +1146,12 @@ const apiKeySpec = {
     name: "Authorization",
     prefix: "Bearer ",
     placeholder: "sbp_...",
+  },
+  superagent: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
+  telem: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "tlm_...",
   },
   youcom: {
     name: "Authorization",
@@ -1219,6 +1229,44 @@ const specialMethodsFor = (entry) => {
         key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
         placeholder: "Workspace ID", validation: { maxLength: 512 },
       }] } : {}),
+    }),
+  ];
+  // Gauge's sign-in picks one organization during consent; an API key is bound
+  // to the organization that created it and carries no user identity.
+  if (entry.slug === "gauge") {
+    const warning =
+      "Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended.";
+    // The access step renders the capability profile before sign-in, so the
+    // publish warning is visible on the default browser path too.
+    const capabilityProfile = {
+      key: "write",
+      label: "Read and write",
+      description: `Read AI visibility, SEO and traffic data, and run content workflows. ${warning}`,
+    };
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Gauge in the browser and choose the organization this connection may use. Write tools start enabled and remain governed by Paperclip's action policies.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        whenToUse: "Use a Gauge organization API key when browser sign-in is not suitable.",
+        guidanceMd:
+          "In Gauge, open Settings → Integrations → API Keys, generate a key for Paperclip, and paste it below.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+    ];
+  }
+  // Superagent's hosted server advertises protected-resource metadata, but its
+  // authorization server publishes no OAuth metadata, so organization API keys
+  // are the only working credential.
+  if (entry.slug === "superagent") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      whenToUse: "Connect with a Superagent organization API key.",
+      guidanceMd: "Open Superagent Settings → API keys, create a separate key for Paperclip, and paste it below.",
+      consoleLinks: { keys: "https://www.superagent.sh/app/settings#api-keys", docs: entry.docsUrl },
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1564,6 +1612,73 @@ const specialMethodsFor = (entry) => {
       }),
     ];
   }
+  if (entry.slug === "telem") {
+    // Telem's hosted server takes an API key only. The optional settings are
+    // per-connection request headers that the server reads; each one is left
+    // out of the request when it is empty, so an unset field keeps the
+    // server's default (auto routing off, default tier, all providers).
+    const providerList = (key, label, header, helperMd) => ({
+      key,
+      label,
+      type: "textarea",
+      advanced: true,
+      placeholder: "Optional comma-separated provider names",
+      helperMd,
+      validation: { pattern: "^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$", maxLength: 500 },
+      transport: { location: "header", name: header, format: "csv" },
+    });
+    const tenantFields = [
+      {
+        key: "autoRouting",
+        label: "Auto routing",
+        type: "select",
+        advanced: true,
+        options: [
+          { value: "off", label: "Off" },
+          { value: "accuracy", label: "Accuracy" },
+        ],
+        helperMd:
+          "Optional. Accuracy lets Telem choose the search providers for each query. Off, or no selection, keeps auto routing off.",
+        transport: { location: "header", name: "X-Telem-Auto-Routing" },
+      },
+      {
+        key: "tier",
+        label: "Tier",
+        type: "select",
+        advanced: true,
+        options: [
+          { value: "minimalist", label: "Minimalist" },
+          { value: "default", label: "Default" },
+          { value: "extended", label: "Extended" },
+          { value: "max", label: "Max" },
+        ],
+        helperMd:
+          "Optional. Sets how much search work Telem does for each query. No selection uses the Default tier.",
+        transport: { location: "header", name: "X-Telem-Tier" },
+      },
+      providerList(
+        "providersInclude",
+        "Providers to include",
+        "X-Telem-Providers-Include",
+        "Optional. Telem searches only these providers. Leave it empty to allow all providers.",
+      ),
+      providerList(
+        "providersExclude",
+        "Providers to exclude",
+        "X-Telem-Providers-Exclude",
+        "Optional. Telem does not search these providers.",
+      ),
+    ];
+    return [
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        guidanceMd:
+          "Create an API key in the Telem console at app.telem.ai. Paste the key below. Open Advanced to set auto routing, the tier, or the providers to include or exclude.",
+        whenToUse: "Connect with a Telem API key.",
+        consoleLinks: { keys: "https://app.telem.ai", docs: entry.docsUrl },
+        tenantFields,
+      }),
+    ];
+  }
   if (entry.slug === "youcom") {
     // You.com also serves a documented keyless profile at ?profile=free with a
     // reduced read-only tool set. That is a real user choice: try web search
@@ -1643,7 +1758,10 @@ for (const entry of researchManifest.entries) {
   }
   let methods = specialMethodsFor(entry);
   if (!methods) {
-    if (entry.authMode === "customer_oauth")
+    if (entry.authMode === "public")
+      methods = [method("public-mcp", "mcp_remote", "none", { serverUrl: entry.serverUrl }, entry.riskTier,
+        "Connect the provider's public MCP server without an account credential.", { label: "Connect public tools" })];
+    else if (entry.authMode === "customer_oauth")
       methods = [customerOAuthMethodFor(entry)];
     else if (entry.authMode === "api_key") methods = [apiKeyMethodFor(entry)];
     else {
@@ -1665,7 +1783,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
@@ -1834,6 +1952,23 @@ for (const { slug, name, provider, subscription, envKey, url, description } of a
   // AI account flow; saved REST connections remain removable through Connections.
   app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
 }
+// Reviewed provider-specific source data stays separate from generated output.
+// Apply it after legacy/research inputs, then run the same branding, permission,
+// instruction-template and validation pipeline as every other definition.
+const overridesDirectory = path.join(root, "scripts/app-definition-overrides");
+if (fs.existsSync(overridesDirectory)) {
+  for (const fileName of fs.readdirSync(overridesDirectory).filter(name => name.endsWith(".json")).sort()) {
+    const override = JSON.parse(fs.readFileSync(path.join(overridesDirectory, fileName), "utf8"));
+    if (!override.slug || fileName !== `${override.slug}.json` || !Array.isArray(override.methods)) {
+      throw new Error(`${fileName}: invalid provider definition source`);
+    }
+    override.branding = brandingFor(override.slug);
+    const existingIndex = apps.findIndex(app => app.slug === override.slug);
+    if (existingIndex === -1) apps.push(override);
+    else apps[existingIndex] = { ...apps[existingIndex], ...override };
+  }
+}
+
 // Every tool method has a checked-in permission review. Discovery metadata is
 // evidence for reviewers, never a runtime instruction to request more scopes.
 const permissionReviews = JSON.parse(fs.readFileSync(

@@ -1,7 +1,7 @@
 # Public Paperclip MCP acceptance
 
 This explicit-only Product E2E suite runs a paid external assistant model against
-the real ten-tool MCP catalog and shipped plugin skills. Delegated work goes
+the real direct-instance MCP catalog and shipped plugin skills. Delegated work goes
 through the real scheduler and a paid Codex or Claude agent. Independent public
 API reads grade durable outcomes; a model's success claim cannot override them.
 
@@ -182,3 +182,23 @@ UI tool. Browser decisions are recorded as explicit host events between turns,
 never fabricated as model tool calls. Missing approval or delegation fails early.
 Grader v11 calibrates both handoff mechanisms and rejects early work, missing
 independent grants, refusal bypass, and reordered approval evidence.
+
+## Expanded direct-instance operations (2026-10-06)
+
+Eight additional cases bring the catalog to 21 cases / 63 cells. Each uses browser
+consent, explicit configuration consent where needed, real MCP calls, one paid
+worker run, and independent durable API assertions: `expanded-task-edit`,
+`expanded-documents`, `expanded-files`, `expanded-agent-config`,
+`expanded-projects`, `expanded-skills`, `expanded-api`, `expanded-permissions`.
+The document case opens another model conversation for retrieval. The file case
+adds a bounded host transfer tool with actual local bytes and checks the downloaded
+SHA-256; this simulates host file capability, not installation in a real client.
+Transfer credentials are secret-scanned/redacted from retained evidence. The project
+case lists the fixture's available repositories; binding production repositories
+requires the separate real-client staging check. This suite tests direct connections,
+not the directory broker's ten-tool surface. The expanded scenario source is also
+fingerprinted. The existing request, cost, timeout and no-retry accounting applies.
+
+```sh
+pnpm test:e2e:runner -- --suite public-mcp --case expanded-task-edit --profile assistant-codex-mini --max-automatic-retries 0
+```

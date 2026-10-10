@@ -16,6 +16,8 @@ const SENSITIVE_KEYS = new Set<string>([
   // material under `credentials`. Redact the whole subtree instead of trying
   // to keep an ever-changing allowlist of provider-specific field names in
   // sync with every connector.
+  "configurationtoken",
+  "configuration_token",
   "credential",
   "credentials",
   "password",

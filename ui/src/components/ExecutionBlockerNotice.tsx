@@ -47,7 +47,7 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
           <Link to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>Inspect run</Link>
         </Button>
       )}
-      {(!requiresInspection || blocker.canRetry) && blocker.agentId && blocker.runId &&
+      {!blocker.workspaceRepairRequired && (!requiresInspection || blocker.canRetry) && blocker.agentId && blocker.runId &&
         ((blocker.cause === "legacy_execution_requires_reconciliation" && failedRun) || blocker.canContinue || blocker.canRetry) && (
         <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending ? "Starting…" : blocker.canContinue ? "Continue" : "Retry"}

@@ -21,8 +21,10 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  canonicalNativeRuntimeContextDigest,
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
+  parseNativeExecutionInput,
 } from "../../vendor/paperclip-runner/index.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -35,6 +37,8 @@ import {
 } from "../../realtime/runner-prp-ws.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.js", async () => {
@@ -49,6 +53,20 @@ import {
   claimNativeRestartRecoveries,
   type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
+
+// Exact v5 wire prompt from before the task-monitor upgrade (#15446).
+const historicalPrompt = {
+  revision: "paperclip-execution.v5",
+  text: "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. To hire or reuse a persistent teammate, use list_agents, then search_api for agent-hires and call_api if a hire is needed. Provider helper threads do not create Paperclip agents. When the user assigns work or a revision to a teammate, use create_task with that agent's ID; review their result rather than doing their assigned work yourself. When remaining work depends on a child task, use set_dependencies to add its ID while preserving existing blocker IDs. Complete independent work, then call paperclip_block with the child agent as owner and child completion as the unblock action. End the turn so the child can use the workspace. Do not sleep or poll for child results while holding the workspace. Paperclip resumes the parent when the dependency completes. When the user asks to connect a service, call connections_search before any service tool, even when that tool is already installed. Follow the returned instruction and wait for any required user choice before executing. For other tasks needing a service, use installed tools if available; otherwise use connections_search and follow its instruction. The request appears as a card in the task. Finish independent work before yielding for access; do not poll or request the same connection repeatedly. Paperclip will continue automatically with updated tools after resolution. After a decline, pursue alternatives unless the user explicitly asks to retry. Finish exactly once with `paperclip_finish` or `paperclip_block`.",
+  digest: "bec3e633d8d828103ce50b3a8b8dc9991c8ef65e07538bdab1a7663957c2ef9b",
+} as const;
+
+// A saved prompt unknown to this release must recover without adding source data.
+const unregisteredPrompt = {
+  revision: "saved-prompt-before-upgrade",
+  text: "Complete the assigned task using the saved instructions.",
+  digest: "b0cab3306694028624bbccbf40984a7aca7c809f77b29bfd959325a2af3f7a66",
+} as const;
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -564,8 +582,29 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   }, 45_000);
 
-  realProcessIt("hard-restarts a dead runner on the same run and provider session", async () => {
-    const fixture = await seedRun("DEAD");
+  realProcessIt.each([
+    ["hard", "current"],
+    ["hot", "historical"],
+    ["hot", "unregistered"],
+  ] as const)("%s-restarts a dead runner with a %s prompt on the same run and provider session", async (restartKind, promptKind) => {
+    const fixture = await seedRun(`DEAD-${promptKind}`);
+    const context = nativeRuntimeContextFixture();
+    const runtimeContext = { ...context, prompt: promptKind === "current"
+      ? context.prompt
+      : promptKind === "historical" ? historicalPrompt : unregisteredPrompt };
+    runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+    const execution = { ...buildNativeExecutionInput({
+      companyId,
+      runId: fixture.runId,
+      issue: { id: fixture.issueId, identifier: `NRR-DEAD-${promptKind}`, title: "Recover a dead runner", description: null, workMode: "standard" },
+      taskPrompt: "Resume this active turn after process loss.",
+      agentId,
+      workspace: { id: fixture.runId, cwd: tmpdir(), repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: fixture.native.normalizedSessionId,
+      provider: "codex",
+      completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Recover the same turn", criteria: [{ id: "objective", requirement: "Resume without a duplicate turn" }] } },
+      runtimeContext: context,
+    }), runtimeContext };
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
     const baseOptions = transportOptions(fixture, stateDirectory);
     const options = {
@@ -580,6 +619,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const started = await first.transport.request("thread/start", {
         cwd: tmpdir(),
         dynamicTools: [],
+        baseInstructions: runtimeContext.prompt.text,
       });
       const thread = started.thread as Record<string, unknown>;
       const turnStarted = await first.transport.request("turn/start", {
@@ -598,6 +638,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         providerPid,
         providerSessionId: String(thread.id),
       });
+      const [persistedRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.update(heartbeatRuns).set({
+        runnerProfileJson: { ...persistedRun.runnerProfileJson, nativeExecutionInput: execution },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
 
       await first.detachControllerForRestart();
       await stopOwnedProcessGroup(firstRunnerPid, stateDirectory);
@@ -609,7 +653,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const [claim] = await claimNativeRestartRecoveries({
         db: fixture.db,
         controller: successor,
-        restartKind: "hard",
+        restartKind,
         now: new Date(),
         runIds: [fixture.runId],
       });
@@ -626,6 +670,12 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const [stoppedRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
       expect(stoppedRun.processPid).toBeNull();
       expect(stoppedRun.processGroupId).toBeNull();
+      // executeRun reads this immutable input before resuming after a restart.
+      const recoveredExecution = parseNativeExecutionInput(stoppedRun.runnerProfileJson?.nativeExecutionInput);
+      if (!("runtimeContext" in recoveredExecution)) throw new Error("Expected a pinned runtime context");
+      expect(recoveredExecution.binding).toEqual(execution.binding);
+      expect(recoveredExecution.session).toEqual(execution.session);
+      expect(recoveredExecution.runtimeContext).toEqual(runtimeContext);
 
       restored = createRunnerdCodexTransport({
         ...options,

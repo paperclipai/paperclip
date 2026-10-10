@@ -33,10 +33,12 @@ export const stockHarnessGates = [
     "packages/adapters/opencode-local/src/server/execute.test.ts",
     "packages/adapters/cursor-cloud/src/server/execute.test.ts",
     "server/src/__tests__/codex-local-execute.test.ts",
+    "server/src/__tests__/paperclip-issue-update-helper.test.ts",
   ], required: ["keeps task and chat defaults to identity and connection guidance",
     "does not restore generic procedures on resume or with the legacy opt-in",
     "integrates the env-free store", "advertises folded routing metadata", "bounds routing descriptions",
-    "loads an old env-bearing file with rotated credentials", "drops a skill that fails to materialize"] },
+    "loads an old env-bearing file with rotated credentials", "drops a skill that fails to materialize", "exits 0 and prints the issue JSON when the server echoes the requested status",
+    "fails an empty 2xx body instead of treating it as success"] },
   // Hermes is not in the root Vitest project list. Run its package config so
   // the requested file cannot silently disappear from discovery.
   { id: "SH-3-hermes", name: "Hermes shared-prompt delivery", cwd: "packages/adapters/hermes",
@@ -45,9 +47,9 @@ export const stockHarnessGates = [
   { id: "SH-eval", name: "Independent oracle and qualification admission", cwd: ".",
     config: "tests/runner-e2e/vitest.config.ts",
     files: ["tests/runner-e2e/stock-harness-manifest.test.ts", "tests/runner-e2e/paperclip-document.test.ts", "tests/runner-e2e/stock-harness.test.ts", "tests/runner-e2e/stock-harness-checks.test.mjs",
-      "tests/runner-e2e/stock-harness-admission.test.ts", "tests/runner-e2e/stock-harness-digest.test.ts",
+      "tests/runner-e2e/stock-harness-admission.test.ts", "tests/runner-e2e/stock-harness-digest.test.ts", "tests/runner-e2e/checkout-activity.test.ts",
       "tests/runner-e2e/select-rerun-artifacts.test.ts", "tests/runner-e2e/stock-harness-instruction-variant.test.mjs", "tests/runner-e2e/automatic-retry.test.ts"],
-    required: ["requires generated capability manifests for the current skill sources", "the shipped recipe delivers the current", "the shipped recipe supports an unnumbered issue", "rejects old SHA before providers", "allows toolchain paths and excludes every present or future credential",
+    required: ["distinguishes a runtime claim from repeated successful HTTP checkout calls", "refuses missing, mismatched and duplicate run/receipt identities", "requires generated capability manifests for the current skill sources", "the shipped recipe delivers the current", "the shipped recipe supports an unnumbered issue", "rejects old SHA before providers", "allows toolchain paths and excludes every present or future credential",
       "changes when the evaluated server/src/onboarding-assets/default/AGENTS.md changes",
       "changes when the evaluated packages/adapter-utils/src/server-utils.ts changes",
       "changes when the evaluated packages/shared/src/connection-intent-guidance.ts changes",
@@ -85,7 +87,7 @@ export function sourceFingerprint() {
   const hash = createHash("sha256");
   const sources = new Set([
     ...stockHarnessGates.flatMap(gate => gate.files.map(file => join(gate.cwd, file))),
-    "tests/runner-e2e/stock-harness.ts", "tests/runner-e2e/stock-harness-checks.mjs", "tests/runner-e2e/catalog.ts",
+    "tests/runner-e2e/stock-harness.ts", "tests/runner-e2e/checkout-activity.ts", "tests/runner-e2e/stock-harness-checks.mjs", "tests/runner-e2e/catalog.ts",
     "tests/runner-e2e/stock-harness-admission.ts", "tests/runner-e2e/launch.ts", "tests/runner-e2e/runner.spec.ts",
     "tests/runner-e2e/stock-harness-instruction-variant.mjs", "tests/runner-e2e/stock-harness-instruction-variant.d.mts", "tests/runner-e2e/fixtures/stock-harness/historical-default-agents.md",
     "tests/runner-e2e/automatic-retry.ts", "tests/runner-e2e/types.ts",
@@ -113,11 +115,13 @@ export function sourceFingerprint() {
   const sourceErrors = [];
   sources.add("skills/paperclip/SKILL.md");
   sources.add("skills/paperclip/references/issue-documents.md");
+  sources.add("scripts/paperclip-issue-update.sh");
+  sources.add("skills/paperclip/scripts/paperclip-issue-update.sh");
   for (const source of [...sources].sort()) {
     hash.update(source);
     try { hash.update("present\0").update(readFileSync(join(root, source))); }
     catch (error) {
-      if (source === "skills/paperclip/references/issue-documents.md" && error.code === "ENOENT") hash.update("absent\0");
+      if ((source === "skills/paperclip/references/issue-documents.md" || source === "skills/paperclip/scripts/paperclip-issue-update.sh") && error.code === "ENOENT") hash.update("absent\0");
       else sourceErrors.push(source);
     }
   }

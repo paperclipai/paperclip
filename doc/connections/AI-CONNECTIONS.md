@@ -193,6 +193,17 @@ and contain neither credentials nor raw provider errors. Expired credentials
 report `authentication_required`; the probe does not exchange refresh tokens
 or change connection health.
 
+The Costs dashboard uses the company quota endpoint. It reads each authorized
+managed subscription separately, retaining the last successful observation on
+transient errors. For managed Codex accounts, a 401 can trigger one persisted
+OAuth refresh; it defers while potentially competing OpenAI work is active.
+Refresh takes the company secret-mutation lock before database row locks and
+requires those row locks immediately, before exchanging a single-use token.
+Reconnect and runtime credential write-back follow the same lock order.
+Credential resolution checks its version after any database wait and reloads a
+rotated value before giving it to a new run. Unknown utilization has no progress
+bar, but any provider-reported reset time remains visible.
+
 Verification:
 
 ```sh
@@ -498,9 +509,10 @@ existing account name. Connecting installs access for that agent and resumes the
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs of one subscription do not wait for each other. No credential
-lease exists to hold them, so a fresh task execution cannot enter a contention
-wait. A run that already entered this wait keeps its scheduled retries. It does
+Concurrent runs of one subscription do not hold a credential lease. A fresh
+task can briefly wait when a credential rotation holds the company file lock or
+a grant/secret database row lock. Lock timeouts become `ai_connection_busy`,
+keeping the task on its automatic pre-provider scheduled retry path. It does
 not request new credentials, and it does not consume the provider-failure retry
 allowance. Each retry revalidates the account, and existing run-dispatch rules
 still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
@@ -524,6 +536,39 @@ requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
 
+Quota polling has a 20-second response deadline. Once a managed OAuth refresh
+starts, it has its own 60-second request lifetime so the replacement token body
+can still be read and committed after the dashboard stops waiting. A successful
+refreshed observation uses the saved grant/secret revision as its cache identity.
+A reconnect during credential resolution defers the poll instead of associating
+one account's quota with another revision. Both Costs surfaces retain matching
+successful observations on transient failures and clear them on authentication
+failure or credential rotation.
+
+Managed runtime token write-back retries a company-lock timeout twice (three
+30-second acquisition attempts), so a slow quota exchange does not discard a
+different account's replacement tokens. Any remaining write-back error preserves
+the private runtime home for retry; cleanup deletes it only after a successful
+transaction or an intentional freshness/authorization discard. These retained
+homes are recovery evidence, not a background replay queue; persistent database
+or lock failures still require operator intervention.
+
+Quota OAuth replacement tokens are encrypted with the instance secrets master
+key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
+before vault, grant, or activity writes. Storage and encryption are checked before
+exchanging a single-use refresh token. Failed saves retry without another OAuth
+exchange; persistent failures keep the encrypted record for the next quota poll,
+including after a restart. New OpenAI subscription runtimes serialize credential
+reads with quota exchanges and recover a matching pending replacement before
+materializing an auth home. Authentication-failure handling also recovers a
+matching replacement before marking the grant invalid. A failed recovery save
+defers these actions and leaves both the active grant and journal intact.
+The journal is removed only after database commit (or
+when an authorized newer credential makes it obsolete). Replay checks the grant,
+connection, secret, and original credential fingerprint and cannot reactivate a
+revoked grant or overwrite a reconnect. Back up this directory and the instance
+secrets key with the instance data. Loss of durable storage while receiving a
+provider token can still require reconnecting the account.
 
 ## Advanced provider routing (2026-10-02)
 
@@ -672,3 +717,120 @@ requires a complete `response_wake` object.
 
 Task-card account repair uses the provider reconnect form for routed accounts,
 retaining the saved endpoint, protocol, model aliases, and connection identity.
+
+## Subscription cost reporting
+
+The Costs page shows metered API spend beside the **current monthly subscription
+commitment**. API dollars and both token totals follow the selected date range;
+monthly subscription fees do not. Tokens measure Paperclip work only, while a
+subscription fee covers the entire provider account, including other usage.
+Recorded subscription overages remain separate from the recurring fee.
+
+Agent, user, project, and model cost rows use a right-aligned amount with any
+estimate badge underneath. Each badge reflects that row's own ledger events in
+the selected date range.
+
+Discovery uses the managed AI connection actually selected for a run, or the
+connected accounts visible to the user viewing Costs. An administrator cannot
+probe another user's private credentials. OpenAI identity combines workspace and
+seat claims from the exact bearer token accepted by its usage endpoint, with
+the selected workspace checked against those claims. An editable ID token cannot
+establish identity or grant price-edit access. Claude's OAuth profile combines
+organization and account identity when the token allows profile access. Identity
+keys are company-scoped hashes; reporting never exposes tokens, raw provider IDs,
+or credential hashes. Multiple agents and connections sharing a known paid seat
+count once. Distinct seats remain separate even in the same workspace. Before
+provider verification, each connection grant has its own unconfirmed record;
+local claims alone cannot combine another user's account or billing editors.
+
+Supported exact plan identifiers with a stable account identity map to dated, USD, before-tax web list prices
+in `packages/shared/src/subscriptions.ts`. The UI labels these **Estimated** (or
+**Partially estimated** when combined with user-supplied prices). A generic
+OpenAI Pro, Claude Max, team, or enterprise entitlement does not reliably
+identify the price: it stays **Price unknown** until its owner enters an amount.
+Annual prices are divided by 12 using exact decimal arithmetic. Supported
+currencies are totaled separately; Paperclip does not estimate exchange rates.
+
+Use **Subscriptions → View details → Edit price** to record the amount paid,
+billing cadence, and tracking status. Personal prices are editable by their
+owner; shared prices require AI-connection management permission. When the same
+seat is connected both personally and shared, both its personal owners and
+company connection managers can edit the single fee, regardless of discovery
+order. These billing permissions survive disconnecting a connection; they do
+not grant access to its credentials. Viewers cannot
+edit. Updates append an immutable price revision and reject stale concurrent
+edits. Ending or excluding tracking does not cancel the provider subscription.
+Disconnecting a connection also does not prove that billing stopped, so the fee
+continues until explicitly ended or excluded.
+
+Claude setup tokens can lack profile permission. Grok plan observations currently
+do not supply a verified billing identity. Such connections retain an unconfirmed
+identity and may need manual linking after a credential change. An unconfirmed
+identity requires a user-supplied price before contributing a monthly fee, so
+credential rotations cannot multiply automatic list-price estimates. **Link accounts**
+combines usage and keeps the selected account's price; it is restricted to accounts
+the caller can edit and should only join the same subscription or paid seat.
+Provider observations never overwrite a user-supplied price. Conflicting manual
+prices prevent automatic linking rather than silently choosing one.
+
+Monthly totals and account details include only accounts the viewer may see:
+personal billing owners, company managers of shared fees, and the authorized
+audience of active shared grants. Revoking a grant removes its audience's access
+to the fee. Cost-read permission alone does not reveal
+another member's personal plan, price, owner, or account-linked activity. Billing
+editors retain visibility after disconnection so they can end tracking. Aggregate
+API and subscription run-token totals remain company-wide, as in existing cost
+reports; hidden private accounts are not mislabeled as missing attribution.
+Fixed-price, credit-billed, and unknown usage remain in the inference ledger.
+They are reported separately from API and subscription tokens as other or unknown
+billing types; the API retains the `unknown` field name for this combined total.
+
+Provider lookups run in the background, with a six-hour attempt cache shared by
+server replicas, at most four active provider lookups per process, a 15-second
+request deadline, and a 256 KiB response limit. Failed checks preserve the last
+observed plan and price. The report reads the database only and loads just the
+current price for each account; earlier revisions remain stored for auditing.
+Accepted discovery requests wait for provider capacity instead of skipping accounts.
+At most twenty discovery requests run per process; additional requests receive
+HTTP 429 and can be retried using **Retry account check**.
+Failed background UI reloads retain the last loaded values and show a short
+status message. Failed discovery offers **Retry account check**.
+
+Each new managed subscription run snapshots its subscription ID. Its cost receipt
+inherits that server-derived ID, outside the immutable monetary receipt hash.
+Switching accounts cannot move an earlier run to the new subscription. Linking
+duplicates resolves historical IDs in reports without rewriting receipts.
+Legacy and unmanaged subscription usage still contributes to the subscription
+token total but is not retroactively assigned to a guessed account. Subscription
+estimates never create finance events, change the inference ledger's dollar
+amounts, or consume agent budgets.
+
+The company-scoped API is documented in OpenAPI:
+
+- `GET /api/companies/:companyId/costs/subscriptions`: current fees and usage for
+  `from`/`to` (inclusive, matching existing cost reports), or `period=all`.
+- `POST /api/companies/:companyId/costs/subscriptions/refresh`: request background
+  discovery for the caller's authorized connections; returns `202` immediately.
+- `PATCH /api/companies/:companyId/costs/subscriptions/:subscriptionId`: save a
+  price with `expectedRevision`, plan, nullable `amountCents`, currency, cadence,
+  and tracking status.
+- `POST /api/companies/:companyId/costs/subscriptions/:subscriptionId/link`: link
+  a duplicate using `targetId`, `expectedRevision`, and `targetRevision`.
+
+Storybook **Costs / Subscriptions** renders the production Costs page with
+interactive fixtures for normal estimates, unknown prices, provider failures,
+and mobile layouts. Its edits affect fixture data only. Focused verification:
+
+```sh
+pnpm exec vitest run server/src/__tests__/subscriptions.test.ts \
+  server/src/__tests__/subscription-routes.test.ts \
+  ui/src/components/SubscriptionCostCard.test.tsx ui/src/pages/Costs.test.tsx
+pnpm check:token-gates
+pnpm storybook
+```
+
+These tests include real PostgreSQL persistence, migration replay, concurrent
+updates, account changes, duplicate identity resolution, ownership, monetary
+receipt replay, unknown prices, and failed provider observations. Provider payloads
+are fixtures; live provider access still depends on the deployment's credentials
+and scopes.

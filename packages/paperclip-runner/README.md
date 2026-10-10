@@ -22,6 +22,13 @@ the provider conversation. Company, agent, task, workspace, model, instruction,
 and skill compatibility still gate recovery. An MCP-only assignment change can
 resume only when the selected harness explicitly supports refreshing tools.
 
+Compact continuation messages include the active completion revision and criterion
+IDs plus a reminder to obtain an accepted `paperclip_finish` or `paperclip_block`
+result for this turn. Reports from earlier turns do not finish the new turn.
+Provider final text alone remains insufficient; governed waits and strict native
+completion validation keep their existing behavior. This reminder changes the
+resumed model input, not the tool catalog or automatic retry policy.
+
 When recovery needs a fresh conversation, the server supplies a deterministic
 handoff through a lazy history loader at the fresh attempt boundary.
 It includes the original request, recent messages, resolved interaction
@@ -40,6 +47,68 @@ conversation; an unqualified/custom harness retains its restart fence.
 Legacy fresh attempts receive the same bounded handoff, including resume-failure
 fallbacks. Provider
 authentication repairs retain their existing fresh-session recovery behavior.
+
+## ACPX release declarations
+
+`acpx-profiles.json` owns the package versions, command/profile digests, and
+required execution policies used by TypeScript and Rust. It contains no models.
+After changing it, run `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`.
+Normal build and typecheck reject stale generated declarations. Generation also
+checks installed dependency pins and agreement with Cursor's distribution manifest
+and immutable release attestation (`cursor-contract.json`). Cursor's per-platform
+closure pins are generated from `cursor-distributions.json`.
+
+Codex startup and browser login prefer the CLI from the installed dependency
+graph. If that dependency is absent, they use an executable `codex` from the
+selected execution host's `PATH`. An explicit execution command takes precedence,
+and resumed sessions retain their recorded command. Older or newer CLI versions
+are allowed. Relative PATH entries use the selected process working directory.
+Compatibility is established by the actual protocol or login attempt.
+Missing executables and real protocol failures still return actionable errors.
+Package identity and executable containment remain checked. Browser login keeps
+its existing provider-specific credential home. Linux ARM64 retains its existing
+legacy login path because native execution is not qualified there.
+
+Exact dependency pins remain release and ACPX artifact-qualification checks.
+They make published builds reproducible and verify sandbox artifacts; they do not
+add a version-number gate to ordinary native Codex startup or browser login.
+
+Release packages retain the pinned Codex JavaScript dependency graph, but do not
+bundle Codex native binaries. The published manifest declares the official,
+exact-version platform packages as optional dependencies. npm installs the
+package for the consumer's operating system and architecture. Those declarations
+belong to the published server manifest; the bundled JavaScript wrapper delegates
+platform installation there so npm can keep native and legacy versions separate.
+The wrapper code and patched ACP bridge stay unchanged.
+Codex sandbox read roots include the separately installed native vendor resources
+without granting access to enclosing npm directories or credential homes.
+This packaging does not change agent defaults or
+the selected runner of an existing agent.
+
+Every ACPX harness accepts an explicit caller-selected model without a Paperclip
+model allowlist. The adapter sends that ID unchanged and verifies the provider's
+effective model before prompting. An incomplete discovery catalog does not block
+selection; a provider rejection or mismatch fails without choosing a fallback.
+Qualification model selections live in test catalogs, separately from optional
+product defaults. The legacy resolved snapshot field `qualificationModel` contains
+the caller's selected model; its serialized name preserves recovery identities.
+Historical profile fixtures remain immutable evidence, not release declarations.
+
+Pi credentials are selected from the explicit run environment and remain session-bound.
+The native Rust launcher forwards the controller-bound credential names, including
+custom provider references, without restricting Pi to an OpenRouter credential.
+Built-in providers can use their usual API-key environment variables. Custom Pi
+providers are supported through `PAPERCLIP_PI_PROVIDERS`: a JSON object containing
+the native `models.json` provider entries (without the outer `providers` key).
+The runner writes that configuration to the private Pi agent directory and binds
+its digest to recovery. API-key and header environment references are forwarded
+only from the explicit run environment; command-based credential resolution is
+unsupported. Select the provider/model ID explicitly in the agent configuration.
+The bundled ACPX package tests exercise unlisted model selection, rejection,
+exact acknowledgement, and replay on a loaded connection. Catalog membership
+and Cursor model-alias expansion do not determine the selected model.
+Provider activity adapters own native tool identities, evidence, and diagnostic
+usage projection; the shared driver and sidecar consume those hooks.
 
 ## Public package surfaces
 
@@ -79,13 +148,62 @@ synchronous trace scan for each pending event: it blocks event delivery and can
 leave the board showing an active run after the provider turn has already ended.
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
-stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
-validates the exact model, session identity, tool catalog, structured input,
-and terminal settlement at the process boundary. Cursor, Copilot and Pi have
-separate candidate branches and remain unavailable in production until local
-and Daytona qualification passes. Their verified distributions are build-owned;
-no candidate accepts an arbitrary executable. See
-[the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+stdin/stdout bridge admits the pinned Claude, Codex, Grok and Cursor ACPX profiles.
+It validates the exact model, session identity, tool catalog, structured input,
+and terminal settlement at the process boundary. Copilot and Pi remain gated.
+Verified distributions are build-owned; no provider accepts an arbitrary executable.
+See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+
+Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation
+does not download it. Run setup as the OS user that runs Paperclip (the service
+account for a managed service). Setup writes to that account's
+`~/.paperclip/runtimes/cursor/<platform>-<arch>/<closure-sha256>`, so a system-wide
+npm installation can remain read-only. Isolated provider HOME/XDG settings do not
+redirect this cache. Container images continue to use their packaged assets.
+Configure a company secret binding for `CURSOR_API_KEY` or
+`CURSOR_AUTH_TOKEN`, select Cursor in the Runner configuration, and select an exact
+model ID. Agent is the default; Plan and Ask are explicit modes. Paperclip semantic
+questions are supported. Native AskQuestion and authoritative per-run dollar usage
+are unavailable. Accepting a native plan ends the planning run successfully while
+the task waits for the next instruction. See the
+[Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
+
+A release includes all three platform daemons and the Linux provider-pack identity
+from its matching Daytona image. Run `stage:release-binaries` with a manifest that
+binds each daemon path and SHA-256, plus `remoteProviderPack: {path, sha256}` for
+the actual image's `provider-pack.json`. Assemble these assets after the normal
+build and include them in the server's vendored Runner output before npm packing.
+Assembly requires the provider pack's source revision to match `sourceRevision`
+and its ACPX profiles and Cursor distribution to match the current source pins.
+An independently rehashed older pack is rejected.
+Provider-pack builds replace the installed Copilot platform wrappers with relative
+launchers. These wrappers remain usable after the pack moves into an image. The
+build still rejects any wrapper that retains its temporary deployment path.
+Ordinary remote Cursor startup uses the packaged Linux daemon and verifies every
+image asset against that manifest. A mismatched image fails before the provider
+starts; install the matching package and image together.
+
+Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
+while retaining the existing Runner authority. Live adoption and ordinary
+commands retain their 30-second bounds. Closing the transport cancels admission;
+an acknowledgement received after the admission deadline cannot revive it.
+
+The board's transcript parser coalesces consecutive identical Pi runtime-failure
+display rows within one run, turn and session, including the exit handler and
+its late prompt rejection. Both original PRP facts remain in the run log.
+Distinct failure details, intervening retry activity and later turns remain
+visible. The profile-14 notice projection, wrapper bytes and terminal settlement
+remain unchanged.
+
+Cursor candidate configuration accepts `acpxSessionMode: "agent" | "plan" | "ask"`
+(default `agent`). This selects the native Cursor mode independently of
+`acpxPermissionMode` and Paperclip task planning or company approvals. The mode
+is validated at the API boundary and is bound to provider admission and recovery;
+changing it cannot reuse an incompatible warm session. Other providers reject
+this setting. Cursor configuration requires an explicit model. Pending providers retain
+operator-controlled qualification admission.
+
 
 Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the

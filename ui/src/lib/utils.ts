@@ -33,8 +33,13 @@ export function asFiniteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatCents(cents: number, currency = "USD"): string {
+  // Older finance writes accepted arbitrary three-character codes. Keep those
+  // amounts readable without passing an invalid currency to Intl.
+  if (!/^[a-z]{3}$/i.test(currency)) {
+    return `${currency} ${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function formatNumber(n: number, options?: Intl.NumberFormatOptions): string {
@@ -170,13 +175,42 @@ function coerceBillingType(value: unknown): BillingType | null {
   return null;
 }
 
-function readRunCostUsd(payload: Record<string, unknown> | null): number {
-  if (!payload) return 0;
-  for (const key of ["costUsd", "cost_usd", "total_cost_usd"] as const) {
+function readRunCostUsd(payload: Record<string, unknown> | null): number | null {
+  if (!payload) return null;
+  for (const key of ["cacheAdjustedCostUsd", "costUsdExact", "costUsd", "cost_usd", "total_cost_usd"] as const) {
     const value = payload[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (key === "costUsdExact" && typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) && Number.isFinite(Number(value))) return Number(value);
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   }
-  return 0;
+  return null;
+}
+
+/** Receipt-backed runs and legacy Claude/Gemini snapshots store uncached input
+ * separately. OpenCode/Pi persist their provider-qualified model IDs and also
+ * separate cache reads. Older Codex input already includes cached tokens.
+ * Unknown legacy formats retain their input-plus-output interpretation. */
+export function visibleRunTokenTotal(usage: Record<string, unknown> | null | undefined): number {
+  const count = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = usage?.[key];
+      if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
+    }
+    return 0;
+  };
+  const input = count("inputTokens", "input_tokens");
+  const output = count("outputTokens", "output_tokens");
+  const cached = count("cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens");
+  const provider = typeof usage?.provider === "string" ? usage.provider : "";
+  const model = typeof usage?.model === "string" ? usage.model : "";
+  // Use the saved model convention, not the agent's current adapter: an agent
+  // can change adapters after a historical run. Codex saves an unqualified ID.
+  const qualifiedModel = provider !== "" && provider !== "unknown"
+    && model.startsWith(`${provider}/`) && model.length > provider.length + 1;
+  const inputExcludesCached = usage?.provider === "anthropic"
+    || usage?.provider === "google"
+    || qualifiedModel
+    || (typeof usage?.accountingReceiptId === "string" && usage.accountingReceiptId.length > 0);
+  return input + output + (inputExcludesCached ? cached : 0);
 }
 
 export function visibleRunCostUsd(
@@ -185,7 +219,7 @@ export function visibleRunCostUsd(
 ): number {
   const billingType = coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
   if (billingType === "subscription_included") return 0;
-  return readRunCostUsd(usage) || readRunCostUsd(result);
+  return readRunCostUsd(usage) ?? readRunCostUsd(result) ?? 0;
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
@@ -246,4 +280,9 @@ export function projectWorkspaceUrl(
   workspaceId: string,
 ): string {
   return `${projectUrl(project)}/workspaces/${workspaceId}`;
+}
+
+/** Preserve sub-cent inference charges instead of showing a misleading $0.00. */
+export function formatDetailedCents(cents: string | number): string {
+  return (Number(cents) / 100).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 9 });
 }

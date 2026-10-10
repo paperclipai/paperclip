@@ -144,6 +144,9 @@ afterAll(() => {
     "packages/paperclip-runner/src/backends/codex-native-backend.ts",
     "packages/paperclip-runner/src/drivers/opencode/mcp-bridge.ts",
     "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
+    "server/src/services/connection-tool-definitions.ts",
+    "packages/shared/src/connection-intent-guidance.ts",
+    "packages/shared/src/validators/connection-intent.ts",
     "server/src/services/native-runtime/native-session-resume.ts",
     "server/src/__tests__/native-procedure-measurement.test.ts",
   ];

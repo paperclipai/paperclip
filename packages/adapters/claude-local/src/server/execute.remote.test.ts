@@ -285,6 +285,34 @@ describe("claude remote execution", () => {
     expect(call?.[2]).not.toContain("--resume");
   });
 
+  it("explains a remote-to-local session reset even when the cwd matches", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-local-reset-"));
+    cleanupDirs.push(rootDir);
+    vi.stubEnv("PAPERCLIP_HOME", rootDir);
+    const onLog = vi.fn(async () => {});
+
+    await execute({
+      runId: "run-local-reset",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        sessionParams: {
+          cwd: rootDir,
+          remoteExecution: { transport: "ssh", host: "remote.test", port: 22, username: "fixture", remoteCwd: rootDir },
+        },
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { engine: "cli", command: "claude", cwd: rootDir, paperclipRuntimeSkills: [] },
+      context: {},
+      onLog,
+    });
+
+    expect(runChildProcess.mock.calls[0]?.[2]).not.toContain("--resume");
+    expect(onLog).toHaveBeenCalledWith("stdout", expect.stringContaining("does not match the current execution target"));
+    expect(onLog).not.toHaveBeenCalledWith("stdout", expect.stringContaining("was saved for cwd"));
+  });
+
   it("resumes saved Claude sessions for remote SSH execution when the remote identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-match-"));
     cleanupDirs.push(rootDir);

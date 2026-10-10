@@ -45,6 +45,8 @@ export interface AcpxSidecarOpenParams {
   agent: QualifiedAcpxAgent;
   model: string;
   permissionMode: NativeAcpxPermissionMode;
+  mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   permissionModePinned: boolean;
   providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
@@ -65,6 +67,8 @@ export interface AcpxExpectedSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   permissionMode?: NativeAcpxPermissionMode;
+  mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

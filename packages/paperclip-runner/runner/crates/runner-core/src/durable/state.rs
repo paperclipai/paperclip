@@ -78,12 +78,18 @@ impl Command {
         let schema_version = match self.schema.as_str() {
             "paperclip.prp.command.v1" => 1,
             "paperclip.prp.command.v2" => 2,
+            "paperclip.prp.command.v3" => 3,
             _ => {
                 return Err(DurableRunnerError::invalid(
                     "command requires a supported paperclip.prp.command schema",
                 ));
             }
         };
+        if self.command_type == "external_provider.operation" && schema_version < 3 {
+            return Err(DurableRunnerError::invalid(
+                "external provider operations require PRP v3",
+            ));
+        }
         if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
                 "session goal commands require the paperclip.prp.command.v2 schema",
@@ -150,6 +156,7 @@ impl Command {
                 | "session.goal.get"
                 | "session.goal.set"
                 | "session.goal.clear"
+                | "external_provider.operation"
         ) {
             return Err(DurableRunnerError::invalid(format!(
                 "command type is not supported by PRP v{schema_version}"
@@ -578,7 +585,9 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
-        let schema_version = if matches!(
+        let schema_version = if event_type.starts_with("external_provider.") {
+            3
+        } else if matches!(
             event_type.as_str(),
             "session.capabilities.updated"
                 | "session.goal.snapshot"
@@ -3438,6 +3447,30 @@ mod tests {
                 .pointer("/payload/payload/semantic_tool/content/digest"),
             Some(&Value::String(semantic_value_digest(transmitted)))
         );
+    }
+
+    #[test]
+    fn durable_question_initial_text_survives_serialized_reload_without_resolution() {
+        let mut config = config(PathBuf::from("unused"));
+        config.max_outbox_bytes = 512 * 1024;
+        config.max_frame_bytes = 256 * 1024;
+        let mut state = DurableState::new(&config);
+        let text = "  Editable draft 漢字\n".repeat(1_000);
+        state.enqueue_event(&config, "runtime_request.created", EventPriority::P0, json!({
+            "request": {"schema":"paperclip.runtime_request.v2", "requestKind":"runtime", "requestId":"edit-1",
+                "type":"input", "status":"pending", "input":{"schema":"paperclip.question_set.v1", "questions":[{
+                    "id":"draft", "prompt":"Edit", "answerMode":"text", "required":true, "initialText":text
+                }]}}
+        })).unwrap();
+        let reloaded: DurableState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        let request = reloaded.outbox[0]
+            .envelope
+            .pointer("/payload/payload/request")
+            .unwrap();
+        assert_eq!(request["input"]["questions"][0]["initialText"], json!(text));
+        assert_eq!(request["status"], "pending");
+        assert!(request.get("response").is_none());
     }
 
     #[test]

@@ -45,8 +45,11 @@ const images = [manilaImage, nightImage].map((src, index) => product(index ? "Ni
 }));
 
 type Scenario = "videos" | "mixed" | "rows" | "fallback" | "empty";
+function workProductsForScenario(scenario: Scenario = "videos") {
+  return scenario === "empty" ? [] : scenario === "rows" ? [...videos.slice(0, 1), ...images.slice(0, 1), ...files] : scenario === "mixed" ? [...videos.slice(0, 2), ...images, ...files] : scenario === "fallback" ? [product("Video preview unavailable", 30, { metadata: { contentType: "video/mp4", contentPath: "data:video/mp4;base64,AA==", originalFilename: "unavailable.mp4" } }), product("Image preview unavailable", 31, { metadata: { contentType: "image/png", contentPath: "data:image/png;base64,AA==" } })] : videos;
+}
 function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenario; width?: number }) {
-  const workProducts = scenario === "empty" ? [] : scenario === "rows" ? [...videos.slice(0, 1), ...images.slice(0, 1), ...files] : scenario === "mixed" ? [...videos.slice(0, 2), ...images, ...files] : scenario === "fallback" ? [product("Video preview unavailable", 30, { metadata: { contentType: "video/mp4", contentPath: "data:video/mp4;base64,AA==", originalFilename: "unavailable.mp4" } }), product("Image preview unavailable", 31, { metadata: { contentType: "image/png", contentPath: "data:image/png;base64,AA==" } })] : videos;
+  const workProducts = workProductsForScenario(scenario);
   const attachments = scenario === "mixed" ? [{ id: "loose-image", companyId: issue.companyId, issueId: issue.id, createdByAgentId: storybookAgents[0].id, contentPath: nightImage, contentType: "image/png", originalFilename: "Unpromoted agent attachment.png", objectKey: "cover.png", byteSize: 42000, createdAt: date } as IssueAttachment] : [];
   const [client] = useState(() => {
     const cache = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
@@ -89,7 +92,24 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
     </QueryClientProvider>
   );
 }
-const meta = { title: "Tasks/Artifact Gallery", component: GalleryStory, parameters: { layout: "fullscreen" }, args: { scenario: "videos", width: 480 }, render: (args, context) => <GalleryStory key={`${context.id}-${args.scenario}`} {...args} /> } satisfies Meta<typeof GalleryStory>;
+const meta = {
+  title: "Tasks/Artifact Gallery", component: GalleryStory, parameters: { layout: "fullscreen" },
+  args: { scenario: "videos", width: 480 },
+  beforeEach: ({ args }) => {
+    const originalFetch = window.fetch;
+    const fixtureFetch: typeof window.fetch = async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      if (method === "GET" && url.pathname === `/api/issues/${issue.id}/work-products`) {
+        return Response.json(workProductsForScenario(args.scenario));
+      }
+      return originalFetch(input, init);
+    };
+    window.fetch = fixtureFetch;
+    return () => { if (window.fetch === fixtureFetch) window.fetch = originalFetch; };
+  },
+  render: (args, context) => <GalleryStory key={`${context.id}-${args.scenario}`} {...args} />,
+} satisfies Meta<typeof GalleryStory>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const EightVideoOutputs: Story = {};

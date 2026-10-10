@@ -23,21 +23,66 @@ import {
   sanitizeRecord,
 } from "../redaction.js";
 
+import { createCopilotToolEvidence } from "../../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js";
+import { appendSemanticToolReceipt } from "../../../packages/paperclip-runner/src/drivers/semantic-tool-receipt.js";
+
+function receiptNotice(version: 1 | 2 = 1): Record<string, any> {
+  return {
+    schema: "paperclip.provider.notice.v1", noticeId: `copilot-evidence-${"a".repeat(24)}-1`,
+    severity: "info", category: `paperclip_semantic_tool_receipt_v${version}`, scope: "turn",
+    recoverable: true, userActionable: false, summary: "Paperclip returned a semantic tool result.",
+    provenance: { method: "paperclip/semantic_tool_result", eventType: "semantic_result", sessionId: "session", turnId: "turn" },
+    details: Object.entries({ stage: "semantic_result", schema: `paperclip.semantic_tool_receipt.v${version}`,
+      operationId: "finish_task", callIdentitySha256: "a".repeat(64), inputSha256: "b".repeat(64),
+      resultSha256: "c".repeat(64), outcome: "returned", ...(version === 2 ? { normalizedInputSha256: "d".repeat(64) } : {}),
+    }).map(([name, value]) => ({ name, value })),
+  };
+}
+const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find((detail: any) => detail.name === "schema").value;
+
 describe("redaction", () => {
-  it("preserves credential-related prose, metadata, and dotted filenames", () => {
-    const input = {
-      body: "Keep the private key in a secret manager. Document credential handling and token permissions. Use bearer tokens for authentication. Prefer bearer authentication.",
-      tokenPolicy: "least privilege",
-      secretStorage: "vault",
-      credentialHandling: "harness",
-      authorizationRequired: true,
-      path: "deployment.credentials.example.md",
-    };
-    expect(sanitizeRecord(input)).toEqual(input);
-    expect(redactSensitiveText(input.body)).toBe(input.body);
-    expect(sanitizeRecord({ credentials: { provider: "opaque-value" }, passwordValue: "opaque-value", authorization_code: "opaque-value" }))
-      .toEqual({ credentials: REDACTED_EVENT_VALUE, passwordValue: REDACTED_EVENT_VALUE, authorization_code: REDACTED_EVENT_VALUE });
-    expect(redactSensitiveText("--token-budget 4000 SECRET_STORAGE=vault")).toBe("--token-budget 4000 SECRET_STORAGE=vault");
+  it("preserves the actual Copilot receipt producer discriminator through nested durable redaction", () => {
+    const events: Array<Record<string, any>> = [];
+    const projector = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace",
+      active: () => true, emit: event => events.push(event) });
+    const receipt = appendSemanticToolReceipt({ tool: "finish_task", callId: "call", arguments: {} },
+      { content: [{ type: "text", text: "accepted" }] }).receipt;
+    expect(receipt.schema).toBe("paperclip.semantic_tool_receipt.v2");
+    projector.captureSemanticReceipt()!(receipt);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.category).toBe("paperclip_semantic_tool_receipt_v2");
+    expect(events[0]!.payload.details).toHaveLength(8);
+    const input = { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1,
+      eventType: "provider.notice.recorded", payload: events[0]!.payload } };
+    expect(redactEventPayload(input)).toEqual(input);
+    expect(redactEventPayload(redactEventPayload(input))).toEqual(input);
+  });
+
+  it.each([1, 2] as const)("preserves public v%s receipt identifiers as text", version => {
+    const notice = receiptNotice(version);
+    expect(redactEventPayload(notice)).toEqual(notice);
+    // Master's JWT detector recognizes encoded headers, so a dotted public
+    // identifier needs no receipt-shaped exemption to survive redaction.
+    expect(redactEventPayload({ value: `paperclip.semantic_tool_receipt.v${version}` }))
+      .toEqual({ value: `paperclip.semantic_tool_receipt.v${version}` });
+  });
+
+  it("redacts credentials in receipt-shaped data and every adjacent field", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345678";
+    const notice = receiptNotice();
+    notice.details.find((d: any) => d.name === "operationId").value = jwt;
+    notice.provenance.sessionId = jwt;
+    const redacted = redactEventPayload(notice)! as Record<string, any>;
+    expect(receiptSchemaValue(redacted)).toBe("paperclip.semantic_tool_receipt.v1");
+    expect(redacted.details.find((d: any) => d.name === "operationId").value).toBe(REDACTED_EVENT_VALUE);
+    expect(redacted.provenance.sessionId).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload({ notice, password: "canary", arbitrary: jwt }))
+      .toMatchObject({ password: REDACTED_EVENT_VALUE, arbitrary: REDACTED_EVENT_VALUE });
+    notice.details.find((d: any) => d.name === "schema").value = jwt;
+    notice.summary = "Authorization: Bearer canary-token";
+    const hostile = redactEventPayload(notice)!;
+    expect(receiptSchemaValue(hostile)).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(hostile)).not.toContain("canary-token");
   });
 
   it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {

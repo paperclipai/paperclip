@@ -11,7 +11,7 @@ const valid: DelegationEvidence = {
 describe("public MCP durable-state oracle", () => {
   it("accepts a complete independently observed outcome", () => {
     expect(gradeDelegation(valid).every((check) => check.passed)).toBe(true);
-    expect(new Set(publicMcpCaseDefinitions.map((entry) => entry[0])).size).toBe(13);
+    expect(new Set(publicMcpCaseDefinitions.map((entry) => entry[0])).size).toBe(21);
   });
   it.each([
     ["no evidence", null],
@@ -110,6 +110,7 @@ describe("mutation identity oracle", () => {
   const unknown = { ...accepted, result: { isError: true, structuredContent: { outcome: "unknown" } } };
   it("accepts a repaired schema rejection before any execution", () => {
     expect(gradeStableMutationIdentity([invalid, accepted])).toBe(true);
+    expect(gradeStableMutationIdentity([{ ...invalid, result: { isError: true, structuredContent: { outcome: "rejected", phase: "validation" } } }, accepted])).toBe(true);
   });
   it.each([[accepted], [accepted, accepted], [unknown, accepted]].map(calls => ({ calls })))("accepts one submitted mutation identity %#", ({ calls }) => {
     expect(gradeStableMutationIdentity(calls)).toBe(true);

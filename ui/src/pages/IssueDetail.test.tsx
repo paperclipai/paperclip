@@ -54,6 +54,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listComments: vi.fn(),
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
+  checkMonitorNow: vi.fn(),
   listFeedbackVotes: vi.fn(),
   listInteractions: vi.fn(),
   getQueuedComments: vi.fn(),
@@ -593,6 +594,7 @@ vi.mock("../components/Identity", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
+  buttonVariants: () => "",
   Button: ({
     children,
     disabled,
@@ -1330,6 +1332,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    mockIssuesApi.checkMonitorNow.mockReset();
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.getQueuedComments.mockResolvedValue(
@@ -1418,6 +1421,57 @@ describe("IssueDetail", () => {
     mockLocation.state = null;
     mockRouteParams.issueId = "PAP-1";
     mockRouteParams.companyPrefix = "PAP";
+  });
+
+  it("clears only the monitor after confirmation and refreshes the task", async () => {
+    const nextCheckAt = new Date(Date.now() + 60_000).toISOString();
+    const preservedPolicy = { mode: "normal", commentRequired: false, stages: [{ type: "review", approvalsNeeded: 1, participants: [{ type: "user", userId: "reviewer-1" }] }], maxReviewRounds: 4, authorizationPolicy: { assignmentPolicy: { mode: "protected" } } };
+    const policy = { ...preservedPolicy, monitor: { nextCheckAt, scheduledBy: "board", notes: "Check deployment" } } as Issue["executionPolicy"];
+    const monitored = createIssue({ status: "in_progress", executionPolicy: policy, executionState: { monitor: { status: "scheduled", nextCheckAt, attemptCount: 1 } } as Issue["executionState"] });
+    const cleared = createIssue({ status: "in_progress", executionPolicy: preservedPolicy as Issue["executionPolicy"] });
+    mockIssuesApi.get.mockResolvedValue(monitored);
+    mockIssuesApi.update.mockImplementation(async () => {
+      mockIssuesApi.get.mockResolvedValue(cleared);
+      return cleared;
+    });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    await waitForAssertion(() => expect(container.querySelector('[aria-label="Cancel monitor"]')).not.toBeNull());
+    await act(async () => (container.querySelector('[aria-label="Cancel monitor"]') as HTMLButtonElement).click());
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    await act(async () => Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledWith(monitored.id, { expectedExecutionPolicy: policy, executionPolicy: preservedPolicy }));
+    await waitForAssertion(() => expect(container.querySelector('[aria-label="Cancel monitor"]')).toBeNull());
+  });
+
+  it.each([false, true])("keeps monitor errors on the checked task (late response: %s)", async (lateResponse) => {
+    const monitor = { monitor: { status: "scheduled", nextCheckAt: new Date(Date.now() + 60_000).toISOString(), attemptCount: 1, serviceName: "github" } } as Issue["executionState"];
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", executionState: monitor }));
+    const check = createDeferred<never>();
+    mockIssuesApi.checkMonitorNow.mockReturnValue(check.promise);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    let button: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      button = Array.from(container.querySelectorAll("button")).find((entry) => entry.textContent === "Check now");
+      expect(button).toBeTruthy();
+    });
+    await act(async () => button!.click());
+    if (!lateResponse) {
+      check.reject(new Error("First task monitor failed"));
+      await waitForAssertion(() => expect(container.textContent).toContain("First task monitor failed"));
+    }
+    const second = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Second monitored task", status: "in_progress", executionState: monitor });
+    mockIssuesApi.get.mockResolvedValue(second);
+    queryClient.setQueryData(queryKeys.issues.detail("PAP-2"), second);
+    mockRouteParams.issueId = "PAP-2";
+    mockLocation.pathname = "/issues/PAP-2";
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    if (lateResponse) check.reject(new Error("First task monitor failed"));
+    await flushReact();
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Second monitored task");
+      expect(container.textContent).not.toContain("First task monitor failed");
+      expect(Array.from(container.querySelectorAll("button")).find((entry) => entry.textContent === "Check now")?.disabled).toBe(false);
+    });
   });
 
   afterEach(async () => {

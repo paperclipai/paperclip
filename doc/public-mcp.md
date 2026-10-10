@@ -88,7 +88,9 @@ or refetching does not undo a write-access opt-out. Nothing is authorized until
 
 Return to the same Connections entry to see your connected assistants, their
 read/write access, and revoke access. The list refreshes after consent and only
-shows your grants for the selected organization. The legacy
+shows your active grants for the selected organization. Each connection shows your
+profile avatar and defaults to a name such as “Dotta’s Codex connection.” Revoked
+connections disappear from the list; their audit records remain. The legacy
 `/assistant-connections` URL remains available for account-wide management.
 
 `GET /api/mcp/setup` returns the live experimental gate, canonical endpoint,
@@ -104,7 +106,7 @@ without a store listing. For Codex CLI:
 
 ```sh
 codex mcp add paperclip --url https://YOUR-PAPERCLIP-HOST/mcp/paperclip
-codex mcp login paperclip --scopes paperclip:read,paperclip:write,offline_access
+codex mcp login paperclip --scopes paperclip:read,paperclip:write,paperclip:configure,offline_access
 ```
 
 For Claude Code:
@@ -203,10 +205,18 @@ Dynamic registration uses public clients, exact registered HTTPS redirect URIs
 (or HTTP loopback), authorization code flow, S256 PKCE and exact resource
 binding to the endpoint. Authorization requests expire in ten minutes; codes
 expire one minute after consent and are single-use. Access tokens expire in
-fifteen minutes. `offline_access` issues a thirty-day rotating refresh token;
-replaying a consumed refresh token revokes its entire grant. Tokens and codes
+fifteen minutes. `offline_access` issues a thirty-day rotating refresh token for
+personal assistant connections. Dedicated Dot agent connections instead receive
+rotating refresh tokens without an inactivity expiry: they stay connected until
+revoked or their agent/operator loses access. Migration `0319_heavy_captain_midlands.sql`
+removes the old expiry from valid, unused Dot refresh tokens on unrevoked grants.
+Expired credentials remain expired.
+Replaying a consumed refresh token still revokes its entire grant. Tokens and codes
 are hashed at rest. `paperclip:read` is required; `paperclip:write` adds only task
-creation and comments. Scope expansion requires a new consent flow.
+work and attachment mutations on direct connections. The `paperclip:configure`
+scope covers allowed configuration operations. One **Write all of your Paperclip
+data** consent checkbox approves both requested mutation scopes. Scope expansion
+requires a new consent flow; the directory broker retains its original operations.
 
 Each grant records the person, client, company, resource and scopes. Membership
 and company availability are rechecked at execution. Instance admin status does
@@ -225,7 +235,7 @@ undo in-flight mutations. Manage existing tasks and execution in Paperclip.
 Audit records identify the human caller and connection/client for mutations.
 OAuth credential bodies and redirect locations are redacted from HTTP logs.
 
-## Tool surface
+## Original directory tool surface
 
 | Tool | Effect |
 | --- | --- |
@@ -236,13 +246,13 @@ OAuth credential bodies and redirect locations are redacted from HTTP logs.
 | `paperclip_read_task` | Current task plus recent comments/history |
 | `paperclip_create_task` | Assigned task, submitted to existing scheduling |
 | `paperclip_add_comment` | Human feedback; may wake or queue work |
-| `paperclip_list_deliverables` | Documents and work-product references |
-| `paperclip_read_document` | Durable document body |
+| `paperclip_list_deliverables` | Documents, attachments and work-product references |
+| `paperclip_read_document` | Durable document body and current revision |
 | `paperclip_pending_approvals` | Pending approvals and existing decision links |
 
 Every company-scoped call requires its explicit authorized company ID. The
-server emits bounded projections rather than agent configurations or upstream
-credentials. URLs include the company's prefix so unrelated browser company
+server emits bounded projections without upstream credentials. Direct connections
+can read the allowed operating configuration through the expanded tools below. URLs include the company's prefix so unrelated browser company
 selection cannot redirect the user to a different team's approval interface.
 
 Writes require a UUID `requestId`, unique per intended action. A durable receipt
@@ -260,8 +270,8 @@ task is not proof that an agent started or finished it.
 
 ## Hosted onboarding and release gates
 
-When `PAPERCLIP_CLOUD_API_ORIGIN` is present, consent links to the existing Cloud
-`/orgs/new` flow in a separate tab. Provisioning, mission/template selection,
+Create a hosted organization through Cloud before approving a connection.
+Provisioning, mission/template selection,
 model credentials, execution capacity and spending remain owned by Cloud.
 Installing a plugin never provisions a company or starts paid agents.
 
@@ -312,7 +322,8 @@ legacy MCP. It advertises `events` through `server/discover` and implements
 `events/list`, `events/subscribe`, and `events/unsubscribe`. MCP 2.0 requests
 include matching `MCP-Protocol-Version`/`Mcp-Method` headers, per-request version
 and client-capability metadata, and `Mcp-Name` for tool calls. Existing
-initialize-based clients keep the ten-tool connection.
+initialize-based direct clients receive the same expanded tool catalog. The central
+directory broker keeps its original ten-tool connection.
 
 | Event | Required filters | Payload |
 | --- | --- | --- |
@@ -437,3 +448,65 @@ and unavailable-organization variants remain separately inspectable.
 Apply the additive nullable request-column migration before running this tenant
 version, and deploy tenant support before the Cloud broker that sends the binding.
 Existing direct requests and grants are unchanged.
+
+## Expanded direct assistant tools
+
+Direct instance connections expose 37 explicitly registered operations. The central
+public directory broker retains its original ten tools and rejects expanded calls.
+The existing experimental setting gates both surfaces; sharing a setup link still
+conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
+checked by default for eligible roles. It approves the requested work and
+configuration scopes together; unchecking it grants read-only access. Clients must
+request `paperclip:configure` to configure agents, projects and skills. Existing
+write connections do not acquire this scope, including after refresh; reconnect
+with the expanded scopes to approve it.
+Normal Paperclip permissions are required in addition to the connection scope.
+
+- Work (`paperclip:write`): update, finish or block tasks; write Markdown documents;
+  register or update deliverables; upload attachments. Assignment and status changes
+  can schedule agents. Pending execution reviews must be decided in Paperclip.
+- Configuration (`paperclip:configure`): edit existing agents, model/budget and
+  existing connection bindings; edit instructions; create/update projects and choose
+  accessible repositories; create/update organization skills and their files.
+  Credentials, execution commands, policies and agent creation are excluded.
+- Reads (`paperclip:read`): task/document history, agent instructions, skill files,
+  accessible repository choices and attachment downloads. Native domain read
+  permissions still apply. Revision IDs from reads are required for content edits.
+
+`paperclip_search_api` describes the same allowlisted named operations and their
+schemas. `paperclip_call_api` takes an operation identifier and validated arguments.
+It cannot accept an arbitrary URL, REST path, credential or actor override. Both
+interfaces share scope checks and mutation receipts. Reuse the same request UUID
+and arguments after a timeout. An unknown result means execution is uncertain;
+inspect current state or retry that identity instead of starting another action.
+
+To attach a video, compute its byte size and SHA-256, then call
+`paperclip_get_upload_url` with its task, filename, content type and request UUID.
+PUT the exact bytes using the returned Content-Type. Success returns the saved
+attachment immediately; **there is no completion call**. Recover a lost response
+by repeating the upload or requesting its URL with the same identity. Conflicting
+bytes are rejected. `paperclip_list_deliverables` includes attachments, documents
+and work products; `paperclip_get_download_url` downloads one authorized attachment.
+Replacing a binary deliverable uses a new attachment and updates its reference.
+
+File URLs are ten-minute, transfer-specific credentials: keep them out of chat and
+logs. Only their hashes are stored. Use host HTTP/file tools to send/receive bytes;
+if unavailable, upload/download through the Paperclip task page manually. The server
+never fetches a supplied remote URL or reads a supplied local path. Existing file
+type and size limits apply (10 MB default). Grants, membership, organization,
+experimental availability and write authority are checked again during transfer.
+Revocation prevents future use, including of previously issued file URLs. Expired
+pending storage is cleaned on subsequent transfer requests; completed attachments
+remain durable. Cloud deployments also need the narrowly scoped transfer proxy.
+
+Instruction edits require a managed instruction file with a current revision/hash.
+The legacy `promptTemplate.legacy.md` entry has no version protection, so MCP
+rejects edits to it with `MCP_LEGACY_INSTRUCTIONS_UNVERSIONED`. Migrate the legacy
+prompt to a managed instruction file in Paperclip first; native runner behavior
+is unchanged.
+
+Client-side tool approval remains separate from OAuth consent. For example, a
+noninteractive Codex invocation that forbids tool approvals may read successfully
+but refuse a write. Approve the intended tool in the host rather than weakening
+server permissions. The [qualification record](plans/2026-10-06-expanded-assistant-mcp-verification.md)
+distinguishes paid model tests, actual-client proof and staging verification.

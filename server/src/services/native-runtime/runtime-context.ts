@@ -1,3 +1,4 @@
+import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -196,8 +197,9 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       : {};
     return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
   });
-  const [runIdentity] = hasGitHubConnection
-    ? await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+  const hasVoiceConnection = effective.installedConnections.some(connection => connection.transport === "voice");
+  const [runIdentity] = hasGitHubConnection || hasVoiceConnection
+    ? await input.db.select({ contextSnapshot: heartbeatRuns.contextSnapshot, responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.id, input.runId),
@@ -219,6 +221,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   // App access is optional runtime context. Keep usable assignments pinned, but
   // do not stop unrelated work because an assigned app needs attention.
   const githubBotConnectionIds = await githubBotConnectionIdsForRun(input.db, input.agent.companyId, input.agent.id, input.runId);
+  const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: typeof runIdentity?.contextSnapshot?.issueId === "string" ? runIdentity.contextSnapshot.issueId : typeof runIdentity?.contextSnapshot?.taskId === "string" ? runIdentity.contextSnapshot.taskId : null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
   const availableConnectionIds = new Set(resolvedInstalledConnections.filter((connection) =>
     permitted.has(connection.id)
     && connection.status === "active"
@@ -226,7 +229,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
       || connection.credentialPolicy === "per_user"
       || !isToolConnectionAttentionHealth(connection.healthStatus))
-    && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id))
+    && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
   ).map((connection) => connection.id));
   const assignment = {
     version: 1,

@@ -45,7 +45,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "runner.spec.ts",
+  testMatch: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY === "1" ? "installed-startup.spec.ts" : "runner.spec.ts",
   timeout: Number(process.env.PAPERCLIP_RUNNER_E2E_TEST_TIMEOUT_MS ?? 600_000),
   expect: { timeout: 30_000 },
   fullyParallel: false,

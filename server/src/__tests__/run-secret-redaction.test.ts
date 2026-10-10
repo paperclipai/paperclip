@@ -7,6 +7,14 @@ import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "
 const secret = "q2a-exact-secret-value";
 
 describe("registered run secret redaction", () => {
+  it("strips private credential fields and denies names unless the caller supplies an authorized projection", () => {
+    const input = { resultJson: { configurationIncomplete: {
+      credentialAccess: { connectionName: "private name", grantId: "private grant", secret: "private value" },
+    } } };
+    expect(redactRegisteredSecretValues(input, []).resultJson.configurationIncomplete.credentialAccess).toEqual({});
+    expect(redactRegisteredSecretValues(input, [], "Visible name").resultJson.configurationIncomplete.credentialAccess).toEqual({ connectionName: "Visible name" });
+    expect(redactRegisteredSecretValues(input, ["Visible name"], "Visible name").resultJson.configurationIncomplete.credentialAccess).toEqual({ connectionName: REDACTED_EVENT_VALUE });
+  });
   it("redacts exact values across comment and heartbeat/wake projections", () => {
     const result = redactRegisteredSecretValues({
       comment: { body: `agent pasted ${secret} in a comment` },

@@ -86,7 +86,9 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableApps: true,
     enableMcpAggregators: true,
     enablePublicMcp: false,
+    enableOpenAiDot: false,
     enableChatConnectors: false,
+    enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
     enablePipelines: false,
     enableCases: false,
@@ -269,6 +271,19 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("names Dot prerequisites and saves its opt-in independently in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableOpenAiDot: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
   it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
     await renderPage();
     const selector = 'button[aria-label="Toggle chat connectors experimental setting"]';
@@ -280,6 +295,18 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
       expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
+  });
+
+  it("toggles GitHub review bots without enabling chat connectors", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle GitHub review bots experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGitHubReviewBots: enabled });
+      expect(currentExperimentalSettings.enableChatConnectors).toBe(false);
     }
   });
 

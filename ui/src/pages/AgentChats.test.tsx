@@ -7,6 +7,8 @@ import { recordAgentChatVisit } from "@/lib/recent-agent-chats";
 import { AgentChats } from "./AgentChats";
 
 const state = vi.hoisted(() => ({
+  primaryAgentId: null as string | null,
+  primaryLoading: false,
   companyId: "company-a",
   userId: "user-a",
   agents: [] as Agent[],
@@ -16,6 +18,8 @@ const state = vi.hoisted(() => ({
   sessionError: null as Error | null,
   navigate: vi.fn(),
 }));
+
+vi.mock("@/components/primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => ({ primaryAgentId: state.primaryAgentId, loading: state.primaryLoading }) }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({
@@ -48,6 +52,8 @@ async function render() {
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  state.primaryAgentId = null;
+  state.primaryLoading = false;
   state.companyId = "company-a";
   state.userId = "user-a";
   state.agents = [agent("alice"), agent("bob")];
@@ -73,6 +79,29 @@ afterEach(async () => {
 });
 
 describe("Chat landing", () => {
+  it("uses the primary only when there is no valid recent conversation", async () => {
+    state.primaryAgentId = "alice";
+    recordAgentChatVisit("company-a", "user-a", "removed");
+    await render();
+    expect(state.navigate).toHaveBeenCalledWith("/chats/alice-slug", { replace: true });
+    state.navigate.mockClear();
+    recordAgentChatVisit("company-a", "user-a", "bob");
+    await render();
+    expect(state.navigate).toHaveBeenCalledWith("/chats/bob-slug", { replace: true });
+  });
+
+  it("waits for the primary without sending anything and preserves the chooser for unavailable primaries", async () => {
+    state.primaryLoading = true;
+    await render();
+    expect(state.navigate).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Opening chat");
+    state.primaryLoading = false;
+    state.primaryAgentId = "removed";
+    await render();
+    expect(state.navigate).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Who would you like to talk to?");
+  });
+
   it("opens the most recently visited agent and replaces the landing history entry", async () => {
     recordAgentChatVisit("company-a", "user-a", "alice");
     recordAgentChatVisit("company-a", "user-a", "bob");

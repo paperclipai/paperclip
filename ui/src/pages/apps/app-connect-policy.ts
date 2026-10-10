@@ -55,7 +55,7 @@ export function resolveAppsConnectRouteKey(input: {
 
 export function canEnterAppsConnect(
   searchParams: URLSearchParams,
-  { chatConnectorsEnabled = false }: { chatConnectorsEnabled?: boolean } = {},
+  { chatConnectorsEnabled = false, githubReviewBotsEnabled = false }: { chatConnectorsEnabled?: boolean; githubReviewBotsEnabled?: boolean } = {},
 ): boolean {
   if (searchParams.get("byo") === "1") {
     // The old BYO discovery page has moved to the Connectors list. Keep only
@@ -74,14 +74,19 @@ export function canEnterAppsConnect(
   // actionable unavailable state rather than bouncing back to the catalog.
   if (/^ai-router-(?:[a-f0-9]{2})+$/.test(source)) return true;
   const entry = getAppStoreDefinition(source);
+  const channelEnabled = source === "github-code-review-bot" ? githubReviewBotsEnabled : chatConnectorsEnabled;
   if (
-    !chatConnectorsEnabled &&
+    !channelEnabled &&
     entry?.methods.some((method) => method.transport === "chat_sdk") &&
     !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
   ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog
   // setup. Admit only known providers here; the setup flow then proves the
-  // exact reconnect target is visible to the selected company before rendering.
-  if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
-  return source === "agentmail" || chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
+  // exact reconnect or incomplete-draft target belongs to the selected company
+  // and matches this provider before resolving the hidden definition.
+  if (
+    getConnectableAppDefinition(source)
+    && (searchParams.get("reconnect")?.trim() || searchParams.get("resume")?.trim())
+  ) return true;
+  return source === "agentmail" || channelEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

@@ -1,3 +1,4 @@
+import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -29,7 +30,8 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES, CLAUDE_ROUTING_ENV_KEYS } from "../drivers/acpx/environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES, CLAUDE_ROUTING_ENV_KEYS, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
+import { piCredentialNames } from "../drivers/acpx/pi-provider-config.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
@@ -44,7 +46,7 @@ import {
 
 const protocol = "paperclip.runner";
 const protocolMinVersion = 1;
-const protocolVersion = 2;
+const protocolVersion = 3;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
@@ -78,6 +80,7 @@ const commandTypes = new Set([
   "request.resolve",
   "interaction.receipt",
   "semantic_tool.result",
+  "external_provider.operation",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -700,7 +703,7 @@ function isStoredCoreState(
       (command, index) =>
         isRecord(command) &&
         (command.schema === "paperclip.prp.command.v1" ||
-          command.schema === "paperclip.prp.command.v2") &&
+          command.schema === "paperclip.prp.command.v2" || command.schema === "paperclip.prp.command.v3") &&
         typeof command.commandId === "string" &&
         stableIdPattern.test(command.commandId) &&
         command.commandId.length <= 160 &&
@@ -1491,6 +1494,7 @@ export class DurablePrpControlPlane {
   #connections = new Set<AuthorityConnection>();
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #pendingSemanticCalls = new Set<string>();
+  #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -1625,6 +1629,16 @@ export class DurablePrpControlPlane {
       await Promise.allSettled([...this.#connectionProcessing.values()]);
       assertIngressStopped();
     }
+  }
+
+  /** Retire this journal writer after stopped ingress is fully joined. A late
+   * external effect keeps its committed input pending for reconciliation;
+   * it must never overwrite the successor controller's durable state. */
+  retireSemanticToolCallbacks(): void {
+    if (this.#server !== null || this.#connections.size !== 0 || this.#connectionProcessing.size !== 0) {
+      throw new Error("Semantic callback retirement requires drained, stopped ingress.");
+    }
+    this.#semanticCallbacksRetired = true;
   }
 
   /** Forces a resumable re-authentication after an immutable run attachment rotates. */
@@ -1959,7 +1973,7 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: type.startsWith("session.goal.")
+      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
         ? "paperclip.prp.command.v2"
         : "paperclip.prp.command.v1",
       commandId:
@@ -3298,6 +3312,7 @@ export class DurablePrpControlPlane {
           this.disconnectActiveRunner();
         };
         const queueResult = (result: unknown, isError: boolean): void => {
+          if (this.#semanticCallbacksRetired) return;
           try {
             // Retain the full input once in its canonical event. Copying a
             // large write into its result command can exceed the wire bound
@@ -3378,7 +3393,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_AGENT_KEY_ID",
   "PAPERCLIP_AGENT_PUBLIC_KEY",
   "PAPERCLIP_AGENT_PRIVATE_KEY",
-  ...ACPX_CREDENTIAL_NAMES.pi,
+  ...ACPX_CREDENTIAL_NAMES.pi.filter(name => !name.startsWith("AWS_")),
   ...ACPX_CREDENTIAL_NAMES.cursor,
   ...ACPX_CREDENTIAL_NAMES.copilot,
   ACPX_CREDENTIAL_BINDING_ENV,
@@ -3417,6 +3432,7 @@ const runnerExplicitProviderEnvironmentKeys = [
 
 function runnerEnvironment(
   ticket: string,
+  normalizedSessionId: string,
   explicitSource?: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const platformSource = explicitSource ?? process.env;
@@ -3440,7 +3456,23 @@ function runnerEnvironment(
         if (explicitSource[key] !== undefined) environment[key] = explicitSource[key];
       }
     }
-    Object.assign(environment, githubCredentialEnvironment(explicitSource));
+    // Pi custom-provider references and direct cloud credentials cross only
+    // under the controller's exact run/session credential binding.
+    const marker = explicitSource[ACPX_CREDENTIAL_BINDING_ENV];
+    let binding: unknown;
+    if (marker !== undefined && Buffer.byteLength(marker) <= 4_096) {
+      try { binding = JSON.parse(marker); } catch { /* Sidecar admission rejects invalid markers. */ }
+    }
+    let taskEnvironmentSource = explicitSource;
+    if (binding !== null && typeof binding === "object" && !Array.isArray(binding)
+      && (binding as Record<string, unknown>).agent === "pi") {
+      const bound = createAcpxSidecarHostEnvironment(explicitSource, "pi", normalizedSessionId);
+      taskEnvironmentSource = bound;
+      for (const key of piCredentialNames(explicitSource)) {
+        if (bound[key] !== undefined) environment[key] = bound[key];
+      }
+    }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource), configuredEnvironment(taskEnvironmentSource));
   }
   return environment;
 }
@@ -3588,7 +3620,7 @@ export function spawnRunner(options: {
   }
 
   const command = options.runnerBinaryPath ?? runnerBinary;
-  const environment = runnerEnvironment(options.ticket, options.environment);
+  const environment = runnerEnvironment(options.ticket, options.identity.normalizedSessionId, options.environment);
   const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
     ...handle,
     restart: (ticket) => spawnRunner({ ...options, ticket }),

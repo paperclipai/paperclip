@@ -1011,6 +1011,38 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("Workspace restore failed");
   });
 
+  it("directs a missing starting branch to repair instead of offering an unchanged retry", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" onRetryFailedRun={vi.fn()} linkedRuns={[{
+      runId: "missing-branch-run", runtimeMode: "legacy", status: "failed", errorCode: "configuration_incomplete",
+      agentId: "agent-1", agentName: "Worker", adapterType: "claude_local",
+      createdAt: "2026-08-25T18:00:00.000Z", startedAt: null, finishedAt: "2026-08-25T18:00:02.000Z",
+      resultJson: { configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main" } },
+    }]} />);
+    expect(container.textContent).toContain("Starting branch unavailable");
+    expect(container.textContent).toContain("Repair the starting branch below before retrying.");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it.each(["legacy", "native"] as const)("keeps a %s credential denial expanded and replaces it after a successful attempt", (runtimeMode) => {
+    const denied = {
+      runId: "credential-run", runtimeMode, status: "failed", errorCode: "configuration_incomplete",
+      agentId: "agent-1", agentName: "Codie", adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local",
+      responsibleUserId: "nicky", createdAt: "2026-08-25T18:00:00Z", startedAt: null, finishedAt: "2026-08-25T18:00:02Z",
+      resultJson: { configurationIncomplete: { selectionFailure: "ai_connection_credential_not_shared", credentialAccess: { connectionName: "Dotta’s API Key" } } },
+    };
+    const props = { comments: [], onAdd: async () => {}, issueStatus: "blocked", currentUserId: "nicky", onRetryFailedRun: vi.fn() };
+    render(<TaskChatThread {...props} linkedRuns={[denied]} />);
+    const alert = container.querySelector('[data-testid="task-chat-credential-access-notice"]');
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toContain("Codie is configured to use Dotta’s API Key, but you don’t have access");
+    expect(alert?.querySelector('a[href="/agents/agent-1/runtime"]')).not.toBeNull();
+    expect(alert?.querySelector('a[href*="/runs/credential-run"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+    render(<TaskChatThread {...props} linkedRuns={[denied, { ...denied, runId: "new-run", status: "succeeded",
+      resultJson: null, errorCode: null, createdAt: "2026-08-25T18:01:00Z", startedAt: "2026-08-25T18:01:00Z", finishedAt: "2026-08-25T18:01:02Z" }]} />);
+    expect(container.querySelector('[data-testid="task-chat-credential-access-notice"]')).toBeNull();
+  });
+
   it("directs a missing personal AI credential to its card without offering a premature retry", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
       onRetryFailedRun={vi.fn()} interactions={[{
@@ -2184,6 +2216,35 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(turnHeaders[1]?.textContent).toContain(
       "Continued after steering · Worked for",
     );
+  });
+
+  it("keeps a pending native permission answerable after same-turn steering", async () => {
+    const runId = "native-pending-steered";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      { kind: "runtime_request", ts: "2026-08-25T18:00:01.000Z", requestId: "permission-1",
+        requestKind: "permission_approval", turnId: "provider-turn-1", requestType: "permission", status: "pending",
+        prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] },
+      { kind: "assistant", ts: "2026-08-25T18:00:03.000Z", text: "Steering acknowledged.", channel: "progress" },
+    ]);
+    const resolve = vi.spyOn(heartbeatsApi, "resolveRuntimeRequest").mockResolvedValue({} as never);
+    render(<TaskChatThread comments={[{
+      id: "pending-steering-comment", companyId: "company-1", issueId: "issue-1", authorType: "user",
+      authorAgentId: null, authorUserId: "user-1", body: "Change course.", presentation: null, metadata: null,
+      runId: null, consumedByRunId: runId, steeredIntoRunId: runId,
+      conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+      createdAt: new Date("2026-08-25T18:00:02.000Z"), updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+    }]} onAdd={async () => {}} issueStatus="in_progress" activeRun={{
+      id: runId, runtimeMode: "native", status: "running", invocationSource: "issue", triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z", finishedAt: null, createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+    }} />);
+    const deny = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(button => button.textContent === "Deny");
+    expect(deny).toHaveLength(1);
+    expect(deny[0].disabled).toBe(false);
+    expect(container.textContent).not.toContain("Cancelled");
+    await act(async () => deny[0].click());
+    expect(resolve).toHaveBeenCalledWith({ runId, requestId: "permission-1", turnId: "provider-turn-1",
+      requestKind: "permission_approval", resolution: { action: "decline" } });
   });
 
   it("labels the live tail as a continuation after the steering bubble", () => {
