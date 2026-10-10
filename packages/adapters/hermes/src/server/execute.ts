@@ -341,7 +341,7 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
+  const rawModel = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
@@ -373,26 +373,31 @@ export async function execute(
     }
   }
 
-  // ── Resolve provider (defense in depth) ────────────────────────────────
-  // Priority chain:
+  // ── Resolve model and provider (defense in depth) ──────────────────────
+  // When the adapter model is "auto" (the default), detect the concrete
+  // model from ~/.hermes/config.yaml so we do not pass -m auto to the CLI.
+  // Hermes treats "auto" as a literal model name and fails with
+  // "models/auto" on providers like Gemini.
+  //
+  // Provider priority chain:
   //   1. Explicit provider in adapterConfig (user override)
   //   2. Provider from ~/.hermes/config.yaml (detected at runtime)
   //   3. Provider inferred from model name prefix
   //   4. "auto" (let Hermes decide)
-  //
-  // This ensures that even if the agent was created before provider tracking
-  // was added, or if the model was changed without updating provider, the
-  // correct provider is still used.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  if (!explicitProvider || rawModel === "auto") {
     try {
       detectedConfig = await detectModel();
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
   }
+
+  const resolvedModel = rawModel === "auto"
+    ? (detectedConfig?.model || "auto")
+    : rawModel;
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
     explicitProvider,
@@ -401,7 +406,7 @@ export async function execute(
     detectedBaseUrl: detectedConfig?.baseUrl,
     detectedHasApiKey: detectedConfig?.hasApiKey,
     detectedApiMode: detectedConfig?.apiMode,
-    model,
+    model: rawModel,
   });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
@@ -441,8 +446,8 @@ export async function execute(
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
-    args.push("-m", model);
+  if (resolvedModel && resolvedModel !== "auto") {
+    args.push("-m", resolvedModel);
   }
 
   // Always pass --provider when we have a resolved one (not "auto").
@@ -532,7 +537,7 @@ export async function execute(
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
+    `[hermes] Starting Hermes Agent (model=${resolvedModel}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
   if (sessionId) {
     await ctx.onLog(
@@ -591,7 +596,7 @@ export async function execute(
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,
-    model,
+    model: resolvedModel,
   };
 
   if (parsed.errorMessage) {
