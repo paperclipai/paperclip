@@ -218,6 +218,7 @@ it("uses each computer owner's allocated port without changing the sandbox defau
   const base = {
     kind: "remote" as const, transport: "computer" as const, providerKey: "boat", remoteCwd: "/home/user/project",
     leaseId: "attempt-lease", listenerPort: 45101, effectiveCapabilities: capabilities, getRunnerIngressEndpoint,
+    processRunner: { execute: async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: new Date().toISOString() }) },
     resourceAuthority: { kind: "computer-owner" as const, computerId: "machine", ownerId: "owner-a", generation: 2 },
     fileAuthority: { kind: "remote-persistent" as const, placementId: "placement", root: "/home/user/project", agentHome: "/home/user/agent-a" },
     launch: async () => ({}), inspectProcess: async () => ({ running: true, claim: {} }),
@@ -230,7 +231,7 @@ it("uses each computer owner's allocated port without changing the sandbox defau
     expect(resolved).toMatchObject({ mode: "provider_ingress", listenPort: port });
     expect(getRunnerIngressEndpoint).toHaveBeenLastCalledWith({ leaseId: "attempt-lease", port, path: "/api/runner/v1/connect/run-1" });
   }
-  const { listenerPort, resourceAuthority, fileAuthority, launch, inspectProcess, retainWarm, retire, computerTool, ...common } = base;
+  const { listenerPort, processRunner, resourceAuthority, fileAuthority, launch, inspectProcess, retainWarm, retire, computerTool, ...common } = base;
   const resolved = await resolvePaperclipRunnerTransport({ target: { ...common, transport: "sandbox" }, runId: "sandbox-run",
     localConnectUrl: "ws://localhost/unused", runnerIngressAuthorized: true });
   expect(resolved).toMatchObject({ mode: "provider_ingress", listenPort: 43127 });

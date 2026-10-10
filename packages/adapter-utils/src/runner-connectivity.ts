@@ -1,4 +1,5 @@
-import { adapterExecutionTargetIsCommandBacked, type AdapterExecutionTarget } from "./execution-target.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+import { adapterExecutionTargetIsCommandBacked } from "./execution-target-kind.js";
 
 export const PAPERCLIP_RUNNER_INGRESS_PORT = 43_127;
 export const PAPERCLIP_RUNNER_CONNECT_PATH_PREFIX = "/api/runner/v1/connect";

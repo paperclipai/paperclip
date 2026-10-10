@@ -76,10 +76,12 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
       return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
     },
     async realizeWorkspace({ lease, workspace }) {
-      const request = workspace.metadata?.workspaceRealizationRequest as { source?: { projectId?: string; repoUrl?: string; branchName?: string; strategy?: string }; issueId?: string } | undefined;
+      const request = workspace.metadata?.workspaceRealizationRequest as { source?: { projectId?: string; repoUrl?: string; repoRef?: string; branchName?: string; strategy?: string }; issueId?: string } | undefined;
       const result = await computers.realizeWorkspace({ ...scope(lease), owner: computerOwnerFromLease(lease),
         projectId: request?.source?.projectId ?? undefined, taskId: request?.issueId ?? undefined,
-        repositoryUrl: request?.source?.repoUrl ?? undefined, branch: request?.source?.branchName ?? undefined,
+        repositoryUrl: request?.source?.repoUrl ?? undefined,
+        branch: request?.source?.branchName ?? request?.source?.repoRef ?? undefined,
+        baseRef: request?.source?.repoRef ?? undefined,
         mode: request?.source?.strategy === "git_worktree" ? "worktree" : "shared" });
       await leases.updateLeaseMetadata(lease.id, { ...lease.metadata, remoteCwd: result.remoteCwd,
         fileAuthority: { kind: "remote-persistent", placementId: result.placementId, root: result.remoteCwd, agentHome: result.agentHome } });
@@ -88,7 +90,8 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
     },
     async execute({ lease, command, args, cwd, env, stdin, timeoutMs, onLog }) {
       const binding = await recover(lease);
-      return binding.runner.execute({ command, args, cwd: cwd ?? binding.remoteCwd, env, stdin, timeoutMs, onLog });
+      return binding.runner.execute({ command, args, cwd: cwd ?? binding.remoteCwd, env, stdin, timeoutMs,
+        onLog: onLog ? async (stream, chunk) => { await onLog(stream, chunk); } : undefined });
     },
     async resolveCapabilities() { return COMPUTER_CAPABILITIES; },
   };
@@ -101,13 +104,13 @@ export async function computerExecutionTarget(db: Db, lease: EnvironmentLease, i
   const owner = computerOwnerFromLease(lease);
   const binding = await computers.recover({ ...scope, owner });
   const ingress = async (path: string): Promise<RunnerIngressEndpoint> => {
-    const endpoint = await binding.ingress({ path });
+    const endpoint = await binding.process.ingress({ path });
     return { kind: "authenticated_websocket", websocketUrl: endpoint.url,
       secretHeaders: Object.entries(endpoint.secretHeaders).map(([name, value]) => ({ name, value })),
       generation: `${owner.ownerId}:${owner.generation}`, refresh: () => ingress(path), close: async () => {} };
   };
   return { kind: "remote", transport: "computer", providerKey: "boat", environmentId: lease.environmentId, leaseId: lease.id,
-    remoteCwd: binding.remoteCwd, listenerPort: binding.listenerPort, runner: binding.runner, shellCommand: "bash",
+    remoteCwd: binding.remoteCwd, listenerPort: binding.listenerPort, runner: binding.runner, processRunner: binding.process.runner, shellCommand: "bash",
     effectiveCapabilities: COMPUTER_CAPABILITIES, reusableLeaseConfigured: true,
     runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs },
     resourceAuthority: { kind: "computer-owner", ...owner },

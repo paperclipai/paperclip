@@ -1,3 +1,5 @@
+import { adapterExecutionTargetIsCommandBacked } from "./execution-target-kind.js";
+export { adapterExecutionTargetIsCommandBacked } from "./execution-target-kind.js";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -237,6 +239,8 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
 export interface AdapterComputerExecutionTarget extends Omit<AdapterSandboxExecutionTarget, "transport" | "sandboxLeaseAcquisition"> {
   transport: "computer";
   listenerPort: number;
+  /** Native process control survives attempt handoff only for the same process claim. */
+  processRunner: CommandManagedRuntimeRunner;
   resourceAuthority: { kind: "computer-owner"; computerId: string; ownerId: string; generation: number };
   fileAuthority: { kind: "remote-persistent"; placementId: string; root: string; agentHome: string };
   launch(input: { command: string; args?: string[]; cwd?: string; env?: Record<string, string> }): Promise<unknown>;
@@ -248,12 +252,6 @@ export interface AdapterComputerExecutionTarget extends Omit<AdapterSandboxExecu
 
 export type AdapterCommandBackedExecutionTarget = AdapterSandboxExecutionTarget | AdapterComputerExecutionTarget;
 
-/** Command transport capability; sandbox allocation ownership is unchanged. */
-export function adapterExecutionTargetIsCommandBacked(
-  target: AdapterExecutionTarget | null | undefined,
-): target is AdapterCommandBackedExecutionTarget {
-  return target?.kind === "remote" && (target.transport === "sandbox" || target.transport === "computer");
-}
 
 export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget

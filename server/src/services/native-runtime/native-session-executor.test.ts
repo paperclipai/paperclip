@@ -705,6 +705,29 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it("launches a computer runner through owned process admission, never detached shell allocation", async () => {
+    let nonce = "";
+    const launch = vi.fn(async (request: { args: string[] }) => { nonce = request.args[4]!; return {}; });
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      const label = request.args[2];
+      return { exitCode: label === "paperclip-runner-monitor" ? 3 : 0, timedOut: false, signal: null,
+        stdout: label === "paperclip-runner-process-identity" ? `${nonce}\n4321\n2026-09-06T00:00:00.000Z\ncomputer-runner\nlinux:abcd-1234:100\n`
+          : label === "paperclip-runner-diagnostics" ? "stopped" : Buffer.from('{}').toString('base64'), stderr: "" };
+    });
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "computer", remoteCwd: "/home/user/project", launch } as never,
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/state/identity",
+      stateDirectory: "/runtime/state", diagnosticsDirectory: "/runtime/logs", runnerInstanceId: "computer-runner",
+    });
+    const handle = launcher({ command: "/controller/runnerd", args: ["--runner-id", "computer-runner"], cwd: "/controller", environment: {} });
+    await handle.completion;
+    expect(launch).toHaveBeenCalledOnce();
+    expect(launch.mock.calls[0]![0].args).toContain("/runtime/runnerd");
+    expect(launch.mock.calls[0]![0].args[1]).not.toContain("nohup");
+    expect(execute.mock.calls.every(([request]) => request.args[2] !== "paperclip-runner-launch")).toBe(true);
+    expect(handle.child.pid).toBe(4321);
+  });
+
   it.each(["delivered", "sandbox_missing", "logging_failed"] as const)(
     "detaches runnerd and contains asynchronous signal failures (%s)", async (signalOutcome) => {
     let launchNonce = "";

@@ -554,7 +554,7 @@ export async function claimWarmNativeInstructionCopy(input: {
 function instructionTargetIdentity(target?: AdapterExecutionTarget | null): string {
   return JSON.stringify(target?.kind === "remote" ? {
     environmentId: target.environmentId, cwd: target.remoteCwd,
-    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.transport === "computer" ? target.resourceAuthority.computerId : target.spec,
+    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.transport === "computer" ? [target.resourceAuthority.computerId, target.resourceAuthority.ownerId] : target.spec,
   } : { kind: "local", environmentId: target?.environmentId });
 }
 
@@ -567,6 +567,12 @@ export async function reserveWarmNativeInstructionDirectory(input: {
   for (const [id, entry] of warmNativeSessions) {
     if (entry.companyId !== input.companyId || entry.agentId !== input.agentId || entry.instructionCopy?.runId !== input.previousRunId) continue;
     if (entry.busy || entry.preparingRunId) throw new Error("native_session_supervisor_busy");
+    if (input.target?.kind === "remote" && input.target.transport === "computer" &&
+        entry.computerTarget?.resourceAuthority.computerId === input.target.resourceAuthority.computerId &&
+        entry.computerTarget.resourceAuthority.ownerId === input.target.resourceAuthority.ownerId &&
+        entry.computerTarget.resourceAuthority.generation < input.target.resourceAuthority.generation) {
+      entry.computerTarget = input.target;
+    }
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
     entry.preparingRunId = input.runId;
@@ -8463,6 +8469,9 @@ async function executePaperclipNativeSessionWithinScope(
           entry.credentialRunId !== input.execution.binding.runId);
       if (
         input.refreshTools === true ||
+        (input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" &&
+          (entry.computerTarget?.resourceAuthority.computerId !== input.runnerExecutionTarget.resourceAuthority.computerId ||
+           entry.computerTarget?.resourceAuthority.ownerId !== input.runnerExecutionTarget.resourceAuthority.ownerId)) ||
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         entry.configuredEnvironmentDigest !== configuredEnvironmentDigest ||
@@ -11386,7 +11395,7 @@ async function createRunnerdBackendWithinSessionClaim(
           spec: remoteTarget.spec,
           defaultCwd: remoteTarget.remoteCwd,
         })
-      : remoteTarget.runner
+      : remoteTarget.transport === "computer" ? remoteTarget.processRunner : remoteTarget.runner
     : null;
   if (remoteTarget && !remoteCommandRunner) {
     throw new Error(
