@@ -11,7 +11,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
+  envBindingSecretRefSchema,
   type EnvBinding,
+  type EnvSecretRefBinding,
   type Environment,
   type EnvironmentDeleteBlastRadius,
   type EnvironmentProviderCapability,
@@ -71,7 +73,7 @@ type EnvironmentFormState = {
   driver: "local" | "ssh" | "sandbox" | "computer";
   boatId: string;
   boatApiKey: string;
-  boatApiKeySecretId: string;
+  boatApiKeySecretRef: EnvSecretRefBinding | null;
   sshHost: string;
   sshPort: string;
   sshUsername: string;
@@ -127,7 +129,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
         provider: "boat",
         sandboxId: form.boatId.trim(),
         ...(form.boatApiKey.trim() ? { apiKey: form.boatApiKey.trim() } : {
-          apiKeySecretRef: { type: "secret_ref" as const, secretId: form.boatApiKeySecretId, version: "latest" as const },
+          apiKeySecretRef: form.boatApiKeySecretRef,
         }),
       } : form.driver === "ssh"
         ? {
@@ -159,7 +161,7 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     driver: "ssh",
     boatId: "",
     boatApiKey: "",
-    boatApiKeySecretId: "",
+    boatApiKeySecretRef: null,
     sshHost: "",
     sshPort: "22",
     sshUsername: "",
@@ -229,11 +231,12 @@ function readSandboxConfig(environment: Environment) {
 
 function createEnvironmentFormFromEnvironment(environment: Environment): EnvironmentFormState {
   if (environment.driver === "computer") {
-    const ref = environment.config.apiKeySecretRef;
+    const parsedRef = envBindingSecretRefSchema.safeParse(environment.config.apiKeySecretRef);
+    const ref = parsedRef.success ? parsedRef.data : null;
     return { ...createEmptyEnvironmentForm(), name: environment.name,
       description: environment.description ?? "", driver: "computer",
       boatId: typeof environment.config.sandboxId === "string" ? environment.config.sandboxId : "",
-      boatApiKeySecretId: ref && typeof ref === "object" && "secretId" in ref && typeof ref.secretId === "string" ? ref.secretId : "",
+      boatApiKeySecretRef: ref,
       envVars: environment.envVars ?? {} };
   }
   if (environment.driver === "ssh") {
@@ -1857,7 +1860,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     environmentForm.name.trim().length > 0 &&
     (environmentForm.driver !== "computer" ||
       /^bx_[a-zA-Z0-9]+$/.test(environmentForm.boatId.trim()) &&
-      Boolean(environmentForm.boatApiKey.trim() || environmentForm.boatApiKeySecretId)) &&
+      Boolean(environmentForm.boatApiKey.trim() || environmentForm.boatApiKeySecretRef)) &&
     (environmentForm.driver !== "ssh" ||
       (
         environmentForm.sshHost.trim().length > 0 &&
@@ -2295,7 +2298,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   <Input value={environmentForm.boatId} placeholder="bx_…"
                     onChange={(event) => setEnvironmentForm(current => ({ ...current, boatId: event.target.value }))} />
                 </Field>
-                <Field label="Boat API key" hint={environmentForm.boatApiKeySecretId ? "A key is saved. Leave blank to keep it." : "Stored as an encrypted secret."}>
+                <Field label="Boat API key" hint={environmentForm.boatApiKeySecretRef ? "A key is saved. Leave blank to keep it." : "Stored as an encrypted secret."}>
                   <Input type="password" autoComplete="new-password" value={environmentForm.boatApiKey}
                     onChange={(event) => setEnvironmentForm(current => ({ ...current, boatApiKey: event.target.value }))} />
                 </Field>

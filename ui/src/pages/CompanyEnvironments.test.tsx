@@ -777,6 +777,37 @@ describe("CompanyEnvironments — test provider button", () => {
     });
   });
 
+  it("preserves the pinned Boat key when saving an unrelated environment edit", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const apiKeySecretRef = {
+      type: "secret_ref",
+      secretId: "75c6e3a4-1e77-4ce1-af91-205509c06966",
+      version: 2,
+    };
+    mockEnvironmentsApi.list.mockResolvedValue([{
+      id: "env-boat", name: "Boat", driver: "computer", description: null,
+      config: { provider: "boat", sandboxId: "bx_existing", apiKeySecretRef },
+    }]);
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-boat/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Boat API key");
+    });
+    const page = getEnvironmentFormPage()!;
+    const nameInput = Array.from(page.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.value === "Boat")!;
+    await act(async () => setInputValue(nameInput, "Renamed Boat"));
+    await act(async () => click(findButton(page, "Save environment")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.update).toHaveBeenCalledExactlyOnceWith("env-boat", expect.objectContaining({
+        name: "Renamed Boat",
+        config: { provider: "boat", sandboxId: "bx_existing", apiKeySecretRef },
+      }), "company-1");
+    });
+  });
+
   it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
