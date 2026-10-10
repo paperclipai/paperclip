@@ -459,6 +459,69 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   ].join("\n");
 }
 
+export type SuccessfulRunHandoffEscalationDecision =
+  | {
+      kind: "escalate";
+      previousStatus: "in_progress";
+    }
+  | {
+      kind: "skip";
+      reason: string;
+    };
+
+export const SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON =
+  "this corrective handoff run is already escalated to the board";
+
+/**
+ * Decide whether an exhausted successful-run handoff may still escalate its
+ * issue to `blocked`.
+ *
+ * The handoff evidence describes the corrective run that just finished, not the
+ * issue's current state, so it stays readable on the issue long after the run
+ * is over. A status write creates no run, which means `latestRun` is still that
+ * same corrective run on the next sweep, so a sweep that escalates on evidence
+ * alone re-blocks an issue whose write succeeded — and the `blocked` row it
+ * produces (no blocker relations, no unblock descriptor) is exactly what the
+ * board janitor then measures, which sends a courier to clear it, which flips
+ * it back to `in_progress`, which re-arms the cause. The loop has no fixed
+ * point.
+ *
+ * Escalation is a board handoff: one per corrective run. The recovery action it
+ * creates is already deduped per `companyId:issueId:cause`, so a repeat sweep
+ * re-writes `blocked` while re-using the same board action — a status
+ * transition with no new information for the board. Key the decision on the
+ * corrective run id recorded in that action's evidence, so the first escalation
+ * still happens, a repeat of the same run does not, and a genuinely new
+ * corrective run (a new attempt that also failed to set a disposition)
+ * escalates again.
+ */
+export function decideSuccessfulRunHandoffEscalation(input: {
+  issueStatus: string;
+  correctiveRunId: string;
+  activeRecoveryCause: string | null;
+  escalatedCorrectiveRunId: string | null;
+}): SuccessfulRunHandoffEscalationDecision {
+  if (
+    input.activeRecoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+    input.escalatedCorrectiveRunId === input.correctiveRunId
+  ) {
+    return {
+      kind: "skip",
+      reason: SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON,
+    };
+  }
+  // `previousStatus` is recorded on the recovery action evidence and in the
+  // activity log. Assert it from the issue instead of assuming it, so an
+  // escalation can never claim a status the issue was not in.
+  if (input.issueStatus !== "in_progress") {
+    return {
+      kind: "skip",
+      reason: `issue status ${input.issueStatus} is not the escalated handoff status`,
+    };
+  }
+  return { kind: "escalate", previousStatus: "in_progress" };
+}
+
 export function decideSuccessfulRunHandoff(input: {
   run: HeartbeatRunRow;
   issue: IssueRow | null;

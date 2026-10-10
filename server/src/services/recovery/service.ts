@@ -125,8 +125,10 @@ import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  decideSuccessfulRunHandoffEscalation,
   isPluginManagedIssueLifecycle,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -4386,6 +4388,7 @@ export function recoveryService(
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       successfulRunHandoffRetried: 0,
+      successfulRunHandoffAlreadyEscalated: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
@@ -5331,9 +5334,36 @@ export function recoveryService(
           }
         }
 
+        // The handoff evidence describes the corrective run that just finished,
+        // not the issue now. A status write creates no run, so `latestRun` is
+        // still that run on the next sweep and evidence alone escalates an
+        // issue whose write succeeded. Escalation is a board handoff, so allow
+        // one per corrective run: the first exhaustion escalates, a repeat
+        // sweep over the same run does not, and a new corrective run escalates
+        // again.
+        const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+          issue.companyId,
+          issue.id,
+        );
+        const escalation = decideSuccessfulRunHandoffEscalation({
+          issueStatus: issue.status,
+          correctiveRunId: handoffEvidence.correctiveRunId,
+          activeRecoveryCause: activeRecoveryAction?.cause ?? null,
+          escalatedCorrectiveRunId: readNonEmptyString(
+            parseObject(activeRecoveryAction?.evidence).correctiveRunId,
+          ),
+        });
+        if (escalation.kind === "skip") {
+          if (escalation.reason === SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON) {
+            result.successfulRunHandoffAlreadyEscalated += 1;
+          }
+          result.skipped += 1;
+          continue;
+        }
+
         const updated = await escalateStrandedAssignedIssue({
           issue,
-          previousStatus: "in_progress",
+          previousStatus: escalation.previousStatus,
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
