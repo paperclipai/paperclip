@@ -631,6 +631,7 @@ describe("issue dependency wakeups in issue routes", () => {
       status: "blocked",
       assigneeAgentId: "agent-2",
       blockedTransitionAt,
+      unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
     }));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: parentIssueId,
@@ -658,6 +659,7 @@ describe("issue dependency wakeups in issue routes", () => {
           dependentIssueId: parentIssueId,
           blockerIssueIds: [childIssueId],
           blockedTransitionAt,
+          unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
         }),
       );
       expect(mockWakeup).toHaveBeenCalledWith(
@@ -668,6 +670,7 @@ describe("issue dependency wakeups in issue routes", () => {
             dependentIssueId: parentIssueId,
             blockerIssueIds: [childIssueId],
             blockedTransitionAt,
+            unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
           }),
           payload: expect.objectContaining({
             mutation: "blocked_dependency_restored",
