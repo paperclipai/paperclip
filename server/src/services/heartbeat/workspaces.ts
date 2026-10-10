@@ -2889,7 +2889,9 @@ export type EffectiveRunToolConnectionsInput = {
   installedConnections: readonly {
     id: string;
     name: string;
-    status: string;
+    // `ToolConnection.status` is optional. An absent status does not attach, so
+    // the marker keeps that distinction instead of widening it away.
+    status?: string | null;
     enabled: boolean;
     transport: string;
     credentialPolicy?: string | null;
@@ -2931,7 +2933,7 @@ export function buildEffectiveRunToolConnectionsConfigValue(
     .map((connection) => ({
       id: connection.id,
       name: connection.name,
-      status: connection.status,
+      status: connection.status ?? null,
       enabled: connection.enabled,
       transport: connection.transport,
       credentialPolicy: connection.credentialPolicy ?? null,

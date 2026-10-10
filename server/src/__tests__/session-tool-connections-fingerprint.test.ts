@@ -48,6 +48,17 @@ describe("tool-connection session fingerprint value", () => {
     expect(value([connection({ status: "archived" })])).not.toEqual(active);
   });
 
+  it("keeps an absent status distinct from active, because it does not attach", () => {
+    // ToolConnection.status is optional. Widening undefined to "active" would
+    // hide a connection that cannot attach.
+    expect(value([connection({ status: undefined })])).not.toEqual(
+      value([connection({ status: "active" })]),
+    );
+    expect(value([connection({ status: undefined })])).toEqual(
+      value([connection({ status: null })]),
+    );
+  });
+
   it("changes when a connection stops being permitted", () => {
     expect(value([connection()], [])).not.toEqual(value([connection()]));
   });
