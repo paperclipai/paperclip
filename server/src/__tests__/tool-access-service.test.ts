@@ -5749,6 +5749,76 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
+  it("binds an existing active company secret without creating a replacement", async () => {
+    const company = await createCompany(db);
+    const selected = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Existing Dida token",
+      key: `integrations.dida365/${randomUUID()}`,
+      value: "Bearer existing-token",
+    });
+    const before = await db.select({ id: companySecrets.id }).from(companySecrets);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer existing-token");
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [] },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://mcp.dida365.com",
+      name: "Dida365",
+      credentialSecretSelections: {
+        "headers.Authorization": { secretId: selected.id, versionSelector: "latest" },
+      },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(result.connection.credentialSecretRefs).toEqual([
+      expect.objectContaining({
+        secretId: selected.id,
+        configPath: "headers.Authorization",
+        versionSelector: "latest",
+      }),
+    ]);
+    expect(result.connection.credentialRefs).toEqual([
+      expect.objectContaining({
+        secretId: selected.id,
+        key: "Authorization",
+        prefix: null,
+      }),
+    ]);
+    await expect(db.select({ id: companySecrets.id }).from(companySecrets)).resolves.toHaveLength(before.length);
+  });
+
+  it("rejects inactive or cross-company existing secret selections", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const inactive = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Inactive token",
+      key: `inactive/${randomUUID()}`,
+      value: "inactive",
+    });
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, inactive.id));
+    const foreign = await secretService(db).create(otherCompany.id, {
+      provider: "local_encrypted",
+      name: "Foreign token",
+      key: `foreign/${randomUUID()}`,
+      value: "foreign",
+    });
+    const service = createTestToolAccessService(db);
+    for (const secretId of [inactive.id, foreign.id]) {
+      await expect(service.connectGalleryApp(company.id, {
+        link: "https://mcp.dida365.com",
+        name: `Rejected ${secretId}`,
+        credentialSecretSelections: { "headers.Authorization": { secretId } },
+      }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 400 });
+    }
+  });
+
   it("initializes stateful Streamable HTTP servers and remembers that future calls need a session", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
