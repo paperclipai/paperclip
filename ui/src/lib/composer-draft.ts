@@ -93,12 +93,58 @@ export function clearDraft(draftKey: string, attemptId?: string) {
   }
 }
 
+/**
+ * The exact comment request, kept so a send that failed transiently or lost
+ * its receipt can be resent with the same `attemptId`. The server dedupes by
+ * that ID and rejects it for different content, so the body must be the one
+ * originally sent, not the editor text.
+ */
+export interface ComposerSendRequest {
+  body: string;
+  reopen?: boolean;
+  reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null };
+  attachmentIds?: string[];
+  /** Composer run settings, passed back unchanged. */
+  runSettings?: Record<string, unknown>;
+}
+
 export interface ComposerDraftSubmission {
   attemptId: string;
   reviewed: boolean;
   /** Start of text typed after the submitted body in a restored uncertain draft. */
   nextDraftOffset?: number;
   submittedAttachmentIds?: string[];
+  /** Present when the send can be replayed; older records have none. */
+  request?: ComposerSendRequest;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length <= 128);
+}
+
+export function isComposerSendRequest(value: unknown): value is ComposerSendRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings"].includes(key))) return false;
+  if (typeof row.body !== "string" || row.body.length > 200_000) return false;
+  if (row.reopen !== undefined && typeof row.reopen !== "boolean") return false;
+  if (row.reassignment !== undefined) {
+    const reassignment = row.reassignment as Record<string, unknown> | null;
+    if (
+      !reassignment || typeof reassignment !== "object" || Array.isArray(reassignment) ||
+      !isNullableString(reassignment.assigneeAgentId) || !isNullableString(reassignment.assigneeUserId)
+    ) return false;
+  }
+  if (
+    row.attachmentIds !== undefined &&
+    (!Array.isArray(row.attachmentIds) || row.attachmentIds.length > 256 ||
+      !row.attachmentIds.every((id) => typeof id === "string" && id.length <= 128))
+  ) return false;
+  if (
+    row.runSettings !== undefined &&
+    (!row.runSettings || typeof row.runSettings !== "object" || Array.isArray(row.runSettings))
+  ) return false;
+  return true;
 }
 
 /** Retained client request ID. It is not delivery proof until a matching
@@ -108,19 +154,21 @@ export function loadDraftSubmission(
 ): ComposerDraftSubmission | null {
   try {
     const raw = draftStorage(draftKey).getItem(`${draftKey}:submission:v1`);
-    if (!raw || raw.length > 16_384) return null;
+    if (!raw || raw.length > 262_144) return null;
     const record = JSON.parse(raw);
     return record?.version === 1 &&
       record.draftKey === draftKey &&
-      Object.keys(record).every((key) => ["version", "draftKey", "attemptId", "reviewed", "nextDraftOffset", "submittedAttachmentIds"].includes(key)) &&
+      Object.keys(record).every((key) => ["version", "draftKey", "attemptId", "reviewed", "nextDraftOffset", "submittedAttachmentIds", "request"].includes(key)) &&
       typeof record.attemptId === "string" &&
       /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(record.attemptId) &&
       typeof record.reviewed === "boolean" &&
       (record.nextDraftOffset === undefined || (Number.isSafeInteger(record.nextDraftOffset) && record.nextDraftOffset >= 0)) &&
-      (record.submittedAttachmentIds === undefined || (Array.isArray(record.submittedAttachmentIds) && record.submittedAttachmentIds.length <= 256 && record.submittedAttachmentIds.every((id: unknown) => typeof id === "string" && id.length <= 128)))
+      (record.submittedAttachmentIds === undefined || (Array.isArray(record.submittedAttachmentIds) && record.submittedAttachmentIds.length <= 256 && record.submittedAttachmentIds.every((id: unknown) => typeof id === "string" && id.length <= 128))) &&
+      (record.request === undefined || isComposerSendRequest(record.request))
       ? { attemptId: record.attemptId, reviewed: record.reviewed,
           ...(record.nextDraftOffset !== undefined ? { nextDraftOffset: record.nextDraftOffset } : {}),
           ...(record.submittedAttachmentIds !== undefined ? { submittedAttachmentIds: record.submittedAttachmentIds } : {}),
+          ...(record.request !== undefined ? { request: record.request } : {}),
         }
       : null;
   } catch {

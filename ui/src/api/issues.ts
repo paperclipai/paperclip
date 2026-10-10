@@ -42,6 +42,8 @@ import type {
 } from "@paperclipai/shared";
 import { api, ApiError, detachInflightGet, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { classifySendFailure } from "../lib/pending-send";
+import { interactionResolutionErrorCode } from "../lib/interaction-resolution-error";
 
 function hasCommentReceipt(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -69,6 +71,46 @@ async function confirmedCommentResponse<T>(
     // may also happen after commit; it cannot establish that nothing was saved.
     if (error instanceof ApiError && error.status < 500) throw error;
     throw new CommentSubmissionUnknownError();
+  }
+}
+
+/**
+ * Resolutions that failed transiently in this tab. A resolution may land on
+ * the server and lose its response; resending it then gets
+ * `interaction_already_resolved`. That is our own answer, not a conflict.
+ */
+const transientlyFailedResolutions = new Set<string>();
+
+async function resolveInteractionOnce(
+  issueId: string,
+  interactionId: string,
+  expectedStatus: IssueThreadInteraction["status"],
+  request: () => Promise<IssueThreadInteraction>,
+): Promise<IssueThreadInteraction> {
+  const key = `${issueId}:${interactionId}:${expectedStatus}`;
+  try {
+    const result = await request();
+    transientlyFailedResolutions.delete(key);
+    return result;
+  } catch (error) {
+    if (classifySendFailure(error) === "pending") {
+      transientlyFailedResolutions.add(key);
+      throw error;
+    }
+    if (
+      transientlyFailedResolutions.has(key) &&
+      interactionResolutionErrorCode(error) === "interaction_already_resolved"
+    ) {
+      const current = await api
+        .get<IssueThreadInteraction[]>(`/issues/${issueId}/interactions`)
+        .then((rows) => rows.find((row) => row.id === interactionId) ?? null)
+        .catch(() => null);
+      if (current?.status === expectedStatus) {
+        transientlyFailedResolutions.delete(key);
+        return current;
+      }
+    }
+    throw error;
   }
 }
 
@@ -442,14 +484,18 @@ export const issuesApi = {
       rememberAction?: boolean;
     },
   ) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/accept`,
-      data ?? {},
+    resolveInteractionOnce(id, interactionId, "accepted", () =>
+      api.post<IssueThreadInteraction>(
+        `/issues/${id}/interactions/${interactionId}/accept`,
+        data ?? {},
+      ),
     ),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/reject`,
-      reason ? { reason } : {},
+    resolveInteractionOnce(id, interactionId, "rejected", () =>
+      api.post<IssueThreadInteraction>(
+        `/issues/${id}/interactions/${interactionId}/reject`,
+        reason ? { reason } : {},
+      ),
     ),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(
@@ -469,9 +515,11 @@ export const issuesApi = {
       summaryMarkdown?: string | null;
     },
   ) =>
-    api.post<IssueThreadInteraction>(
-      `/issues/${id}/interactions/${interactionId}/respond`,
-      data,
+    resolveInteractionOnce(id, interactionId, "answered", () =>
+      api.post<IssueThreadInteraction>(
+        `/issues/${id}/interactions/${interactionId}/respond`,
+        data,
+      ),
     ),
   submitInteractionVerdicts: (
     id: string,

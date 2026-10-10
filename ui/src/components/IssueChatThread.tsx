@@ -78,8 +78,12 @@ import {
   clearDraftSubmission,
   settleDraftSubmission,
   type ComposerDraftSubmission,
+  type ComposerSendRequest,
 } from "../lib/composer-draft";
-import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { classifySendFailure, type SendOutcome } from "../lib/pending-send";
+import { useAutoResend } from "../hooks/useDurableSubmit";
+import { PendingSendNotice } from "./PendingSendNotice";
+import { describeError } from "../api/errors";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -234,6 +238,7 @@ import {
 } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  RotateCw,
   AlertTriangle,
   ArrowRight,
   Brain,
@@ -513,7 +518,6 @@ export interface IssueChatComposerHandle {
 interface IssueChatComposerProps {
   onSend: IssueChatThreadProps["onAdd"];
   confirmedSubmissionIds: ReadonlySet<string>;
-  onReviewConversation?: () => Promise<void>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -622,7 +626,6 @@ interface IssueChatThreadProps {
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
   ) => Promise<void>;
-  onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -983,6 +986,11 @@ type ComposerAttachmentItem = {
   inline: boolean;
   contentPath?: string;
   error?: string;
+  /**
+   * The picked file, kept after a failed upload so the chip can offer Retry.
+   * Uploads are not deduped by the server, so they never resend on their own.
+   */
+  file?: File;
 };
 
 function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
@@ -4641,7 +4649,6 @@ const IssueChatComposer = forwardRef<
   {
     onSend,
     confirmedSubmissionIds,
-    onReviewConversation,
     onStop,
     stopPending,
     stopScope = "leaf",
@@ -4684,11 +4691,13 @@ const IssueChatComposer = forwardRef<
   // the stored draft. The effect below handles subsequent task-key changes.
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
-  const [reviewError, setReviewError] = useState(false);
   const [uncertainSubmission, setUncertainSubmission] =
     useState<ComposerDraftSubmission | null>(() =>
       draftKey ? loadDraftSubmission(draftKey) : null,
     );
+  // Attempts this composer resent and saw confirmed; they settle exactly like
+  // a receipt that arrives through the thread.
+  const [resentSubmissionIds, setResentSubmissionIds] = useState<ReadonlySet<string>>(() => new Set());
   const mountedTaskKey = useRef(draftKey);
   useEffect(() => {
     mountedTaskKey.current = draftKey;
@@ -4705,6 +4714,7 @@ const IssueChatComposer = forwardRef<
     attemptId: string;
     submittedBody: string;
     submittedAttachmentIds: string[];
+    request: ComposerSendRequest;
   } | null>(null);
   function changeBody(update: string | ((current: string) => string)) {
     const value = typeof update === "function" ? update(bodyRef.current) : update;
@@ -4722,6 +4732,7 @@ const IssueChatComposer = forwardRef<
       attemptId: pending.attemptId, reviewed: false,
       nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
       submittedAttachmentIds: pending.submittedAttachmentIds,
+      request: pending.request,
     });
   }
   const submittingRef = useRef(submitting);
@@ -4831,7 +4842,10 @@ const IssueChatComposer = forwardRef<
   // A server receipt for this exact request settles a restored submission.
   // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
-    if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    if (
+      !uncertainSubmission ||
+      !(confirmedSubmissionIds.has(uncertainSubmission.attemptId) || resentSubmissionIds.has(uncertainSubmission.attemptId))
+    ) return;
     const { attemptId } = uncertainSubmission;
     const reconciled = reconciledSubmissionRef.current;
     if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
@@ -4875,7 +4889,46 @@ const IssueChatComposer = forwardRef<
     setBody(nextDraft);
     bodyRef.current = nextDraft;
     setComposerAttachments(nextAttachments);
-  }, [confirmedSubmissionIds, draftKey, sharedDraftKey, uncertainSubmission]);
+  }, [confirmedSubmissionIds, draftKey, resentSubmissionIds, sharedDraftKey, uncertainSubmission]);
+
+  async function resendUncertainSubmission(): Promise<SendOutcome> {
+    const submission = uncertainSubmission;
+    const request = submission?.request;
+    if (!submission || !request) return "rejected";
+    const taskKey = draftKey;
+    const args = [
+      request.body,
+      request.reopen,
+      request.reassignment,
+      request.attachmentIds,
+      submission.attemptId,
+    ] as const;
+    try {
+      if (request.runSettings) await onSend(...args, request.runSettings as unknown as ComposerRunSettings);
+      else await onSend(...args);
+    } catch (error) {
+      const failure = classifySendFailure(error);
+      if (failure === "rejected") {
+        // A definitive answer: the text is already back in the editor.
+        if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
+        if (mountedTaskKey.current === taskKey) setUncertainSubmission(null);
+      }
+      return failure;
+    }
+    if (mountedTaskKey.current === taskKey) {
+      setResentSubmissionIds((current) => new Set([...current, submission.attemptId]));
+    } else if (taskKey) {
+      settleDraftSubmission(taskKey, submission.attemptId);
+    }
+    return "sent";
+  }
+
+  const resendSourceId = useId();
+  const autoResend = useAutoResend({
+    sourceId: `issue-chat-composer:${resendSourceId}`,
+    active: Boolean(uncertainSubmission?.request) && !submitting,
+    resend: resendUncertainSubmission,
+  });
 
   useEffect(() => {
     if (
@@ -5030,6 +5083,7 @@ const IssueChatComposer = forwardRef<
     bodyRef.current = "";
     setBody("");
     let attemptId: string | null = null;
+    let request: ComposerSendRequest | null = null;
     try {
       if (workModeChanged && onWorkModeChange) {
         await onWorkModeChange(pendingWorkMode);
@@ -5041,10 +5095,19 @@ const IssueChatComposer = forwardRef<
         return;
       }
       attemptId = crypto.randomUUID();
+      // The exact request is stored before it is sent, so a lost response or
+      // an outage can resend it with the same ID instead of losing it.
+      request = {
+        body: submittedBody,
+        ...(reopen === undefined ? {} : { reopen }),
+        ...(reassignment ? { reassignment } : {}),
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+      };
       if (draftKey) {
         saveDraft(draftKey, trimmed);
-        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
-        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds };
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false, request });
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds, request };
         changeBody(bodyRef.current);
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
@@ -5069,11 +5132,14 @@ const IssueChatComposer = forwardRef<
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
-      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+      // Not delivered, or not known to be: keep it and resend with the same
+      // ID when the connection allows. The server dedupes by that ID.
+      if (attemptId && request && classifySendFailure(error) === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: trimmed.length + (nextDraft ? 2 : 0),
           submittedAttachmentIds: attachmentIds,
+          request,
         };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
@@ -5176,12 +5242,21 @@ const IssueChatComposer = forwardRef<
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
       );
     }
+  }
+
+  /** Retry a failed upload from its kept file; only ever on an explicit click. */
+  function retryUpload(attachment: ComposerAttachmentItem) {
+    const file = attachment.file;
+    if (!file) return;
+    setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    void attachFile(file);
   }
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
@@ -5401,67 +5476,18 @@ const IssueChatComposer = forwardRef<
         </p>
       ) : null}
       {uncertainSubmission ? (
-        <div
-          role="alert"
-          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
-        >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={async () => {
-              setReviewError(false);
-              try {
-                if (!onReviewConversation)
-                  throw new Error("Review unavailable");
-                await onReviewConversation();
-                if (mountedTaskKey.current !== draftKey) return;
-                const reviewed = { ...uncertainSubmission, reviewed: true };
-                setUncertainSubmission(reviewed);
-                if (
-                  draftKey &&
-                  loadDraftSubmission(draftKey)?.attemptId ===
-                    reviewed.attemptId
-                )
-                  saveDraftSubmission(draftKey, reviewed);
-              } catch {
-                setReviewError(true);
-              }
-            }}
-          >
-            Review conversation
-          </Button>
-          {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
-          ) : null}
-          {uncertainSubmission.reviewed ? (
-            <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  if (draftKey)
-                    clearDraft(draftKey, uncertainSubmission.attemptId);
-                  bodyRef.current = "";
-                  setBody("");
-                  setComposerAttachments([]);
-                  setUncertainSubmission(null);
-                }}
-              >
-                Discard draft and start new
-              </Button>
-            </>
-          ) : null}
-        </div>
+        <PendingSendNotice
+          className="mb-3"
+          noun="comment"
+          resending={autoResend.resending}
+          stalled={autoResend.stalled}
+          onResendNow={uncertainSubmission.request ? autoResend.resendNow : undefined}
+          onCancel={() => {
+            // Stop resending; the text stays in the editor to edit or send again.
+            if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
+            setUncertainSubmission(null);
+          }}
+        />
       ) : null}
       <MarkdownEditor
         ref={editorRef}
@@ -5547,6 +5573,18 @@ const IssueChatComposer = forwardRef<
                 <span className="shrink-0 text-muted-foreground">
                   {statusLabel}
                 </span>
+                {attachment.status === "error" && attachment.file ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Retry ${attachment.name}`}
+                    disabled={!!uncertainSubmission}
+                    onClick={() => retryUpload(attachment)}
+                  >
+                    <RotateCw className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                ) : null}
                 {!attachment.inline || attachment.status !== "attached" ? (
                   <Button
                     type="button"
@@ -5776,7 +5814,6 @@ export function IssueChatThread({
   userProfileMap,
   onVote,
   onAdd,
-  onReviewConversation,
   onCancelRun,
   stopPending,
   stopScope,
@@ -6741,7 +6778,6 @@ export function IssueChatThread({
               <IssueChatComposer
                 ref={composerRef}
                 onSend={sendComposerComment}
-                onReviewConversation={onReviewConversation}
                 onImageUpload={imageUploadHandler}
                 onAttachImage={onAttachImage}
                 draftKey={draftKey}

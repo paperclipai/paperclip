@@ -67,6 +67,7 @@ import {
   selectedFolderFromList,
   type FolderSelection,
 } from "../components/folders/FolderControls";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -654,13 +655,9 @@ export function Routines() {
     () => createIssueDetailLocationState("Recent Runs", "/routines?tab=runs", "issues"),
     [],
   );
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
-      });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId: selectedCompanyId,
+    invalidateKeys: selectedCompanyId ? [[...queryKeys.issues.list(selectedCompanyId), "routine-executions"]] : [],
   });
 
   function handleLegacyTabChange(tab: string) {

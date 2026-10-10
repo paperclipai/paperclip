@@ -1504,7 +1504,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(1));
     expect(getLastProjectId(issue.companyId)).toBe("original-project");
     await act(async () => failedUpdate.reject(new Error("Project save failed")));
-    await waitForAssertion(() => expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Task update failed" })));
+    await waitForAssertion(() => expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn't update the task" })));
     expect(getLastProjectId(issue.companyId)).toBe("original-project");
     await act(async () => properties.onUpdate({ projectId }));
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(2));

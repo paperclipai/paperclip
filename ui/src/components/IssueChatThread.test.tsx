@@ -3319,11 +3319,49 @@ describe("IssueChatThread", () => {
       )?.value).toBe(nextDraft);
       expect(localStorage.getItem(key)).toBe(nextDraft);
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
-      expect(container.textContent).not.toContain("We couldn’t confirm");
+      expect(container.textContent).not.toContain("Sending when reconnected…");
     } finally {
       act(() => root.unmount());
     }
     expect(localStorage.getItem(key)).toBe(nextDraft);
+  });
+
+  it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {
+    const key = "resend-unconfirmed-comment";
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn()
+      .mockReturnValueOnce(new Promise<void>((_, reject) => { rejectSend = reject; }))
+      .mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+    const type = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
+      editor().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent === label) as HTMLButtonElement;
+    try {
+      await act(async () => root.render(
+        <MemoryRouter>
+          <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+            onAdd={onAdd} draftKey={key} enableLiveTranscriptPolling={false} />
+        </MemoryRouter>,
+      ));
+      type("Typed during the outage");
+      await act(async () => button("Send").click());
+      type("Next thought");
+      await act(async () => rejectSend(new CommentSubmissionUnknownError()));
+      expect(container.textContent).toContain("Sending when reconnected…");
+      expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).request.body).toBe("Typed during the outage");
+      await act(async () => button("Resend now").click());
+      expect(onAdd).toHaveBeenCalledTimes(2);
+      expect(onAdd.mock.calls[1]![0]).toBe("Typed during the outage");
+      expect(onAdd.mock.calls[1]![4]).toBe(onAdd.mock.calls[0]![4]);
+      expect(container.textContent).not.toContain("Sending when reconnected…");
+      expect(editor().value).toBe("Next thought");
+      expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it.each(["submission write", "all storage"])(
@@ -3363,10 +3401,10 @@ describe("IssueChatThread", () => {
         const attemptId = onAdd.mock.calls[0]![4] as string;
         type("The full next draft");
         await act(async () => rejectSend(new CommentSubmissionUnknownError()));
-        expect(container.textContent).toContain("We couldn’t confirm");
+        expect(container.textContent).toContain("Sending when reconnected…");
         await act(async () => root.render(element(attemptId)));
         expect(editor().value).toBe("The full next draft");
-        expect(container.textContent).not.toContain("We couldn’t confirm");
+        expect(container.textContent).not.toContain("Sending when reconnected…");
         expect(send().disabled).toBe(false);
         await act(async () => send().click());
         expect(onAdd.mock.calls[1]![0]).toBe("The full next draft");
@@ -3419,7 +3457,7 @@ describe("IssueChatThread", () => {
         await act(async () => root.render(element(true)));
         const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
         expect(editor().value).toBe(localText);
-        expect(container.textContent).not.toContain("We couldn’t confirm");
+        expect(container.textContent).not.toContain("Sending when reconnected…");
         if (scenario === "unavailable recovery storage") expect(container.textContent).toContain("copy your text before leaving");
         if (scenario.includes("with new attachments")) expect(container.textContent).toContain("another-tab.txt");
         if (scenario === "foreign pending receipt") {
@@ -3960,7 +3998,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
       expect(localStorage.getItem(`${key}:attachments:v1`)).toContain(attachmentId);
       expect(container.textContent).toContain("next-draft.txt");
-      expect(container.textContent).not.toContain("We couldn’t confirm");
+      expect(container.textContent).not.toContain("Sending when reconnected…");
       await act(async () => root.unmount());
       await act(async () => resolveSend());
       expect(localStorage.getItem(key)).toBe("Newer unsent draft");

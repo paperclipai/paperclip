@@ -1,6 +1,7 @@
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
@@ -22,10 +23,15 @@ import {
   clearDraftSubmission,
   settleDraftSubmission,
   type ComposerDraftSubmission,
+  type ComposerSendRequest,
 } from "@/lib/composer-draft";
-import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
+import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { describeError } from "@/api/errors";
+import { useAutoResend } from "@/hooks/useDurableSubmit";
+import { PendingSendNotice } from "@/components/PendingSendNotice";
 import {
   ArrowUp,
+  RotateCw,
   Square,
   ChevronDown,
   CircleHelp,
@@ -148,7 +154,6 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
-  onReviewConversation?: () => Promise<void>;
   /** When set, the main composer temporarily edits this queued message. */
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
@@ -324,6 +329,11 @@ type ComposerAttachment = {
   error?: string;
   /** Set once uploaded; the submit path appends `[name](contentPath)` lines. */
   contentPath?: string;
+  /**
+   * The picked file, kept after a failed upload so the chip can offer Retry.
+   * Uploads are not deduped by the server, so they never resend on their own.
+   */
+  file?: File;
 };
 
 type QueuedEditBackup = {
@@ -401,7 +411,6 @@ export function TaskChatComposer({
   issueStatus,
   mobile = false,
   draftKey,
-  onReviewConversation,
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
@@ -417,7 +426,6 @@ export function TaskChatComposer({
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
-  const [reviewError, setReviewError] = useState(false);
   const [uncertainSubmission, setUncertainSubmission] =
     useState<ComposerDraftSubmission | null>(() =>
       draftKey ? loadDraftSubmission(draftKey) : null,
@@ -485,6 +493,7 @@ export function TaskChatComposer({
     attemptId: string;
     submittedBody: string;
     submittedAttachmentIds: string[];
+    request: ComposerSendRequest;
   } | null>(null);
   function changeBody(value: string) {
     bodyRef.current = value;
@@ -505,6 +514,7 @@ export function TaskChatComposer({
       attemptId: pending.attemptId, reviewed: false,
       nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
       submittedAttachmentIds: pending.submittedAttachmentIds,
+      request: pending.request,
     });
   }
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -719,7 +729,8 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
@@ -774,12 +785,21 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
       );
     }
+  }
+
+  /** Retry a failed upload from its kept file; only ever on an explicit click. */
+  function retryUpload(attachment: ComposerAttachment) {
+    const file = attachment.file;
+    if (!file) return;
+    setAttachments((prev) => prev.filter((item) => item.id !== attachment.id));
+    void attachPickedFile(file);
   }
 
   /** Images picked from the + button go inline at the caret, like paste/drop. */
@@ -893,7 +913,7 @@ export function TaskChatComposer({
       try {
         await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
       } catch (error) {
-        setActionError(error instanceof Error ? error.message : "Failed to create task. Try again.");
+        setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
@@ -1020,6 +1040,7 @@ export function TaskChatComposer({
     setBody("");
     setSubmitting(true);
     let attemptId: string | null = null;
+    let request: ComposerSendRequest | null = null;
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
@@ -1037,10 +1058,6 @@ export function TaskChatComposer({
         return;
       }
       attemptId = crypto.randomUUID();
-      if (draftKey) {
-        saveDraft(draftKey, submittedBody);
-        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
-      }
       // IDs come only from this composer's upload receipts, never from parsing
       // arbitrary Markdown. A removed inline image no longer selects its receipt.
       const attachmentIds = [
@@ -1057,8 +1074,19 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
+      // The exact request is stored before it is sent, so a lost response or
+      // an outage can resend it with the same ID instead of losing it.
+      request = {
+        body: fullBody,
+        ...(reopen === undefined ? {} : { reopen }),
+        ...(reassignment ? { reassignment } : {}),
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+      };
       if (draftKey) {
-        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
+        saveDraft(draftKey, submittedBody);
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false, request });
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request };
         changeBody(bodyRef.current);
       }
       if (runSettings) {
@@ -1082,11 +1110,14 @@ export function TaskChatComposer({
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
-      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+      // Not delivered, or not known to be: keep it and resend with the same
+      // ID when the connection allows. The server dedupes by that ID.
+      if (attemptId && request && classifySendFailure(error) === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
           submittedAttachmentIds: submittedAttachments.flatMap(item => item.attachmentId ? [item.attachmentId] : []),
+          request,
         };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
@@ -1111,45 +1142,69 @@ export function TaskChatComposer({
     }
   }
 
-  useEffect(() => {
-    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
-    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
-      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
-    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+  /** A confirmed receipt for the retained send: drop its text, keep any next draft. */
+  function settleUncertainSubmission(submission: ComposerDraftSubmission) {
+    const nextDraft = submission.nextDraftOffset === undefined
+      ? "" : bodyRef.current.slice(submission.nextDraftOffset);
+    if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
     setUncertainSubmission(null);
+    setActionError(null);
     bodyRef.current = nextDraft;
     setBody(nextDraft);
-    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    const submittedIds = submission.submittedAttachmentIds;
     setAttachments(current => submittedIds
       ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
       : []);
-  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
-
-  async function reviewUncertainSubmission() {
-    if (!uncertainSubmission) return;
-    setReviewError(false);
-    try {
-      if (!onReviewConversation) throw new Error("Review unavailable");
-      await onReviewConversation();
-      if (mountedTaskKey.current !== draftKey) return;
-      const reviewed = { ...uncertainSubmission, reviewed: true };
-      setUncertainSubmission(reviewed);
-      if (
-        draftKey &&
-        loadDraftSubmission(draftKey)?.attemptId === reviewed.attemptId
-      )
-        saveDraftSubmission(draftKey, reviewed);
-    } catch {
-      setReviewError(true);
-    }
   }
 
-  function discardUncertainDraft() {
-    if (!uncertainSubmission?.reviewed) return;
-    if (draftKey) clearDraft(draftKey, uncertainSubmission.attemptId);
-    bodyRef.current = "";
-    setBody("");
-    setAttachments([]);
+  useEffect(() => {
+    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    settleUncertainSubmission(uncertainSubmission);
+  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
+
+  async function resendUncertainSubmission(): Promise<SendOutcome> {
+    const submission = uncertainSubmission;
+    const request = submission?.request;
+    if (!submission || !request || !onAdd) return "rejected";
+    const taskKey = draftKey;
+    const args = [
+      request.body,
+      request.reopen,
+      request.reassignment,
+      request.attachmentIds,
+      submission.attemptId,
+    ] as const;
+    try {
+      if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      else await onAdd(...args);
+    } catch (error) {
+      const failure = classifySendFailure(error);
+      if (failure === "rejected") {
+        // A definitive answer: the text is already back in the editor.
+        if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
+        if (mountedTaskKey.current === taskKey) {
+          setUncertainSubmission(null);
+          setActionError(describeError(error, { action: "send this message" }).body);
+        }
+      }
+      return failure;
+    }
+    if (mountedTaskKey.current === taskKey) settleUncertainSubmission(submission);
+    else if (taskKey) settleDraftSubmission(taskKey, submission.attemptId);
+    return "sent";
+  }
+
+  const resendSourceId = useId();
+  const autoResend = useAutoResend({
+    sourceId: `task-chat-composer:${resendSourceId}`,
+    active: Boolean(uncertainSubmission?.request) && !submitting,
+    resend: resendUncertainSubmission,
+  });
+
+  /** Stop resending; the text stays in the editor to edit or send again. */
+  function cancelUncertainSubmission() {
+    if (!uncertainSubmission) return;
+    if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
     setUncertainSubmission(null);
   }
 
@@ -1288,43 +1343,15 @@ export function TaskChatComposer({
       >
         {creation?.header}
         {uncertainSubmission ? (
-        <div
-          role="alert"
-          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
-        >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={reviewUncertainSubmission}
-          >
-            Review conversation
-          </Button>
-          {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
-          ) : null}
-          {uncertainSubmission.reviewed ? (
-            <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={discardUncertainDraft}
-              >
-                Discard draft and start new
-              </Button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+          <PendingSendNotice
+            className="mb-3"
+            noun="message"
+            resending={autoResend.resending}
+            stalled={autoResend.stalled}
+            onResendNow={uncertainSubmission.request ? autoResend.resendNow : undefined}
+            onCancel={cancelUncertainSubmission}
+          />
+        ) : null}
       {!takeoverVisible && (pendingTakeover || takeover) ? (
         <button
           type="button"
@@ -1432,6 +1459,15 @@ export function TaskChatComposer({
                       </AttachmentDescription>
                     </AttachmentContent>
                     <AttachmentActions>
+                      {attachment.status === "error" && attachment.file ? (
+                        <AttachmentAction
+                          aria-label={`Retry ${attachment.name}`}
+                          disabled={!!uncertainSubmission}
+                          onClick={() => retryUpload(attachment)}
+                        >
+                          <RotateCw aria-hidden />
+                        </AttachmentAction>
+                      ) : null}
                       <AttachmentAction
                         aria-label={`Remove ${attachment.name}`}
                         disabled={!!uncertainSubmission}
