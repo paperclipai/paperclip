@@ -2872,3 +2872,4 @@ export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-
 
 export * from "./muse-protocol.js";
 export * from "./muse-invitations.js";
+export * from "./fast-response.js";

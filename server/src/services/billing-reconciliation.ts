@@ -1,6 +1,6 @@
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { decisionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { fastResponseRequests, decisionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
@@ -160,6 +160,10 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
             eq(budgetReservations.companyId, companyId), eq(budgetReservations.decisionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
           ));
+        }
+        if (updated.usageKind === "fast_response") {
+          const [invocation] = await tx.select({ id: fastResponseRequests.id }).from(fastResponseRequests).where(and(eq(fastResponseRequests.companyId, companyId), eq(fastResponseRequests.costEventId, eventId)));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.fastResponseRequestId, invocation.id), eq(budgetReservations.state, "held")));
         }
         const budgets = budgetServiceInTransaction(tx, publications);
         await budgets.evaluateCostEvent(updated);
