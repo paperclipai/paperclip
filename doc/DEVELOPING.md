@@ -1506,6 +1506,15 @@ even if filesystem I/O delays cancellation. Late results cannot add evidence
 or start another page. Each listing retains its existing batches of eight reads;
 concurrent listings do not skip healthy logs because another listing is busy.
 
+### SSH private keys and agent identities
+
+When an SSH execution target supplies `privateKey`, the shared SSH transport
+disables the controller's SSH agent with `IdentityAgent=none` and sets
+`IdentitiesOnly=yes`. This prevents unrelated agent keys from being offered or
+used when the supplied key fails. Targets without a supplied key keep OpenSSH's
+normal agent behavior. OpenSSH still reads the operator's configuration, including
+any explicit `IdentityFile` entries; this option does not isolate that configuration.
+
 ### Preinstalled remote runner runtime
 
 For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
