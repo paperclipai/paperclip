@@ -3603,7 +3603,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    // Target the specific agent so the authorization self branch applies: an
+    // agent may read the skills attached to itself. Peer reads still require
+    // the agent_config:read grant ladder (and board reads are unchanged).
+    await assertCanReadAgent(req, agent);
 
     const adapter = findActiveServerAdapter(agent.adapterType);
     if (!adapter?.listSkills) {

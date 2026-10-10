@@ -406,6 +406,71 @@ describe("agent skill routes", () => {
     );
   }, 10_000);
 
+  it("lets an agent read its own skills without the peer config-read grant", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_self",
+      explanation: "Allowed because the actor is reading its own agent configuration.",
+    });
+
+    const res = await requestApp(
+      await createApp(createDb(), {
+        type: "agent",
+        agentId: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        runId: "run-1",
+        source: "agent_key",
+      }),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The skills route must resolve the target agent, not the company, so the
+    // authorization self branch is reachable.
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: "company-1",
+        agentId: "11111111-1111-4111-8111-111111111111",
+      },
+    }));
+  }, 10_000);
+
+  it("does not let an agent read a peer agent's skills without a grant", async () => {
+    const peer = { ...makeAgent("claude_local"), id: "33333333-3333-4333-8333-333333333333" };
+    mockAgentService.getById.mockResolvedValue(peer);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:suggest-changes.",
+    });
+
+    const res = await requestApp(
+      await createApp(createDb(), {
+        type: "agent",
+        agentId: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        runId: "run-1",
+        source: "agent_key",
+      }),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/33333333-3333-4333-8333-333333333333/skills?companyId=company-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+      },
+    }));
+  }, 10_000);
+
   it("lists skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
       env: {
