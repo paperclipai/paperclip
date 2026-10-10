@@ -711,6 +711,71 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it.each(["timeout", "ssh_failure", "rejected_rpc"] as const)(
+    "keeps the admitted process after a transient %s monitor failure", async failure => {
+      vi.useFakeTimers();
+      try {
+        let nonce = "";
+        let polls = 0;
+        const launch = vi.fn(async (request: { args: string[] }) => { nonce = request.args[4]!; });
+        const execute = vi.fn(async (request: { args: string[] }) => {
+          const label = request.args[2];
+          const result = { exitCode: 0, timedOut: false, signal: null, stdout: "", stderr: "" };
+          if (label === "paperclip-runner-process-identity") return { ...result,
+            stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\ncomputer-runner\nlinux:abcd-1234:100\n` };
+          if (label === "paperclip-runner-monitor") {
+            polls += 1;
+            if (polls === 1) {
+              if (failure === "rejected_rpc") throw new Error("SSH connection reset");
+              return { ...result, exitCode: failure === "timeout" ? 3 : 255, timedOut: failure === "timeout" };
+            }
+            return { ...result, exitCode: polls === 3 ? 4 : 0 };
+          }
+          if (label === "paperclip-runner-diagnostics") return result;
+          return { ...result, stdout: Buffer.from("{}").toString("base64") };
+        });
+        const launcher = createRemoteRunnerProcessLauncher({
+          target: { kind: "remote", transport: "computer", remoteCwd: "/home/user/project", launch } as never,
+          runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/state/identity",
+          stateDirectory: "/runtime/state", diagnosticsDirectory: "/runtime/logs", runnerInstanceId: "computer-runner",
+        });
+        const handle = launcher({ command: "/controller/runnerd", args: ["--runner-id", "computer-runner"], cwd: "/controller", environment: {} });
+        let settled = false;
+        void handle.completion.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(1_100);
+        expect(polls).toBe(2);
+        expect(settled).toBe(false);
+        expect(launch).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(handle.completion).resolves.toMatchObject({ stderr: "runner_remote_process_identity_mismatch" });
+        expect(polls).toBe(3);
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
+  it("bounds inconclusive process monitoring without claiming the process exited", async () => {
+    vi.useFakeTimers();
+    try {
+      let nonce = "";
+      const launch = vi.fn(async (request: { args: string[] }) => { nonce = request.args[4]!; });
+      const execute = vi.fn(async (request: { args: string[] }) => ({
+        exitCode: request.args[2] === "paperclip-runner-monitor" ? 255 : 0,
+        timedOut: false, signal: null, stderr: "",
+        stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\ncomputer-runner\nlinux:abcd-1234:100\n`,
+      }));
+      const launcher = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "computer", remoteCwd: "/home/user/project", launch } as never,
+        runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/state/identity",
+        stateDirectory: "/runtime/state", diagnosticsDirectory: "/runtime/logs", runnerInstanceId: "computer-runner",
+      });
+      const handle = launcher({ command: "/controller/runnerd", args: ["--runner-id", "computer-runner"], cwd: "/controller", environment: {} });
+      const completion = expect(handle.completion).rejects.toThrow("runner_remote_process_monitor_unavailable exitCode=255 timedOut=false");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await completion;
+      expect(launch).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("launches a computer runner through owned process admission, never detached shell allocation", async () => {
     let nonce = "";
     const launch = vi.fn(async (request: { args: string[] }) => { nonce = request.args[4]!; return {}; });

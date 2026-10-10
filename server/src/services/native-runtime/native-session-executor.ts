@@ -11191,6 +11191,7 @@ export function createRemoteRunnerProcessLauncher(input: {
         attributes: { identitySource: "remote_marker", detached: true },
       });
 
+      let consecutiveUnknownObservations = 0;
       while (true) {
         const observed = await runner.execute({
           command: "sh",
@@ -11205,8 +11206,18 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
-        });
-        if (observed.exitCode === 0 && !observed.timedOut) {
+        }).catch(() => null);
+        const identityConfirmed = observed?.exitCode === 0 && !observed.timedOut;
+        const identityLost = observed !== null && !observed.timedOut
+          && (observed.exitCode === 3 || observed.exitCode === 4);
+        if (!identityLost) {
+          // SSH/provider failures do not prove that runnerd exited. In particular,
+          // concurrent artifact uploads can delay a monitor RPC while PRP stays
+          // healthy. Retry unknown observations without allocating another runner.
+          consecutiveUnknownObservations = identityConfirmed ? 0 : consecutiveUnknownObservations + 1;
+          if (consecutiveUnknownObservations >= 3) {
+            throw new Error(`runner_remote_process_monitor_unavailable exitCode=${observed?.exitCode ?? "unknown"} timedOut=${observed?.timedOut ?? "unknown"}`);
+          }
           await new Promise<void>((resolve) =>
             setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
           );
