@@ -59,6 +59,7 @@ import {
   parseLocalProcessSandboxExtraPaths,
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
+  resolveRunScratchManagedPath,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
@@ -999,12 +1000,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
     const networkScope = parseLocalProcessNetworkScope(config.networkScope);
     const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+    const runScratchPath = filesystemScope ? await resolveRunScratchManagedPath(effectiveEnv) : null;
     const localProcessSandbox: LocalProcessSandboxOptions | null =
       (filesystemScope || networkScope) && !executionTargetIsRemote
         ? {
             workspaceDir: effectiveExecutionCwd,
             filesystemScope,
-            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+            managedPaths: [{ path: effectiveCodexHome, access: "rw" }, ...(runScratchPath ? [runScratchPath] : [])],
             extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
             pathAliases: targetWorkspaceRealization?.mode === "copy"
               ? targetWorkspaceRealization.pathAliases

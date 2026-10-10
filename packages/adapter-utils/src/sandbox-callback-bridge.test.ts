@@ -463,6 +463,70 @@ describe("sandbox callback bridge", () => {
     });
   });
 
+  it("drains a request queued while a listing that started before stop is in flight", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-drain-in-flight-list-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const base = createFileSystemSandboxCallbackBridgeQueueClient();
+    let releaseListing!: () => void;
+    const listingGate = new Promise<void>((resolve) => {
+      releaseListing = resolve;
+    });
+    let signalListingStarted!: () => void;
+    const listingStarted = new Promise<void>((resolve) => {
+      signalListingStarted = resolve;
+    });
+    let gatedListings = 0;
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...base,
+      listJsonFiles: async (directory) => {
+        const fileNames = await base.listJsonFiles(directory);
+        if (directory === directories.requestsDir && gatedListings === 0) {
+          // Hold the first listing after it has read the empty queue.
+          gatedListings += 1;
+          signalListingStarted();
+          await listingGate;
+        }
+        return fileNames;
+      },
+    };
+    const handled: string[] = [];
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      handleRequest: async (request) => {
+        handled.push(request.id);
+        return { status: 200, body: JSON.stringify({ id: request.id }) };
+      },
+    });
+
+    await listingStarted;
+    await writeFile(
+      path.posix.join(directories.requestsDir, "req-late.json"),
+      `${JSON.stringify({
+        id: "req-late",
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: "",
+        createdAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+    const stopped = worker.stop({ drainTimeoutMs: 5_000 });
+    releaseListing();
+    await stopped;
+
+    const response = JSON.parse(
+      await readFile(path.posix.join(directories.responsesDir, "req-late.json"), "utf8"),
+    ) as { status: number; body: string };
+    expect(response.status).toBe(200);
+    expect(handled).toEqual(["req-late"]);
+  });
+
   it("drains already-queued requests on stop", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-drain-"));
     cleanupDirs.push(rootDir);
