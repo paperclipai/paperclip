@@ -592,6 +592,73 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   });
 
+  it("reacknowledges a stale stop fingerprint while the subtree is still stopped", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REACK", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // The platform's own bookkeeping mutates the watched issue between dispatch
+    // and the watchdog's first write, drifting the stop fingerprint.
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+    expect(revalidated.allowed).toBe(false);
+
+    const reack = await service.reacknowledgeMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+    expect(reack.acked).toBe(true);
+    if (!reack.acked) throw new Error("Expected reacknowledgement to succeed");
+    expect(reack.stopFingerprint).not.toBe(originalFingerprint);
+    expect(reack.stopFingerprint).toMatch(/^task_watchdog_stop:/);
+  });
+
+  it("refuses to reacknowledge when the watched subtree has a live path", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REACK-LIVE", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: sourceId },
+    });
+
+    const reack = await service.reacknowledgeMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+    expect(reack.acked).toBe(false);
+  });
+
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });

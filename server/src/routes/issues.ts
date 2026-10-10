@@ -591,6 +591,24 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         pendingInteractionsByIssueId: {},
       },
     }),
+    reacknowledgeMutationScope: async () => ({
+      acked: true,
+      stopFingerprint: "task_watchdog_stop:unavailable",
+      classification: {
+        state: "stopped",
+        reason: "Task watchdog service unavailable in this route context.",
+        includedIssueIds: [],
+        stopFingerprint: "task_watchdog_stop:unavailable",
+        stoppedLeaves: [],
+        stopSnapshot: {
+          version: 2,
+          fingerprint: "task_watchdog_stop:unavailable",
+          materialLeaves: [],
+          waitsByIssueId: {},
+        },
+        pendingInteractionsByIssueId: {},
+      },
+    }),
   };
 }
 
@@ -5782,6 +5800,9 @@ export function issueRoutes(
 
     const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope);
     if (revalidated.allowed) return true;
+    const staleFingerprint =
+      revalidated.classification?.state === "stopped" &&
+      "stopFingerprint" in revalidated.classification;
     res.status(409).json({
       error: revalidated.reason,
       details: {
@@ -5794,6 +5815,9 @@ export function issueRoutes(
           "stopFingerprint" in revalidated.classification
             ? revalidated.classification.stopFingerprint
             : null,
+        hint: staleFingerprint
+          ? `The watched subtree is still stopped but its stop fingerprint changed (usually from the platform's own bookkeeping). Re-read the subtree, then re-acknowledge the current state with POST /api/issues/${scope.watchedIssueId}/watchdog/ack and retry the mutation.`
+          : null,
       },
     });
     return false;
@@ -9472,6 +9496,108 @@ export function issueRoutes(
     }
     await queueTaskWatchdogEvaluation(issue, actor.runId);
     res.json({ ok: true });
+  });
+
+  // Re-acknowledge a task-watchdog run's stopped fingerprint against the
+  // current subtree state. This is the executable path the stale-fingerprint
+  // 409 refers to: when the platform's own bookkeeping mutates the watched
+  // subtree between dispatch and first write, the run's stored stop fingerprint
+  // drifts and every subtree mutation is rejected. Re-reading and re-acking
+  // rebinds the run to the current stopped state (only while the subtree is
+  // still stopped) so the watchdog can finish its recovery work.
+  router.post("/issues/:id/watchdog/ack", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind !== "watchdog") {
+      res.status(403).json({ error: "This run is not a task-watchdog run." });
+      return;
+    }
+    if (
+      scope.watchedIssueId !== issue.id &&
+      scope.watchdogIssueId !== issue.id
+    ) {
+      res.status(403).json({
+        error:
+          "Task-watchdog acknowledgement must target the watched issue or the watchdog review issue.",
+      });
+      return;
+    }
+
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return;
+
+    const reack = await taskWatchdogsSvc.reacknowledgeMutationScope(scope);
+    if (!reack.acked) {
+      res.status(409).json({
+        error: reack.reason,
+        details: {
+          watchedIssueId: scope.watchedIssueId,
+          currentState:
+            "classification" in reack && reack.classification
+              ? reack.classification.state
+              : null,
+        },
+      });
+      return;
+    }
+
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, issue.companyId),
+      ));
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found." });
+      return;
+    }
+
+    const snapshot = (run.contextSnapshot ?? {}) as Record<string, unknown>;
+    const taskWatchdog = (snapshot.taskWatchdog as Record<string, unknown> | null) ?? {};
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          ...snapshot,
+          taskWatchdog: { ...taskWatchdog, stopFingerprint: reack.stopFingerprint },
+          stopFingerprint: reack.stopFingerprint,
+        },
+      })
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, issue.companyId),
+      ));
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.task_watchdog_reacknowledged",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        watchdogId: scope.watchdogId,
+        watchedIssueId: scope.watchedIssueId,
+        previousStopFingerprint: scope.stopFingerprint,
+        stopFingerprint: reack.stopFingerprint,
+      },
+    });
+
+    res.json({ acked: true, stopFingerprint: reack.stopFingerprint });
   });
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {

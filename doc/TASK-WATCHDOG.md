@@ -139,6 +139,18 @@ Every watchdog-originated mutation is gated by a server-side scope check derived
 
 The check is wired into the issue update, status change, blocker, assignment, and interaction routes. Any disallowed mutation is rejected at the route layer; the watchdog agent must take a different path (comment, in-subtree follow-up issue, leave a valid waiting state, escalate to a human owner).
 
+### Re-acknowledging a stale stop fingerprint
+
+The stop fingerprint is captured into the run's context when the watchdog wake is dispatched. When the watched subtree changes between dispatch and the run's first write — the common case being the platform's own bookkeeping (for example, the automatic "waiting for approval → dependency wait" conversion that flips a leaf to `blocked`) — the run's stored fingerprint no longer matches the current stopped state, and every subtree mutation is rejected with `409` until the run refreshes it.
+
+The `409` carries a `hint` pointing at the re-acknowledge route. The watchdog re-reads the subtree and, while it is still stopped, re-binds its run to the current fingerprint:
+
+```http
+POST /api/issues/:watchedIssueId/watchdog/ack
+```
+
+The route resolves the calling run's task-watchdog scope, recomputes the current classification, and — only while the subtree is still stopped — rewrites the run's stored `stopFingerprint` to the current value so subsequent mutations are accepted. If the subtree has become live or otherwise left the stopped state, the route returns `409` and the watchdog must fall back to a read-only recovery path instead.
+
 ---
 
 ## Origin and badges
@@ -183,7 +195,7 @@ If what you actually want is "wake me when this is done," use a routine or an is
 | Server service                   | `server/src/services/task-watchdogs.ts`                               |
 | Scope enforcement                | `server/src/services/task-watchdog-scope.ts`                          |
 | Wake context + default mandate   | `packages/adapter-utils/src/server-utils.ts` (`WATCHDOG_DEFAULT_MANDATE`) |
-| HTTP routes                      | `server/src/routes/issues.ts` (`GET/PUT/DELETE /issues/:id/watchdog`) |
+| HTTP routes                      | `server/src/routes/issues.ts` (`GET/PUT/DELETE /issues/:id/watchdog`, `POST /issues/:id/watchdog/ack`) |
 | Properties UI                    | `ui/src/components/IssueProperties.tsx` (Watchdog row)               |
 | New-issue dialog UI              | `ui/src/components/NewIssueDialog.tsx`                                |
 
