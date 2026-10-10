@@ -220,8 +220,60 @@ export function buildPrompt(
 /** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
 const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 
+/**
+ * Non-quiet runs report the session through the exit summary
+ * (hermes_cli/cli_session_mixin.py `_print_exit_summary`), which prints a
+ * resume hint above a labelled block:
+ *
+ *   Resume this session with:
+ *     hermes --resume 20261001_120157_05292c
+ *
+ *   Session:        20261001_120157_05292c
+ *
+ * We read the command, not the label: the label comes from the
+ * `cli.session.exit_label_session` locale string and so is translated
+ * ("Sitzung:" in de, "Session :" in fr), while the command is literal in every
+ * locale. A non-default profile appends " -p <name>" to the command line,
+ * which `\S+` stops short of.
+ *
+ * See `pickSessionId` for why the position of a match matters as much as the
+ * pattern that found it.
+ */
+const SESSION_ID_REGEX_RESUME_HINT = /^\s*hermes --resume (\S+)/gm;
+
 /** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/gi;
+
+/**
+ * Last match for `re`, with where it was found. `re` must be global.
+ * `matchAll` works off its own copy, so the shared regex keeps `lastIndex` 0.
+ */
+function lastMatch(text: string, re: RegExp): { id: string; at: number } | undefined {
+  let found: { id: string; at: number } | undefined;
+  for (const m of text.matchAll(re)) found = { id: m[1], at: m.index ?? 0 };
+  return found;
+}
+
+/**
+ * Pick the session id out of a non-quiet run, which may carry either spelling:
+ * the resume hint on current Hermes, "session saved:" on older builds.
+ *
+ * Neither pattern gets priority — the *latest* match wins, whichever found it.
+ * Hermes prints its exit summary after the answer, so the last match is the one
+ * the summary wrote and anything earlier is something the agent said. Ranking
+ * the patterns instead would be wrong in one direction or the other: preferring
+ * the hint loses a valid "session saved:" id to a `hermes --resume` line quoted
+ * in a response, and preferring the legacy pattern is worse still, because it is
+ * loose enough to read prose ("session id is unknown" yields "is").
+ */
+function pickSessionId(text: string): string | undefined {
+  return [
+    lastMatch(text, SESSION_ID_REGEX_RESUME_HINT),
+    lastMatch(text, SESSION_ID_REGEX_LEGACY),
+  ]
+    .filter((m) => m !== undefined)
+    .sort((a, b) => b.at - a.at)[0]?.id;
+}
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -230,7 +282,7 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
-interface ParsedOutput {
+export interface ParsedOutput {
   sessionId?: string;
   response?: string;
   usage?: UsageSummary;
@@ -271,7 +323,7 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -288,10 +340,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
     }
   } else {
-    // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
+    const nonQuietId = pickSessionId(combined);
+    if (nonQuietId) {
+      result.sessionId = nonQuietId;
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
