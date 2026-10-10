@@ -223,13 +223,20 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
   });
 
-  it.each(["active", "stopped"])("rejects a competing %s allocation owner across companies", async state => {
+  it.each(["active", "stopped", "older_stopped", "older_destroyed"])("rejects a competing %s allocation owner across companies", async state => {
     const f = await seed(), other = await seed();
     const stopped = await stopAndRetain(f);
     [other.lease] = await db.update(environmentLeases).set({ providerLeaseId: f.lease.providerLeaseId,
-      acquiredAt: new Date(f.lease.acquiredAt.getTime() + 1),
+      acquiredAt: new Date(f.lease.acquiredAt.getTime() + (state.startsWith("older_") ? -1_000 : 1)),
     }).where(eq(environmentLeases.id, other.lease.id)).returning();
-    if (state === "stopped") await stopAndRetain(other);
+    if (state !== "active") {
+      const stoppedOther = await stopAndRetain(other);
+      if (state === "older_destroyed") await db.update(environmentLeases).set({ metadata: {
+        ...stoppedOther.metadata, remoteExecutionTermination: {
+          ...(stoppedOther.metadata!.remoteExecutionTermination as Record<string, unknown>), state: "destroyed",
+        },
+      } }).where(eq(environmentLeases.id, other.lease.id));
+    }
     const competing = await readLease(other.lease.id);
     await recordLegacyWorkspaceRestoreFailure(db, f.run, patch.resultJson, f.lease);
     expect(await readLease(f.lease.id)).toEqual(stopped);

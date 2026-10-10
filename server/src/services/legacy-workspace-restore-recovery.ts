@@ -3,7 +3,6 @@ import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, type Db } from "@paperclipai/db";
 import { hasWorkspaceRestoreFailure, WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { hasConfirmedSandboxStopAndRetain, prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
@@ -81,13 +80,14 @@ export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run, so
       // failure. Only the host's original source and two matching receipts can
       // turn that released row into a file-repair hold.
       if (!source || !matchesOriginalSource(lease, run, source) || !hasConfirmedSandboxStopAndRetain(lease)) continue;
-      const others = await db.select().from(environmentLeases).where(and(
+      const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
         ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider!),
         eq(environmentLeases.providerLeaseId, lease.providerLeaseId!),
-      ));
-      // A later owner invalidates this stop even if it has since stopped too.
-      // Cross-company owners also fail closed without exposing their identity.
-      if (others.some(other => other.acquiredAt >= lease.acquiredAt || !hasRemoteTerminationReceipt(other))) continue;
+      )).limit(1);
+      // An ephemeral source has no legitimate reuse history. Any other physical
+      // owner makes retention ambiguous, including an older owner that later
+      // destroyed the allocation. Do not expose cross-company owner identity.
+      if (other) continue;
       await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure",
         metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ workspaceRestoreRecovery: {
           schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id,
