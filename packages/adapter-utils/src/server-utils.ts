@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { detectExecveLimitViolations, formatExecveLimitError, resolveExecveLimits } from "./execve-limits.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
@@ -4745,10 +4746,35 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
-      .then((target) => {
+      .then(async (target) => {
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
+        }
+        // Name the offending entry before execve fails with an opaque
+        // `spawn E2BIG`. See ./execve-limits.ts.
+        const execveLimits = resolveExecveLimits();
+        const execveViolations = detectExecveLimitViolations(
+          target.command,
+          target.args,
+          childEnv as Record<string, string | undefined>,
+          execveLimits,
+        );
+        if (execveViolations.length > 0) {
+          // Release anything the spawn target already staged, such as the
+          // temporary SSH identity file, before giving up. The spawn-error and
+          // close paths both do this, so this path must too. A cleanup failure
+          // must not replace the diagnostic, so it is reported and swallowed.
+          try {
+            await target.cleanup?.();
+          } catch (cleanupError) {
+            onLogError(
+              cleanupError,
+              runId,
+              "runChildProcess preflight cleanup failed after refusing an oversized launch",
+            );
+          }
+          throw formatExecveLimitError(target.command, execveViolations, execveLimits);
         }
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
