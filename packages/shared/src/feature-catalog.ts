@@ -360,6 +360,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAgentRunnableScheduler: {
+    title: "Agent Runnable Scheduler",
+    description:
+      "Park wakes as per-agent runnable work when capacity is full (default serial capacity 1) instead of creating concurrent heartbeat runs.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableFirstTaskPlanProposal: {
     title: "First task: propose with a plan document",
     description:

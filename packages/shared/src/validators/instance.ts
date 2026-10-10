@@ -92,6 +92,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
+  enableAgentRunnableScheduler: z.boolean().default(false),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = z

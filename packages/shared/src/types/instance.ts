@@ -155,6 +155,11 @@ export interface InstanceExperimentalSettings {
    * from another instance fail closed.
    */
   worktreeRunExecutionActivationInstanceId: string | null;
+  /**
+   * Serialize agent work through an explicit per-agent runnable queue with
+   * default capacity 1 unless the agent opts into parallel execution.
+   */
+  enableAgentRunnableScheduler: boolean;
 }
 
 /**
