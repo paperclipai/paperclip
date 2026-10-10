@@ -13,6 +13,7 @@ import { buildProjectMentionHref } from "@paperclipai/shared";
 import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -217,7 +218,7 @@ suite("task project repository provisioning", () => {
       assigneeAdapterOverrides: { adapterConfig: { cwd: overrideCwd } },
       workspaceSelection: taskDirectory ? { version: 1, source: "explicit", selection: { kind: "task_directory" } } : null });
     const expectedCwd = taskDirectory
-      ? path.join(root, "home", "instances", "default", "isolated-workspaces", companyId, issueId)
+      ? path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", companyId, issueId)
       : overrideCwd;
     let bindingId: string | null = null;
     for (let admission = 0; admission < 2; admission++) {
