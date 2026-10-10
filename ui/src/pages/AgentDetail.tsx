@@ -4,6 +4,7 @@ import { AgentConnectionInstructions } from "@/features/connections/ConnectionIn
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
+import { normalizeInstructionsFilePath } from "../lib/instructions-path";
 import { characterStateForAgent } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
@@ -2904,11 +2905,16 @@ export function PromptsTab({
                   className="flex-1"
                   disabled={!newFilePath.trim() || newFilePath.includes("..")}
                   onClick={() => {
-                    const candidate = newFilePath.trim();
-                    if (!candidate || candidate.includes("..")) return;
-                    setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
+                    const normalized = normalizeInstructionsFilePath(newFilePath);
+                    if (!normalized || normalized.includes("..")) return;
+                    const candidate = fileOptions.find((path) => path === normalized)
+                      ?? fileOptions.find((path) => path.toLowerCase() === normalized.toLowerCase())
+                      ?? normalized;
+                    if (!fileOptions.includes(candidate)) {
+                      setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
+                      setDraft("");
+                    }
                     setSelectedFile(candidate);
-                    setDraft("");
                     setNewFilePath("");
                     setShowNewFileInput(false);
                   }}
