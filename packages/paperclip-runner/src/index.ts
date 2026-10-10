@@ -89,4 +89,5 @@ export * from "./compatibility.js";
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxPiInstallation } from "./drivers/acpx/installation-integrity.js";
 export { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
 
+export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";

@@ -1,6 +1,14 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current integration (2026-10-08): **Copilot profile v17 remains pending** with
+Current integration (2026-10-10): **Copilot profile v18 remains pending** with
+digest `sha256:5e79c2b1a42b98a545bafe9e93f8c6b6c423bec1c18dc1f0a3cf48477b757389`.
+Muse's external-provider protocol adds shared generated schema and validator
+sources to the execution identity. Version 18 binds those two source hashes;
+the Copilot executable, policies and receipt implementation are unchanged.
+The v17 declaration remains historical and its warm sessions are rejected by
+the current candidate. This identity update supplies no new paid qualification.
+
+Historical integration (2026-10-08): **Copilot profile v17 remained pending** with
 digest `sha256:481d0852ae8272a90f9912723d540518a874a0da65a9070e33b52ea1a14cbd7f`.
 It binds master's shared protocol-validation sources without changing the
 executable or supplying new paid qualification. Historical checkpoints below

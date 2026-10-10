@@ -1,3 +1,4 @@
+import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { NATIVE_EXECUTION_INPUT_SCHEMA } from "../contracts/native-execution.js";
@@ -208,9 +209,9 @@ function createTransportBackedNativeSessionBackend(
 export function describeRunnerdNativeSessionBackend(
   input: NativeExecutionInput,
 ): Promise<NativeSessionBackendDescriptor> {
-  if (input.schema === "paperclip.native-execution-input.v6") {
+  if (input.schema === "paperclip.native-execution-input.v6" || input.schema === "paperclip.native-execution-input.v7") {
     // Dot uses its dedicated Rust bridge, rather than the JSON-RPC facade.
-    const descriptor = describeRunnerdDotDriver();
+    const descriptor = input.schema === "paperclip.native-execution-input.v7" ? describeRunnerdMuseDriver() : describeRunnerdDotDriver();
     return Promise.resolve({
       kind: "runner",
       name: descriptor.kind,

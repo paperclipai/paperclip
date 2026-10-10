@@ -3210,6 +3210,7 @@ export function heartbeatService(
         nativeChatWorkspaceScope &&
         persistedNativeExecutionInput &&
         persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v6" &&
+        persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v7" &&
         !nativeChatWorkspaceMatches({
           scope: nativeChatWorkspaceScope,
           expectedCwd: nativeChatExpectedCwd,

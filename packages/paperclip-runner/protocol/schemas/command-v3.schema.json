@@ -206,7 +206,10 @@
                   "accept",
                   "tool",
                   "progress",
-                  "finish"
+                  "finish",
+                  "renew",
+                  "request_user_input",
+                  "consume_input"
                 ]
               },
               "input": {
@@ -371,6 +374,140 @@
                 },
                 "required": [
                   "result"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "renew"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "expiresAtUnixMs": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "expiresAtUnixMs"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "request_user_input"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "questionSet": {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "questionSet"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "consume_input"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "inputDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "inputDigest"
                 ],
                 "additionalProperties": false
               }

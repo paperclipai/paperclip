@@ -44,6 +44,7 @@ packages/paperclip-runner/test/**
 packages/paperclip-runner/test/fixtures/**
 !packages/paperclip-runner/test/fixtures/copilot-profile-v16-identity.json
 !packages/paperclip-runner/test/fixtures/copilot-profile-v17-identity.json
+!packages/paperclip-runner/test/fixtures/copilot-profile-v18-identity.json
 !packages/paperclip-runner/test-fixtures
 packages/paperclip-runner/test-fixtures/**
 !packages/paperclip-runner/test-fixtures/pi-acp

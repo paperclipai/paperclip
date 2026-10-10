@@ -1689,7 +1689,8 @@ export function nativeSessionWorkspaceScope(execution: { binding: Pick<NativeExe
 
 function nativeProviderSessionScope(execution: NativeExecutionInput) {
   switch (execution.provider.kind) {
-    case "openai_dot": return { kind: "openai_dot", bindingId: execution.provider.binding.bindingId, generation: execution.provider.binding.bindingGeneration };
+    case "muse":
+    case "openai_dot": return { kind: execution.provider.kind, bindingId: execution.provider.binding.bindingId, generation: execution.provider.binding.bindingGeneration };
     case "claude_managed":
       return {
         kind: execution.provider.kind,
@@ -5557,6 +5558,7 @@ function canonicalJson(value: unknown): string {
 
 function runnerProviderStateFilename(execution: NativeExecutionInput): string {
   switch (execution.provider.kind) {
+    case "muse": return "muse-provider-state.json";
     case "openai_dot":
       return "dot-provider-state.json";
     case "codex":
@@ -5591,8 +5593,9 @@ export function providerSessionIdentityFromDurableProviderState(input: {
     providerSessionIdentity: null,
   });
   switch (input.execution.provider.kind) {
+    case "muse":
     case "openai_dot":
-      // Dot checkpoints recover the bridge only; there is no native provider thread.
+      // External checkpoints recover the bridge only; there is no native provider thread.
       return emptyIdentity();
     case "acpx": {
       const descriptor = record(state.descriptor);
@@ -8596,7 +8599,7 @@ async function executePaperclipNativeSessionWithinScope(
       : null;
   }
   const runnerExecution: NativeExecutionInput =
-    input.execution.schema !== "paperclip.native-execution-input.v6" && input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
+    input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v7" && input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
       ? {
           ...input.execution,
           workspace: {
@@ -11346,6 +11349,9 @@ async function createRunnerdBackendWithinSessionClaim(
   sessionScopeId: string,
   retainedTransition?: VerifiedWarmTransitionBinding,
 ): Promise<NativeSessionBackend & { bindManagedSession(session: NativeSession): NativeSession }> {
+  if (input.execution.schema === "paperclip.native-execution-input.v7") {
+    throw new Error("paperclip_runner_provider_unsupported");
+  }
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const remoteTarget = target.kind === "remote" ? target : null;

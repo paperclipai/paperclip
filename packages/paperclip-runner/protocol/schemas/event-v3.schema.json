@@ -171,7 +171,8 @@
         "issue.status.decision.superseded",
         "run.terminal",
         "external_provider.dispatch_requested",
-        "external_provider.operation_settled"
+        "external_provider.operation_settled",
+        "external_provider.input_available"
       ]
     },
     "schemaVersion": {
@@ -560,6 +561,105 @@
               "binding",
               "requestId",
               "outcome"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "external_provider.input_available"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "binding": {
+                "type": "object",
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "normalizedSessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingGeneration": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "assignmentRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "companyId",
+                  "agentId",
+                  "bindingId",
+                  "runId",
+                  "normalizedSessionId",
+                  "turnId",
+                  "bindingGeneration",
+                  "assignmentRevision"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "inputDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "response": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/question-response.schema.json"
+              }
+            },
+            "required": [
+              "binding",
+              "requestId",
+              "turnId",
+              "inputDigest",
+              "response"
             ],
             "additionalProperties": false
           }

@@ -98,6 +98,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
+  if (provider === "muse") {
+    return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true,
+      ...(typeof schemaValues.museBindingId === "string" ? { museBindingId: schemaValues.museBindingId } : {}) };
+  }
   if (provider === "openai_dot") {
     return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
       ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
