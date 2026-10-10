@@ -11262,7 +11262,6 @@ export function createRemoteRunnerProcessLauncher(input: {
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
   return (spec) => {
-    input.onLaunchAttempt?.();
     let launchedIdentity: {
       nonce: string;
       pid: number;
@@ -11353,6 +11352,9 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
+      // From this exact boundary onward, a lost RPC acknowledgement may mean
+      // a live process. Asset preparation failures above prove no dispatch.
+      input.onLaunchAttempt?.();
       const launchResult = input.target.transport === "computer"
         ? await input.target.launch({ command: "sh", args: ["-c", 'mkdir -p -- "$(dirname -- "$1")"; ' + REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
             "paperclip-runner-child", input.processIdentityPath, identityNonce, input.runnerInstanceId,
@@ -12024,6 +12026,13 @@ async function createRunnerdBackendWithinSessionClaim(
         : null;
   const sourceRuntimeContext =
     "runtimeContext" in input.execution ? input.execution.runtimeContext : null;
+  // Computer bundles are immutable. Each bootstrap attempt publishes new
+  // references instead of overlaying a previous read-only snapshot. Old
+  // snapshots remain until future bounded maintenance; provider HOME and user
+  // files never participate in this materialization.
+  const remoteContextRoot = remoteRunnerFilesystemRoot
+    ? posix.join(remoteRunnerFilesystemRoot, "context", ...(remoteTarget?.transport === "computer" ? ["snapshots", randomUUID()] : []))
+    : null;
   const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {
@@ -12036,8 +12045,7 @@ async function createRunnerdBackendWithinSessionClaim(
             bundle: {
               ...sourceRuntimeContext.instructions.bundle,
               rootPath: posix.join(
-                remoteRunnerFilesystemRoot,
-                "context",
+                remoteContextRoot!,
                 "instructions",
               ),
             },
@@ -12047,8 +12055,7 @@ async function createRunnerdBackendWithinSessionClaim(
             bundle: {
               ...skill.bundle,
               rootPath: posix.join(
-                remoteRunnerFilesystemRoot,
-                "context",
+                remoteContextRoot!,
                 "skills",
                 `${index}-${skill.bundle.digest.slice(0, 12)}`,
               ),

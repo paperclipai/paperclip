@@ -108,6 +108,9 @@ export async function prepareComputerProviderPackCache(input: {
   cacheRoot: string;
   sessionKey: string;
   owner: { ownerId: string; generation: number };
+  // Must be the computer processRunner: it fences retired owners and places
+  // every command in their owner slice, including commands using bypassSession.
+  // Cross-owner receipt replacement relies on that admission/retirement fence.
   runner: CommandManagedRuntimeRunner;
   verify: (root: string) => Promise<void>;
   stage: (root: string, runner: CommandManagedRuntimeRunner) => Promise<void>;
