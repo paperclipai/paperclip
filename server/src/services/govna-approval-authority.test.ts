@@ -30,6 +30,19 @@ function signedStatement(
   return `${signingInput}.${signature.toString("base64url")}`;
 }
 
+function signedRawStatement(
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  header: string,
+  payload: string,
+) {
+  const signingInput = `${Buffer.from(header).toString("base64url")}.${Buffer.from(payload).toString("base64url")}`;
+  const signature = sign("sha256", Buffer.from(signingInput), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363",
+  });
+  return `${signingInput}.${signature.toString("base64url")}`;
+}
+
 describe("Govna approval-authority protocol", () => {
   it("enables exact-call delegation only for an allowlisted tool and explicit matched policy", () => {
     const config = {
@@ -44,8 +57,10 @@ describe("Govna approval-authority protocol", () => {
       hostContextId: "farmhub-paperclip",
       localPolicyRevision: "policy-v1",
       connectionGeneration: 1,
-      issuer: "https://factory.farmhub.ag",
-      audience: "govna-approval-authority",
+      hostIssuer: "https://factory.farmhub.ag",
+      hostProofAudience: "govna-approval-authority",
+      statementIssuer: "https://api.govna.io",
+      statementAudience: "farmhub-paperclip",
       hostKeyId: "farmhub-host-key-1",
       hostSigningKeySecretId: "secret-key-id",
       statementKeyId: "govna-statement-key-1",
@@ -129,6 +144,19 @@ describe("Govna approval-authority protocol", () => {
     expect(authorityRequestHash("lookup", { query: "soil" })).not.toBe(
       authorityRequestHash("lookup", { query: "water" }),
     );
+    expect(authorityRequestHash("dose", { liters: 0.5 })).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(() => authorityRequestHash("dose", null as never)).toThrow(/arguments must be an object/);
+    expect(() => authorityRequestHash("dose", [] as never)).toThrow(/arguments must be an object/);
+    expect(() => authorityRequestHash("dose", { crop: "\ud800" })).toThrow(/noncharacter/);
+    expect(() => authorityHostEnvelopeHash("prepare", "https://authority.govna.test/prepare", {
+      trust_revision: 1,
+      operation_id: "operation-1",
+      host_context_id: "context-1",
+      local_policy_revision: "policy-1",
+      connection_generation: 1,
+      name: "dose",
+      arguments: null,
+    })).toThrow(/arguments must be an object/);
   });
 
   it("uses canonical base64url SHA-256 digests for bearer and ticket binding", () => {
@@ -137,6 +165,20 @@ describe("Govna approval-authority protocol", () => {
     expect(digestAuthorityBearer("synthetic-bearer")).not.toBe(
       digestDispatchTicket("synthetic-ticket"),
     );
+  });
+
+  it("rejects duplicate signed JOSE members before JSON information loss", () => {
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    expect(() => parseCompactJws(signedRawStatement(
+      privateKey,
+      '{"alg":"ES256","alg":"none","typ":"govna-authority-status+jwt","kid":"key"}',
+      '{"state":"pending"}',
+    ))).toThrow(/Duplicate JSON object key/);
+    expect(() => parseCompactJws(signedRawStatement(
+      privateKey,
+      '{"alg":"ES256","typ":"govna-authority-status+jwt","kid":"key"}',
+      '{"state":"pending","state":"approved"}',
+    ))).toThrow(/Duplicate JSON object key/);
   });
 
   it("signs a strict ES256 host proof with dispatch-only local claim provenance", () => {
@@ -295,6 +337,44 @@ describe("Govna approval-authority protocol", () => {
 
     expect(verified.payload).toEqual(payload);
     expect(verified.payload.reservation_id).toBe("arv_01j0000000e008000000000001");
+
+    const pendingStatusPayload = {
+      ...payload,
+      exp: 1_800_000_030,
+      ticket_generation: null,
+      decision_actor_id: null,
+      decision_at: null,
+      decision_evidence_id: null,
+    };
+    expect(verifyAuthorityStatement({
+      compact: signedStatement(privateKey, "govna-authority-status+jwt", pendingStatusPayload),
+      publicKey,
+      keyId: "govna-statement-key-1",
+      type: "status",
+      now: 1_800_000_001,
+      expected: { operation_id: payload.operation_id, reservation_id: payload.reservation_id },
+      approvalOrigin: "https://app.govna.io",
+    }).payload).toEqual(pendingStatusPayload);
+
+    const approvedStatusPayload = {
+      ...pendingStatusPayload,
+      state: "approved",
+      approval_url: null,
+      safe_summary: null,
+      ticket_generation: 1,
+      decision_actor_id: "usr_01j0000000e008000000000002",
+      decision_at: 1_800_000_000,
+      decision_evidence_id: "evt_01j0000000e008000000000001",
+    };
+    expect(verifyAuthorityStatement({
+      compact: signedStatement(privateKey, "govna-authority-status+jwt", approvedStatusPayload),
+      publicKey,
+      keyId: "govna-statement-key-1",
+      type: "status",
+      now: 1_800_000_001,
+      expected: { operation_id: payload.operation_id, reservation_id: payload.reservation_id },
+      approvalOrigin: "https://app.govna.io",
+    }).payload).toEqual(approvedStatusPayload);
   });
 
   it("rejects an expired, substituted, or extra-field authority statement", () => {

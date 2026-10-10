@@ -9,6 +9,7 @@ import {
   toolConnections,
   toolGovnaAuthorityOperations,
   toolInvocations,
+  toolPolicies,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -35,6 +36,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
     await db.delete(toolCallEvents);
     await db.delete(toolGovnaAuthorityOperations);
     await db.delete(toolInvocations);
+    await db.delete(toolPolicies);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companies);
@@ -64,18 +66,51 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       transport: "mcp_remote",
       status: "active",
       enabled: true,
-      config: { url: "https://example.invalid/mcp" },
+      config: {
+        url: "https://example.invalid/mcp",
+        govnaApprovalAuthority: {
+          mode: "required",
+          prepareEndpoint: "https://api.govna.io/approval-authority/v1/prepare",
+          statusEndpoint: "https://api.govna.io/approval-authority/v1/status",
+          cancelEndpoint: "https://api.govna.io/approval-authority/v1/cancel",
+          approvalOrigin: "https://app.govna.io",
+          resource: "https://mcp.govna.io/farmhub",
+          trustId: "atr_01m4hfpth0emf9wpckns4ngbxt",
+          trustRevision: 1,
+          hostContextId: "farmhub-paperclip",
+          localPolicyRevision: "policy-v1",
+          connectionGeneration: 1,
+          hostIssuer: "https://factory.farmhub.ag",
+          hostProofAudience: "govna-approval-authority",
+          statementIssuer: "https://api.govna.io",
+          statementAudience: "farmhub-paperclip",
+          hostKeyId: "farmhub-host-key-1",
+          hostSigningKeySecretId: "secret-key-id",
+          statementKeyId: "govna-statement-key-1",
+          statementPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nexample\n-----END PUBLIC KEY-----",
+          tools: ["send_email"],
+        },
+      },
+    }).returning();
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company!.id,
+      name: "Govna exact calls",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+      config: { govnaDelegation: "delegable_exact_call" },
     }).returning();
     const [invocation] = await db.insert(toolInvocations).values({
       companyId: company!.id,
       connectionId: connection!.id,
       toolName: "send_email",
+      upstreamToolName: "send_email",
       argumentsHash: "request-hash",
       policyDecision: "require_approval",
+      matchedPolicyIds: [policy!.id],
       approvalState: "pending",
       status: "awaiting_approval",
     }).returning();
-    return { company: company!, connection: connection!, invocation: invocation! };
+    return { company: company!, connection: connection!, invocation: invocation!, policy: policy! };
   }
 
   function pendingInput(f: Awaited<ReturnType<typeof fixture>>) {
@@ -206,5 +241,34 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
     const [invocation] = await db.select().from(toolInvocations);
     expect(operation).toMatchObject({ state: "outcome_unknown", errorCode: "dispatch_receipt_missing" });
     expect(invocation).toMatchObject({ status: "failed", errorCode: "dispatch_receipt_missing" });
+  });
+
+  it("rechecks the live connection and local policy inside the dispatch claim", async () => {
+    const f = await fixture();
+    const input = pendingInput(f);
+    const service = govnaAuthorityOperationService(db);
+    await service.reserve(input);
+    await service.approve({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    });
+    await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, f.policy.id));
+
+    await expect(service.claimDispatch({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    expect(operation).toMatchObject({ state: "approved", localClaimId: null });
   });
 });

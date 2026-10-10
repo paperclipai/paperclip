@@ -1,18 +1,23 @@
 import {
   createHash,
+  createPrivateKey,
+  createPublicKey,
   randomBytes,
   randomUUID,
   sign,
   verify,
   type KeyObject,
 } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   toolCallEvents,
+  toolConnections,
   toolGovnaAuthorityOperations,
   toolInvocations,
+  toolPolicies,
   type Db,
 } from "@paperclipai/db";
+import { parseJsonNoDuplicateKeys } from "./strict-json.js";
 
 export type AuthorityHostOperation = "prepare" | "status" | "cancel" | "dispatch";
 
@@ -31,6 +36,7 @@ const RESERVATION_PATTERN = /^arv_[0-9a-hjkmnp-tv-z]{26}$/;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_COMPACT_JWS_BYTES = 16 * 1024;
 const PUBLIC_ID_BODY = "[0-9a-hjkmnp-tv-z]{26}";
+const CROCKFORD32 = "0123456789abcdefghjkmnpqrstvwxyz";
 
 const AUTHORITY_BINDING_FIELDS = [
   "iss", "aud", "version", "challenge", "host_request_hash", "trust_id",
@@ -106,8 +112,10 @@ const AUTHORITY_CONFIG_FIELDS = [
   "hostContextId",
   "localPolicyRevision",
   "connectionGeneration",
-  "issuer",
-  "audience",
+  "hostIssuer",
+  "hostProofAudience",
+  "statementIssuer",
+  "statementAudience",
   "hostKeyId",
   "hostSigningKeySecretId",
   "statementKeyId",
@@ -127,14 +135,27 @@ export type GovnaApprovalAuthorityConfig = {
   hostContextId: string;
   localPolicyRevision: string;
   connectionGeneration: number;
-  issuer: string;
-  audience: string;
+  hostIssuer: string;
+  hostProofAudience: string;
+  statementIssuer: string;
+  statementAudience: string;
   hostKeyId: string;
   hostSigningKeySecretId: string;
   statementKeyId: string;
   statementPublicKeyPem: string;
   tools: string[];
 };
+
+export class GovnaAuthorityTransportError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GovnaAuthorityTransportError";
+  }
+}
 
 function sha256Base64Url(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("base64url");
@@ -237,13 +258,15 @@ export function parseGovnaAuthorityConfig(
     assertHttpsEndpoint(value[field]);
   }
   assertHttpsOrigin(value.approvalOrigin);
-  assertGraphicText(value.trustId, "trust id");
+  assertPublicId(value.trustId, "atr", "trust id");
   assertPositiveSafeInteger(value.trustRevision, "trust revision");
   assertGraphicText(value.hostContextId, "host context id");
   assertGraphicText(value.localPolicyRevision, "local policy revision");
   assertPositiveSafeInteger(value.connectionGeneration, "connection generation");
-  assertHttpsStatementUrl(value.issuer, "host issuer");
-  assertGraphicText(value.audience, "audience");
+  assertHttpsStatementUrl(value.hostIssuer, "host issuer");
+  assertGraphicText(value.hostProofAudience, "host proof audience");
+  assertHttpsStatementUrl(value.statementIssuer, "statement issuer");
+  assertGraphicText(value.statementAudience, "statement audience");
   assertGraphicText(value.hostKeyId, "host key id", 128);
   assertGraphicText(value.hostSigningKeySecretId, "host signing key secret id", 160);
   assertGraphicText(value.statementKeyId, "statement key id", 128);
@@ -302,6 +325,7 @@ function assertJsonValue(value: unknown, depth = 0): asserts value is JsonValue 
     for (const character of value) {
       const codePoint = character.codePointAt(0)!;
       if (
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
         (codePoint >= 0xfdd0 && codePoint <= 0xfdef) ||
         (codePoint & 0xffff) === 0xfffe ||
         (codePoint & 0xffff) === 0xffff
@@ -312,7 +336,7 @@ function assertJsonValue(value: unknown, depth = 0): asserts value is JsonValue 
     return;
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
       throw new Error("Govna authority JSON contains a non-interoperable number");
     }
     return;
@@ -366,7 +390,9 @@ function validateAuthorityBody(
     assertGraphicText(input.local_policy_revision, "local policy revision");
     assertPositiveSafeInteger(input.connection_generation, "connection generation");
     assertGraphicText(input.name, "tool name");
-    const argumentsValue = input.arguments ?? {};
+    const argumentsValue = Object.prototype.hasOwnProperty.call(input, "arguments")
+      ? input.arguments
+      : {};
     if (
       !argumentsValue ||
       typeof argumentsValue !== "object" ||
@@ -410,10 +436,18 @@ export function authorityRequestHash(
   argumentsValue: Record<string, unknown> | undefined,
 ): string {
   assertGraphicText(name, "tool name");
+  const normalizedArguments = argumentsValue === undefined ? {} : argumentsValue;
+  if (
+    normalizedArguments === null ||
+    typeof normalizedArguments !== "object" ||
+    Array.isArray(normalizedArguments)
+  ) {
+    throw new Error("Govna authority arguments must be an object");
+  }
   const request = {
     method: "tools/call",
     name,
-    arguments: argumentsValue ?? {},
+    arguments: normalizedArguments,
   };
   assertJsonValue(request);
   return sha256Base64Url(`${TOOL_DIGEST_PREFIX}${canonicalJson(request)}`);
@@ -422,6 +456,12 @@ export function authorityRequestHash(
 export function digestAuthorityBearer(bearer: string): string {
   if (!bearer || /\s/.test(bearer)) throw new Error("Invalid Govna authority bearer");
   return sha256Base64Url(bearer);
+}
+
+export function authorityBearerToken(authorization: string): string {
+  const match = /^Bearer ([^\s]+)$/.exec(authorization);
+  if (!match) throw new Error("Govna authority requires one canonical Bearer credential");
+  return match[1]!;
 }
 
 export function digestDispatchTicket(ticket: string): string {
@@ -445,10 +485,17 @@ export function parseCompactJws(compact: string): {
   const decodeObject = (part: string): Record<string, unknown> => {
     const bytes = Buffer.from(part, "base64url");
     if (bytes.toString("base64url") !== part) throw new Error("Invalid compact JWS encoding");
-    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error("Invalid compact JWS UTF-8");
+    }
+    const parsed: unknown = parseJsonNoDuplicateKeys(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Invalid compact JWS object");
     }
+    assertJsonValue(parsed);
     return parsed as Record<string, unknown>;
   };
   const signature = Buffer.from(parts[2]!, "base64url");
@@ -467,6 +514,15 @@ function assertPublicId(value: unknown, prefix: string, label: string): asserts 
   if (typeof value !== "string" || !new RegExp(`^${prefix}_${PUBLIC_ID_BODY}$`).test(value)) {
     throw new Error(`Invalid Govna ${label}`);
   }
+  const body = value.slice(prefix.length + 1);
+  if (CROCKFORD32.indexOf(body[0]!) > 7) throw new Error(`Invalid Govna ${label}`);
+  let decoded = 0n;
+  for (const character of body) decoded = decoded * 32n + BigInt(CROCKFORD32.indexOf(character));
+  if (decoded >= (1n << 128n)) throw new Error(`Invalid Govna ${label}`);
+  const bytes = Buffer.from(decoded.toString(16).padStart(32, "0"), "hex");
+  const version = bytes[6]! >> 4;
+  const variant = bytes[8]! >> 6;
+  if ((version !== 4 && version !== 7) || variant !== 2) throw new Error(`Invalid Govna ${label}`);
 }
 
 function assertAuthorityBinding(payload: Record<string, unknown>): void {
@@ -530,6 +586,22 @@ function assertStatementTime(
   assertDigest(payload.jti, "statement id");
 }
 
+function assertLiveApprovalWindow(payload: Record<string, unknown>): void {
+  const issuedAt = Number(payload.iat);
+  const expiresAt = Number(payload.exp);
+  const approvalExpiresAt = Number(payload.approval_expires_at);
+  if (
+    !Number.isSafeInteger(issuedAt) ||
+    !Number.isSafeInteger(expiresAt) ||
+    !Number.isSafeInteger(approvalExpiresAt) ||
+    approvalExpiresAt <= issuedAt ||
+    approvalExpiresAt - issuedAt > 900 ||
+    expiresAt > approvalExpiresAt
+  ) {
+    throw new Error("Invalid Govna approval expiry window");
+  }
+}
+
 function assertApprovalUrl(
   value: unknown,
   approvalOrigin: string | undefined,
@@ -542,7 +614,7 @@ function assertApprovalUrl(
 
 function assertDecisionTuple(payload: Record<string, unknown>, requireGeneration: boolean): void {
   if (requireGeneration) assertPositiveSafeInteger(payload.ticket_generation, "ticket generation");
-  else if (payload.ticket_generation !== undefined) throw new Error("Unexpected Govna ticket generation");
+  else if (payload.ticket_generation !== undefined && payload.ticket_generation !== null) throw new Error("Unexpected Govna ticket generation");
   assertPublicId(payload.decision_actor_id, "usr", "decision actor id");
   if (
     !Number.isSafeInteger(payload.decision_at) ||
@@ -601,33 +673,37 @@ export function verifyAuthorityStatement(input: {
 
   const state = parsed.payload.state;
   if (input.type === "pending") {
-    if (state !== "pending" || Number(parsed.payload.exp) > Number(parsed.payload.approval_expires_at)) {
+    if (state !== "pending") {
       throw new Error("Invalid Govna pending authority state");
     }
+    assertLiveApprovalWindow(parsed.payload);
     assertApprovalUrl(parsed.payload.approval_url, input.approvalOrigin, parsed.payload);
     assertGraphicText(parsed.payload.safe_summary, "safe summary", 2048);
     if ([...String(parsed.payload.safe_summary)].length > 512) throw new Error("Govna safe summary is too long");
   } else if (input.type === "ticket") {
-    if (state !== "approved" || Number(parsed.payload.exp) > Number(parsed.payload.approval_expires_at)) {
+    if (state !== "approved") {
       throw new Error("Invalid Govna dispatch ticket state");
     }
+    assertLiveApprovalWindow(parsed.payload);
     assertDecisionTuple(parsed.payload, true);
   } else if (state === "pending") {
+    assertLiveApprovalWindow(parsed.payload);
     assertApprovalUrl(parsed.payload.approval_url, input.approvalOrigin, parsed.payload);
     assertGraphicText(parsed.payload.safe_summary, "safe summary", 2048);
-    if (parsed.payload.ticket_generation !== undefined || parsed.payload.decision_actor_id !== undefined || parsed.payload.decision_at !== undefined || parsed.payload.decision_evidence_id !== undefined) {
+    if (parsed.payload.ticket_generation != null || parsed.payload.decision_actor_id != null || parsed.payload.decision_at != null || parsed.payload.decision_evidence_id != null) {
       throw new Error("Pending Govna status contains decision claims");
     }
   } else if (["approved", "dispatched", "completed"].includes(String(state))) {
-    if (parsed.payload.approval_url !== undefined || parsed.payload.safe_summary !== undefined) throw new Error("Decided Govna status contains pending display claims");
+    if (parsed.payload.approval_url != null || parsed.payload.safe_summary != null) throw new Error("Decided Govna status contains pending display claims");
     assertDecisionTuple(parsed.payload, true);
+    if (state === "approved") assertLiveApprovalWindow(parsed.payload);
   } else if (state === "denied") {
-    if (parsed.payload.approval_url !== undefined || parsed.payload.safe_summary !== undefined) throw new Error("Denied Govna status contains pending display claims");
+    if (parsed.payload.approval_url != null || parsed.payload.safe_summary != null) throw new Error("Denied Govna status contains pending display claims");
     assertDecisionTuple(parsed.payload, false);
   } else if (["expired", "revoked", "outcome_unknown"].includes(String(state))) {
-    if (parsed.payload.approval_url !== undefined || parsed.payload.safe_summary !== undefined) throw new Error("Terminal Govna status contains pending display claims");
-    const hasDecision = parsed.payload.decision_actor_id !== undefined || parsed.payload.decision_at !== undefined || parsed.payload.decision_evidence_id !== undefined || parsed.payload.ticket_generation !== undefined;
-    if (hasDecision) assertDecisionTuple(parsed.payload, parsed.payload.ticket_generation !== undefined);
+    if (parsed.payload.approval_url != null || parsed.payload.safe_summary != null) throw new Error("Terminal Govna status contains pending display claims");
+    const hasDecision = parsed.payload.decision_actor_id != null || parsed.payload.decision_at != null || parsed.payload.decision_evidence_id != null || parsed.payload.ticket_generation != null;
+    if (hasDecision) assertDecisionTuple(parsed.payload, parsed.payload.ticket_generation != null);
   } else {
     throw new Error("Invalid Govna authority status state");
   }
@@ -653,7 +729,7 @@ export function createAuthorityHostProof(input: {
   assertGraphicText(input.keyId, "host key id", 128);
   assertGraphicText(input.issuer, "host issuer");
   assertGraphicText(input.audience, "proof audience");
-  assertGraphicText(input.trustId, "trust id");
+  assertPublicId(input.trustId, "atr", "trust id");
   assertPositiveSafeInteger(input.trustRevision, "trust revision");
   assertHttpsEndpoint(input.endpoint);
   assertDigest(input.hostRequestHash, "host request hash");
@@ -698,6 +774,210 @@ export function createAuthorityHostProof(input: {
     dsaEncoding: "ieee-p1363",
   });
   return `${signingInput}.${signature.toString("base64url")}`;
+}
+
+async function readAuthorityResponse(response: Response): Promise<Record<string, unknown>> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new GovnaAuthorityTransportError(502, "response_too_large", "Govna authority response is too large");
+  }
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new GovnaAuthorityTransportError(502, "response_too_large", "Govna authority response is too large");
+      }
+      chunks.push(value);
+    }
+  }
+  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  if (!response.ok) {
+    if (body.length !== 0) {
+      throw new GovnaAuthorityTransportError(502, "invalid_error_body", "Govna authority returned a non-empty error body");
+    }
+    throw new GovnaAuthorityTransportError(response.status, "authority_rejected", "Govna authority rejected the request");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new GovnaAuthorityTransportError(502, "invalid_response", "Govna authority returned invalid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new GovnaAuthorityTransportError(502, "invalid_response", "Govna authority returned an invalid response");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    Object.keys(record).some((field) => field !== "authority" && field !== "ticket") ||
+    typeof record.authority !== "string" ||
+    (record.ticket !== undefined && typeof record.ticket !== "string")
+  ) {
+    throw new GovnaAuthorityTransportError(502, "invalid_response", "Govna authority response shape is invalid");
+  }
+  return record;
+}
+
+export function createGovnaAuthorityHttpClient(input: {
+  config: GovnaApprovalAuthorityConfig;
+  authorization: string;
+  hostPrivateKeyPem: string;
+  request: (url: string, init: RequestInit) => Promise<Response>;
+  now?: () => number;
+}) {
+  const bearer = authorityBearerToken(input.authorization);
+  const privateKey = createPrivateKey(input.hostPrivateKeyPem);
+  const publicKey = createPublicKey(input.config.statementPublicKeyPem);
+  const now = input.now ?? (() => Math.floor(Date.now() / 1000));
+
+  async function authorityCall(args: {
+    operation: "prepare" | "status" | "cancel";
+    endpoint: string;
+    body: Record<string, unknown>;
+    type: "pending" | "status";
+    expected: Record<string, unknown>;
+  }) {
+    const hostRequestHash = authorityHostEnvelopeHash(args.operation, args.endpoint, args.body);
+    const proof = createAuthorityHostProof({
+      privateKey,
+      keyId: input.config.hostKeyId,
+      issuer: input.config.hostIssuer,
+      audience: input.config.hostProofAudience,
+      trustId: input.config.trustId,
+      trustRevision: input.config.trustRevision,
+      bearer,
+      operation: args.operation,
+      endpoint: args.endpoint,
+      hostRequestHash,
+      now: now(),
+    });
+    const response = await input.request(args.endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Authorization: input.authorization,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "Govna-Authority-Proof": proof,
+      },
+      body: JSON.stringify(args.body),
+    });
+    const result = await readAuthorityResponse(response);
+    const authority = verifyAuthorityStatement({
+      compact: result.authority as string,
+      publicKey,
+      keyId: input.config.statementKeyId,
+      type: args.type,
+      now: now(),
+      expected: {
+        ...args.expected,
+        iss: input.config.statementIssuer,
+        aud: input.config.statementAudience,
+      },
+      approvalOrigin: input.config.approvalOrigin,
+    });
+    let ticket: { compact: string; payload: Record<string, unknown> } | undefined;
+    if (result.ticket !== undefined) {
+      if (args.type !== "status" || authority.payload.state !== "approved") {
+        throw new GovnaAuthorityTransportError(502, "unexpected_ticket", "Govna authority returned an unexpected dispatch ticket");
+      }
+      ticket = {
+        compact: result.ticket as string,
+        payload: verifyAuthorityStatement({
+          compact: result.ticket as string,
+          publicKey,
+          keyId: input.config.statementKeyId,
+          type: "ticket",
+          now: now(),
+          expected: {
+            ...args.expected,
+            iss: input.config.statementIssuer,
+            aud: input.config.statementAudience,
+          },
+        }).payload,
+      };
+      if (!sameJson(authority.payload.ticket_generation, ticket.payload.ticket_generation)) {
+        throw new GovnaAuthorityTransportError(502, "ticket_mismatch", "Govna status and dispatch ticket do not match");
+      }
+    } else if (args.type === "status" && authority.payload.state === "approved") {
+      throw new GovnaAuthorityTransportError(502, "ticket_missing", "Govna approved status omitted its dispatch ticket");
+    }
+    return { authority: result.authority as string, payload: authority.payload, ticket };
+  }
+
+  return {
+    prepare(body: Record<string, unknown>, expected: Record<string, unknown>) {
+      return authorityCall({
+        operation: "prepare",
+        endpoint: input.config.prepareEndpoint,
+        body,
+        type: "pending",
+        expected,
+      });
+    },
+    status(body: Record<string, unknown>, expected: Record<string, unknown>) {
+      return authorityCall({
+        operation: "status",
+        endpoint: input.config.statusEndpoint,
+        body,
+        type: "status",
+        expected,
+      });
+    },
+    cancel(body: Record<string, unknown>, expected: Record<string, unknown>) {
+      return authorityCall({
+        operation: "cancel",
+        endpoint: input.config.cancelEndpoint,
+        body,
+        type: "status",
+        expected,
+      });
+    },
+    dispatch(inputDispatch: {
+      reservationId: string;
+      operationId: string;
+      requestHash: string;
+      localClaimId: string;
+      ticket: string;
+    }) {
+      const body = {
+        reservation_id: inputDispatch.reservationId,
+        operation_id: inputDispatch.operationId,
+        trust_revision: input.config.trustRevision,
+        ticket_digest: digestDispatchTicket(inputDispatch.ticket),
+        request_hash: inputDispatch.requestHash,
+        local_claim_id: inputDispatch.localClaimId,
+      };
+      const hostRequestHash = authorityHostEnvelopeHash("dispatch", input.config.resource, body);
+      return {
+        endpoint: input.config.resource,
+        proof: createAuthorityHostProof({
+          privateKey,
+          keyId: input.config.hostKeyId,
+          issuer: input.config.hostIssuer,
+          audience: input.config.hostProofAudience,
+          trustId: input.config.trustId,
+          trustRevision: input.config.trustRevision,
+          bearer,
+          operation: "dispatch",
+          endpoint: input.config.resource,
+          hostRequestHash,
+          localClaimId: inputDispatch.localClaimId,
+          now: now(),
+        }),
+        metadata: {
+          reservation_id: inputDispatch.reservationId,
+          ticket: inputDispatch.ticket,
+        },
+      };
+    },
+  };
 }
 
 export class GovnaAuthorityStateError extends Error {
@@ -886,6 +1166,49 @@ export function govnaAuthorityOperationService(db: Db) {
         invocation.status !== "awaiting_approval"
       ) {
         throw new GovnaAuthorityStateError("invocation_invalid", "Invocation changed before Govna dispatch");
+      }
+      if (operation.approvalExpiresAt.getTime() <= Date.now()) {
+        throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority approval has expired");
+      }
+      const [connection] = await tx
+        .select()
+        .from(toolConnections)
+        .where(and(
+          eq(toolConnections.id, operation.connectionId),
+          eq(toolConnections.companyId, input.companyId),
+        ))
+        .for("update");
+      const policyIds = invocation.matchedPolicyIds ?? [];
+      const policies = policyIds.length > 0
+        ? await tx
+          .select()
+          .from(toolPolicies)
+          .where(and(
+            eq(toolPolicies.companyId, input.companyId),
+            inArray(toolPolicies.id, policyIds),
+          ))
+          .for("update")
+        : [];
+      let currentConfig: GovnaApprovalAuthorityConfig | null = null;
+      try {
+        currentConfig = connection?.enabled === true && connection.status === "active"
+          ? parseGovnaAuthorityConfig(
+              connection.config as Record<string, unknown>,
+              policies,
+              invocation.upstreamToolName ?? invocation.toolName,
+            )
+          : null;
+      } catch {
+        currentConfig = null;
+      }
+      if (
+        !currentConfig ||
+        policies.length !== policyIds.length ||
+        policies.some((policy) => policy.enabled !== true) ||
+        currentConfig.localPolicyRevision !== operation.localPolicyRevision ||
+        currentConfig.connectionGeneration !== operation.connectionGeneration
+      ) {
+        throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority configuration or local policy changed");
       }
       const localClaimId = `gcl_${randomUUID()}`;
       const now = new Date();
