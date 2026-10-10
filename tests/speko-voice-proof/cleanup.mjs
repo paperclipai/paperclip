@@ -35,3 +35,20 @@ export function createCleanup({ local, provider, report, failed }) {
     },
   };
 }
+
+/** Keep the finalized recording for retry until its upload is acknowledged. */
+export function createAudioSave({stop, upload}) {
+  let blob, saved = false, pending;
+  return {
+    save() {
+      if (saved) return Promise.resolve();
+      if (pending) return pending;
+      pending = (async () => {
+        blob ??= await stop();
+        await upload(blob);
+        saved = true;
+      })().finally(() => { pending = undefined; });
+      return pending;
+    },
+  };
+}

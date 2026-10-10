@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCleanup } from './cleanup.mjs';
+import { createCleanup, createAudioSave } from './cleanup.mjs';
 
 test('failed hangup preserves evidence and retries only the unconfirmed provider operation', async () => {
   let locals = 0, ends = 0;
@@ -65,4 +65,34 @@ test('retries failed local operations and keeps End available until all media cl
   assert.equal(await cleanup.end(), true);
   assert.equal(cleanup.complete, true);
   assert.deepEqual({tracks, sdk, ends, reports}, {tracks: 1, sdk: 2, ends: 1, reports: 2});
+});
+
+
+test('failed audio upload is retryable with the same finalized recording and blocks cleanup completion', async () => {
+  const blob = new Blob(['synthetic-audio']);
+  let stops = 0, uploads = 0, ends = 0;
+  const evidence = createAudioSave({stop: async () => { stops++; return blob; }, upload: async value => {
+    assert.equal(value, blob); if (++uploads === 1) throw new Error('HTTP failure');
+  }});
+  const failures = [];
+  const cleanup = createCleanup({local: async attempt => { await attempt('recording.save', () => evidence.save()); },
+    provider: async () => { ends++; }, report: async () => {}, failed: operation => failures.push(operation)});
+  assert.equal(await cleanup.end(), false);
+  assert.equal(cleanup.complete, false);
+  assert.deepEqual(failures, ['recording.save']);
+  assert.equal(await cleanup.end(), true);
+  assert.equal(cleanup.complete, true);
+  assert.deepEqual({stops, uploads, ends}, {stops: 1, uploads: 2, ends: 1});
+});
+
+test('audio evidence waits for final recording data before upload and coalesces concurrent saves', async () => {
+  let finish, uploads = 0;
+  const stopped = new Promise(resolve => { finish = resolve; });
+  const evidence = createAudioSave({stop: () => stopped, upload: async () => { uploads++; }});
+  const first = evidence.save(), second = evidence.save();
+  assert.equal(first, second);
+  await Promise.resolve(); assert.equal(uploads, 0);
+  finish(new Blob(['synthetic-audio']));
+  await first; await evidence.save();
+  assert.equal(uploads, 1);
 });

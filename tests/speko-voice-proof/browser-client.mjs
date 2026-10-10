@@ -1,5 +1,5 @@
 import { VoiceConversation } from '@spekoai/client';
-import { createCleanup } from './cleanup.mjs';
+import { createCleanup, createAudioSave } from './cleanup.mjs';
 const config = JSON.parse(document.querySelector('#config').textContent);
 const $ = (id) => document.getElementById(id);
 const events = [];
@@ -8,7 +8,7 @@ const tracks = [];
 const cleanupFailures = [];
 const began = performance.now();
 let conversation, context, destination, muted = false, running = false, ended = false;
-let speaking = false, notificationSent = false, sessionId, interval, recorder;
+let speaking = false, notificationSent = false, sessionId, interval, recorder, audioEvidence;
 const event = (kind, fields = {}) => { events.push({ kind, elapsedMs: Math.round(performance.now() - began), ...fields }); };
 const status = (text) => { $('status').textContent = text; };
 async function api(path, body = {}) {
@@ -23,13 +23,27 @@ const observer = new MutationObserver(() => {
   recorder = new MediaRecorder(stream);
   const chunks = [];
   recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  recorder.onstop = async () => {
-    try {
-      const result = await fetch('/audio', { method: 'POST', headers: { 'content-type': 'audio/webm', 'x-proof-csrf': config.csrf }, body: new Blob(chunks, { type: 'audio/webm' }) });
-      event('received_audio_saved', { ok: result.ok });
-      await saveReport();
-    } catch { event('received_audio_save_failed'); }
-  };
+  const recorded = new Promise((resolve, reject) => {
+    recorder.onstop = () => resolve(new Blob(chunks, {type: 'audio/webm'}));
+    recorder.onerror = () => reject(new Error('Recording failed'));
+  });
+  recorded.catch(() => {}); // Cleanup observes the original rejected promise.
+  audioEvidence = createAudioSave({
+    stop: async () => {
+      if (recorder.state !== 'inactive') recorder.stop();
+      let timer;
+      try {
+        return await Promise.race([recorded, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Recording did not finish')), 10_000);
+        })]);
+      } finally { clearTimeout(timer); }
+    },
+    upload: async blob => {
+      const response = await fetch('/audio', {method: 'POST', headers: {'content-type': 'audio/webm', 'x-proof-csrf': config.csrf}, body: blob, signal: AbortSignal.timeout(20_000)});
+      if (!response.ok) throw new Error('Received audio could not be saved');
+      event('received_audio_saved', {ok: true});
+    },
+  });
   recorder.start(); event('received_audio_recording_started');
 });
 observer.observe(document.body, { childList: true, subtree: true });
@@ -78,7 +92,7 @@ const cleanup = createCleanup({
   local: async (attempt) => {
     ended = true; clearInterval(interval); observer.disconnect();
     $('scenario').disabled = $('mute').disabled = true;
-    await attempt('recorder.stop', () => { if (recorder?.state === 'recording') recorder.stop(); });
+    await attempt('recording.save', () => audioEvidence?.save());
     await attempt('sdk.end', () => conversation?.endSession());
     event('sdk_cleanup', { inputTracksEnded: tracks.every((t) => t.readyState === 'ended'), audioElements: document.querySelectorAll('audio').length });
     await attempt('tracks.stop', () => { destination?.stream.getTracks().forEach((t) => t.stop()); tracks.forEach((t) => t.stop()); });
