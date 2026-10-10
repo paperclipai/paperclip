@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -7,6 +7,16 @@ import { logger } from "../middleware/logger.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
+
+/**
+ * A service key never owns a run, so it cannot be given a per-run budget. It is
+ * a long-lived identity serving many independent inbound events rather than one
+ * agent turn, so each key gets a rolling window instead: the same shape of
+ * backstop, sized to an hour of inbound traffic rather than to a single
+ * heartbeat.
+ */
+export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT = 60;
+export const CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS = 60 * 60 * 1000;
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
@@ -46,15 +56,17 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
   now?: Date;
+  cap?: number;
 }): CrossIssueInfluenceDecision {
   const now = input.now ?? new Date();
   const mode = now >= CROSS_ISSUE_INFLUENCE_ENFORCE_AT ? "enforce" : "log_only";
   const nextCount = input.priorCount + 1;
+  const cap = input.cap ?? CROSS_ISSUE_INFLUENCE_LIMIT;
   return {
-    allowed: mode === "log_only" || nextCount <= CROSS_ISSUE_INFLUENCE_LIMIT,
+    allowed: mode === "log_only" || nextCount <= cap,
     mode,
     count: nextCount,
-    cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+    cap,
     enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
   };
 }
@@ -172,6 +184,119 @@ export async function observeCrossIssueInfluence(
       logger.info(logContext, "cross-issue influence observed");
     } else {
       logger.warn(logContext, "cross-issue influence cap exceeded");
+    }
+
+    return decision;
+  });
+}
+
+/**
+ * Observes one cross-issue influence attempt by a service key — an integration
+ * that speaks for an agent but never owns a heartbeat run.
+ *
+ * There is no run row whose lock would serialize concurrent attempts, so the
+ * transaction takes a per-window advisory lock instead: count-then-insert is
+ * atomic per (company, agent, key) and a burst arriving at the cap cannot
+ * read the same prior count and all land.
+ *
+ * The window is scoped to the service key that carried the write. An agent
+ * can be spoken for by several integrations, and one of them filling its
+ * budget must not 429 another's otherwise-authorized replies. A caller with
+ * no key identity falls back to the agent-wide window — the stricter shared
+ * bucket, never a fresh one.
+ *
+ * Unlike the run path there is no source issue to compare against, so every
+ * attempt is charged; a service key has no "own" issue to write to for free.
+ */
+export async function observeServiceKeyCrossIssueInfluence(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    serviceKeyId: string | null;
+    responsibleUserId?: string | null;
+    targetIssueId: string;
+    targetIssueIdentifier?: string | null;
+    kind: CrossIssueInfluenceKind;
+    now?: Date;
+  },
+): Promise<CrossIssueInfluenceDecision> {
+  const now = input.now ?? new Date();
+  const windowStart = new Date(now.getTime() - CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${
+      `cross-issue-influence:service-key:${input.companyId}:${input.agentId}:${input.serviceKeyId ?? "unkeyed"}`
+    }, 0))`);
+    const priorCount = await tx
+      .select({ count: count() })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.agentId, input.agentId),
+        isNull(activityLog.runId),
+        eq(activityLog.action, CROSS_ISSUE_INFLUENCE_ACTIVITY),
+        gte(activityLog.createdAt, windowStart),
+        input.serviceKeyId === null
+          ? undefined
+          : sql`${activityLog.details} ->> 'serviceKeyId' = ${input.serviceKeyId}`,
+      ))
+      .then((rows) => Number(rows[0]?.count ?? 0));
+    const decision = evaluateCrossIssueInfluenceLimit({
+      priorCount,
+      now,
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+    });
+
+    await tx.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      agentId: input.agentId,
+      runId: null,
+      responsibleUserId: input.responsibleUserId ?? null,
+      action: decision.allowed
+        ? CROSS_ISSUE_INFLUENCE_ACTIVITY
+        : CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY,
+      entityType: "issue",
+      entityId: input.targetIssueId,
+      details: {
+        kind: input.kind,
+        actorScope: "service_key",
+        serviceKeyId: input.serviceKeyId,
+        sourceIssueId: null,
+        targetIssueId: input.targetIssueId,
+        targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+        count: decision.count,
+        cap: decision.cap,
+        mode: decision.mode,
+        enforceAt: decision.enforceAt,
+        windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+        windowStart: windowStart.toISOString(),
+        allowed: decision.allowed,
+      },
+    });
+
+    const logContext = {
+      event: "cross_issue_influence_cap",
+      companyId: input.companyId,
+      runId: null,
+      agentId: input.agentId,
+      actorScope: "service_key",
+      serviceKeyId: input.serviceKeyId,
+      targetIssueId: input.targetIssueId,
+      kind: input.kind,
+      count: decision.count,
+      cap: decision.cap,
+      mode: decision.mode,
+      windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      enforceAt: decision.enforceAt,
+      allowed: decision.allowed,
+    };
+    if (decision.allowed) {
+      logger.info(logContext, "service-key cross-issue influence observed");
+    } else {
+      logger.warn(logContext, "service-key cross-issue influence cap exceeded");
     }
 
     return decision;

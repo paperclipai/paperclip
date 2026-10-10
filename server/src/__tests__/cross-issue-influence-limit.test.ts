@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
+  CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+  CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
   crossIssueInfluenceLimitError,
   evaluateCrossIssueInfluenceLimit,
   observeCrossIssueInfluence,
+  observeServiceKeyCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.ts";
 
 function counterDb(
@@ -14,6 +17,8 @@ function counterDb(
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
   const tx = {
+    // The service-key path opens with a transaction-scoped advisory lock.
+    execute: async () => undefined,
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
@@ -212,5 +217,79 @@ describe("cross-issue influence limit rollout", () => {
       details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
+  });
+});
+
+describe("cross-issue influence limit for run-less service keys", () => {
+  const serviceInput = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    serviceKeyId: "66666666-6666-4666-8666-666666666666",
+    targetIssueId: "55555555-5555-4555-8555-555555555555",
+    targetIssueIdentifier: "STA-8192",
+    kind: "comment" as const,
+    now: new Date("2026-09-30T08:00:00.000Z"),
+  };
+
+  it("allows the last comment inside the window and fails closed on the next", async () => {
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT - 1);
+
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({
+      allowed: true,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+    });
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({
+      allowed: false,
+      count: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT + 1,
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+    });
+    expect(fake.inserted.map((row) => row.action)).toEqual([
+      "issue.cross_issue_influence_observed",
+      "issue.cross_issue_influence_cap_rejected",
+    ]);
+  });
+
+  it("records the attempt against the agent with no run and a bounded window", async () => {
+    const fake = counterDb(0);
+
+    await observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput);
+
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        actorType: "agent",
+        agentId: serviceInput.agentId,
+        runId: null,
+        entityType: "issue",
+        entityId: serviceInput.targetIssueId,
+        details: expect.objectContaining({
+          actorScope: "service_key",
+          serviceKeyId: serviceInput.serviceKeyId,
+          sourceIssueId: null,
+          targetIssueIdentifier: "STA-8192",
+          windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+          windowStart: "2026-09-30T07:00:00.000Z",
+          cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+        }),
+      }),
+    ]);
+  });
+
+  it("charges every attempt because a service key has no source issue", async () => {
+    const fake = counterDb(0);
+
+    // The run path returns null (uncharged) for a write to the run's own issue.
+    // A run-less key has no own issue, so nothing is free.
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({ count: 1 });
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({ count: 2 });
   });
 });

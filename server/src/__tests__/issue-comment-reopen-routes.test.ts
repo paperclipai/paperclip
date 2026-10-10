@@ -105,6 +105,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncIssueSafely: vi.fn(async () => undefined),
 }));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn());
+const mockObserveServiceKeyCrossIssueInfluence = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceLimitError = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceRunContextError = vi.hoisted(() => vi.fn());
 const mockRunnerGoalService = vi.hoisted(() => ({
@@ -211,6 +212,7 @@ vi.mock("../services/external-objects.js", () => ({
 
 vi.mock("../services/cross-issue-influence-limit.js", () => ({
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+  observeServiceKeyCrossIssueInfluence: mockObserveServiceKeyCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
 }));
@@ -353,6 +355,7 @@ describe("issue comment reopen routes", () => {
     mockExternalObjectService.syncCommentSafely.mockReset();
     mockExternalObjectService.syncIssueSafely.mockReset();
     mockObserveCrossIssueInfluence.mockReset();
+    mockObserveServiceKeyCrossIssueInfluence.mockReset();
     mockCrossIssueInfluenceLimitError.mockReset();
     mockCrossIssueInfluenceRunContextError.mockReset();
     mockTxInsertValues.mockReset();
@@ -392,6 +395,13 @@ describe("issue comment reopen routes", () => {
       mode: "log_only",
       count: 1,
       cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+    mockObserveServiceKeyCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      mode: "enforce",
+      count: 1,
+      cap: 60,
       enforceAt: "2026-08-11T00:00:00.000Z",
     });
     mockCrossIssueInfluenceLimitError.mockImplementation(
@@ -2630,6 +2640,383 @@ describe("issue comment reopen routes", () => {
       expect(mockIssueService.addComment).not.toHaveBeenCalled();
     },
   );
+
+  it("allows a mention-granted run-less service-scoped comment and charges the service-key window", async () => {
+    const routerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "inbound reply routed by a service integration",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: routerAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => {
+        const allowed = input.action === "issue:comment";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
+          explanation: allowed
+            ? "Allowed by a mention-scoped issue comment grant."
+            : "Missing permission.",
+        };
+      },
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: routerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyId: "key-router-1",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "inbound reply routed by a service integration" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    // No run exists, so nothing may be charged against a per-run counter — but
+    // the attempt is still observed and rate-capped against the key's window.
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockObserveServiceKeyCrossIssueInfluence).toHaveBeenCalledTimes(1);
+    expect(mockObserveServiceKeyCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        agentId: routerAgentId,
+        serviceKeyId: "key-router-1",
+        targetIssueId: "11111111-1111-4111-8111-111111111111",
+        kind: "comment",
+      }),
+    );
+  });
+
+  it("rejects a run-less service-scoped comment carried only by the default-open visibility rule", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action === "issue:comment",
+        action: input.action,
+        reason: "allow_visible_issue_write",
+        explanation: "Allowed by the shared default-open visible-issue write rule.",
+      }),
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "visible, but nobody invited this integration here" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+  });
+
+  it("returns 429 when a run-less service key exceeds its rolling window", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action === "issue:comment",
+        action: input.action,
+        reason: "allow_issue_mention_grant",
+        explanation: "Allowed by a mention-scoped issue comment grant.",
+      }),
+    );
+    mockObserveServiceKeyCrossIssueInfluence.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 61,
+      cap: 60,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "one reply too many" });
+
+    expect(res.status).toBe(429);
+    expect(res.body.details).toMatchObject({
+      code: "cross_issue_influence_cap_exceeded",
+      count: 61,
+      cap: 60,
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still denies a run-less service-scoped comment the issue authorization rejects", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "issue:comment",
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "no grant on this issue" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still rejects run-less service-scoped PATCH writes", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "cross-issue write" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a run-less service-scoped PATCH that carries a comment body", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_issue_mention_grant",
+        explanation: "Allowed by a mention-scoped issue comment grant.",
+      }),
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "comment smuggled through the update route" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects a run-less service-scoped comment that carries resume intent", async () => {
+    // The assignee's own service key would pass comment authorization via
+    // allow_self, so the comments-only carve-out would admit the write — but
+    // `resume: true` makes this a task-state change (status to todo, workspace
+    // reopen), which stays attributable to a run.
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "resuming without a run", resume: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a run-less service-scoped comment carrying resume intent on an open issue", async () => {
+    // Unlike `reopen`, `resume` is not a no-op on an open issue: an explicit
+    // resume defeats the self-comment wake suppression
+    // (shouldWakeAssigneeForIssueComment), so the assignee's own run-less key
+    // could queue an issue_commented wake and start its agent a new turn.
+    // Turn-starting stays attributable to a run, so the gate fires here too.
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "resuming an open issue without a run", resume: true });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({
+      code: "cross_issue_influence_run_context_required",
+    });
+    expect(mockObserveServiceKeyCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("lets a run-less service-scoped comment through when reopen is a no-op on an open issue", async () => {
+    // On an open issue the route never applies `reopen` for agent actors, so
+    // the flag changes no task state and the comment stands on its own
+    // authorization — same outcome the assignee's key would get with a run.
+    // (`resume` is different: it forces an assignee wake even on an open
+    // issue, so it keeps the run-context requirement everywhere — covered by
+    // the tests around this one.)
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "reply with a redundant reopen flag",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: assigneeAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:comment",
+      reason: "allow_self",
+      explanation: "Agents may act on their own issues.",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyId: "key-router-1",
+        keyScope: { kind: "service" },
+        runId: undefined,
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "reply with a redundant reopen flag", reopen: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockObserveServiceKeyCrossIssueInfluence).toHaveBeenCalledTimes(1);
+  });
+
+  it("charges the run budget when a service-scoped key does send a run", async () => {
+    const routerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "routed inside a run",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: routerAgentId,
+      authorUserId: null,
+    });
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action === "issue:comment",
+        action: input.action,
+        reason: "allow_issue_mention_grant",
+        explanation: "Allowed by a mention-scoped issue comment grant.",
+      }),
+    );
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      mode: "enforce",
+      count: 1,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: routerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: { kind: "service" },
+        runId: "77777777-7777-4777-8777-777777777777",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "routed inside a run" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+  });
 
   it.each(["invalid", "wrong agent", "wrong company"])(
     "rejects comment and PATCH writes with a %s run",

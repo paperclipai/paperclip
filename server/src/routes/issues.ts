@@ -355,6 +355,7 @@ import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
+  observeServiceKeyCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
@@ -3681,22 +3682,63 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
+    options: {
+      /**
+       * Set only by the dedicated comment route, and only once the issue
+       * authorization decision is known. A run-less service key may comment
+       * where the agent it speaks for has a concrete relationship to the issue
+       * — it is the assignee, the issue has no agent assignee, a mention grant
+       * names it, or it is reporting to its direct parent — but not where the
+       * comment is carried solely by the shared default-open visibility rule.
+       * Every other call site leaves this unset and keeps failing closed, so a
+       * PATCH that happens to carry a comment body still requires a run.
+       */
+      runlessServiceKeyEligible?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
-    if (!req.actor.agentId || !req.actor.runId)
+    if (!req.actor.agentId) throw crossIssueInfluenceRunContextError();
+    // A service-scoped key belongs to an integration that speaks for an agent
+    // but never owns a heartbeat run, so there is no run to attribute the write
+    // to and no per-run budget to charge. Failing closed here would make the
+    // mention grant, the assignee rule, and the unassigned-issue rule
+    // unreachable for these callers, even though `assertAgentIssueCommentAllowed`
+    // has already decided them upstream. Let that decision stand — the same way
+    // issue creation by a run-less agent actor already does — and charge the
+    // attempt to the service-key window instead of a run budget, so the
+    // integration is still counted and still rate-capped.
+    //
+    // The carve-out is deliberately narrow twice over. It is comments only:
+    // `update` and `interaction_resolution` change task state, so they still
+    // require a run to attribute them to. And it excludes the default-open
+    // visibility rule: a run-less integration fed by untrusted input (inbound
+    // email, a webhook payload) should be able to reply where it was invited,
+    // not on every issue that happens to be visible to it.
+    const runId = req.actor.runId;
+    const runlessServiceComment =
+      kind === "comment" &&
+      !runId &&
+      req.actor.keyScope?.kind === "service" &&
+      options.runlessServiceKeyEligible === true;
+    if (!runId && !runlessServiceComment)
       throw crossIssueInfluenceRunContextError();
 
-    // The counter transaction locks and validates the persisted run before it
-    // derives the source issue. Never trust the API-key run header by itself.
-    const decision = await observeCrossIssueInfluence(db, {
+    const observation = {
       companyId: issue.companyId,
-      runId: req.actor.runId,
       agentId: req.actor.agentId,
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
-    });
+    };
+    // The run counter transaction locks and validates the persisted run before
+    // it derives the source issue. Never trust the API-key run header by itself.
+    const decision = runId
+      ? await observeCrossIssueInfluence(db, { ...observation, runId })
+      : await observeServiceKeyCrossIssueInfluence(db, {
+          ...observation,
+          serviceKeyId: req.actor.keyId ?? null,
+        });
     if (!decision || decision.allowed) return true;
 
     const labels = await issueWriteDenialLabels(req, {
@@ -18174,6 +18216,27 @@ export function issueRoutes(
       const interruptRequested = req.body.interrupt === true;
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
+      // The run-less service-key carve-out further down covers the comment
+      // itself and nothing else. `resume` always does more than comment: on a
+      // closed or blocked issue it moves status back to todo and reopens the
+      // workspace, and on an open issue its one remaining effect is to force
+      // an assignee wake past the self-comment suppression
+      // (shouldWakeAssigneeForIssueComment) — either way it starts a turn,
+      // and turn-starting stays attributable to a run. `reopen` only changes
+      // state on closed/blocked issues; on an open issue the route treats it
+      // as a no-op for agent actors, so that comment falls through to its own
+      // authorization. Refuse instead of silently dropping the flag so a
+      // misconfigured integration hears the contract rather than guessing why
+      // nothing resumed. (`interrupt` is board-only below, so it needs no
+      // gate here.)
+      if (
+        (resumeRequested || (reopenRequested && (isClosed || isBlocked))) &&
+        req.actor.type === "agent" &&
+        !req.actor.runId &&
+        req.actor.keyScope?.kind === "service"
+      ) {
+        throw crossIssueInfluenceRunContextError();
+      }
       const crossIssueCommentOnlyGrant =
         isClosed &&
         (isDirectParentReportDecision(commentAccessDecision) ||
@@ -18275,6 +18338,15 @@ export function issueRoutes(
           res,
           issue,
           "comment",
+          {
+            // A run-less service key may reply where the agent it speaks for is
+            // actually involved — assignee, unassigned issue, mention grant,
+            // direct-parent report. The shared default-open visibility rule is
+            // not involvement, so it does not unlock the run-less path.
+            runlessServiceKeyEligible: !isDefaultOpenIssueWriteDecision(
+              commentAccessDecision,
+            ),
+          },
         ))
       )
         return;

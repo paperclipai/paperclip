@@ -195,15 +195,29 @@ export const skillTestAgentKeyScopeSchema = z.object({
   issueId: z.string().guid(),
 }).strict();
 
+/**
+ * A key held by an integration that speaks for an agent without ever owning a
+ * heartbeat run — an inbound email router, a webhook receiver, a chat bridge.
+ * These callers have no run to attribute a write to, so the cross-issue
+ * influence gate lets their comments fall through to the normal issue
+ * authorization decision instead of failing closed on the missing run header.
+ * The scope grants nothing else; every other check still applies.
+ */
+export const serviceAgentKeyScopeSchema = z.object({
+  kind: z.literal("service"),
+}).strict();
+
 export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  serviceAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
+export type ServiceAgentKeyScope = z.infer<typeof serviceAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
   const parsed = agentApiKeyScopeSchema.safeParse(value);
