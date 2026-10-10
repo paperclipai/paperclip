@@ -18,7 +18,9 @@ import {
 import {
   GovnaAuthorityStateError,
   govnaAuthorityOperationService,
+  type GovnaApprovalAuthorityConfig,
 } from "../services/govna-approval-authority.js";
+import { govnaToolGatewayCoordinator } from "../services/govna-tool-gateway.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -351,5 +353,79 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
     await expect(claim).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     expect(operation).toMatchObject({ state: "approved", localClaimId: null });
+  });
+
+  it("prepares, resumes, claims, and emits exact dispatch authority without persisting the ticket", async () => {
+    const f = await fixture();
+    const config = (f.connection.config as {
+      govnaApprovalAuthority: GovnaApprovalAuthorityConfig;
+    }).govnaApprovalAuthority;
+    const approvalExpiresAt = Math.floor(Date.now() / 1000) + 60;
+    const ticketExpiresAt = Math.floor(Date.now() / 1000) + 30;
+    let statusCalls = 0;
+    const client = {
+      async prepare() {
+        return { payload: {
+          reservation_id: "arv_01m4hfpth0emf9wpckns4ngbxt",
+          approval_url: "https://app.govna.io/authority-approval?org=org_01m4hfpth0emf9wpckns4ngbxt&reservation=arv_01m4hfpth0emf9wpckns4ngbxt",
+          safe_summary: "Approve one exact send",
+          approval_expires_at: approvalExpiresAt,
+          operation_id: `paperclip:${f.invocation.id}`,
+        } };
+      },
+      async status() {
+        statusCalls += 1;
+        return {
+          payload: { state: "approved", ticket_generation: 1 },
+          ticket: {
+            compact: "signed-dispatch-ticket",
+            payload: { ticket_generation: 1, exp: ticketExpiresAt },
+          },
+        };
+      },
+      dispatch(input: { reservationId: string; localClaimId: string; ticket: string }) {
+        return {
+          endpoint: "https://mcp.govna.io/farmhub",
+          proof: "signed-host-proof",
+          metadata: { reservation_id: input.reservationId, ticket: input.ticket },
+        };
+      },
+    };
+    const coordinator = govnaToolGatewayCoordinator(db, {
+      signingSecret: "test-only-signing-secret",
+      assertCurrentAuthority: async () => ({ localPolicyRevision: "policy-v1", connectionGeneration: 1 }),
+    });
+    const call = {
+      companyId: f.company.id,
+      invocationId: f.invocation.id,
+      connectionId: f.connection.id,
+      gatewayToolName: "send_email",
+      upstreamToolName: "send_email",
+      parameters: { to: "ops@example.com", body: "ship" },
+      config,
+      client,
+    };
+
+    await expect(coordinator.prepareOrResume(call)).resolves.toMatchObject({
+      kind: "pending",
+      pending: { kind: "approval", executionId: "arv_01m4hfpth0emf9wpckns4ngbxt" },
+    });
+    await expect(coordinator.prepareOrResume(call)).resolves.toMatchObject({
+      kind: "dispatch",
+      parameters: call.parameters,
+      authority: {
+        endpoint: "https://mcp.govna.io/farmhub",
+        proof: "signed-host-proof",
+        metadata: {
+          reservation_id: "arv_01m4hfpth0emf9wpckns4ngbxt",
+          ticket: "signed-dispatch-ticket",
+        },
+      },
+    });
+    expect(statusCalls).toBe(1);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    expect(operation).toMatchObject({ state: "dispatch_claimed", localClaimId: expect.any(String) });
+    expect(JSON.stringify(operation)).not.toContain("signed-dispatch-ticket");
+    expect(JSON.stringify(operation)).not.toContain("signed-host-proof");
   });
 });

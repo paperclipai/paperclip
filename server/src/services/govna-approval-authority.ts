@@ -48,6 +48,14 @@ const AUTHORITY_BINDING_FIELDS = [
   "enforcement_revision", "reservation_id", "approval_id",
   "approval_expires_at", "approval_route_digest", "human_approval_required",
 ] as const;
+
+export function authorityImmutableBinding(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(AUTHORITY_BINDING_FIELDS.flatMap((field) =>
+    payload[field] === undefined ? [] : [[field, payload[field]]],
+  ));
+}
 const TIME_FIELDS = ["iat", "nbf", "exp", "jti"] as const;
 const STATEMENT_FIELDS = {
   pending: [...AUTHORITY_BINDING_FIELDS, ...TIME_FIELDS, "state", "approval_url", "safe_summary"],

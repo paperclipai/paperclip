@@ -1,6 +1,6 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -29,6 +29,7 @@ import {
   toolActionRequests,
   toolCallEvents,
   toolGatewaySessions,
+  toolGovnaAuthorityOperations,
   toolInvocations,
   toolPolicies,
 } from "@paperclipai/db";
@@ -47,6 +48,10 @@ import {
 } from "../services/tool-gateway.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
 import {
+  authorityRequestHash,
+  parseCompactJws,
+} from "../services/govna-approval-authority.js";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -55,6 +60,27 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const testToolActionSigningSecret = "test-tool-action-signing-secret";
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
+
+function signGovnaStatement(
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  type: string,
+  payload: Record<string, unknown>,
+) {
+  const header = Buffer.from(JSON.stringify({
+    alg: "ES256",
+    typ: type,
+    kid: "govna-statement-key-1",
+  })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signingInput = `${header}.${body}`;
+  const signature = sign("sha256", Buffer.from(signingInput), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363",
+  });
+  return `${signingInput}.${signature.toString("base64url")}`;
+}
+
+const govnaDigest = (fill: number) => Buffer.alloc(32, fill).toString("base64url");
 
 function createTestToolGatewayService(db: ReturnType<typeof createDb>, options: ToolGatewayServiceOptions = {}) {
   return createToolGatewayService(db, {
@@ -186,6 +212,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolCallEvents);
     await db.delete(toolAccessAuditEvents);
     await db.delete(toolActionRequests);
+    await db.delete(toolGovnaAuthorityOperations);
     await db.delete(toolInvocations);
     await db.delete(issueApprovals);
     await db.delete(approvals);
@@ -1681,6 +1708,278 @@ describeEmbeddedPostgres("tool gateway service", () => {
     else expect((await execution).status).toBe("completed");
     expect(dispatched).toHaveBeenCalledTimes(1);
     expect(refreshed).toEqual(upstreamFailure ? [grants[1]!.id] : [grants[1]!.id, grants[0]!.id]);
+  });
+
+  it.each([true, false])("resumes one Govna-approved exact call and never replays it (receipt: %s)", async (includeReceipt) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    const hostKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const statementKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const hostPrivateKeyPem = hostKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString().trimEnd();
+    const statementPublicKeyPem = statementKeys.publicKey.export({ type: "spki", format: "pem" }).toString().trimEnd();
+    const bearerSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Govna test bearer",
+      key: `govna.bearer.${randomUUID()}`,
+      value: "synthetic-govna-bearer",
+    });
+    const hostKeySecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Govna host signing key",
+      key: `govna.host-key.${randomUUID()}`,
+      value: hostPrivateKeyPem,
+    });
+    await db.insert(companySecretBindings).values([
+      {
+        companyId: company.id,
+        secretId: bearerSecret.id,
+        targetType: "tool_connection",
+        targetId: connection.id,
+        configPath: "oauth.access_token",
+      },
+      {
+        companyId: company.id,
+        secretId: hostKeySecret.id,
+        targetType: "tool_connection",
+        targetId: connection.id,
+        configPath: "govnaApprovalAuthority.hostSigningKeySecretId",
+      },
+    ]);
+    const resource = "https://8.8.8.8/mcp";
+    const prepareEndpoint = "https://8.8.8.8/approval-authority/v1/prepare";
+    const statusEndpoint = "https://8.8.8.8/approval-authority/v1/status";
+    await db.update(toolConnections).set({
+      authKind: "oauth",
+      credentialSource: "paperclip_vault",
+      credentialRefs: [{
+        name: "oauth.access_token",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+        secretId: bearerSecret.id,
+        versionSelector: "latest",
+      }],
+      config: {
+        url: resource,
+        govnaApprovalAuthority: {
+          mode: "required",
+          prepareEndpoint,
+          statusEndpoint,
+          cancelEndpoint: "https://8.8.8.8/approval-authority/v1/cancel",
+          approvalOrigin: "https://app.govna.io",
+          resource,
+          trustId: "atr_01m4hfpth0emf9wpckns4ngbxt",
+          trustRevision: 1,
+          hostContextId: "farmhub-paperclip",
+          localPolicyRevision: "policy-v1",
+          connectionGeneration: 1,
+          hostIssuer: "https://factory.farmhub.ag",
+          hostProofAudience: "govna-approval-authority",
+          statementIssuer: "https://api.govna.io",
+          statementAudience: "farmhub-paperclip",
+          hostKeyId: "farmhub-host-key-1",
+          hostSigningKeySecretId: hostKeySecret.id,
+          statementKeyId: "govna-statement-key-1",
+          statementPublicKeyPem,
+          tools: ["needs_input"],
+        },
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    const [govnaGrant] = await db.select().from(connectionGrants).where(eq(
+      connectionGrants.connectionId,
+      connection.id,
+    ));
+    await db.update(connectionGrants).set({
+      credentialSecretRefs: [{
+        secretId: bearerSecret.id,
+        versionSelector: "latest",
+        configPath: "oauth.access_token",
+        required: true,
+        label: "Govna bearer",
+      }],
+    }).where(eq(connectionGrants.id, govnaGrant.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Delegate exact remote reads to Govna",
+      policyType: "require_approval",
+      selectors: { riskLevel: "read" },
+      config: { govnaDelegation: "delegable_exact_call" },
+    });
+
+    const originalArguments = { query: "soil moisture", nested: { limit: 3 } };
+    const expectedRequestHash = authorityRequestHash("needs_input", originalArguments);
+    const reservationId = "arv_01j0000000e008000000000001";
+    const approvalId = "apr_01j0000000e008000000000001";
+    const now = () => Math.floor(Date.now() / 1000);
+    let immutableBinding: Record<string, unknown> | null = null;
+    const dispatches: Array<Record<string, unknown>> = [];
+    const remoteHttpRequest = vi.fn(async (url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      expect(headers.get("authorization")).toBe("Bearer synthetic-govna-bearer");
+      const proof = parseCompactJws(headers.get("govna-authority-proof")!);
+      const body = JSON.parse(String(init.body)) as Record<string, any>;
+      const issuedAt = now();
+
+      if (url === prepareEndpoint) {
+        expect(body).toMatchObject({
+          trust_revision: 1,
+          host_context_id: "farmhub-paperclip",
+          local_policy_revision: "policy-v1",
+          connection_generation: 1,
+          name: "needs_input",
+          arguments: originalArguments,
+        });
+        immutableBinding = {
+          iss: "https://api.govna.io",
+          aud: "farmhub-paperclip",
+          version: 1,
+          challenge: proof.payload.challenge,
+          host_request_hash: proof.payload.host_request_hash,
+          trust_id: "atr_01m4hfpth0emf9wpckns4ngbxt",
+          trust_revision: 1,
+          revocation_epoch: 0,
+          host_key_id: "farmhub-host-key-1",
+          organization_id: "org_01j0000000e008000000000001",
+          oauth_client_id: "agt_01j0000000e008000000000001",
+          actor_id: "usr_01j0000000e008000000000001",
+          agent_id: "agt_01j0000000e008000000000002",
+          session_id: "ses_01j0000000e008000000000001",
+          grant_id: "grn_01j0000000e008000000000001",
+          operation_id: body.operation_id,
+          host_context_id: "farmhub-paperclip",
+          local_policy_revision: "policy-v1",
+          connection_generation: 1,
+          resource,
+          connector_identity_id: "idn_01j0000000e008000000000001",
+          tool_id: "ctl_01j0000000e008000000000001",
+          tool_name: "needs_input",
+          snapshot_digest: "a".repeat(64),
+          request_hash: expectedRequestHash,
+          evaluated_action_digest: "b".repeat(64),
+          enforcement_revision: "c".repeat(64),
+          reservation_id: reservationId,
+          approval_id: approvalId,
+          approval_expires_at: issuedAt + 600,
+          approval_route_digest: "d".repeat(64),
+          human_approval_required: true,
+        };
+        const authority = signGovnaStatement(statementKeys.privateKey, "govna-approval-authority+jwt", {
+          ...immutableBinding,
+          iat: issuedAt,
+          nbf: issuedAt,
+          exp: issuedAt + 60,
+          jti: govnaDigest(1),
+          state: "pending",
+          approval_url: `https://app.govna.io/authority-approval?org=org_01j0000000e008000000000001&reservation=${reservationId}`,
+          safe_summary: "Approve one exact library lookup",
+        });
+        return new Response(JSON.stringify({ authority }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url === statusEndpoint) {
+        expect(immutableBinding).not.toBeNull();
+        expect(body).toMatchObject({
+          reservation_id: reservationId,
+          trust_revision: 1,
+        });
+        const decision = {
+          ...immutableBinding!,
+          challenge: proof.payload.challenge,
+          host_request_hash: proof.payload.host_request_hash,
+          iat: issuedAt,
+          nbf: issuedAt,
+          exp: issuedAt + 30,
+          state: "approved",
+          ticket_generation: 1,
+          decision_actor_id: "usr_01j0000000e008000000000002",
+          decision_at: issuedAt,
+          decision_evidence_id: "evt_01j0000000e008000000000001",
+        };
+        const authority = signGovnaStatement(statementKeys.privateKey, "govna-authority-status+jwt", {
+          ...decision,
+          jti: govnaDigest(2),
+          approval_url: null,
+          safe_summary: null,
+        });
+        const ticket = signGovnaStatement(statementKeys.privateKey, "govna-dispatch-ticket+jwt", {
+          ...decision,
+          jti: govnaDigest(3),
+        });
+        return new Response(JSON.stringify({ authority, ticket }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      expect(url).toBe(resource);
+      expect(proof.payload).toMatchObject({ operation: "dispatch", local_claim_id: expect.any(String) });
+      expect(body).toMatchObject({
+        method: "tools/call",
+        params: {
+          name: "needs_input",
+          arguments: originalArguments,
+          _meta: {
+            "io.govna/approval-authority/v1": {
+              reservation_id: reservationId,
+              ticket: expect.any(String),
+            },
+          },
+        },
+      });
+      dispatches.push(body);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { content: [{ type: "text", text: "approved result" }] },
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          ...(includeReceipt ? { "x-govna-call-id": "gcl_exact_call_1" } : {}),
+        },
+      });
+    });
+
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(candidate => candidate.providerType === "mcp_remote_http")!;
+    const call = {
+      sessionToken: session.token,
+      tool: tool.name,
+      parameters: originalArguments,
+      idempotencyKey: "govna-exact-call-1",
+    };
+
+    await expect(gateway.executeTool(call)).rejects.toMatchObject({
+      reasonCode: "provider_interaction_required",
+      details: { upstreamPending: { executionId: reservationId } },
+    });
+    expect(await db.select().from(toolActionRequests)).toHaveLength(0);
+    expect(dispatches).toHaveLength(0);
+
+    const resumed = gateway.executeTool({
+      ...call,
+      parameters: { query: "tampered", nested: { limit: 999 } },
+    });
+    if (includeReceipt) expect((await resumed).status).toBe("completed");
+    else await expect(resumed).rejects.toMatchObject({ reasonCode: "govna_outcome_unknown" });
+    expect(dispatches).toHaveLength(1);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    const [invocation] = await db.select().from(toolInvocations);
+    if (includeReceipt) {
+      expect(operation).toMatchObject({ state: "succeeded" });
+      expect(invocation).toMatchObject({ status: "succeeded", upstreamRequestId: "gcl_exact_call_1" });
+    } else {
+      expect(operation).toMatchObject({ state: "outcome_unknown", errorCode: "dispatch_receipt_missing" });
+      expect(invocation).toMatchObject({ status: "failed", errorCode: "govna_outcome_unknown" });
+      await expect(gateway.executeTool(call)).rejects.toMatchObject({ reasonCode: "govna_outcome_unknown" });
+      expect(dispatches).toHaveLength(1);
+    }
+    expect(JSON.stringify(operation)).not.toContain("govna-dispatch-ticket+jwt");
+    expect(JSON.stringify(operation)).not.toContain("govna-host-proof+jwt");
   });
 
   it("refreshes customer OAuth after a session 401 without replaying the call, then uses a fresh session on explicit retry", async () => {

@@ -174,6 +174,15 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import {
+  createGovnaAuthorityHttpClient,
+  parseGovnaAuthorityConfig,
+  type GovnaApprovalAuthorityConfig,
+} from "./govna-approval-authority.js";
+import {
+  govnaToolGatewayCoordinator,
+  type GovnaGatewayDisposition,
+} from "./govna-tool-gateway.js";
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -415,6 +424,10 @@ type RemoteHttpExecutionResult = {
   execution?: RemoteHttpExecutionAudit;
 };
 
+type GovnaRemoteDispatch = Extract<GovnaGatewayDisposition, { kind: "dispatch" }>["authority"] & {
+  operationId: string;
+};
+
 type RemoteHttpExecutionAudit = {
   transport: "mcp_remote";
   request: {
@@ -431,6 +444,7 @@ type RemoteHttpExecutionAudit = {
     contentType: string | null;
     bodySizeBytes: number;
     upstreamRequestId: string | null;
+    govnaCallId?: string | null;
   };
 };
 
@@ -707,6 +721,13 @@ export function upstreamRequestIdFromHeaders(headers: Headers) {
     if (sanitized) return sanitized.slice(0, 160);
   }
   return null;
+}
+
+function govnaCallIdFromHeaders(headers: Headers) {
+  const raw = headers.get("x-govna-call-id");
+  if (!raw) return null;
+  const sanitized = raw.replace(/[\r\n\t]/g, " ").trim();
+  return sanitized ? sanitized.slice(0, 160) : null;
 }
 
 function safeClientMetadata(
@@ -1184,6 +1205,74 @@ export function createToolGatewayService(
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
+  const govnaCoordinator = govnaToolGatewayCoordinator(db, {
+    signingSecret: options.toolActionSigningSecret,
+    assertCurrentAuthority: async ({ db: transaction, operation, invocation }) => {
+      const signed = readSignedToolArgumentsPayload({
+        signedArguments: operation.signedArguments,
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        signingSecret: options.toolActionSigningSecret,
+      });
+      if (!signed) throw new Error("Govna exact-call arguments signature is invalid");
+      const decisionInput: ToolAccessDecisionInput = {
+        companyId: invocation.companyId,
+        actor: {
+          actorType: invocation.actorType === "agent" || invocation.actorType === "user" || invocation.actorType === "plugin"
+            ? invocation.actorType
+            : "system",
+          actorId: invocation.actorId ?? invocation.agentId ?? invocation.companyId,
+          agentId: invocation.agentId,
+        },
+        runContext: {
+          heartbeatRunId: invocation.runId,
+          issueId: invocation.issueId,
+          gatewayId: invocation.gatewayId,
+        },
+        request: {
+          applicationId: invocation.applicationId,
+          connectionId: invocation.connectionId,
+          catalogEntryId: invocation.catalogEntryId,
+          providerType: invocation.providerType,
+          applicationKey: invocation.applicationKey,
+          upstreamToolName: invocation.upstreamToolName,
+          toolName: invocation.toolName,
+          riskLevel: invocation.riskLevel,
+          arguments: signed.arguments,
+          sideEffecting: true,
+        },
+        consumeRateLimit: false,
+      };
+      const decision = await toolAccessPolicyService(transaction).decide(decisionInput);
+      if (decision.decision !== "require_approval") {
+        throw new Error("Current local policy no longer delegates this call");
+      }
+      const [connection] = invocation.connectionId
+        ? await transaction.select().from(toolConnections).where(and(
+            eq(toolConnections.id, invocation.connectionId),
+            eq(toolConnections.companyId, invocation.companyId),
+          ))
+        : [];
+      const policies = decision.matchedPolicyIds.length > 0
+        ? await transaction.select().from(toolPolicies).where(and(
+            eq(toolPolicies.companyId, invocation.companyId),
+            inArray(toolPolicies.id, decision.matchedPolicyIds),
+          ))
+        : [];
+      const config = connection
+        ? parseGovnaAuthorityConfig(
+            connection.config as Record<string, unknown>,
+            policies,
+            invocation.upstreamToolName ?? invocation.toolName,
+          )
+        : null;
+      if (!config) throw new Error("Current local policy does not delegate to Govna");
+      return {
+        localPolicyRevision: config.localPolicyRevision,
+        connectionGeneration: config.connectionGeneration,
+      };
+    },
+  });
   // Authentication produces a new session object for every operation. Keep
   // credential acquisition scoped to that object and out of persisted inputs.
   const githubOperationCredentials = new WeakMap<
@@ -2692,6 +2781,90 @@ export function createToolGatewayService(
       issueId: input.session.issueId,
       toolName: input.tool.name,
       argumentsHash: canonicalArgumentsHash,
+    });
+  }
+
+  async function govnaConfigForDecision(
+    tool: ToolGatewayDescriptor,
+    decision: ToolAccessDecision,
+  ): Promise<GovnaApprovalAuthorityConfig | null> {
+    if (
+      decision.decision !== "require_approval" ||
+      tool.providerType !== "mcp_remote_http" ||
+      !tool.connectionId ||
+      decision.matchedPolicyIds.length === 0
+    ) return null;
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, tool.connectionId));
+    if (!connection) return null;
+    const policies = await db.select().from(toolPolicies).where(and(
+      eq(toolPolicies.companyId, connection.companyId),
+      inArray(toolPolicies.id, decision.matchedPolicyIds),
+    ));
+    return parseGovnaAuthorityConfig(
+      connection.config as Record<string, unknown>,
+      policies,
+      tool.upstreamToolName ?? tool.name,
+    );
+  }
+
+  async function coordinateGovnaToolCall(input: {
+    session: ToolGatewaySession;
+    tool: ToolGatewayDescriptor;
+    invocation: typeof toolInvocations.$inferSelect;
+    parameters: unknown;
+    config: GovnaApprovalAuthorityConfig;
+  }) {
+    const { entry, connection } = await resolveConnectedRemoteTool(input.session, input.tool);
+    const grant = await resolveConnectionGrant(input.session, connection);
+    const endpoint = await resolvedRemoteEndpoint(input.session, connection, grant);
+    if (endpoint !== input.config.resource) {
+      throw new ToolGatewayHttpError(409, "Govna authority resource no longer matches the MCP endpoint", "govna_resource_changed");
+    }
+    const credentialHeaders = {
+      ...projectedConnectionHeaders(connection),
+      ...(await resolveCredentialHeaders(input.session, connection, grant)),
+    };
+    const authorization = new Headers(credentialHeaders).get("authorization");
+    if (!authorization) {
+      throw new ToolGatewayHttpError(422, "Govna authority requires a Bearer credential", "govna_bearer_missing");
+    }
+    const hostPrivateKeyPem = await secrets.resolveSecretValue(
+      input.session.companyId,
+      input.config.hostSigningKeySecretId,
+      "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath: "govnaApprovalAuthority.hostSigningKeySecretId",
+        responsibleUserId: input.session.responsibleUserId ?? null,
+        actorType: input.session.actorType ?? "agent",
+        actorId: input.session.actorId ?? input.session.agentId,
+        issueId: input.session.issueId,
+        heartbeatRunId: input.session.runId,
+      },
+    );
+    const request = (url: string, init: RequestInit) => options.remoteHttpRequest
+      ? options.remoteHttpRequest(url, init)
+      : guardedRemoteHttpFetch(url, init, {
+          ...remoteHttpFetchOptions(),
+          responseTimeoutMs: 10_000,
+        });
+    const client = createGovnaAuthorityHttpClient({
+      config: input.config,
+      authorization,
+      hostPrivateKeyPem,
+      request,
+    });
+    return govnaCoordinator.prepareOrResume({
+      companyId: input.session.companyId,
+      invocationId: input.invocation.id,
+      connectionId: connection.id,
+      gatewayToolName: input.tool.name,
+      upstreamToolName: entry.toolName,
+      parameters: input.parameters,
+      identityContextId: input.session.identityContextId,
+      config: input.config,
+      client,
     });
   }
 
@@ -5947,6 +6120,7 @@ export function createToolGatewayService(
     invocationId: string,
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
+    govnaAuthority?: GovnaRemoteDispatch | null,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(
       session,
@@ -5964,6 +6138,9 @@ export function createToolGatewayService(
       return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
     }
     const endpoint = await resolvedRemoteEndpoint(session, connection, grant);
+    if (govnaAuthority && govnaAuthority.endpoint !== endpoint) {
+      throw new ToolGatewayHttpError(409, "Govna dispatch resource no longer matches this connection", "govna_resource_changed");
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -5978,6 +6155,12 @@ export function createToolGatewayService(
       callerHeaders,
     });
     let headers = builtHeaders.headers;
+    if (govnaAuthority) {
+      if (new Headers(headers).has("govna-authority-proof")) {
+        throw new ToolGatewayHttpError(409, "Govna authority proof header collision", "govna_header_collision");
+      }
+      headers = { ...headers, "Govna-Authority-Proof": govnaAuthority.proof };
+    }
     let headerSummary = builtHeaders.summary;
     const requestId = `paperclip-tool-${randomUUID()}`;
     const execution: RemoteHttpExecutionAudit = {
@@ -6020,6 +6203,7 @@ export function createToolGatewayService(
           contentType: refreshedResponse.headers.get("content-type"),
           bodySizeBytes: 0,
           upstreamRequestId: upstreamRequestIdFromHeaders(refreshedResponse.headers),
+          govnaCallId: govnaCallIdFromHeaders(refreshedResponse.headers),
         };
         throw new ToolGatewayHttpError(
           409,
@@ -6092,6 +6276,9 @@ export function createToolGatewayService(
           params: {
             name: entry.toolName,
             arguments: parameters,
+            ...(govnaAuthority
+              ? { _meta: { "io.govna/approval-authority/v1": govnaAuthority.metadata } }
+              : {}),
           },
         }),
       };
@@ -6195,6 +6382,7 @@ export function createToolGatewayService(
         contentType: response.headers.get("content-type"),
         bodySizeBytes: 0,
         upstreamRequestId: upstreamRequestIdFromHeaders(response.headers),
+        govnaCallId: govnaCallIdFromHeaders(response.headers),
       };
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
@@ -10144,6 +10332,7 @@ export function createToolGatewayService(
       });
       let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
+      let govnaDispatch: GovnaRemoteDispatch | null = null;
 
       if (!input.approvedActionRequestId) {
         const replay = await replayMatchingAgentAction({
@@ -10535,16 +10724,55 @@ export function createToolGatewayService(
         if (accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && SLACK_TOOLS.some(t => t.name === tool.upstreamToolName && t.risk === "approval")) {
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }
+        const govnaConfig = await govnaConfigForDecision(tool, accessDecision);
         const recorded = await policyService.recordInvocation(
           decisionInput,
           accessDecision,
+          { createActionRequest: !govnaConfig },
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
         const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;
-        if (recorded.replayed && !retryingSlackRateLimit) {
+        if (accessDecision.decision === "require_approval" && govnaConfig) {
+          const disposition = await coordinateGovnaToolCall({
+            session,
+            tool,
+            invocation: recorded.invocation,
+            parameters: effectiveParameters,
+            config: govnaConfig,
+          });
+          if (disposition.kind === "pending") {
+            await retainUpstreamHandoff(invocationId, disposition.pending);
+            await db.update(toolInvocations).set({
+              errorCode: "provider_interaction_required",
+              errorMessage: "Complete the Govna approval before retrying this exact call.",
+              updatedAt: new Date(),
+            }).where(eq(toolInvocations.id, invocationId));
+            throw new ToolGatewayHttpError(
+              409,
+              "Complete the Govna approval before retrying this exact call.",
+              "provider_interaction_required",
+              { upstreamPending: disposition.pending, invocationId },
+            );
+          }
+          if (disposition.kind === "blocked") {
+            throw new ToolGatewayHttpError(409, disposition.message, disposition.reasonCode, { invocationId });
+          }
+          if (disposition.kind === "terminal") {
+            throw new ToolGatewayHttpError(409, "Govna approval is no longer dispatchable.", `govna_${disposition.state}`, { invocationId });
+          }
+          govnaDispatch = { ...disposition.authority, operationId: disposition.operationId };
+          effectiveParameters = disposition.parameters;
+          effectiveArgumentsSummary = validateToolContent({
+            value: effectiveParameters,
+            direction: "arguments",
+            sensitiveMode: "redact",
+            promptInjectionMode: "ignore",
+          }).summary;
+        }
+        if (recorded.replayed && !retryingSlackRateLimit && !govnaDispatch) {
           await writeAudit({
             session,
             companyId: session.companyId,
@@ -10568,7 +10796,7 @@ export function createToolGatewayService(
             result: recorded.invocation.resultSummary ?? null,
           };
         }
-        if (accessDecision.decision === "require_approval") {
+        if (accessDecision.decision === "require_approval" && !govnaConfig) {
           await requestApprovalForRecordedToolCall({
             invocation: recorded.invocation,
             actionRequest: recorded.actionRequest,
@@ -10579,7 +10807,7 @@ export function createToolGatewayService(
             policyDecision: accessDecision,
           });
         }
-        if (!accessDecision.allowed) {
+        if (!accessDecision.allowed && !govnaDispatch) {
           // recordInvocation inserted this row already terminal (denied or
           // rate_limited), so this is its only completion boundary.
           void emitConnectionInvoked(db, invocationId);
@@ -10616,14 +10844,16 @@ export function createToolGatewayService(
             },
           );
         }
-        await db
-          .update(toolInvocations)
-          .set({
-            status: "executing",
-            startedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
+        if (!govnaDispatch) {
+          await db
+            .update(toolInvocations)
+            .set({
+              status: "executing",
+              startedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(toolInvocations.id, invocationId));
+        }
       }
 
       await writeAudit({
@@ -10638,7 +10868,9 @@ export function createToolGatewayService(
           decision: input.approvedActionRequestId ? "approved" : "allow",
           reasonCode: input.approvedActionRequestId
             ? "approved_action_request"
-            : "profile_allows_tool",
+            : govnaDispatch
+              ? "govna_exact_call_approved"
+              : "profile_allows_tool",
           tool: tool.name,
           virtualToolName,
           targetToolName: virtualToolName ? tool.name : undefined,
@@ -10648,6 +10880,7 @@ export function createToolGatewayService(
       });
 
       let connectedMcpExecution: RemoteHttpExecutionResult | null = null;
+      let govnaOutcomeRecorded = false;
       try {
         const executionTimeoutMs = timeoutMs(input.timeoutMs);
         if (
@@ -10670,6 +10903,7 @@ export function createToolGatewayService(
                 invocationId,
                 input.callerHeaders,
                 input.timeoutMs === undefined,
+                govnaDispatch,
               )
             : tool.providerType === "mcp_local_stdio"
               ? await executeLocalStdioTool(
@@ -10718,6 +10952,29 @@ export function createToolGatewayService(
             "tool_error",
             { execution: connectedMcpExecution?.execution },
           );
+        }
+        if (govnaDispatch) {
+          const receipt = connectedMcpExecution?.execution?.response?.govnaCallId ?? null;
+          if (!receipt) {
+            await govnaCoordinator.operations.markOutcomeUnknown({
+              companyId: session.companyId,
+              operationId: govnaDispatch.operationId,
+              errorCode: "dispatch_receipt_missing",
+            });
+            govnaOutcomeRecorded = true;
+            throw new ToolGatewayHttpError(
+              409,
+              "Govna dispatch completed without a durable receipt; the outcome must be reconciled and will not be replayed.",
+              "govna_outcome_unknown",
+            );
+          }
+          await govnaCoordinator.operations.complete({
+            companyId: session.companyId,
+            operationId: govnaDispatch.operationId,
+            outcome: "succeeded",
+            upstreamRequestId: receipt,
+          });
+          govnaOutcomeRecorded = true;
         }
         await db
           .update(toolInvocations)
@@ -10851,6 +11108,26 @@ export function createToolGatewayService(
         const failedExecution =
           executionAuditFromError(normalizedError) ??
           connectedMcpExecution?.execution;
+        if (govnaDispatch && !govnaOutcomeRecorded) {
+          const receipt = failedExecution?.response?.govnaCallId ?? null;
+          if (receipt) {
+            await govnaCoordinator.operations.complete({
+              companyId: session.companyId,
+              operationId: govnaDispatch.operationId,
+              outcome: "failed",
+              upstreamRequestId: receipt,
+              errorCode: reasonCode,
+              errorMessage: message,
+            });
+          } else {
+            await govnaCoordinator.operations.markOutcomeUnknown({
+              companyId: session.companyId,
+              operationId: govnaDispatch.operationId,
+              errorCode: "dispatch_receipt_missing",
+            });
+          }
+          govnaOutcomeRecorded = true;
+        }
         await db
           .update(toolInvocations)
           .set({
