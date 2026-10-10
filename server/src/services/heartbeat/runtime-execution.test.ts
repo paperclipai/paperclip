@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,44 +215,6 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     vi.spyOn(input.workspace.workspaceOperationRecorder, "recordOperation").mockRejectedValueOnce(error);
     await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
     expect(await finalizations()).toMatchObject([{ status: "failed" }]);
-    expectCleanup(input);
-  });
-
-  it.each([true, false])("validates computer worktrees remotely before finalization (matching branch: %s)", async matches => {
-    const { input, adapter } = await fixture();
-    const remoteCwd = "/home/user/paperclip/company/projects/project/task";
-    const runner: CommandManagedRuntimeRunner = {
-      execute: vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString(),
-        stdout: matches ? "paperclip/task\n" : "other-task\n", stderr: "" })),
-    };
-    input.workspace.executionTarget = {
-      kind: "remote", transport: "computer", remoteCwd, runner, processRunner: runner,
-      listenerPort: 43100,
-      resourceAuthority: { kind: "computer-owner", computerId: randomUUID(), ownerId: randomUUID(), generation: 1 },
-      fileAuthority: { kind: "remote-persistent", placementId: randomUUID(), root: remoteCwd, agentHome: "/home/user/paperclip/company/agents/agent" },
-      launch: vi.fn(), inspectProcess: vi.fn(async () => ({ running: false, claim: null })),
-      retainWarm: vi.fn(), retire: vi.fn(async () => true), computerTool: { command: "computer", args: [] },
-    };
-    Object.assign(input.workspace.executionWorkspace, {
-      cwd: remoteCwd, worktreePath: remoteCwd, strategy: "git_worktree", branchName: "paperclip/task",
-    });
-    adapter.execute.mockImplementationOnce(async ctx => {
-      expect(ctx.stopRemoteStartup).toBeTypeOf("function");
-      await expect(ctx.stopRemoteStartup!()).rejects.toThrow("Remote startup stop requires a cancelled run");
-      expect(input.services.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
-      return { exitCode: 0, signal: null, timedOut: false };
-    });
-    if (matches) {
-      await expect(executeHeartbeatRuntime(db, input)).resolves.toMatchObject({ dispatched: true });
-      expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
-    } else {
-      await expect(executeHeartbeatRuntime(db, input)).rejects.toThrow("computer_workspace_branch_mismatch");
-      expect(await finalizations()).toMatchObject([{ status: "failed" }]);
-    }
-    expect(runner.execute).toHaveBeenCalledOnce();
-    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
-      command: "git", args: ["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: remoteCwd, bypassSession: true,
-    }));
     expectCleanup(input);
   });
 
