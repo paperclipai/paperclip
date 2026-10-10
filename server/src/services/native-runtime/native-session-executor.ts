@@ -1697,6 +1697,18 @@ function nativeSessionKey(execution: NativeExecutionInput): string {
   );
 }
 
+/** Persistent computer artifacts belong to an agent session, independent of a shared repo cwd. */
+export function remoteRunnerStorageRoots(
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>,
+  sessionKey: string,
+) {
+  const home = target.transport === "computer" ? target.fileAuthority?.agentHome : target.remoteCwd;
+  if (!home || !posix.isAbsolute(home)) throw new Error("runner_remote_storage_home_missing");
+  const base = posix.join(home, ".paperclip-runtime", "paperclip-runner");
+  const sessionRoot = posix.join(base, "sessions", createHash("sha256").update(sessionKey).digest("hex"));
+  return { runtimeRoot: target.transport === "computer" ? sessionRoot : base, sessionRoot };
+}
+
 export function nativeSessionWorkspaceScope(execution: { binding: Pick<NativeExecutionInput["binding"], "runId" | "executionWorkspaceId">; workspace: NativeExecutionInput["workspace"] }) {
   if ("access" in execution.workspace) return { kind: "none" as const };
   // Projectless local runs use the heartbeat run id as a durable placeholder
@@ -11417,10 +11429,10 @@ async function prepareRemoteDotRunner({ input, target, runner, root, identity }:
   identity: NonNullable<NonNullable<Parameters<typeof createNativeSessionBackend>[1]>["dotRunnerOptions"]>["identity"];
 }) {
   const runnerBinary = input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary();
-  const remoteRoot = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner");
+  const storage = remoteRunnerStorageRoots(target, identity.normalizedSessionId);
+  const remoteRoot = storage.runtimeRoot;
   const remoteBinary = posix.join(remoteRoot, "bin", "paperclip-runnerd");
-  const runnerStateDirectory = posix.join(remoteRoot, "sessions",
-    createHash("sha256").update(identity.normalizedSessionId).digest("hex"), "runner");
+  const runnerStateDirectory = posix.join(storage.sessionRoot, "runner");
   const requiredMode = resolveRemoteRunnerTransportMode({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true });
   const artifact = readRunnerdArtifactBinding(runnerBinary);
   const prepare = async () => {
@@ -11687,13 +11699,10 @@ async function createRunnerdBackendWithinSessionClaim(
     return { ...backend, descriptor: () => backend.descriptor(), openSession: input => backend.openSession(input),
       recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options), bindManagedSession: session => session };
   }
-  const remoteRuntimeRoot = remoteTarget
-    ? posix.join(
-        remoteTarget.remoteCwd,
-        ".paperclip-runtime",
-        "paperclip-runner",
-      )
+  const remoteStorage = remoteTarget
+    ? remoteRunnerStorageRoots(remoteTarget, nativeSessionKey(input.execution))
     : null;
+  const remoteRuntimeRoot = remoteStorage?.runtimeRoot ?? null;
   const requiresRemoteProviderPack =
     remoteTarget !== null &&
     (input.execution.provider.kind === "opencode" ||
@@ -11764,12 +11773,7 @@ async function createRunnerdBackendWithinSessionClaim(
           )
         : posix.join(remoteRuntimeRoot, "bin", "codex")
       : null;
-  const remoteSessionDigest = createHash("sha256")
-    .update(nativeSessionKey(input.execution))
-    .digest("hex");
-  const remoteSessionRoot = remoteRuntimeRoot
-    ? posix.join(remoteRuntimeRoot, "sessions", remoteSessionDigest)
-    : null;
+  const remoteSessionRoot = remoteStorage?.sessionRoot ?? null;
   const remoteStateDirectory = remoteSessionRoot
     ? posix.join(remoteSessionRoot, "runner")
     : undefined;

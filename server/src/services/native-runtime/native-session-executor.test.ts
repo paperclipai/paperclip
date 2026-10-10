@@ -373,6 +373,7 @@ import {
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
+  remoteRunnerStorageRoots,
 } from "./native-session-executor.js";
 
 beforeEach(() => {
@@ -707,6 +708,28 @@ describe("remote runner launch fingerprint compatibility", () => {
       const lines = (await readFile(marker, "utf8")).split("\n");
       expect(lines[4]).toBe(hasBootIdentity ? "linux:abcd-1234:1234" : "");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("persistent computer runtime storage", () => {
+  it("isolates agents and sessions sharing one project while keeping warm roots stable", () => {
+    const target = (agent: string) => ({ kind: "remote", transport: "computer", remoteCwd: "/shared/project",
+      fileAuthority: { kind: "remote-persistent", root: "/shared/project", placementId: "shared", agentHome: `/home/user/paperclip/company/agents/${agent}` },
+    } as never);
+    const a = remoteRunnerStorageRoots(target("a"), "session-1");
+    const b = remoteRunnerStorageRoots(target("b"), "session-1");
+    expect(a.runtimeRoot).not.toBe(b.runtimeRoot);
+    expect(a.runtimeRoot).toContain("/agents/a/.paperclip-runtime/");
+    expect(a.sessionRoot).toBe(a.runtimeRoot);
+    expect(remoteRunnerStorageRoots(target("a"), "session-1")).toEqual(a);
+    expect(remoteRunnerStorageRoots(target("a"), "session-2").runtimeRoot).not.toBe(a.runtimeRoot);
+    expect((target("a") as { remoteCwd: string }).remoteCwd).toBe("/shared/project");
+    expect(() => remoteRunnerStorageRoots({ kind: "remote", transport: "computer", remoteCwd: "/shared/project" } as never, "session")).toThrow("runner_remote_storage_home_missing");
+  });
+  it("preserves existing sandbox runtime and session paths", () => {
+    const roots = remoteRunnerStorageRoots({ kind: "remote", transport: "sandbox", remoteCwd: "/workspace" } as never, "session-1");
+    expect(roots.runtimeRoot).toBe("/workspace/.paperclip-runtime/paperclip-runner");
+    expect(roots.sessionRoot).toBe(`${roots.runtimeRoot}/sessions/${createHash("sha256").update("session-1").digest("hex")}`);
   });
 });
 
@@ -13439,6 +13462,7 @@ describe("runnerd provider runtime wiring", () => {
       runnerIngressAuthorized: true, runnerRemoteCodexNpmSpec: override,
       runnerExecutionTarget: {
         kind: "remote", transport: "computer", remoteCwd: "/workspace",
+        fileAuthority: { kind: "remote-persistent", root: "/workspace", placementId: "workspace", agentHome: "/home/user/agent" },
         environmentId: "environment", leaseId: "lease", providerKey: "boat",
         effectiveCapabilities: { runnerWebSocketIngress: true },
         runner: { execute: remoteExecute }, processRunner: { execute: remoteExecute },
@@ -13452,7 +13476,7 @@ describe("runnerd provider runtime wiring", () => {
     await expect(transport.controlPlaneRegistration({})).rejects.toThrow("reached-private-codex-verification");
     expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({
       command: "npm",
-      args: ["install", "--prefix", "/workspace/.paperclip-runtime/paperclip-runner/harnesses/codex", "--no-audit", "--no-fund", expected],
+      args: ["install", "--prefix", `/home/user/agent/.paperclip-runtime/paperclip-runner/sessions/${createHash("sha256").update(execution.session.normalizedSessionId ?? `session-${execution.binding.runId}`).digest("hex")}/harnesses/codex`, "--no-audit", "--no-fund", expected],
     }));
     expect(remoteExecute.mock.calls.filter(([command]) => command.command === "npm")).toHaveLength(1);
     expect(remoteExecute.mock.calls.some(([command]) => command.args?.includes("--global"))).toBe(false);
