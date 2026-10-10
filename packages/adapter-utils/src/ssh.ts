@@ -4,6 +4,7 @@ import { constants as fsConstants, createReadStream, createWriteStream, promises
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
@@ -35,6 +36,50 @@ export interface SshConnectionConfig {
 export interface SshCommandResult {
   stdout: string;
   stderr: string;
+}
+
+/**
+ * Decode a Node readable stream as UTF-8 across `data` events.
+ * Per-chunk `toString("utf8")` / `String(chunk)` corrupts a glyph whose
+ * bytes are split across two events; StringDecoder holds the incomplete
+ * sequence until the rest arrives. Call `flush()` once on end/close.
+ */
+export function createStreamingUtf8Accumulator() {
+  const decoder = new StringDecoder("utf8");
+  let text = "";
+  let flushed = false;
+
+  const writeBuffer = (buf: Buffer) => {
+    if (flushed || buf.length === 0) return;
+    text += decoder.write(buf);
+  };
+
+  return {
+    get text() {
+      return text;
+    },
+    write(chunk: unknown) {
+      if (flushed) return;
+      if (typeof chunk === "string") {
+        writeBuffer(Buffer.from(chunk, "utf8"));
+        return;
+      }
+      if (Buffer.isBuffer(chunk)) {
+        writeBuffer(chunk);
+        return;
+      }
+      if (chunk instanceof Uint8Array) {
+        writeBuffer(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      }
+    },
+    flush() {
+      if (!flushed) {
+        flushed = true;
+        text += decoder.end();
+      }
+      return text;
+    },
+  };
 }
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
@@ -235,16 +280,16 @@ async function spawnText(
     });
 
     const maxBuffer = options.maxBuffer ?? 1024 * 128;
-    let stdout = "";
-    let stderr = "";
+    const stdoutAcc = createStreamingUtf8Accumulator();
+    const stderrAcc = createStreamingUtf8Accumulator();
     let settled = false;
     let timedOut = false;
 
     const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
       if (settled) return;
       settled = true;
-      error.stdout = stdout;
-      error.stderr = stderr;
+      error.stdout = stdoutAcc.flush();
+      error.stderr = stderrAcc.flush();
       error.killed = timedOut;
       reject(error);
     };
@@ -253,13 +298,12 @@ async function spawnText(
       streamName: "stdout" | "stderr",
       chunk: unknown,
     ) => {
-      const text = String(chunk);
-      if (streamName === "stdout") {
-        stdout += text;
-      } else {
-        stderr += text;
-      }
-      if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
+      const acc = streamName === "stdout" ? stdoutAcc : stderrAcc;
+      acc.write(chunk);
+      if (
+        Buffer.byteLength(stdoutAcc.text, "utf8") > maxBuffer ||
+        Buffer.byteLength(stderrAcc.text, "utf8") > maxBuffer
+      ) {
         child.kill("SIGTERM");
         finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
           code: null,
@@ -308,6 +352,8 @@ async function spawnText(
       clearTimers();
       if (settled) return;
       settled = true;
+      const stdout = stdoutAcc.flush();
+      const stderr = stderrAcc.flush();
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -669,7 +715,7 @@ async function streamLocalFileToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let sshStderr = "";
+    const sshStderrAcc = createStreamingUtf8Accumulator();
     let settled = false;
 
     const fail = (error: Error) => {
@@ -681,7 +727,7 @@ async function streamLocalFileToSsh(input: {
     };
 
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderrAcc.write(chunk);
     });
     source.on("error", fail);
     ssh.on("error", fail);
@@ -694,6 +740,7 @@ async function streamLocalFileToSsh(input: {
     ssh.on("close", (code) => {
       if (settled) return;
       settled = true;
+      const sshStderr = sshStderrAcc.flush();
       if ((code ?? 0) !== 0) {
         reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
         return;
@@ -724,7 +771,7 @@ async function streamSshToLocalFile(input: {
     });
     const sink = createWriteStream(input.localFile, { mode: 0o600 });
 
-    let sshStderr = "";
+    const sshStderrAcc = createStreamingUtf8Accumulator();
     let settled = false;
 
     const fail = (error: Error) => {
@@ -742,7 +789,7 @@ async function streamSshToLocalFile(input: {
       ssh.stdout?.pipe(sink);
     }
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderrAcc.write(chunk);
     });
     ssh.on("error", fail);
     sink.on("error", fail);
@@ -750,6 +797,7 @@ async function streamSshToLocalFile(input: {
       sink.end(() => {
         if (settled) return;
         settled = true;
+        const sshStderr = sshStderrAcc.flush();
         if ((code ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
           return;
@@ -1455,8 +1503,8 @@ export async function syncDirectoryToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let tarStderr = "";
-    let sshStderr = "";
+    const tarStderrAcc = createStreamingUtf8Accumulator();
+    const sshStderrAcc = createStreamingUtf8Accumulator();
     let settled = false;
     let tarExited = false;
     let sshExited = false;
@@ -1468,6 +1516,8 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
+      const tarStderr = tarStderrAcc.flush();
+      const sshStderr = sshStderrAcc.flush();
       if ((tarExitCode ?? 0) !== 0) {
         reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
@@ -1496,10 +1546,10 @@ export async function syncDirectoryToSsh(input: {
       tar.stdout?.pipe(ssh.stdin ?? null);
     }
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderrAcc.write(chunk);
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderrAcc.write(chunk);
     });
 
     tar.on("error", fail);
@@ -1570,8 +1620,8 @@ export async function syncDirectoryFromSsh(input: {
         env: tarSpawnEnv(),
       });
 
-      let sshStderr = "";
-      let tarStderr = "";
+      const sshStderrAcc = createStreamingUtf8Accumulator();
+      const tarStderrAcc = createStreamingUtf8Accumulator();
       let settled = false;
       let sshExited = false;
       let tarExited = false;
@@ -1581,6 +1631,8 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
+        const sshStderr = sshStderrAcc.flush();
+        const tarStderr = tarStderrAcc.flush();
         if ((sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
@@ -1607,10 +1659,10 @@ export async function syncDirectoryFromSsh(input: {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
       ssh.stderr?.on("data", (chunk) => {
-        sshStderr += String(chunk);
+        sshStderrAcc.write(chunk);
       });
       tar.stderr?.on("data", (chunk) => {
-        tarStderr += String(chunk);
+        tarStderrAcc.write(chunk);
       });
 
       ssh.on("error", fail);
