@@ -15,6 +15,66 @@ import { remoteProgram } from "./remote-program.js";
 
 const apiOrigin = "https://boat.dev/api/v1";
 const transportCache = new Map<string, Promise<CommandManagedRuntimeRunner>>();
+type CommandInput = Parameters<CommandManagedRuntimeRunner["execute"]>[0];
+
+/** Reserve SSH admission for lifecycle/identity calls while bulk and legacy commands run. */
+export function createBoatTransportAdmission() {
+  let active = 0;
+  let ordinary = 0;
+  let bulk = 0;
+  const queue: Array<{ control: boolean; bulk: boolean; start: () => void }> = [];
+  function drain() {
+    while (active < 8) {
+      const eligible = (entry: (typeof queue)[number]) =>
+        entry.control || (ordinary < 6 && (!entry.bulk || bulk < 4));
+      let index = queue.findIndex((entry) => entry.control && eligible(entry));
+      if (index < 0) index = queue.findIndex(eligible);
+      if (index < 0) break;
+      queue.splice(index, 1)[0]!.start();
+    }
+  }
+  return async function execute(
+    runner: CommandManagedRuntimeRunner,
+    input: CommandInput,
+    control: boolean,
+  ) {
+    const startedAt = new Date().toISOString();
+    const deadline = Date.now() + (input.timeoutMs ?? 15_000);
+    const isBulk = Buffer.byteLength(input.stdin ?? "") > 1024 * 1024;
+    // Even process-control callers must use the ordinary budget for large uploads.
+    const isControl = control && !isBulk;
+    if (queue.length >= 128)
+      throw new ComputerError("conflict", "Computer command admission is busy");
+    return new Promise<Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>>>((resolve, reject) => {
+      const timedOut = () => resolve({ exitCode: null, signal: null, timedOut: true,
+        stdout: "", stderr: "Computer command timed out waiting for SSH admission", pid: null, startedAt });
+      const entry = { control: isControl, bulk: isBulk, start: () => {
+        clearTimeout(timer);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) { timedOut(); return; }
+        active++;
+        if (!isControl) ordinary++;
+        if (isBulk) bulk++;
+        void Promise.resolve().then(() => runner.execute({ ...input, timeoutMs: remaining }))
+          .then(resolve, reject).finally(() => {
+            active--;
+            if (!isControl) ordinary--;
+            if (isBulk) bulk--;
+            drain();
+          });
+      } };
+      const timer = setTimeout(() => {
+        const index = queue.indexOf(entry);
+        if (index >= 0) queue.splice(index, 1);
+        timedOut();
+        drain();
+      }, Math.max(1, deadline - Date.now()));
+      queue.push(entry);
+      drain();
+    });
+  };
+}
+const transportAdmission = new Map<string, ReturnType<typeof createBoatTransportAdmission>>();
 const desktopCache = new Map<
   string,
   { viewerUrl: string; expiresAt: string }
@@ -166,7 +226,7 @@ export function boatBackend(
       stop: sandbox.stop ?? null,
     };
   }
-  async function runner(
+  async function rawRunner(
     record: ComputerRecord,
   ): Promise<CommandManagedRuntimeRunner> {
     const key = `${record.id}:${record.ledger.secretRef.secretId}:${record.ledger.secretRef.version ?? "latest"}`;
@@ -263,13 +323,23 @@ export function boatBackend(
     }
     return pending;
   }
+  async function runner(record: ComputerRecord, options?: { control?: boolean }): Promise<CommandManagedRuntimeRunner> {
+    const raw = await rawRunner(record);
+    let admission = transportAdmission.get(record.providerId);
+    if (!admission) {
+      admission = createBoatTransportAdmission();
+      transportAdmission.set(record.providerId, admission);
+    }
+    const execute = admission;
+    return { ...raw, execute: (input) => execute(raw, input, options?.control === true) };
+  }
   async function execute(
     record: ComputerRecord,
     code: string,
     payload: unknown,
   ) {
     const result = await (
-      await runner(record)
+      await runner(record, { control: true })
     ).execute({
       command: "python3",
       args: ["-c", code],

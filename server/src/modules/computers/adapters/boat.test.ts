@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { boatBackend, desktopReadinessProgram, processProgram } from "./boat.js";
+import { boatBackend, createBoatTransportAdmission, desktopReadinessProgram, processProgram } from "./boat.js";
 import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
 const record: ComputerRecord = {
@@ -478,5 +478,57 @@ describe("Boat desktop input readiness", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("mcp --socket /run/ascii-cua/driver.sock\n");
     expect(existsSync(f.healthy)).toBe(true);
+  });
+});
+
+
+describe("Boat SSH admission", () => {
+  const result = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+  it("reserves lifecycle and identity capacity while bulk and long legacy commands are active", async () => {
+    const admission = createBoatTransportAdmission();
+    const completions: Array<() => void> = [];
+    const runner = { execute: vi.fn(async () => new Promise<typeof result>((resolve) => completions.push(() => resolve(result)))) };
+    const input = { command: "legacy", timeoutMs: 60_000 };
+    const jobs = Array.from({ length: 8 }, () => admission(runner, { ...input, stdin: "x".repeat(1024 * 1024 + 1) }, true));
+    jobs.push(admission(runner, input, false), admission(runner, input, false));
+    await Promise.resolve();
+    expect(runner.execute).toHaveBeenCalledTimes(6);
+    jobs.push(admission(runner, { command: "retire", timeoutMs: 10_000 }, true));
+    jobs.push(admission(runner, { command: "identity", timeoutMs: 10_000 }, true));
+    await Promise.resolve();
+    expect(runner.execute).toHaveBeenCalledTimes(8);
+    while (completions.length) {
+      completions.splice(0).forEach((finish) => finish());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await Promise.all(jobs);
+    expect(runner.execute).toHaveBeenCalledTimes(12);
+  });
+  it("expires queued work without starting it and preserves the original remaining timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const admission = createBoatTransportAdmission();
+      const completions: Array<() => void> = [];
+      const runner = { execute: vi.fn(async (_input: { command: string; timeoutMs?: number }) => new Promise<typeof result>((resolve) => completions.push(() => resolve(result)))) };
+      const jobs = Array.from({ length: 6 }, () => admission(runner, { command: "long", timeoutMs: 60_000 }, false));
+      await vi.advanceTimersByTimeAsync(0);
+      const expired = admission(runner, { command: "expired", timeoutMs: 100 }, false);
+      const queued = admission(runner, { command: "queued", timeoutMs: 1000 }, false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await expired).toMatchObject({ timedOut: true, pid: null });
+      expect(runner.execute).toHaveBeenCalledTimes(6);
+      completions.shift()!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.execute).toHaveBeenLastCalledWith(expect.objectContaining({ command: "queued", timeoutMs: 800 }));
+      completions.splice(0).forEach((finish) => finish());
+      await Promise.all([...jobs, queued]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("releases all capacity after failed or cancelled transport commands without replay", async () => {
+    const admission = createBoatTransportAdmission();
+    const runner = { execute: vi.fn(async () => { throw new Error("transport cancelled"); }) };
+    const settled = await Promise.allSettled(Array.from({ length: 12 }, () => admission(runner, { command: "once", timeoutMs: 1000 }, false)));
+    expect(settled.every((entry) => entry.status === "rejected")).toBe(true);
+    expect(runner.execute).toHaveBeenCalledTimes(12);
   });
 });

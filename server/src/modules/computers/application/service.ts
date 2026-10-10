@@ -170,6 +170,7 @@ export function createComputerService(
     if (!placement)
       throw new ComputerError("conflict", "Computer placement is missing");
     const raw = await backend.runner(record);
+    const control = await backend.runner(record, { control: true });
     let pinnedProcess = owner.process ? structuredClone(owner.process) : null;
     async function processScope() {
       if (!pinnedProcess) return scoped({ ...record, owner: ownerRef });
@@ -203,7 +204,7 @@ export function createComputerService(
           throw new ComputerError("conflict", "Computer owner is retired");
         // Start a command unit under the same owner slice while holding the remote tombstone lock.
         // The lock is released only after systemd knows the unit, so retirement cannot miss a delayed launch.
-        return raw.execute({
+        return (processScoped ? control : raw).execute({
           command: "python3",
           args: [
             "-c",
