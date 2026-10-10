@@ -222,6 +222,24 @@ describe("classifyCodexAuthRefreshFailure", () => {
     ].join("\n");
     expect(classifyCodexAuthRefreshFailure({ stdout })).toBeNull();
   });
+
+  it("ignores quoted auth errors when the protocol stops without a terminal error", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: { type: "command_execution", aggregated_output: "Invalid or expired refresh token" },
+    });
+    expect(classifyCodexAuthRefreshFailure({ stdout, stderr: "Process terminated unexpectedly" })).toBeNull();
+  });
+
+  it("retains a real stderr auth failure after protocol output", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Application error: refresh_token_reused" },
+    });
+    expect(classifyCodexAuthRefreshFailure({ stdout, stderr: "OAuth failed: refresh token has expired" })).toBe(
+      "refresh_token_expired",
+    );
+  });
 });
 
 describe("isCodexUnknownSessionError", () => {
