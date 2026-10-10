@@ -81,10 +81,14 @@ export function AuditHub({ section }: { section: AuditSection }) {
     return <EmptyState icon={History} message="Select an organization to view Audit." />;
   }
 
+  // The Activity section has a single breadcrumb, which the breadcrumb bar
+  // already renders as the page h1. Other sections render a trail without one.
+  const HeadingTag = section === "activity" ? "h2" : "h1";
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
+        <HeadingTag className="text-3xl font-semibold tracking-tight text-foreground">Audit</HeadingTag>
       </div>
 
       <Tabs

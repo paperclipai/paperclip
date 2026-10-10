@@ -805,7 +805,7 @@ export function Routines() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Routines</h1>
+            <h2 className="text-2xl font-semibold tracking-tight">Routines</h2>
             <p className="text-sm text-muted-foreground">
               Recurring work definitions that materialize into auditable execution tasks.
             </p>
@@ -845,7 +845,7 @@ export function Routines() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-xl font-bold">Routines</h1>
+          <h2 className="text-xl font-bold">Routines</h2>
           <p className="text-sm text-muted-foreground">
             Recurring work definitions that materialize into auditable execution tasks.
           </p>
