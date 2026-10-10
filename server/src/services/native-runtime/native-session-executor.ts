@@ -42,6 +42,7 @@ import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
+import { computerProviderPackCachePath, prepareComputerProviderPackCache } from "./remote-provider-pack-cache.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -11963,9 +11964,9 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredProviderPackRoot,
     );
   }
-  const stagedRemoteProviderPackRoot = remoteRuntimeRoot
-    ? posix.join(remoteRuntimeRoot, "provider-pack")
-    : null;
+  const stagedRemoteProviderPackRoot = remoteTarget?.transport === "computer" && expectedProviderPackManifest
+    ? computerProviderPackCachePath(remoteTarget.fileAuthority.agentHome, expectedProviderPackManifest.digest)
+    : remoteRuntimeRoot ? posix.join(remoteRuntimeRoot, "provider-pack") : null;
   let activeRemoteProviderPackRoot: string | null = null;
   const remoteBinary = remoteRuntimeRoot
     ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
@@ -12510,7 +12511,31 @@ async function createRunnerdBackendWithinSessionClaim(
       expectedProviderPackManifest &&
       stagedRemoteProviderPackRoot
     ) {
-      const packSource = await prepareVerifiedRemoteProviderPack({
+      const packSource = remoteTarget.transport === "computer"
+        ? await prepareComputerProviderPackCache({
+          cacheRoot: stagedRemoteProviderPackRoot,
+          sessionKey: nativeSessionKey(input.execution),
+          owner: remoteTarget.resourceAuthority,
+          runner: remoteCommandRunner,
+          verify: (root) => measureNativeRunnerSpan(input.trace, "provider_pack.verify", () => verifyRemoteProviderPack(root)),
+          stage: async (root, runner) => {
+            if (!configuredProviderPackRoot) {
+              throw new Error("runner_remote_provider_artifact_incompatible: configure the build-owned provider pack for first use on this computer");
+            }
+            await input.onLog?.("stderr", "[paperclip-runner] Preparing the provider pack for first use.\n");
+            await stageRemoteRunnerDirectory({
+              target: remoteTarget,
+              runner,
+              sourcePath: configuredProviderPackRoot,
+              targetPath: root,
+              mode: 0o700,
+              onProgress: async (completed, total) => {
+                await input.onLog?.("stderr", `[paperclip-runner] Uploading provider pack: ${Math.round(completed / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MiB.\n`);
+              },
+            });
+          },
+        })
+        : await prepareVerifiedRemoteProviderPack({
         verifyStaged: () => measureNativeRunnerSpan(
           input.trace,
           "provider_pack.verify",
@@ -12600,7 +12625,7 @@ async function createRunnerdBackendWithinSessionClaim(
         },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-      if (packSource === "staged") {
+      if (packSource === "staged" || packSource === "reused") {
         await input.onLog?.(
           "stderr",
           "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
