@@ -82,6 +82,15 @@ export function retryWhileTransient(_failureCount: number, error: unknown): bool
   return isTransientError(error);
 }
 
+/**
+ * For the few reads that must fail fast: retry a transient error at most
+ * `limit` times (`0` never retries) and never anything else. Prefer this over
+ * `retry: false` so the call site says why it opts out of the default policy.
+ */
+export function retryTransientOnly(limit: number): (failureCount: number, error: unknown) => boolean {
+  return (failureCount, error) => isTransientError(error) && failureCount < limit;
+}
+
 /** Backoff for `retryWhileTransient`: the connectivity probe schedule, capped at 15s. */
 export function reconnectDelayFor(failureCount: number, error: unknown): number {
   const base = PROBE_BACKOFF_MS[Math.min(failureCount, PROBE_BACKOFF_MS.length - 1)];

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentChatsApi } from "@/api/agentChats";
 import { agentsApi } from "@/api/agents";
 import { authApi } from "@/api/auth";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCompany } from "@/context/CompanyContext";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { recordAgentChatVisit } from "@/lib/recent-agent-chats";
@@ -43,6 +44,10 @@ export function AgentChat() {
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
     enabled: enabled && !!agent && session.isFetched,
   });
+  const agentsView = useQueryView(agents);
+  const sessionView = useQueryView(session);
+  const historyView = useQueryView(historyAgent);
+  const chatView = useQueryView(chat);
   const creating = useRef<Promise<Issue> | null>(null);
   useEffect(() => {
     creating.current = null;
@@ -69,7 +74,11 @@ export function AgentChat() {
       throw error;
     }
   }, [agent, selectedCompanyId, chat.data, client, userId]);
-  if (!loaded || agents.isPending || session.isPending || historyAgent.isFetching && !agent)
+  // An outage before anything loaded keeps the quiet loading copy; loaded
+  // data renders through it.
+  const reconnecting = agentsView.kind === "reconnecting" || sessionView.kind === "reconnecting"
+    || chatView.kind === "reconnecting" || (!rosterAgent && historyView.kind === "reconnecting");
+  if (!loaded || agents.isPending || session.isPending || historyAgent.isFetching && !agent || reconnecting)
     return (
       <p className="text-sm text-muted-foreground">Loading conversation…</p>
     );
@@ -80,11 +89,16 @@ export function AgentChat() {
         history remains available through task links.
       </p>
     );
-  if (agents.error || chat.error || !rosterAgent && historyAgent.error)
+  const failed = [agentsView, chatView, ...(rosterAgent ? [] : [historyView])].find((view) => view.kind === "error");
+  if (failed)
     return (
-      <p className="text-sm text-destructive">
-        {(agents.error ?? chat.error ?? historyAgent.error)?.message}
-      </p>
+      <QueryErrorState
+        size="page"
+        error={failed.error}
+        action="load this conversation"
+        onRetry={failed.retry}
+        retrying={failed.isFetching}
+      />
     );
   if (!agent)
     return <p className="text-sm text-destructive">Agent not found.</p>;

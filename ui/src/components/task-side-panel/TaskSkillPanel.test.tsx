@@ -43,10 +43,22 @@ describe("TaskSkillPanel", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
-  it("offers retry for transient errors", async () => {
+  it("keeps a quiet loading state during an outage instead of an error", async () => {
+    vi.mocked(companySkillsApi.detail).mockRejectedValue(
+      new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
+    );
+    renderPanel();
+    await vi.waitFor(() => expect(companySkillsApi.detail).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.textContent).toContain("Loading skill…");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("offers retry with readable copy for an unexpected failure", async () => {
     vi.mocked(companySkillsApi.detail).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(skill);
     renderPanel();
-    await vi.waitFor(() => expect(container.textContent).toContain("The skill could not be loaded"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load the skill"));
     act(() => (container.querySelector("button") as HTMLButtonElement).click());
     await vi.waitFor(() => expect(container.textContent).toContain("Release helper"));
     expect(container.textContent).toContain("Run the release.");

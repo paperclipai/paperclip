@@ -8,6 +8,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
@@ -83,6 +84,7 @@ export function Workspaces() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const experimentalSettingsView = useQueryView(experimentalSettingsQuery);
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
 
   const overviewQuery = useInfiniteQuery({
@@ -94,6 +96,7 @@ export function Workspaces() {
     getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
     enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
   });
+  const overviewView = useQueryView(overviewQuery);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workspaces" }]);
@@ -107,13 +110,18 @@ export function Workspaces() {
   const groups = useMemo(() => buildProjectWorkspaceGroups(overviewItems), [overviewItems]);
   const firstPage = overviewPages[0] ?? null;
   const totalWorkspaceCount = firstPage?.total ?? overviewItems.length;
-  const dataLoading = overviewQuery.isLoading;
+  const dataLoading = overviewQuery.isLoading || overviewView.kind === "reconnecting";
   const error = overviewQuery.error as Error | null;
 
-  if (experimentalSettingsQuery.isLoading) return <PageSkeleton variant="detail" />;
+  // An outage before the settings load must not redirect away as "disabled".
+  if (experimentalSettingsQuery.isLoading || experimentalSettingsView.kind === "reconnecting") {
+    return <PageSkeleton variant="detail" />;
+  }
   if (!isolatedWorkspacesEnabled) return <Navigate to="/issues" replace />;
   if (dataLoading) return <PageSkeleton variant="list" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (overviewView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load workspaces" onRetry={overviewView.retry} retrying={overviewView.isFetching} />;
+  }
 
   return (
     <div className="space-y-6">

@@ -16,8 +16,10 @@
  * before errors. Intentional exceptions go in ALLOWLIST below as
  * "<path>:<rule>" with a reason.
  *
- * Report-only by default: prints findings and exits 0. `--enforce` exits 1
- * on any finding outside the allowlist (CI turns this on once surfaces migrate).
+ * Report-only by default: prints findings and exits 0, except for findings in
+ * ENFORCED_FILES (surfaces already migrated), which always exit 1. `--enforce`
+ * exits 1 on any finding outside the allowlist (CI turns this on once the
+ * long tail migrates).
  *
  * Usage: node scripts/check-query-error-rendering.mjs [--enforce] [--summary]
  */
@@ -60,6 +62,56 @@ export const ALLOWLIST = new Set([
   // Empty for now: report-only mode lists every finding as the baseline.
 ]);
 
+/**
+ * Files already moved onto the shared read handling (`useQueryView` /
+ * `<QueryView>` in ui/src/components/QueryView.tsx). A finding in one of these
+ * fails the check even in report-only mode, so a migrated surface cannot
+ * quietly regress. Add a file here when you migrate it; mark an intentional
+ * exception on its line with `// query-error-ok: <reason>`.
+ */
+export const ENFORCED_FILES = new Set([
+  "ui/src/components/AgentChatPicker.tsx",
+  "ui/src/components/AgentConversationSidebar.tsx",
+  "ui/src/components/AgentConversationsSidebar.tsx",
+  "ui/src/components/BreadcrumbBar.production.tsx",
+  "ui/src/components/BreadcrumbBar.tsx",
+  "ui/src/components/CaseRevisionRail.tsx",
+  "ui/src/components/chat/AgentWorkPanels.tsx",
+  "ui/src/components/FileViewerSheet.tsx",
+  "ui/src/components/IssueRelatedWorkPanel.tsx",
+  "ui/src/components/IssueShareSheet.tsx",
+  "ui/src/components/issue-properties/external-object-rows.tsx",
+  "ui/src/components/NewIssueDialog.tsx",
+  "ui/src/components/QueryView.tsx",
+  "ui/src/components/Sidebar.production.tsx",
+  "ui/src/components/Sidebar.tsx",
+  "ui/src/components/SidebarAgentChats.tsx",
+  "ui/src/components/task-side-panel/TaskAttachmentPanel.tsx",
+  "ui/src/components/task-side-panel/TaskDocumentPanel.tsx",
+  "ui/src/components/task-side-panel/TaskSkillPanel.tsx",
+  "ui/src/components/UnprefixedExecutionWorkspaceRedirect.tsx",
+  "ui/src/components/WorkspaceFileBrowser.tsx",
+  "ui/src/hooks/useIssueExternalObjects.ts",
+  "ui/src/lib/query-client.ts",
+  "ui/src/pages/AgentChat.tsx",
+  "ui/src/pages/AgentChats.tsx",
+  "ui/src/pages/AgentDetail.production.tsx",
+  "ui/src/pages/AgentDetail.tsx",
+  "ui/src/pages/CaseDetail.tsx",
+  "ui/src/pages/CompanySettingsPluginPage.tsx",
+  "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+  "ui/src/pages/GoalDetail.tsx",
+  "ui/src/pages/IssueDetail.tsx",
+  "ui/src/pages/PluginManager.tsx",
+  "ui/src/pages/ProjectDetail.tsx",
+  "ui/src/pages/ProjectWorkspaceDetail.tsx",
+  "ui/src/pages/SkillStudio.tsx",
+  "ui/src/pages/Workspaces.tsx",
+  "ui/src/plugins/bridge.ts",
+  "ui/src/plugins/launchers.tsx",
+  "ui/src/plugins/slots.tsx",
+]);
+
 function isCheckable(path) {
   if (!/\.(ts|tsx)$/.test(path)) return false;
   if (/\.(test|spec|stories)\.(ts|tsx)$/.test(path)) return false;
@@ -93,12 +145,17 @@ export function scanSource(sourceText, path) {
   return findings;
 }
 
-export function scanQueryErrorRendering({ root = defaultScanRoot, allowlist = ALLOWLIST } = {}) {
+export function scanQueryErrorRendering({
+  root = defaultScanRoot,
+  allowlist = ALLOWLIST,
+  enforcedFiles = ENFORCED_FILES,
+} = {}) {
   const findings = [];
   for (const file of walk(root, [])) {
     const path = relative(repoRoot, file).split(sep).join("/");
     for (const finding of scanSource(readFileSync(file, "utf8"), path)) {
-      if (!allowlist.has(`${finding.path}:${finding.rule}`)) findings.push(finding);
+      if (allowlist.has(`${finding.path}:${finding.rule}`)) continue;
+      findings.push({ ...finding, enforced: enforcedFiles.has(finding.path) });
     }
   }
   return findings;
@@ -109,6 +166,7 @@ function main() {
   const enforce = args.has("--enforce");
   const summaryOnly = args.has("--summary");
   const findings = scanQueryErrorRendering();
+  const enforcedFindings = findings.filter((finding) => finding.enforced);
 
   if (!summaryOnly) {
     for (const finding of findings) {
@@ -122,8 +180,18 @@ function main() {
     const count = findings.filter((finding) => finding.rule === rule.id).length;
     console.log(`  ${rule.id.padEnd(20)} ${String(count).padStart(5)}  ${rule.description}`);
   }
+  if (enforcedFindings.length > 0) {
+    // Always listed, even with --summary: these fail the check in every mode.
+    console.log("");
+    console.log(`${enforcedFindings.length} finding(s) in migrated files (ENFORCED_FILES); these always fail:`);
+    for (const finding of enforcedFindings) {
+      console.log(`  ${finding.path}:${finding.line}  [${finding.rule}]  ${finding.text}`);
+    }
+    console.log("Render cached data first and use describeError(), or mark the line with `// query-error-ok: <reason>`.");
+    process.exitCode = 1;
+  }
   if (!enforce) {
-    console.log("Report-only mode: not failing. Pass --enforce to fail on findings.");
+    console.log("Report-only mode: findings outside migrated files do not fail. Pass --enforce to fail on all findings.");
     return;
   }
   if (findings.length > 0) process.exitCode = 1;

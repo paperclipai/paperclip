@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import {
   ExecutionWorkspaceCompanyGate,
   UnprefixedExecutionWorkspaceRedirect,
@@ -97,12 +98,35 @@ describe("UnprefixedExecutionWorkspaceRedirect", () => {
     expect(container.textContent).not.toContain("/FOR/execution-workspaces");
   });
 
-  it("shows not found when the workspace cannot be resolved", async () => {
-    mockExecutionWorkspacesApi.get.mockRejectedValue(new Error("Execution workspace not found"));
+  it("shows not found when the workspace does not exist", async () => {
+    mockExecutionWorkspacesApi.get.mockRejectedValue(new ApiError("Execution workspace not found", 404, { error: "not_found" }));
     render("/execution-workspaces/missing/issues");
 
     await vi.waitFor(() => expect(container.textContent).toContain("NOT_FOUND"));
     expect(container.textContent).not.toContain("DESTINATION@");
+  });
+
+  it("keeps loading instead of showing not found during an outage", async () => {
+    mockExecutionWorkspacesApi.get.mockRejectedValue(
+      new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
+    );
+    render("/execution-workspaces/workspace-1/issues");
+
+    await vi.waitFor(() => expect(mockExecutionWorkspacesApi.get).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.textContent).not.toContain("NOT_FOUND");
+    expect(container.textContent).not.toContain("DESTINATION@");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+  });
+
+  it("shows readable copy with a retry for an unexpected failure", async () => {
+    mockExecutionWorkspacesApi.get.mockRejectedValue(new ApiError("internal_error", 500, { error: "internal_error" }));
+    render("/execution-workspaces/workspace-1/issues");
+
+    await vi.waitFor(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+    expect(container.textContent).not.toContain("NOT_FOUND");
+    expect(container.textContent).not.toContain("internal_error");
+    expect(container.textContent).toContain("Retry");
   });
 
   it("rejects a prefixed route for a different company's workspace", async () => {
