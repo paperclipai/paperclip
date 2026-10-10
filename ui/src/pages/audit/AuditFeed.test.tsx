@@ -383,11 +383,12 @@ describe("AuditFeed", () => {
     // errored, and it stays "fetching" throughout — so wait for the settled
     // state rather than a fixed number of microtask flushes. The explicit test
     // timeout below keeps that wait inside the budget on slower CI runners.
-    await waitForText("Try again", 20_000);
+    await waitForText("Retry", 20_000);
 
     expect(container.textContent).not.toContain("Refreshing audit access…");
+    expect(container.textContent).toContain("Couldn't load the audit log");
     expect(container.textContent).toContain("Network down");
-    expect(container.textContent).toContain("Try again");
+    expect(container.textContent).toContain("Retry");
 
     // And the recovery must not loop: no further refetches once it has failed.
     const settledCalls = calls;

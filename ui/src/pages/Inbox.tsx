@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { describeError } from "../api/errors";
+import { useQueryView } from "../components/QueryView";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
@@ -831,7 +833,6 @@ function StreamlinedInbox({
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
@@ -924,20 +925,18 @@ function StreamlinedInbox({
     }
   }, [selectedCompanyId]);
 
-  const {
-    data: approvals,
-    isLoading: isApprovalsLoading,
-    error: approvalsError,
-  } = useQuery({
+  const approvalsQuery = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-
   const {
-    data: joinRequests = [],
-    isLoading: isJoinRequestsLoading,
-  } = useQuery({
+    data: approvals,
+    isLoading: isApprovalsLoading,
+  } = approvalsQuery;
+  const approvalsView = useQueryView(approvalsQuery);
+
+  const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
       try {
@@ -950,8 +949,12 @@ function StreamlinedInbox({
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
   });
+  const {
+    data: joinRequests = [],
+    isLoading: isJoinRequestsLoading,
+  } = joinRequestsQuery;
+  const joinRequestsView = useQueryView(joinRequestsQuery);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -960,11 +963,13 @@ function StreamlinedInbox({
     queryKey: dashboardQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
+  const dashboardView = useQueryView(dashboardQuery);
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
   const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
@@ -974,7 +979,7 @@ function StreamlinedInbox({
     queryKey: inboxIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = useQuery({
+  const inboxIssuesQuery = useQuery({
     queryKey: inboxIssuesQueryKey,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -986,12 +991,10 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = inboxIssuesQuery;
+  const inboxIssuesView = useQueryView(inboxIssuesQuery);
   usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
-  const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-    dataUpdatedAt: mineIssuesUpdatedAt,
-  } = useQuery({
+  const mineIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -1006,6 +1009,12 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: mineIssuesRaw = [],
+    isLoading: isMineIssuesLoading,
+    dataUpdatedAt: mineIssuesUpdatedAt,
+  } = mineIssuesQuery;
+  const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedMineIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -1014,11 +1023,7 @@ function StreamlinedInbox({
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
-  const {
-    data: touchedIssuesRaw = [],
-    isLoading: isTouchedIssuesLoading,
-    dataUpdatedAt: touchedIssuesUpdatedAt,
-  } = useQuery({
+  const touchedIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -1032,6 +1037,12 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: touchedIssuesRaw = [],
+    isLoading: isTouchedIssuesLoading,
+    dataUpdatedAt: touchedIssuesUpdatedAt,
+  } = touchedIssuesQuery;
+  const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -1041,13 +1052,15 @@ function StreamlinedInbox({
   });
   usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
+  const heartbeatRunsQuery = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: heartbeatRuns, isLoading: isRunsLoading } = heartbeatRunsQuery;
+  const heartbeatRunsView = useQueryView(heartbeatRunsQuery);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -1767,7 +1780,7 @@ function StreamlinedInbox({
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(describeError(err, { action: "approve" }).body);
     },
   });
 
@@ -1778,7 +1791,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(describeError(err, { action: "reject" }).body);
     },
   });
 
@@ -1793,7 +1806,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err, { action: "approve the join request" }).body);
     },
   });
 
@@ -1806,7 +1819,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err, { action: "reject the join request" }).body);
     },
   });
 
@@ -1834,7 +1847,7 @@ function StreamlinedInbox({
     onError: (error) => {
       pushToast({
         title: "Run retry failed",
-        body: error instanceof Error ? error.message : "Unable to retry run",
+        body: describeError(error, { action: "retry the run" }).body,
         tone: "error",
       });
     },
@@ -1907,7 +1920,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err, { action: "archive the task" }).body);
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -1948,7 +1961,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(describeError(err, { action: "undo the inbox archive" }).body);
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2385,7 +2398,18 @@ function StreamlinedInbox({
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
+  // `reconnecting` means the first load is paused on an outage: the inbox is
+  // still loading, not empty, so the skeleton stays up instead of "Inbox zero".
+  const anySectionReconnecting =
+    joinRequestsView.kind === "reconnecting" ||
+    approvalsView.kind === "reconnecting" ||
+    dashboardView.kind === "reconnecting" ||
+    inboxIssuesView.kind === "reconnecting" ||
+    mineIssuesView.kind === "reconnecting" ||
+    touchedIssuesView.kind === "reconnecting" ||
+    heartbeatRunsView.kind === "reconnecting";
   const allLoaded =
+    !anySectionReconnecting &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
@@ -2706,8 +2730,10 @@ function StreamlinedInbox({
         ) : null}
       />
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsView.kind === "error" ? (
+        <p role="alert" className="text-sm text-destructive">{describeError(approvalsView.error, { action: "load approvals" }).body}</p>
+      ) : null}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
         <div className="-mx-2 sm:mx-0">

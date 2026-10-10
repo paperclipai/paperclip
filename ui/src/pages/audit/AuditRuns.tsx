@@ -6,6 +6,7 @@ import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { routinesApi } from "@/api/routines";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryErrorState, useQueryView, type QueryViewState } from "@/components/QueryView";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,16 +49,14 @@ function routineRunTitle(run: RoutineRunSummary) {
 
 function RoutineScopedRuns({
   runs,
-  isLoading,
-  error,
-  onRetry,
+  view,
 }: {
   runs: RoutineRunSummary[];
-  isLoading: boolean;
-  error: Error | null;
-  onRetry: () => void;
+  view: QueryViewState<RoutineRunSummary[]>;
 }) {
-  if (isLoading) {
+  // A loaded list stays on screen through a failed refetch; an outage before
+  // the first load reads as loading, and only a real failure shows copy.
+  if (view.kind === "loading" || view.kind === "reconnecting") {
     return (
       <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
         Loading routine runs…
@@ -65,12 +64,14 @@ function RoutineScopedRuns({
     );
   }
 
-  if (error) {
+  if (view.kind === "error") {
     return (
-      <div className="flex flex-col items-center gap-3 border-y border-border py-14 text-center">
-        <p className="text-sm text-muted-foreground">{error.message}</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button>
-      </div>
+      <QueryErrorState
+        error={view.error}
+        action="load routine runs"
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     );
   }
 
@@ -150,6 +151,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     enabled: Boolean(routineId),
     refetchInterval: 15_000,
   });
+  const runsView = useQueryView(runs);
+  const routineRunsView = useQueryView(routineRuns);
   const agentById = useMemo(
     () => new Map((agents.data ?? []).map((agent) => [agent.id, agent])),
     [agents.data],
@@ -191,9 +194,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     return (
       <RoutineScopedRuns
         runs={routineRuns.data ?? []}
-        isLoading={routineRuns.isLoading}
-        error={routineRuns.error instanceof Error ? routineRuns.error : null}
-        onRetry={() => void routineRuns.refetch()}
+        view={routineRunsView}
       />
     );
   }
@@ -248,19 +249,17 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         ) : null}
       </div>
 
-      {runs.isLoading ? (
+      {runsView.kind === "loading" || runsView.kind === "reconnecting" ? (
         <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
           Loading runs…
         </div>
-      ) : runs.error ? (
-        <div className="flex flex-col items-center gap-3 border-y border-border py-14 text-center">
-          <p className="text-sm text-muted-foreground">
-            {runs.error instanceof Error ? runs.error.message : "Failed to load runs."}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => runs.refetch()}>
-            Try again
-          </Button>
-        </div>
+      ) : runsView.kind === "error" ? (
+        <QueryErrorState
+          error={runsView.error}
+          action="load runs"
+          onRetry={runsView.retry}
+          retrying={runsView.isFetching}
+        />
       ) : visibleRuns.length === 0 ? (
         <EmptyState
           icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}

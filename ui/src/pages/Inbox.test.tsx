@@ -3,7 +3,7 @@
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
@@ -1380,6 +1380,37 @@ describe("Inbox toolbar", () => {
       });
     } finally {
       act(() => root.unmount());
+    }
+  });
+
+  it("keeps the skeleton up instead of 'Inbox zero' while the first load is paused on an outage", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    // Paused queries report isLoading=false, so the `allLoaded` flag alone
+    // would render "Inbox zero" during an outage; the view states must win.
+    apiMocks.approvalsList.mockReturnValue(new Promise(() => {}));
+    apiMocks.joinRequestsList.mockReturnValue(new Promise(() => {}));
+    apiMocks.dashboardSummary.mockReturnValue(new Promise(() => {}));
+    apiMocks.issuesList.mockReturnValue(new Promise(() => {}));
+    apiMocks.heartbeatRunsList.mockReturnValue(new Promise(() => {}));
+    onlineManager.setOnline(false);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      expect(container.textContent).not.toContain("Inbox zero");
+      expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    } finally {
+      onlineManager.setOnline(true);
+      act(() => root.unmount());
+      queryClient.clear();
     }
   });
 });

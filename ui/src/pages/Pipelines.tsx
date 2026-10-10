@@ -59,6 +59,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "../api/client";
+import { describeError } from "../api/errors";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import {
@@ -913,6 +915,7 @@ function PipelinesIndex() {
     queryFn: () => pipelinesApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const pipelinesView = useQueryView(pipelinesQuery);
 
   const createPipeline = useMutation({
     mutationFn: async (data: { name: string; description: string }) => {
@@ -944,7 +947,20 @@ function PipelinesIndex() {
   if (!selectedCompanyId) {
     return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select an organization to view pipelines.</div>;
   }
-  if (pipelinesQuery.isLoading) return <PageSkeleton />;
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (pipelinesQuery.isLoading || pipelinesView.kind === "reconnecting") return <PageSkeleton />;
+  if (pipelinesView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={pipelinesView.error}
+        action="load pipelines"
+        onRetry={pipelinesView.retry}
+        retrying={pipelinesView.isFetching}
+      />
+    );
+  }
 
   const pipelines = pipelinesQuery.data ?? [];
   const connectionsAvailable = pipelinesHaveConnectionData(pipelines);
@@ -965,11 +981,7 @@ function PipelinesIndex() {
         </Button>
       </div>
 
-      {pipelinesQuery.error ? (
-        <p className="mb-4 text-sm text-destructive">Could not load pipelines.</p>
-      ) : null}
-
-      {pipelines.length === 0 && !pipelinesQuery.error ? (
+      {pipelines.length === 0 ? (
         <EmptyState
           icon={Hexagon}
           message="No pipelines yet."
@@ -2022,6 +2034,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryKey: queryKeys.pipelines.caseOutputs(caseId),
     queryFn: () => pipelinesApi.getCaseOutputs(caseId),
   });
+  const outputsView = useQueryView(outputs);
   const conversationIssueId = conversationIssue?.id ?? null;
   const conversationIssueDetail = useQuery({
     queryKey: conversationIssueId ? queryKeys.issues.detail(conversationIssueId) : ["pipeline-item", caseId, "missing-conversation-detail"],
@@ -2116,7 +2129,6 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
     enabled: Boolean(conversationIssueId),
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
@@ -2417,7 +2429,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       await issuesApi.interruptLatestQueuedComments(conversationIssueId, runId);
       pushToast({ title: "Interrupt requested", body: "Queued messages will be sent when the previous run has stopped.", tone: "success" });
     } catch (error) {
-      pushToast({ title: "Interrupt failed", body: error instanceof Error ? error.message : "Unable to send queued messages", tone: "error" });
+      pushToast({ title: "Interrupt failed", body: describeError(error, { action: "interrupt the run" }).body, tone: "error" });
     } finally {
       await invalidateConversation();
     }
@@ -2500,7 +2512,6 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryKey: ["pipelines", "item", caseId, "automation-retry-plan", "previous_stage"],
     queryFn: () => pipelinesApi.getAutomationRetryPlan(caseId, "previous_stage"),
     enabled: Boolean(caseId),
-    retry: false,
   });
 
   // For previous_stage retries the operator can pick any eligible upstream stage.
@@ -2517,7 +2528,6 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         retryDialogScope === "previous_stage" ? retryTargetStageId : null,
       ),
     enabled: Boolean(retryDialogScope),
-    retry: false,
     placeholderData: (previousData, previousQuery) => {
       const previousKey = previousQuery?.queryKey;
       if (!Array.isArray(previousKey)) return undefined;
@@ -2545,8 +2555,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       pushToast({ title: "Step automation re-run started", tone: "success" });
     },
     onError: (error: unknown) => {
-      const message = error instanceof ApiError && error.message ? error.message : "Could not re-run this step.";
-      setRetryDialogError(message);
+      setRetryDialogError(describeError(error, { action: "re-run this step" }).body);
       pushToast({ title: "Could not re-run this step", tone: "error" });
     },
   });
@@ -2570,8 +2579,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       pushToast({ title: "Retry started", tone: "success" });
     },
     onError: (error: unknown) => {
-      const message = error instanceof ApiError && error.message ? error.message : "Could not retry this automation.";
-      setRetryDialogError(message);
+      setRetryDialogError(describeError(error, { action: "retry this automation" }).body);
       pushToast({ title: "Could not retry this automation", tone: "error" });
     },
   });
@@ -2612,10 +2620,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       pushToast({ title: "Retry started", tone: "success" });
     },
     onError: (error: unknown) => {
-      const message = error instanceof ApiError && error.message
-        ? error.message
-        : "Could not retry. Please try again.";
-      setLivenessRetryError(message);
+      setLivenessRetryError(describeError(error, { action: "retry the automation" }).body);
       pushToast({ title: "Could not retry the automation", tone: "error" });
     },
   });
@@ -2987,10 +2992,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               Checking retry safety...
             </div>
           ) : retryPlan.error ? (
-            <div className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-              {retryPlan.error instanceof ApiError && retryPlan.error.message
-                ? retryPlan.error.message
-                : "Could not check whether this automation can be retried."}
+            <div role="alert" className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              {describeError(retryPlan.error, { action: "check whether this automation can be retried" }).body}
             </div>
           ) : retryPlan.data ? (
             <div className="space-y-4 py-2">
@@ -3285,9 +3288,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 
           <ItemOutputsSection
             items={outputs.data?.items ?? []}
-            loading={outputs.isLoading}
-            error={outputs.isError}
-            onRetry={() => outputs.refetch()}
+            loading={outputs.isLoading || outputsView.kind === "reconnecting"}
+            error={outputsView.kind === "error"}
+            onRetry={outputsView.retry}
           />
 
           <DetailSection title="Conversation">
@@ -4852,12 +4855,14 @@ export function ReviewQueue() {
     queryFn: () => pipelinesApi.listAttention(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const attentionView = useQueryView(attentionQuery);
 
   const reviewCasesQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.pipelines.reviewCases(selectedCompanyId) : ["pipelines", "review-cases", "none"],
     queryFn: () => pipelinesApi.listReviewCases(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const reviewCasesView = useQueryView(reviewCasesQuery);
 
   const rows = useMemo(
     () =>
@@ -5084,8 +5089,8 @@ export function ReviewQueue() {
         </Button>
       </div>
 
-      {attentionQuery.error || reviewCasesQuery.error ? (
-        <p className="text-sm text-amber-700 dark:text-amber-300">Some items need attention. Try again in a moment.</p>
+      {attentionView.kind === "error" || reviewCasesView.kind === "error" ? (
+        <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">Some items need attention. Try again in a moment.</p>
       ) : null}
 
       {visibleRows.length === 0 ? (
@@ -5178,6 +5183,7 @@ export function Learnings() {
       }),
     enabled: !!selectedCompanyId,
   });
+  const learningsView = useQueryView(learningsQuery);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={BookOpenText} message="Select an organization to view learnings." />;
@@ -5214,8 +5220,8 @@ export function Learnings() {
         </p>
       </div>
 
-      {learningsQuery.error ? (
-        <p className="text-sm text-destructive">Could not load learnings.</p>
+      {learningsView.kind === "error" ? (
+        <p role="alert" className="text-sm text-destructive">{describeError(learningsView.error, { action: "load learnings" }).body}</p>
       ) : groups.length === 0 ? (
         <EmptyState icon={BookOpenText} message="No learnings yet." />
       ) : (

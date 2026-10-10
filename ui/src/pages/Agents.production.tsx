@@ -19,6 +19,7 @@ import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
@@ -226,11 +227,13 @@ export function Agents() {
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
-  const { data: agents, isLoading, error } = useQuery({
+  const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: agents, isLoading } = agentsQuery;
+  const agentsView = useQueryView(agentsQuery);
 
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -327,8 +330,21 @@ export function Agents() {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || agentsView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
+  }
+  if (agentsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={agentsView.error}
+        action="load agents"
+        onRetry={agentsView.retry}
+        retrying={agentsView.isFetching}
+      />
+    );
   }
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
@@ -489,8 +505,6 @@ export function Agents() {
       {filtered.length > 0 && (
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
-
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
         <EmptyState

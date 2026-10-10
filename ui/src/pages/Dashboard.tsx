@@ -32,6 +32,7 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
@@ -165,11 +166,13 @@ export function Dashboard() {
     queryKey: dashboardQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data, isLoading, error, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data, isLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
+  const dashboardView = useQueryView(dashboardQuery);
   usePublishSharedQueryData(sharedDashboard, data, dashboardUpdatedAt);
 
   const activityQueryKey = [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }] as const;
@@ -308,8 +311,21 @@ export function Dashboard() {
     );
   }
 
-  if (isLoading) {
+  // An outage before the first load shows the skeleton; loaded data stays on
+  // screen through a failed refetch, and only a real failure replaces it.
+  if (isLoading || dashboardView.kind === "reconnecting") {
     return <PageSkeleton variant="dashboard" />;
+  }
+  if (dashboardView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={dashboardView.error}
+        action="load the dashboard"
+        onRetry={dashboardView.retry}
+        retrying={dashboardView.isFetching}
+      />
+    );
   }
 
   // Same rule as the auto-offer above: a list still being refreshed may be the
@@ -322,8 +338,6 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
       {pausedBanner?.kind === "imported" ? (
         <InlineBanner
           tone="warning"

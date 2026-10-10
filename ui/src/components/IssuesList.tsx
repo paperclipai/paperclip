@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
+import { describeError } from "../api/errors";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { Link, useNavigate } from "@/lib/router";
@@ -786,7 +787,6 @@ function StreamlinedIssuesList({
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
@@ -2013,7 +2013,7 @@ function StreamlinedIssuesList({
       />
 
       {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error ? <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p> : null}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
           Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
