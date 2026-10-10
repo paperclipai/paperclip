@@ -3644,6 +3644,7 @@ export function issueThreadInteractionService(
                     isNotNull(issueComments.authorUserId),
                     ne(issueComments.authorUserId, "board-concierge"),
                     isNull(issueComments.createdByRunId),
+              eq(issueComments.origin, "comment"),
                     isNull(issueComments.deletedAt),
                     gte(issueComments.createdAt, sourceRunCreatedAt),
                   ),
@@ -4342,10 +4343,11 @@ export function issueThreadInteractionService(
         createdAt: Date | string;
         authorUserId?: string | null;
         createdByRunId?: string | null;
+        origin?: string | null;
       },
       actor: InteractionActor,
     ) => {
-      if (!comment.authorUserId) return [];
+      if (!comment.authorUserId || comment.origin === "fast_response") return [];
       // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
       // machine; createdByRunId can. Only genuine human comments (no run context) supersede.
       if (comment.createdByRunId) return [];
@@ -4456,6 +4458,7 @@ export function issueThreadInteractionService(
               isNotNull(issueComments.authorUserId),
               // Only genuine human comments supersede; machine-originated ones carry createdByRunId.
               isNull(issueComments.createdByRunId),
+              eq(issueComments.origin, "comment"),
             ),
           )
           .orderBy(asc(issueComments.createdAt)),

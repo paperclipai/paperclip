@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions, chatConversations, chatDeliveries, chatEndpoints,
   chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues,
+  fastResponseRequests, chatPublications,
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden, HttpError } from "../errors.js";
@@ -177,6 +178,29 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
             : run.heartbeat_runs.status === "succeeded" ? "This turn ended without publishing a final response. See the Paperclip task for details."
             : "This turn stopped before completing. See the Paperclip task for details.";
         } else if (existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
+        if (finalBody === undefined) {
+          const [fast] = await db.select({ request: fastResponseRequests, publicationState: chatPublications.state })
+            .from(fastResponseRequests).leftJoin(chatPublications, and(
+              eq(chatPublications.companyId, fastResponseRequests.companyId),
+              eq(chatPublications.commentId, fastResponseRequests.commentId),
+              eq(chatPublications.endpointId, fastResponseRequests.endpointId),
+              eq(chatPublications.conversationId, fastResponseRequests.conversationId),
+            )).where(and(eq(fastResponseRequests.companyId, source.endpoint.companyId),
+              eq(fastResponseRequests.endpointId, source.endpoint.id),
+              eq(fastResponseRequests.deliveryId, deliveryId))).limit(1);
+          if (fast && ["published", "delivery_unknown"].includes(fast.publicationState ?? "")) {
+            await lease.commit(async tx => { await tx.update(chatActions).set({
+              status: "processed", result: { code: "fast_response_superseded" }, updatedAt: new Date(),
+            }).where(eq(chatActions.id, existing.id)); });
+            return;
+          }
+          // Keep durable fallback work pending while the contextual receipt can
+          // still arrive. Never race an in-flight or ambiguous external send.
+          if (fast && (fast.publicationState === "streaming" ||
+              (fast.request.expiresAt.getTime() > Date.now() &&
+                (["pending", "running"].includes(fast.request.status) ||
+                  ["pending", "retry"].includes(fast.publicationState ?? ""))))) return;
+        }
       }
       const token = await githubBotRepositoryToken(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
       const prefix = `/repos/${source.repository.split("/").map(encodeURIComponent).join("/")}`;

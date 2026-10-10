@@ -2656,6 +2656,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       return (
         <TaskChatBubbleActions
           copyText={item.text}
+          fastResponse={item.origin === "fast_response"}
           feedback={
             onVote
               ? {

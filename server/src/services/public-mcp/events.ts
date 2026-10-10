@@ -268,7 +268,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
       const previous = details._previous && typeof details._previous === "object" ? details._previous as Record<string, unknown> : null;
       const changedStatus = changes ? Object.hasOwn(changes, "status") : previous?.status !== details.status;
       const wanted = s.name === names[0] ? ["issue.updated", "issue.checked_out", "issue.released"].includes(activity.action) && changedStatus && ISSUE_STATUSES.includes(details.status as typeof ISSUE_STATUSES[number]) && (!Array.isArray(s.arguments.statuses) || s.arguments.statuses.includes(details.status))
-        : s.name === names[1] ? activity.action === "issue.comment_added" && z.uuid().safeParse(details.commentId).success
+        : s.name === names[1] ? activity.action === "issue.comment_added" && details.origin !== "fast_response" && z.uuid().safeParse(details.commentId).success
         : s.name === names[2] ? ["issue.document_created", "issue.document_updated"].includes(activity.action) && typeof details.key === "string" && typeof details.revisionNumber === "number"
         : options.enableDotPrototype && activity.action === "dot.work_available" && [details.runId, details.agentId, details.turnId, details.messageId].every(v => z.uuid().safeParse(v).success);
       const data = { companyId: s.companyId, taskId: s.taskId, url: oauth.config.origin + "/" + encodeURIComponent(company.prefix) + "/issues/" + s.taskId,

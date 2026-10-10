@@ -1,3 +1,4 @@
+import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions,
@@ -205,6 +206,7 @@ export async function stageReceiptReactionRemovals(
     ];
   });
   if (removals.length === 0) return [];
+  await notifyChatActionWork(tx, "receipt_reaction");
   const removalDeliveryIds = new Set(
     removals.map((removal) => removal.deliveryId),
   );

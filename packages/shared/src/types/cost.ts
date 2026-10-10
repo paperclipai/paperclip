@@ -3,7 +3,7 @@ import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   subscriptionId?: string | null;
-  usageKind?: "agent" | "decision";
+  usageKind?: "agent" | "decision" | "fast_response";
   responsibleUserId?: string | null;
   id: string;
   companyId: string;
