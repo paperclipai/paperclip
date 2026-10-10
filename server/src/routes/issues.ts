@@ -1432,6 +1432,8 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "process_lost_retry",
   "run_liveness_continuation",
+  "heartbeat.daily_cost_limit",
+  "heartbeat.daily_run_limit",
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
@@ -1618,6 +1620,14 @@ function buildIssueWakeDiagnosis(input: {
       return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} failed${wakeDiagnosticReasonPhrase(
         latest.reason,
       )}; raw error text is withheld.`;
+    }
+    if (
+      latest.status === "skipped" &&
+      (latest.reason === "heartbeat.daily_run_limit" ||
+        latest.reason === "heartbeat.daily_cost_limit")
+    ) {
+      const limit = latest.reason === "heartbeat.daily_run_limit" ? "run" : "cost";
+      return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} was skipped because the agent had reached its daily ${limit} limit at that time. Daily limits reset at the next UTC day and can be raised in configuration.`;
     }
     if (
       latest.status === "skipped" ||
