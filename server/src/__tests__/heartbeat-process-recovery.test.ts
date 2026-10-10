@@ -162,6 +162,34 @@ const mockAdapterExecute = vi.hoisted(() =>
   })),
 );
 
+// Lets a test make the recovery cycle pre-check miss a cycle, as if the blocker
+// graph changed between the pre-check and the write.
+const cyclePreCheckOverride = vi.hoisted(() => ({
+  current: null as
+    | null
+    | ((companyId: string, issueId: string, candidateIssueIds: string[]) => Promise<string[]> | null),
+}));
+vi.mock("../services/issues.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issues.js")>(
+    "../services/issues.js",
+  );
+  return {
+    ...actual,
+    issueService: (...args: Parameters<typeof actual.issueService>) => {
+      const svc = actual.issueService(...args);
+      return {
+        ...svc,
+        findCycleFormingBlockerIds: (
+          companyId: string,
+          issueId: string,
+          candidateIssueIds: string[],
+        ) =>
+          cyclePreCheckOverride.current?.(companyId, issueId, candidateIssueIds) ??
+          svc.findCycleFormingBlockerIds(companyId, issueId, candidateIssueIds),
+      };
+    },
+  };
+});
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
@@ -7328,6 +7356,363 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain(
       "issue_continuation_waiting_on_review",
     );
+  });
+
+  it("leaves a sub-task that already waits on the parent out of the dependency wait", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const followUpChildId = randomUUID();
+    const openChildId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: followUpChildId,
+        companyId,
+        parentId: issueId,
+        title: "Follow-up that waits on the parent",
+        status: "blocked",
+        priority: "medium",
+        issueNumber: 10,
+        identifier: `${issuePrefix}-10`,
+      },
+      {
+        id: openChildId,
+        companyId,
+        parentId: issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 11,
+        identifier: `${issuePrefix}-11`,
+      },
+    ]);
+    // The parent deliberately blocks its own follow-up child.
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: followUpChildId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.failed).toBe(0);
+    expect(result.waitingOnReviewResolved).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const parent = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(parent?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([
+      openChildId,
+    ]);
+    // The original parent -> follow-up relation is untouched.
+    await expect(
+      sourceBlockerIssueIds(companyId, followUpChildId),
+    ).resolves.toEqual([issueId]);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`${issuePrefix}-11`);
+    expect(comments[0]?.body).not.toContain(`${issuePrefix}-10`);
+    expect(comments[0]?.metadata).toMatchObject({
+      sections: [
+        expect.objectContaining({
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              label: "Blocking issues",
+              value: openChildId,
+            }),
+          ]),
+        }),
+      ],
+    });
+  });
+
+  it("isolates a cycle that forms after the recovery pre-check", async () => {
+    const racing = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const healthy = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const followUpChildId = randomUUID();
+    const healthyChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: followUpChildId,
+        companyId: racing.companyId,
+        parentId: racing.issueId,
+        title: "Follow-up that waits on the parent",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: healthyChildId,
+        companyId: healthy.companyId,
+        parentId: healthy.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId: racing.companyId,
+      issueId: racing.issueId,
+      relatedIssueId: followUpChildId,
+      type: "blocks",
+    });
+
+    // The pre-check sees no cycle for the racing issue, so the cycle is only
+    // found by the write, which rejects it with a 422.
+    cyclePreCheckOverride.current = (_companyId, issueId) =>
+      issueId === racing.issueId ? Promise.resolve([]) : null;
+    try {
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.failed).toBe(1);
+      expect(result.waitingOnReviewResolved).toBe(1);
+      expect(result.issueIds).toEqual([healthy.issueId]);
+    } finally {
+      cyclePreCheckOverride.current = null;
+    }
+
+    await expect(
+      sourceBlockerIssueIds(racing.companyId, racing.issueId),
+    ).resolves.toEqual([]);
+    await expect(
+      sourceBlockerIssueIds(racing.companyId, followUpChildId),
+    ).resolves.toEqual([racing.issueId]);
+    await expect(
+      sourceBlockerIssueIds(healthy.companyId, healthy.issueId),
+    ).resolves.toEqual([healthyChildId]);
+  });
+
+  it("falls through to disposition repair when the only open sub-task waits on the parent", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const followUpChildId = randomUUID();
+
+    await db.insert(issues).values({
+      id: followUpChildId,
+      companyId,
+      parentId: issueId,
+      title: "Follow-up that waits on the parent",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 10,
+      identifier: `${issuePrefix}-10`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: followUpChildId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.failed).toBe(0);
+    expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.dispositionRepairRequeued).toBe(1);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual(
+      [],
+    );
+    await expect(
+      sourceBlockerIssueIds(companyId, followUpChildId),
+    ).resolves.toEqual([issueId]);
+
+    const parent = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(parent).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("leaves a sub-task that waits on the parent through another issue out of the dependency wait", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const intermediateId = randomUUID();
+    const transitiveChildId = randomUUID();
+    const openChildId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: intermediateId,
+        companyId,
+        title: "Issue between the parent and the child",
+        status: "blocked",
+        priority: "medium",
+        issueNumber: 10,
+        identifier: `${issuePrefix}-10`,
+      },
+      {
+        id: transitiveChildId,
+        companyId,
+        parentId: issueId,
+        title: "Child that waits on the parent transitively",
+        status: "blocked",
+        priority: "medium",
+        issueNumber: 11,
+        identifier: `${issuePrefix}-11`,
+      },
+      {
+        id: openChildId,
+        companyId,
+        parentId: issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 12,
+        identifier: `${issuePrefix}-12`,
+      },
+    ]);
+    // parent -> intermediate -> transitive child.
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId,
+        relatedIssueId: intermediateId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: intermediateId,
+        relatedIssueId: transitiveChildId,
+        type: "blocks",
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.failed).toBe(0);
+    expect(result.waitingOnReviewResolved).toBe(1);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([
+      openChildId,
+    ]);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`${issuePrefix}-12`);
+    expect(comments[0]?.body).not.toContain(`${issuePrefix}-11`);
+  });
+
+  it("keeps reconciling other companies when one stranded issue fails", async () => {
+    const failing = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const healthy = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const failingChildId = randomUUID();
+    const healthyChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: failingChildId,
+        companyId: failing.companyId,
+        parentId: failing.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: healthyChildId,
+        companyId: healthy.companyId,
+        parentId: healthy.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    // Make every update of the failing issue throw inside the database.
+    await db.execute(
+      sql.raw(`
+        CREATE FUNCTION recovery_isolation_test_fail() RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected recovery failure';
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER recovery_isolation_test_fail
+          BEFORE UPDATE ON issues
+          FOR EACH ROW
+          WHEN (OLD.id = '${failing.issueId}')
+          EXECUTE FUNCTION recovery_isolation_test_fail();
+      `),
+    );
+    try {
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.failed).toBe(1);
+      expect(result.waitingOnReviewResolved).toBe(1);
+      expect(result.issueIds).toEqual([healthy.issueId]);
+    } finally {
+      await db.execute(
+        sql.raw(`
+          DROP TRIGGER IF EXISTS recovery_isolation_test_fail ON issues;
+          DROP FUNCTION IF EXISTS recovery_isolation_test_fail();
+        `),
+      );
+    }
+
+    await expect(
+      sourceBlockerIssueIds(healthy.companyId, healthy.issueId),
+    ).resolves.toEqual([healthyChildId]);
+    await expect(
+      sourceBlockerIssueIds(failing.companyId, failing.issueId),
+    ).resolves.toEqual([]);
   });
 
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
@@ -16533,13 +16918,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sql`create trigger test_native_blocked_wait_fault before insert on issue_comments for each row execute function test_native_blocked_wait_fault()`,
     );
     try {
-      await expect(
-        heartbeatService(db).reconcileStrandedAssignedIssues(),
-      ).rejects.toMatchObject({
-        cause: expect.objectContaining({
-          message: "native_blocked_wait_fixture_fault",
-        }),
-      });
+      // Recovery isolates the failed candidate: the pass continues and
+      // counts it, and the transaction still rolls back the wait.
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.failed).toBe(1);
+      expect(result.issueIds).not.toContain(issueId);
     } finally {
       await db.execute(
         sql`drop trigger test_native_blocked_wait_fault on issue_comments`,
