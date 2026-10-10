@@ -125,6 +125,7 @@ import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
+import { setRemoteRuntimeExposureGate } from "./services/workspace-runtime.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -1010,6 +1011,14 @@ export async function createApp(
       { workerManager },
       { toolGateway },
     ),
+  );
+  // Instance experimental flag gates the managed runtime exposure transport.
+  // Wired here, outside any UI-mode branch, because the supervisor reads this
+  // gate in every mode and must not fall back to its allow-by-default value in
+  // a vite-dev or API-only run.
+  setRemoteRuntimeExposureGate(
+    async () =>
+      (await instanceSettingsService(db).getExperimental()).enableTailscaleRuntimeExposure !== false,
   );
   api.use(
     adapterRoutes({

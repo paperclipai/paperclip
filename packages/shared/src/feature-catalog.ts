@@ -336,6 +336,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableTailscaleRuntimeExposure: {
+    title: "Tailscale Runtime Exposure",
+    description:
+      "Experimental first-class remote access for managed runtimes. The Tailscale HTTPS broker publishes Paperclip-owned listeners to a tailnet today; off stops Paperclip from publishing any runtime to a tailnet. The flag gates the transport, so a hosted relay can become the default without a second settings surface.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:

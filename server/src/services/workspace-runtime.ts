@@ -370,6 +370,25 @@ function defaultWorkspaceRuntimeExposureDeps(): WorkspaceRuntimeExposureDeps {
 
 let workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
 
+/**
+ * Instance-level gate for the managed runtime exposure transport.
+ *
+ * Backed by the `enableTailscaleRuntimeExposure` experimental flag. The gate
+ * sits in front of the transport choice rather than in front of the Tailscale
+ * broker specifically, so a hosted relay transport can replace the broker
+ * behind the same flag without a second settings surface.
+ */
+let remoteRuntimeExposureGate: () => Promise<boolean> = defaultRemoteRuntimeExposureGate;
+
+function defaultRemoteRuntimeExposureGate(): Promise<boolean> {
+  return Promise.resolve(true);
+}
+
+/** Wires the instance experimental flag into managed runtime exposure. */
+export function setRemoteRuntimeExposureGate(gate: () => Promise<boolean>) {
+  remoteRuntimeExposureGate = gate;
+}
+
 /** Test-only seam; resetRuntimeServicesForTests restores production defaults. */
 export function setWorkspaceRuntimeExposureDepsForTests(deps: WorkspaceRuntimeExposureDeps) {
   workspaceRuntimeExposureDeps = deps;
@@ -434,10 +453,14 @@ export type ResolvedRuntimeServiceExposure = {
 /**
  * Resolve the exposure config for one runtime service start.
  *
- * Precedence: deliberate opt-out → explicit opt-in → automatic default for
- * eligible managed runtimes → none.
+ * Precedence: deliberate opt-out → instance kill switch → explicit opt-in →
+ * automatic default for eligible managed runtimes → none.
+ *
+ * Exported for tests: the gate behavior is the contract an operator relies on
+ * when they turn exposure off, and it is otherwise only reachable through a full
+ * spawn, which needs real processes and a real broker.
  */
-async function resolveRuntimeServiceExposure(input: {
+export async function resolveRuntimeServiceExposure(input: {
   service: Record<string, unknown>;
   serviceName: string;
   command: string | null;
@@ -445,13 +468,30 @@ async function resolveRuntimeServiceExposure(input: {
   const expose = parseObject(input.service.expose);
   const intent = readRuntimeExposureIntent(expose);
   if (intent === "disabled") return null;
+  // Instance kill switch for the managed exposure transport. It gates the
+  // transport, not the broker, so a hosted relay transport stays substitutable
+  // behind the same flag.
+  //
+  // Fail closed. A settings read that fails is not consent to publish a
+  // listener, and an operator who turned this off must not get exposure back
+  // because the database was briefly unreachable.
+  const transportEnabled = await remoteRuntimeExposureGate().catch(() => false);
   // An explicit opt-in is honored verbatim and is never gated on broker
   // availability: the operator asked for HTTPS, so a missing broker must fail
   // the start rather than silently downgrade it to HTTP.
   if (intent === "enabled") {
+    // Same reasoning applies to the instance kill switch: a service that asked
+    // for HTTPS and cannot get it must fail loudly rather than come up on plain
+    // HTTP under the same name.
+    if (!transportEnabled) {
+      throw new Error(
+        `Runtime service "${input.serviceName}" declares an HTTPS exposure, but this instance has remote runtime exposure turned off. Turn enableTailscaleRuntimeExposure back on in Settings, then Experimental, or remove the declared exposure from the service.`,
+      );
+    }
     const declared = resolveDeclaredRuntimeExposureConfig(expose);
     return declared ? { config: declared, origin: "declared" } : null;
   }
+  if (!transportEnabled) return null;
 
   const mode = resolveManagedRuntimeHttpsMode();
   if (mode === "off") return null;
@@ -469,8 +509,20 @@ async function resolveRuntimeServiceExposure(input: {
  * than resolving the full reuse identity: templates never rewrite a service
  * name, and the substrings `isPaperclipDevRuntimeService` matches survive
  * rendering, so this agrees with the per-service decision made during spawn.
+ *
+ * Deliberately does not swallow the error `resolveRuntimeServiceExposure` throws
+ * for a declared HTTPS exposure with the transport off. This runs once for the
+ * whole batch before anything spawns, so failing here rejects the batch while
+ * no process is running and no row is written. Swallowing it would push the
+ * failure into the per-service path, where an earlier service in the same batch
+ * has already started and the transaction rollback would discard the batch
+ * record that identifies it for cleanup.
+ *
+ * Exported for tests: this ordering is the difference between a rejected batch
+ * and an orphaned process, and it is not otherwise observable without spawning
+ * real processes.
  */
-async function anyRuntimeServiceUsesHttpsExposure(
+export async function anyRuntimeServiceUsesHttpsExposure(
   services: Record<string, unknown>[],
 ): Promise<boolean> {
   for (const service of services) {
@@ -535,6 +587,7 @@ export async function resetRuntimeServicesForTests(
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
+  remoteRuntimeExposureGate = defaultRemoteRuntimeExposureGate;
 }
 
 function stableStringify(value: unknown): string {
@@ -3506,7 +3559,7 @@ export async function realizeExecutionWorkspace(input: {
       repoRoot,
       worktreePath: reusablePath,
       expectedBranchName: branchName,
-    }).catch(() => null);
+    });
     if (validation && !validation.valid && validation.reasonCode === "branch_mismatch") {
       if (requestedExistingBranch) {
         // Exact-branch mode never reconciles a mismatched checkout onto
@@ -3536,7 +3589,7 @@ export async function realizeExecutionWorkspace(input: {
         repoRoot,
         worktreePath: reusablePath,
         expectedBranchName: effectiveBranchName,
-      }).catch(() => null);
+      });
       return {
         validation: nextValidation,
         branchName: effectiveBranchName,
@@ -8393,7 +8446,11 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     );
 
   // Backfill inputs, resolved once per startup rather than per row.
-  const httpsMode = resolveManagedRuntimeHttpsMode();
+  // The instance kill switch is read here for the same reason it is read per
+  // start: backfilling a service onto HTTPS that then refuses to come back with
+  // HTTPS would stop and restart a healthy runtime for nothing.
+  const transportEnabled = await remoteRuntimeExposureGate().catch(() => false);
+  const httpsMode = transportEnabled ? resolveManagedRuntimeHttpsMode() : "off";
   const brokerAvailable = httpsMode === "off"
     ? false
     : await workspaceRuntimeExposureDeps.isBrokerAvailable().catch(() => false);

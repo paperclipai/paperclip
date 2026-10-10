@@ -235,6 +235,9 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
+  // On by default, so this reads "not false" rather than "true".
+  const enableTailscaleRuntimeExposure =
+    experimentalQuery.data?.enableTailscaleRuntimeExposure !== false;
   const enableFirstTaskPlanProposal =
     experimentalQuery.data?.enableFirstTaskPlanProposal === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
@@ -565,6 +568,21 @@ export function InstanceExperimentalSettings() {
           settingKey="enableSummaries"
           managed={managedKeys.enableSummaries}
           ariaLabel="Toggle summaries experimental setting"
+        />
+
+        {/* Alphabetical order within the section, so this card follows Summaries. */}
+        <ExperimentalToggleCard
+          title="Tailscale Runtime Exposure"
+          description="Publish managed branch runtimes to your tailnet over HTTPS through the host broker. On is the default because the broker is the only remote transport today."
+          footnote="Turning this off stops Paperclip from publishing any runtime to a tailnet. A service that declares an explicit HTTPS exposure then fails to start instead of quietly serving plain HTTP."
+          checked={enableTailscaleRuntimeExposure}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableTailscaleRuntimeExposure: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableTailscaleRuntimeExposure"
+          managed={managedKeys.enableTailscaleRuntimeExposure}
+          ariaLabel="Toggle Tailscale runtime exposure experimental setting"
         />
 
         {enableIsolatedWorkspaces && (

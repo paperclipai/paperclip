@@ -86,6 +86,12 @@ export const instanceExperimentalSettingsSchema = z.object({
   // off the host keeps the file bridge for every run with no manifest change and
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
+  // Experimental first-class remote access for managed runtimes. On by default
+  // because the Tailscale HTTPS broker is the only remote transport shipped
+  // today. Off stops Paperclip from publishing any runtime to a tailnet. The
+  // transport choice stays behind this flag so a hosted relay can become the
+  // default transport without a second settings surface.
+  enableTailscaleRuntimeExposure: z.boolean().default(true),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),
