@@ -4811,6 +4811,9 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      // Preserve the host-owned source before adapter context can share lease
+      // metadata. A later copy-back failure must not adopt a rebound source.
+      const workspaceRestoreSource = structuredClone(realizationResult.lease);
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
       const instructionPreparationKey = createHash("sha256").update(JSON.stringify({
@@ -7234,7 +7237,7 @@ export function heartbeatService(
             };
             // Retention is the fallback even if recording this receipt fails.
             providerResourceDispositionForRun = "stop_and_retain";
-            await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence);
+            await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence, workspaceRestoreSource);
           }
           for (const stream of ["stdout", "stderr"] as const) {
             const tail = identityRedactor.finish(stream);

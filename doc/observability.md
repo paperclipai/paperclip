@@ -48,8 +48,9 @@ There are no custom attributes, identifiers, content, or exception messages.
 The closed phase names in `server/src/services/issue-read-timing.ts` are:
 `lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
 `relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
-`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
-`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `created_from`,
+`execution_blocker`, `relation_recovery`, `revalidate_recovery`, and
+`mentioned_projects`.
 Without an OTLP endpoint, spans remain no-ops. This adds no first-party
 Telemetry events or run-log events.
 
@@ -631,7 +632,7 @@ pending. Recent events do not prove useful progress. These fields contain only
 numbers and a boolean, never tool names, IDs, arguments, or event content, and
 do not change the execution timeout, cancellation, or recovery policy.
 
-ACP results retain the adapter's resolved wall-clock timeout as
+ACP and legacy OpenCode results retain the adapter's resolved wall-clock timeout as
 `adapterExecutionTimeout` in the instance run result. Finalization uses it for
 `effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
 `configured`, `sandbox_default`, or `unlimited`; `timeoutConfigured` identifies an
@@ -639,6 +640,12 @@ explicit override, including a negative value that disables the timer. An untouc
 sandbox value of zero reports the four-hour default, while a local zero reports
 unlimited. Older adapters without a valid resolution retain the config-based
 metadata fallback. This does not change timers, Stop acknowledgement, or recovery.
+Legacy OpenCode reports a generic timeout message because a provider or output
+observation timeout can occur before the configured execution deadline. The
+resolved policy describes the configured limit, not proof that its timer fired;
+`timeoutFired` retains the existing terminal timeout classification. Provider
+stderr remains in the instance run log and is not used as the timeout exception
+message. An earlier provider timeout does not establish its upstream cause.
 
 When settlement records a workspace restore failure, `run_execution` also
 includes `workspaceRestoreFailure` with one of the shared, path-free codes:
