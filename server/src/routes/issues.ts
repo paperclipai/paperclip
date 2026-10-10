@@ -356,6 +356,7 @@ import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
+  runIdHeaderWasSent,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
@@ -3685,7 +3686,18 @@ export function issueRoutes(
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId)
-      throw crossIssueInfluenceRunContextError();
+      // The request is in hand here, so the 403 can say which failure this is rather
+      // than hedging: a caller told to send a header it demonstrably already sent goes
+      // hunting its own request instead of the transport that ate it (#12118).
+      //
+      // `runResolved: false` unconditionally — reaching this line means the actor layer
+      // produced no run id, so no run was established and nothing is known about who
+      // owns the target. Only `observeCrossIssueInfluence` ever gets far enough to make
+      // an ownership claim.
+      throw crossIssueInfluenceRunContextError({
+        runHeaderPresent: runIdHeaderWasSent(req),
+        runResolved: false,
+      });
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.

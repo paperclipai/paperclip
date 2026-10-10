@@ -86,6 +86,96 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("does not send an unscoped run back to resend the header it already sent", () => {
+    // The header is honoured; an on-demand run's `contextSnapshot` is what is empty, and
+    // no caller can populate it. Offering the header alone read as "retry this" and cost
+    // agents retry loops plus a wrong read of their own permissions (#13078).
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
+    expect(copy.sanctionedPath).toContain("unscoped");
+    expect(copy.sanctionedPath).toContain("cannot help");
+    // The two channels this denial never gated, so the agent stops concluding it is mute.
+    expect(copy.sanctionedPath).toContain("documents");
+    expect(copy.description).toContain("no issue scope");
+  });
+
+  it("tells a caller whose run header never reached the server to send it", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      runHeaderPresent: false,
+    });
+    expect(copy.sanctionedPath).toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    // Absent is the one branch where re-sending is the fix, so never call it futile.
+    expect(copy.sanctionedPath).not.toContain("cannot help");
+    // The server cannot tell "never sent" from "stripped in transit", so it names both.
+    expect(copy.sanctionedPath).toContain("sandbox-bridge header allowlist");
+    expect(copy.description).toContain("No `X-Paperclip-Run-Id` header reached the server");
+  });
+
+  it("stops advising the header once the server has seen it arrive", () => {
+    // Regression (#12118): a probe agent confirmed with `curl -v` that the header was
+    // on the wire, read advice it had already satisfied, invented a wrong root cause
+    // and ended its heartbeat. Observed presence must change the advice, not just the
+    // refusal — and it must still name the ownership path #13078 added.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      runHeaderPresent: true,
+      runResolved: true,
+    });
+    expect(copy.sanctionedPath).not.toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(copy.sanctionedPath).toContain("cannot help");
+    expect(copy.sanctionedPath).toContain("assigned to you or checked out by this run");
+    expect(copy.sanctionedPath).toContain("documents");
+    expect(copy.description).toContain("did reach the server");
+    expect(copy.description).toContain("no issue scope");
+  });
+
+  it("blames the run id, not ownership, when the id resolved to no run", () => {
+    // Review finding: one branch served both "your run has no issue scope" and "your run
+    // id matched nothing". The second never reaches the ownership check, so claiming the
+    // target is not owned asserts a check the server never ran, and sends the caller to
+    // audit permissions instead of the stale id in its own header.
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required", {
+      runHeaderPresent: true,
+      runResolved: false,
+    });
+    expect(copy.sanctionedPath).not.toContain("Send the `X-Paperclip-Run-Id` header");
+    expect(copy.sanctionedPath).toContain("resolved to no run of yours");
+    // The two things that can actually fix it: a current run id, or the transport.
+    expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    expect(copy.sanctionedPath).toContain("sandbox-bridge header allowlist");
+    expect(copy.sanctionedPath).toContain("documents");
+    // No ownership claim anywhere, because none was established.
+    expect(copy.sanctionedPath).not.toContain("assigned to you or checked out by this run");
+    expect(copy.description).not.toContain("is not one this run owns");
+    expect(copy.description).toContain("Nothing was checked about");
+  });
+
+  it("keeps one code, boundary, status and tone across every run-context branch", () => {
+    // Callers and tests match on `code`; only the human-facing copy may differ.
+    const branches = [
+      {},
+      { runHeaderPresent: false },
+      { runHeaderPresent: true },
+      { runHeaderPresent: true, runResolved: true },
+      { runHeaderPresent: true, runResolved: false },
+    ].map((context) =>
+      describeIssueWriteDenial("cross_issue_influence_run_context_required", context),
+    );
+    for (const branch of branches) {
+      expect(branch.code).toBe("cross_issue_influence_run_context_required");
+      expect(branch.boundary).toBe(branches[0].boundary);
+      expect(branch.status).toBe(branches[0].status);
+      expect(branch.tone).toBe(branches[0].tone);
+      expect(branch.whoCanAct).toBe(branches[0].whoCanAct);
+    }
+    // Four distinct copies, not five: a bare `runHeaderPresent: true` means the
+    // ownership case it always meant, so it must read identically to the explicit one.
+    expect(new Set(branches.map((branch) => branch.sanctionedPath)).size).toBe(4);
+    expect(new Set(branches.map((branch) => branch.description)).size).toBe(4);
+    expect(branches[2].sanctionedPath).toBe(branches[3].sanctionedPath);
+    expect(branches[2].description).toBe(branches[3].description);
+  });
+
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
