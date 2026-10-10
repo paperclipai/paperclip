@@ -11,7 +11,7 @@ Canonical combined source is `2ef177271ad703cef598b19b0d2219297c57ca6c`; core is
 | --- | --- |
 | [Staging11 corrected legacy runs](staging-11-legacy-regression.json) | Both runs succeeded 21:23:29, real Claude Skill launched, both persistent entries/proofs read, helper disposition passed without recovery. Includes the Claude activity-display inconsistency, Codex corrected arguments, and natural archive at 21:23:43.156. |
 | [Deployment11 serving receipt](staging-deploy-11-verified.json) | Official verification of 2df40da serving; no product pass implied. |
-| [Candidate provenance](final-candidate-provenance.json) | Exact canonical/candidate comparison and successful preview artifact build; not deployment proof. |
+| [Candidate provenance](final-candidate-provenance.json) | Exact canonical/candidate comparison. Prior candidate `2df40da` built successfully; current `1830beb` build is pending. Not deployment proof. |
 | [Exact runtime-head CI and review](current-head-ci-review.json) | At 21:32:06 UTC, combined `2ef177271a` and core `754a4e792e` each had 52 successful checks, fresh 5/5 review, and zero unresolved threads. Core had two policy skips. |
 | [Scoped cleanup tests](latest-core-test-provenance.json) | Proof246c28c03a:16 route +44 module cases passed; server TypeScript passed. Earlier48-case adapter source and unchanged-file blobs are recorded. No live negative journey implied. |
 | [Corrected legacy CLI runs](local-32-legacy-acceptance.json) | Local32: both actual runs succeeded and issues became done through helpers; hashes matched prior files. Codex read persistent instructions; Claude actually invoked `Skill(paperclip)`. Claude had no configured personal instructions, so that mapping is not a live claim. |

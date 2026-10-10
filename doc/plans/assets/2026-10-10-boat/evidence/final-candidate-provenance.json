@@ -7,11 +7,6 @@
     "packages/db/src/migrations/meta/0332_snapshot.json",
     "packages/db/src/migrations/meta/_journal.json"
   ],
-  "previewArtifactBuild": {
-    "checkedAt": "2026-10-10T21:09:07.813798+00:00",
-    "status": "completed",
-    "conclusion": "success"
-  },
   "servingStagingSource": "2df40da4587725571f94b20806b0da154418d774",
   "qualification": "Serving2df40da corrected legacy Claude/Codex follow-ups passed with unchanged proof hashes and helper disposition without recovery. Candidate1830beb contains current2ef1772/core754a4e isolated viewer fix; build in progress, deployment12 not yet performed. Staging HMR remains unverified.",
   "previousCanonicalSource": "3673939bed4cb85f20d142f950547e3a60502bca",
@@ -31,5 +26,11 @@
     "runId": 38087300389,
     "status": "in_progress",
     "scope": "Parent observed; no deployment12 claimed."
+  },
+  "previousCandidateArtifactBuild": {
+    "checkedAt": "2026-10-10T21:09:07.813798+00:00",
+    "status": "completed",
+    "conclusion": "success",
+    "sourceSha": "2df40da4587725571f94b20806b0da154418d774"
   }
 }
