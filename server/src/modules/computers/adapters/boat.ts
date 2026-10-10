@@ -475,6 +475,15 @@ print('{}')
         });
       }
     },
+    async runnerPorts(record) {
+      const value = await execute(record, runnerPortInventoryProgram, {});
+      if (!Number.isInteger(value.ephemeralStart) || !Number.isInteger(value.ephemeralEnd)
+        || value.ephemeralStart < 1 || value.ephemeralEnd > 65535
+        || value.ephemeralStart > value.ephemeralEnd || !Array.isArray(value.occupied)
+        || value.occupied.some((port: unknown) => !Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535))
+        throw new ComputerError("provider_error", "Computer returned invalid listener port availability");
+      return value;
+    },
     async advance(record, owner) {
       await execute(record, processProgram, { action: "advance", owner });
     },
@@ -564,3 +573,17 @@ print('{}')
     },
   };
 }
+
+/** Read-only Linux socket inventory; all states matter, not only LISTEN. */
+export const runnerPortInventoryProgram = String.raw`
+import json
+with open('/proc/sys/net/ipv4/ip_local_port_range') as source:
+ start,end=map(int,source.read().split())
+occupied=set()
+for path in ['/proc/net/tcp','/proc/net/tcp6']:
+ with open(path) as source:
+  for line in source.readlines()[1:]:
+   port=int(line.split()[1].rsplit(':',1)[1],16)
+   if port:occupied.add(port)
+print(json.dumps({'ephemeralStart':start,'ephemeralEnd':end,'occupied':sorted(occupied)}))
+`;

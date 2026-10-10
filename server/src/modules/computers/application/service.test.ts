@@ -50,6 +50,7 @@ function fixture() {
     }),
     claim: vi.fn(async () => {}),
     advance: vi.fn(async () => {}),
+    runnerPorts: vi.fn(async () => ({ ephemeralStart: 32768, ephemeralEnd: 60999, occupied: [] })),
     runner: vi.fn(async () => ({ execute: vi.fn() })),
     launch: vi.fn(async (_record, owner) => ({
       ...owner.process!,
@@ -114,6 +115,43 @@ function fixture() {
   };
 }
 describe("computer ownership", () => {
+  it("allocates outside guest ephemeral and occupied ports while reserving live owners", async () => {
+    const f = fixture();
+    await f.attach();
+    vi.mocked(f.backend.runnerPorts).mockResolvedValue({
+      ephemeralStart: 16127, ephemeralEnd: 16128, occupied: [16129, 43130],
+    });
+    const first = await f.admit();
+    const second = await f.admit("other-agent", "other-session");
+    expect(first.listenerPort).toBe(16130);
+    expect(second.listenerPort).toBe(16131);
+    expect(f.backend.advance).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ port: 16131 }));
+    for (const port of [first.listenerPort, 43130]) {
+      await expect(f.service.preview({ ...f.scope, owner: first.owner, port })).rejects.toMatchObject({ code: "forbidden" });
+    }
+  });
+
+  it("fails closed when the guest reserves the entire fixed listener range", async () => {
+    const f = fixture();
+    await f.attach();
+    vi.mocked(f.backend.runnerPorts).mockResolvedValue({ ephemeralStart: 1024, ephemeralEnd: 65535, occupied: [] });
+    await expect(f.admit()).rejects.toMatchObject({ code: "conflict", message: "Computer has no available runner ports" });
+    expect(f.backend.advance).not.toHaveBeenCalled();
+  });
+
+  it("preserves historical warm listener identity without reallocating an occupied own port", async () => {
+    const f = fixture();
+    await f.attach();
+    const first = await f.admit();
+    await first.launch({ command: "runnerd" });
+    await f.repository.update(f.scope, record => { record.ledger.owners.find(owner => owner.id === first.owner.ownerId)!.port = 43130; });
+    await f.service.retainWarm({ ...f.scope, owner: first.owner, idleTimeoutMs: 60_000 });
+    vi.mocked(f.backend.runnerPorts).mockClear();
+    const next = await f.admit();
+    expect(next.listenerPort).toBe(43130);
+    expect(f.backend.runnerPorts).not.toHaveBeenCalled();
+  });
+
   it("passes checkout credentials transiently without retaining them in computer state", async () => {
     const f = fixture();
     await f.attach();

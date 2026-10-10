@@ -7,6 +7,7 @@ import {
   expired,
   liveOwners,
   nextPort,
+  isRunnerPort,
   segment,
   timeout,
   type ComputerRecord,
@@ -455,6 +456,18 @@ finally:
     });
     await backend.ready(result.record);
     await backend.claim(result.record);
+    if (result.owner.generation === 1 && !result.owner.process) {
+      const availability = await backend.runnerPorts(result.record);
+      const allocated = await repository.update(input, (record) => {
+        const owner = exactOwner(record, ref(result.record, result.owner));
+        if (owner.phase !== "starting")
+          throw new ComputerError("conflict", "Computer admission was retired");
+        owner.port = nextPort(record.ledger.owners.filter((other) => other.id !== owner.id), availability);
+        return { record: structuredClone(record), owner: structuredClone(owner) };
+      });
+      result.record = allocated.record;
+      result.owner = allocated.owner;
+    }
     await backend.advance(result.record, result.owner);
     await backend.renew(result.record);
     if (input.probeId) {
@@ -661,7 +674,7 @@ finally:
       expired(owner, now())
     )
       throw new ComputerError("conflict", "Preview owner is not live");
-    if (input.port >= 43127 && input.port < 44127)
+    if (isRunnerPort(input.port))
       throw new ComputerError(
         "forbidden",
         "Runner ports are not application previews",
