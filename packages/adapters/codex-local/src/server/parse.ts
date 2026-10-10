@@ -164,7 +164,29 @@ export function classifyCodexAuthRefreshFailure(input: {
   stderr?: string | null;
   errorMessage?: string | null;
 }): CodexAuthRefreshFailureClass | null {
-  const haystack = buildCodexErrorHaystack(input);
+  // JSONL items contain untrusted agent text and command output. A source-code
+  // review may quote an application error such as "expired refresh token";
+  // treating that as a provider failure would revoke a healthy shared account.
+  // Use only the last protocol error, plus process diagnostics. Retain plain
+  // stdout support for CLI failures that occur before the protocol starts.
+  const events = (input.stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => parseJson(line.trim()));
+  const hasProtocolEvents = events.some((event) => event && typeof event.type === "string");
+  let protocolError: string | null = null;
+  for (const event of events) {
+    if (event?.type === "error") {
+      const message = asString(event.message, "").trim();
+      if (message) protocolError = message;
+    } else if (event?.type === "turn.failed") {
+      const message = asString(parseObject(event.error).message, "").trim();
+      if (message) protocolError = message;
+    }
+  }
+  const haystack = buildCodexErrorHaystack({
+    ...input,
+    stdout: hasProtocolEvents ? protocolError : input.stdout,
+  });
 
   if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
   if (CODEX_REFRESH_TOKEN_EXPIRED_RE.test(haystack)) return "refresh_token_expired";
