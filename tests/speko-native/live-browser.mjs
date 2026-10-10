@@ -33,6 +33,7 @@ const events = [], started = Date.now();
 const idleProbe = process.env.SPEKO_NATIVE_IDLE_PROBE === "1";
 if (idleProbe) await page.route("**/voice-sessions/*/notification", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "null" }));
 let session, progress;
+let executionProvider = "unknown";
 const event = (kind, details = {}) => { events.push({ kind, elapsedMs: Date.now() - started, ...details }); console.log(JSON.stringify({ kind, ...details })); };
 page.on('response', async (response) => {
   if (response.request().method() === 'POST' && /\/voice-sessions$/.test(new URL(response.url()).pathname) && response.ok()) {
@@ -137,6 +138,12 @@ try {
   await expect(page.getByRole('button', { name: 'Mute', exact: true })).toBeEnabled({ timeout: 30000 });
   expect(session?.assignedAgentId).toBe(fixture.agentId);
   event('media_connected');
+  const agentResponse = await page.request.get(`${origin}/api/agents/${session.assignedAgentId}`);
+  if (agentResponse.ok()) {
+    const agent = await agentResponse.json();
+    if (typeof agent.adapterType === 'string') executionProvider = agent.adapterType;
+  }
+  event('execution_provider_inspected', {executionProvider});
   if (resumeIssueId) { expect(session?.issueId).toBe(resumeIssueId); event('existing_task_resumed', { issueId: resumeIssueId }); }
   progress = setInterval(() => { void page.locator('body').innerText().then((text) => writeFile(resolve(out, 'latest-visible.txt'), text, { mode: 0o600 })).catch(() => {}); }, 3000);
   await expect(page.getByRole('list', { name: 'Conversation transcript' }).getByRole('listitem')).not.toHaveCount(0, { timeout: 20000 });
@@ -260,7 +267,7 @@ try {
     } catch { event('cleanup_unconfirmed'); process.exitCode = 1; }
   }
   try {
-  await writeFile(resolve(out, 'report.json'), JSON.stringify({ startedAt: new Date(started).toISOString(), events, session, browserNotificationDisabledForIdleProbe: idleProbe, syntheticMicrophone: true, audioReview: 'required independently; script success does not confirm complete spoken playback', resumedIssueId: resumeIssueId, diskScenario, delayedTemplate, expectedWord: templateScenario ? expectedWord : undefined, executionProvider: templateScenario ? 'claude_local' : 'fixture', server: 'real', speko: 'live' }, null, 2), { mode: 0o600 });
+  await writeFile(resolve(out, 'report.json'), JSON.stringify({ startedAt: new Date(started).toISOString(), events, session, browserNotificationDisabledForIdleProbe: idleProbe, syntheticMicrophone: true, audioReview: 'required independently; script success does not confirm complete spoken playback', resumedIssueId: resumeIssueId, diskScenario, delayedTemplate, expectedWord: templateScenario ? expectedWord : undefined, executionProvider, server: 'real', speko: 'live' }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ evidence: out }));
   } finally { await browser.close(); }
   }

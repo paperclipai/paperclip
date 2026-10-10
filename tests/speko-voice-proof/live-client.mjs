@@ -9,6 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { Room, RoomEvent, AudioSource, AudioFrame, AudioStream, LocalAudioTrack, TrackPublishOptions, TrackSource, TrackKind, dispose } from "@livekit/rtc-node";
+import { createMediaFailure } from "./media-failure.mjs";
 import { createProof, createProofServer, DELAY_MS } from "./proof.mjs";
 
 const API = "https://api.speko.dev";
@@ -60,6 +61,7 @@ let stopping = false;
 let utterance;
 let expectedRequests = 0;
 let protocolFailure;
+const mediaFailure = createMediaFailure(() => event("audio_input_failed"));
 let mediaDisconnected = false;
 let interrupted = false;
 const interrupt = () => { interrupted = true; };
@@ -130,6 +132,7 @@ async function until(predicate, timeout, label) {
   while (!predicate()) {
     if (interrupted) throw new Error("Probe interrupted");
     if (protocolFailure) throw new Error(protocolFailure);
+    if (mediaFailure.error) throw mediaFailure.error;
     if (mediaDisconnected) throw new Error("Media disconnected before the scenario completed");
     if (performance.now() >= end) throw new Error(`Timed out waiting for ${label}`);
     await sleep(100);
@@ -141,7 +144,7 @@ async function input(text, file, label) {
   if (mode === "text") await room.localParticipant.sendText(text, { topic: "lk.chat" });
   else {
     const data = inputAudio.get(file);
-    await new Promise((done) => { utterance = { data, offset: 0, done }; });
+    await mediaFailure.waitFor(() => new Promise((done) => { utterance = { data, offset: 0, done }; }));
   }
   event("input_end", { label });
 }
@@ -163,7 +166,7 @@ try {
   const options = new TrackPublishOptions();
   options.source = TrackSource.SOURCE_MICROPHONE;
   await room.localParticipant.publishTrack(track, options);
-  pump = (async () => {
+  pump = mediaFailure.observe((async () => {
     while (!stopping) {
       const frame = new Int16Array(960);
       let finished;
@@ -176,7 +179,7 @@ try {
       await source.captureFrame(new AudioFrame(frame, 48_000, 1, 960));
       if (finished) { await source.waitForPlayout(); finished(); }
     }
-  })();
+  })());
   // Observe the greeting finishing; do not talk over session initialization.
   await until(() => firstAudio !== undefined && performance.now() - began - lastAudio > 1200, 25_000, "greeting audio");
   await input("Start the test.", process.env.SPEKO_PROOF_START_AUDIO, "start");
@@ -250,6 +253,7 @@ try {
     await writeFile(resolve(out, "output.pcm"), Buffer.concat(audioFrames.map((f) => f.data)), {mode: 0o600});
     if (resultAt !== undefined) await writeFile(resolve(out, "result.pcm"), Buffer.concat(audioFrames.filter((f) => f.at >= resultAt - 250).map((f) => f.data)), {mode: 0o600});
   } catch (error) { cleanupFailures.push({operation: "audio_evidence", reason: error.message}); }
+  failure ??= mediaFailure.error?.message;
   const report = { cleanupFailures, startedAt, sourceDigests, sessionId, mode, provider, notifyReady, notifyViaJoin, interruptAcknowledgment, failure: failure ?? null, firstAudio, resultAt, resultAudioAt, lastAudio, audioBursts, audioFrames: audioFrames.length, proof: proof.evidence(), events, syntheticTranscript: transcript, qualification: "requires_audio_and_transport_review" };
   await writeFile(resolve(out, "report.json"), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ reportPath: resolve(out, "report.json"), resultReturned: report.proof.resultReturned, acceptedRequests: report.proof.acceptedRequests, failure: report.failure }));
