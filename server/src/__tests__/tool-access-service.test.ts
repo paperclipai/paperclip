@@ -77,6 +77,7 @@ import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
+import { resolveManagedGitHubCredential } from "../services/git-credentials.js";
 import {
   canonicalToolArguments,
   signToolArguments,
@@ -6577,6 +6578,68 @@ describeEmbeddedPostgres("tool access service", () => {
         .from(toolConnections)
         .where(eq(toolConnections.companyId, company.id)),
     ).resolves.toHaveLength(1);
+  });
+
+  it("gives an agent its GitHub identity from a personal access token, for git as well as tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const agent = await createAgent(db, company.id);
+    mockToolsList([{ name: "get_pull_request", annotations: { readOnlyHint: true } }]);
+
+    const connected = await withGalleryServerUrl(
+      "github",
+      PUBLIC_MCP_FIXTURE_URL,
+      () =>
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "github",
+            connectionMethodKey: "mcp-key",
+            grantKind: "agent",
+            subjectAgentId: agent.id,
+            name: "Agent GitHub PAT",
+            credentialValues: { "credentials.authorization": "ghp_agent_pat_fixture" },
+          },
+          { actorType: "user", actorId: "board" },
+        ),
+      "mcp-key",
+    );
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.actions.readOnly.map((action) => action.catalogEntryId),
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agent.id] },
+    });
+
+    // Setup used to leave a dedicated PAT identity with no grant at all.
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(grants).toEqual([
+      expect.objectContaining({ kind: "agent", subjectAgentId: agent.id, status: "active" }),
+    ]);
+    expect(grants[0]!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.authorization"]);
+
+    // The setup screen installs a dedicated identity for its agent as a separate step.
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+
+    // The git credential broker used to accept only a sign-in token.
+    const resolved = await resolveManagedGitHubCredential(db, secretService(db), company.id, {
+      agentId: agent.id,
+      allowStandingDelegation: false,
+      responsibleUserId: null,
+    });
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.credential).toMatchObject({
+      token: "ghp_agent_pat_fixture",
+      source: "managed_connection",
+      identitySource: "dedicated",
+    });
   });
 
   it("reconnects an exact active custom MCP connection without duplicating its identity", async () => {

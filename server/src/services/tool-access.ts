@@ -13374,6 +13374,66 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // A credential supplied at connect time (a personal access token) has no
+        // callback to wait for: commit it to the agent's own grant here, exactly
+        // as "Just me" does for a user, or the agent is left with no identity.
+        if (credentialSecretRefs.length > 0) {
+          const [existingGrant] = await db
+            .select()
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.connectionId, connectionRow.id),
+                eq(connectionGrants.kind, "agent"),
+                eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+              ),
+            )
+            .limit(1);
+          const grantValues = {
+            credentialSecretRefs,
+            status: "active" as const,
+            revokedAt: null,
+            revokedByAgentId: null,
+            revokedByUserId: null,
+            updatedAt: new Date(),
+          };
+          const [changedGrant] = existingGrant
+            ? await db
+                .update(connectionGrants)
+                .set(grantValues)
+                .where(eq(connectionGrants.id, existingGrant.id))
+                .returning()
+            : await db
+                .insert(connectionGrants)
+                .values({
+                  companyId,
+                  connectionId: connectionRow.id,
+                  kind: "agent",
+                  subjectAgentId: dedicatedAgentId,
+                  ...grantValues,
+                  isDefault: false,
+                  createdByUserId: actor?.actorType === "user" ? actor.actorId : null,
+                })
+                .returning();
+          if (!changedGrant)
+            throw new Error("Failed to create the agent's connection grant");
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = { previous: existingGrant ?? null, current: changedGrant };
+          }
+          await db.insert(toolAccessAuditEvents).values({
+            companyId,
+            connectionId: connectionRow.id,
+            actorType: actor?.actorType ?? "system",
+            actorId: actor?.actorId ?? "system",
+            action: existingGrant ? "connection_grant.updated" : "connection_grant.created",
+            outcome: "success",
+            reasonCode: existingGrant ? "dedicated_identity_reconnected" : "dedicated_identity_created",
+            details: {
+              kind: "agent",
+              credentialSecretRefCount: credentialSecretRefs.length,
+            },
+          });
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
