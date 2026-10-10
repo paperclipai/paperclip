@@ -454,13 +454,7 @@ export async function resolveOAuthClientIdMetadataDocumentUrl(
   try {
     const parsed = new URL(redirectUri);
     if (parsed.protocol !== "https:") return null;
-    const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    const isLoopback =
-      hostname === "localhost" ||
-      hostname.endsWith(".localhost") ||
-      hostname === "::1" ||
-      /^127(?:\.\d{1,3}){3}$/.test(hostname);
-    if (isLoopback) return null;
+    if (isOAuthLoopbackRedirectHostname(parsed.hostname)) return null;
     const metadataUrl = new URL(
       OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
       parsed.origin,
@@ -487,6 +481,37 @@ export async function resolveOAuthClientIdMetadataDocumentUrl(
 }
 
 /**
+ * Whether an OAuth callback hostname is loopback: `localhost`, a `.localhost`
+ * name, `::1`, or any 127.0.0.0/8 address. Redirect constraints, CIMD, and the
+ * registered client type use this one rule, so a callback that one check accepts
+ * as loopback is loopback for all of them.
+ */
+function isOAuthLoopbackRedirectHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "::1" ||
+    /^127(?:\.\d{1,3}){3}$/.test(normalized)
+  );
+}
+
+/**
+ * The RFC 7591 `application_type` for Paperclip's OAuth callback. OpenID Connect
+ * Dynamic Client Registration 1.0 section 2 lets a `web` client use only https
+ * redirect URIs, and lets a `native` client use an http loopback redirect URI
+ * (RFC 8252 section 7.3). A local Paperclip at http://127.0.0.1:3100 has a
+ * loopback callback, so it registers as `native`. Some authorization servers,
+ * Metabase among them, reject a `web` registration with an http redirect URI.
+ */
+export function oauthClientApplicationType(redirectUri: string): "web" | "native" {
+  const url = new URL(redirectUri);
+  return url.protocol === "http:" && isOAuthLoopbackRedirectHostname(url.hostname)
+    ? "native"
+    : "web";
+}
+
+/**
  * Paperclip's client metadata for CIMD (RFC 7591 metadata, served rather than
  * registered). Only the callback for this deployment appears in it, so an
  * authorization server that fetches it can see exactly one legal redirect target.
@@ -503,7 +528,7 @@ export function oauthClientIdMetadataDocument(input: {
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
-    application_type: "web",
+    application_type: oauthClientApplicationType(input.redirectUri),
   };
 }
 
@@ -9756,15 +9781,10 @@ export function toolAccessService(
         code: "oauth_redirect_uri_invalid",
       });
     }
-    const hostname = redirect.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    const isLoopback =
-      hostname === "localhost" ||
-      hostname.endsWith(".localhost") ||
-      hostname === "::1" ||
-      /^127(?:\.\d{1,3}){3}$/.test(hostname);
     if (
       redirect.protocol === "https:" ||
-      (redirect.protocol === "http:" && isLoopback)
+      (redirect.protocol === "http:" &&
+        isOAuthLoopbackRedirectHostname(redirect.hostname))
     )
       return;
     throw unprocessable(
@@ -9996,11 +10016,12 @@ export function toolAccessService(
       ],
       response_types: ["code"],
       token_endpoint_auth_method: tokenEndpointAuthMethod,
-      // RFC 7591: Paperclip's callback is a server-side HTTPS endpoint, so this
-      // is a `web` client, not a `native` one. Some authorization servers reject
-      // an https redirect URI when the default (`web`) is left implicit, and
-      // others apply native-client redirect rules without it.
-      application_type: "web",
+      // RFC 7591: a deployed Paperclip's callback is a server-side HTTPS endpoint,
+      // so it is a `web` client. Some authorization servers reject an https
+      // redirect URI when the default (`web`) is left implicit, and others apply
+      // native-client redirect rules without it. A local Paperclip's http loopback
+      // callback is only legal for a `native` client.
+      application_type: oauthClientApplicationType(input.redirectUri),
     };
     const response = await fetchRemoteHttpUrl(
       assertOAuthEndpointUrl("registration", input.endpoints.registrationUrl),

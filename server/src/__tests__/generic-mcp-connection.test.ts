@@ -41,7 +41,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { toolAccessService } from "../services/tool-access.js";
+import { oauthClientApplicationType, toolAccessService } from "../services/tool-access.js";
 import { ComposioApiError, type ComposioClient } from "../services/composio.js";
 import { createComposioSessionManager } from "../services/composio-session-manager.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -852,6 +852,41 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  it("registers a local Paperclip's http loopback callback as a native client", async () => {
+    // OIDC DCR section 2: a `web` client may use only https redirect URIs, so a strict
+    // authorization server refuses `web` with http://127.0.0.1. RFC 8252 lets a
+    // `native` client use a loopback callback.
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const loopbackRedirectUri = "http://127.0.0.1:3100/api/tools/oauth/callback";
+
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture OAuth" });
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: loopbackRedirectUri,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+    expect(start.registrationSource).toBe("dcr");
+
+    const registration = fixture.requestsTo("/register");
+    expect(registration).toHaveLength(1);
+    expect(registration[0]!.body).toMatchObject({
+      redirect_uris: [loopbackRedirectUri],
+      application_type: "native",
+    });
+  });
+
+  it("declares a web client for every callback except an http loopback one", () => {
+    expect(oauthClientApplicationType(REDIRECT_URI)).toBe("web");
+    expect(oauthClientApplicationType("http://localhost:3100/api/tools/oauth/callback")).toBe("native");
+    expect(oauthClientApplicationType("http://[::1]:3100/api/tools/oauth/callback")).toBe("native");
+    // Every loopback form the redirect constraint check accepts is native too.
+    expect(oauthClientApplicationType("http://127.0.0.2:3100/api/tools/oauth/callback")).toBe("native");
+    expect(oauthClientApplicationType("http://dev.localhost:3100/api/tools/oauth/callback")).toBe("native");
+    // A LAN or tailnet host over http is not loopback, so native rules do not apply.
+    expect(oauthClientApplicationType("http://192.168.1.20:3100/api/tools/oauth/callback")).toBe("web");
   });
 
   async function approveFixtureAuthorization(authorizationUrl: string) {
