@@ -45,7 +45,7 @@ import type {
   AdapterLoginPanelMode,
   AdapterLoginTimeoutPolicy,
 } from "@paperclipai/adapter-utils";
-import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
+import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter, pruneReloadDirsForType, withAdapterLock, withAdapterLocks, lockKeysForType } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -331,7 +331,7 @@ export function adapterRoutes(options: {
       }
     }
 
-    try {
+    const runInstall = async (): Promise<void> => {
       let installedVersion: string | undefined;
       let moduleLocalPath: string | undefined;
 
@@ -416,6 +416,10 @@ export function adapterRoutes(options: {
         installedAt: record.installedAt,
         requiresRestart: isReinstall,
       });
+    };
+    try {
+      if (!isLocalPath) await withAdapterLock(`pkg:${canonicalName}`, runInstall);
+      else await runInstall();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err, packageName }, "Failed to install external adapter");
@@ -557,31 +561,38 @@ export function adapterRoutes(options: {
       return;
     }
 
-    // If installed via npm (has packageName but no localPath), run npm uninstall
-    if (externalRecord.packageName && !externalRecord.localPath) {
-      try {
-        const pluginsDir = getAdapterPluginsDir();
-        await execFileAsync("npm", ["uninstall", externalRecord.packageName], {
-          cwd: pluginsDir,
-          timeout: 60_000,
-        });
-        logger.info(
-          { type: adapterType, packageName: externalRecord.packageName },
-          "npm uninstall completed for external adapter",
-        );
-      } catch (err) {
-        logger.warn(
-          { err, type: adapterType, packageName: externalRecord.packageName },
-          "npm uninstall failed for external adapter; continuing with unregister",
-        );
+    await withAdapterLocks(lockKeysForType(adapterType), async () => {
+      // If installed via npm (has packageName but no localPath), run npm uninstall
+      if (externalRecord.packageName && !externalRecord.localPath) {
+        try {
+          const pluginsDir = getAdapterPluginsDir();
+          await execFileAsync("npm", ["uninstall", externalRecord.packageName], {
+            cwd: pluginsDir,
+            timeout: 60_000,
+          });
+          logger.info(
+            { type: adapterType, packageName: externalRecord.packageName },
+            "npm uninstall completed for external adapter",
+          );
+        } catch (err) {
+          logger.warn(
+            { err, type: adapterType, packageName: externalRecord.packageName },
+            "npm uninstall failed for external adapter; continuing with unregister",
+          );
+        }
       }
-    }
 
-    // Unregister from the runtime registry
-    unregisterServerAdapter(adapterType);
+      // Unregister from the runtime registry
+      unregisterServerAdapter(adapterType);
 
-    // Remove from the persistent store
-    removeAdapterPlugin(adapterType);
+      // Remove from the persistent store
+      removeAdapterPlugin(adapterType);
+
+      // Reclaim reload staging copies, sparing the live copy: a running
+      // session may still import siblings from it. The map entry is still
+      // cleared, so startup prune reclaims the spared copy on restart.
+      pruneReloadDirsForType(adapterType, { keepActive: true });
+    });
 
     logger.info({ type: adapterType }, "External adapter unregistered and removed");
 
@@ -610,32 +621,36 @@ export function adapterRoutes(options: {
 
     // Reload the adapter module (busts ESM cache, re-imports)
     try {
-      const newModule = await reloadExternalAdapter(type);
+      const outcome = await withAdapterLocks(lockKeysForType(type), async () => {
+        const newModule = await reloadExternalAdapter(type, { lockHeld: true });
 
-      // Not found in the external adapter store
-      if (!newModule) {
+        // Not found in the external adapter store
+        if (!newModule) return null;
+
+        // Swap in the reloaded module
+        unregisterServerAdapter(type);
+        registerWithSessionManagement(newModule);
+        configSchemaCache.delete(type);
+
+        // Sync store.version from package.json (store may be missing version for local installs).
+        const record = getAdapterPluginByType(type);
+        let newVersion: string | undefined;
+        if (record) {
+          newVersion = readAdapterPackageVersionFromDisk(record);
+          if (newVersion) {
+            addAdapterPlugin({ ...record, version: newVersion });
+          }
+        }
+        return { newVersion };
+      });
+      if (!outcome) {
         res.status(404).json({ error: `Adapter "${type}" is not an externally installed adapter.` });
         return;
       }
 
-      // Swap in the reloaded module
-      unregisterServerAdapter(type);
-      registerWithSessionManagement(newModule);
-      configSchemaCache.delete(type);
+      logger.info({ type, version: outcome.newVersion }, "External adapter reloaded at runtime");
 
-      // Sync store.version from package.json (store may be missing version for local installs).
-      const record = getAdapterPluginByType(type);
-      let newVersion: string | undefined;
-      if (record) {
-        newVersion = readAdapterPackageVersionFromDisk(record);
-        if (newVersion) {
-          addAdapterPlugin({ ...record, version: newVersion });
-        }
-      }
-
-      logger.info({ type, version: newVersion }, "External adapter reloaded at runtime");
-
-      res.json({ type, version: newVersion, reloaded: true });
+      res.json({ type, version: outcome.newVersion, reloaded: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err, type }, "Failed to reload external adapter");
@@ -673,39 +688,43 @@ export function adapterRoutes(options: {
     }
 
     try {
-      const pluginsDir = getAdapterPluginsDir();
+      const outcome = await withAdapterLocks(lockKeysForType(type), async () => {
+        const pluginsDir = getAdapterPluginsDir();
 
-      logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
+        logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
 
-      await execFileAsync("npm", ["install", "--no-save", record.packageName], {
-        cwd: pluginsDir,
-        timeout: 120_000,
+        await execFileAsync("npm", ["install", "--no-save", record.packageName], {
+          cwd: pluginsDir,
+          timeout: 120_000,
+        });
+
+        // Reload the freshly installed adapter
+        const newModule = await reloadExternalAdapter(type, { lockHeld: true });
+        if (!newModule) return null;
+
+        unregisterServerAdapter(type);
+        registerWithSessionManagement(newModule);
+        configSchemaCache.delete(type);
+
+        // Sync store version from disk
+        let newVersion: string | undefined;
+        const updatedRecord = getAdapterPluginByType(type);
+        if (updatedRecord) {
+          newVersion = readAdapterPackageVersionFromDisk(updatedRecord);
+          if (newVersion) {
+            addAdapterPlugin({ ...updatedRecord, version: newVersion });
+          }
+        }
+        return { newVersion };
       });
-
-      // Reload the freshly installed adapter
-      const newModule = await reloadExternalAdapter(type);
-      if (!newModule) {
+      if (!outcome) {
         res.status(500).json({ error: "npm install succeeded but adapter reload failed." });
         return;
       }
 
-      unregisterServerAdapter(type);
-      registerWithSessionManagement(newModule);
-      configSchemaCache.delete(type);
+      logger.info({ type, version: outcome.newVersion }, "Adapter reinstalled from npm");
 
-      // Sync store version from disk
-      let newVersion: string | undefined;
-      const updatedRecord = getAdapterPluginByType(type);
-      if (updatedRecord) {
-        newVersion = readAdapterPackageVersionFromDisk(updatedRecord);
-        if (newVersion) {
-          addAdapterPlugin({ ...updatedRecord, version: newVersion });
-        }
-      }
-
-      logger.info({ type, version: newVersion }, "Adapter reinstalled from npm");
-
-      res.json({ type, version: newVersion, reinstalled: true });
+      res.json({ type, version: outcome.newVersion, reinstalled: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err, type }, "Failed to reinstall adapter");
