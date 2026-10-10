@@ -252,10 +252,13 @@ the official daemon to a private runtime socket restored its health; actual
 computer input and durable resume handling are being verified.
 
 Native Claude's first provider-pack upload exceeded the existing 15-minute
-bootstrap budget. The qualified pack includes all supported providers. Real
-compressed-byte uploads with remote file writes and hash verification support
-eight concurrent chunks; uploads now share a controller-wide limit of eight.
-The full native Claude run still needs to pass with that change.
+bootstrap budget. The qualified pack includes all supported providers; measured
+cold setup takes about 24 minutes at the observed transfer rate. Computer-backed
+ACPX startup now has a finite 30-minute bootstrap budget. Warm, turn, recovery,
+finalization, and per-command deadlines are unchanged. Real compressed-byte
+uploads with remote file writes and hash verification support eight concurrent
+4 MiB chunks under a controller-wide limit of eight. The full native Claude run
+still needs to pass with that change.
 
 Required remaining evidence includes native Claude completion and warm turns,
 native desktop keyboard control, exact last-owner process retirement, and the

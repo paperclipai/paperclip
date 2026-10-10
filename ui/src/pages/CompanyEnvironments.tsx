@@ -2061,6 +2061,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         {typeof environment.config.host === "string" ? environment.config.host : "SSH host"} ·{" "}
                         {typeof environment.config.username === "string" ? environment.config.username : "user"}
                       </div>
+                    ) : environment.driver === "computer" ? (
+                      <div className="text-xs text-muted-foreground">Persistent agent folders and a shared desktop on Boat.</div>
                     ) : environment.driver === "sandbox" ? (
                       <div className="text-xs text-muted-foreground">
                         {(() => {
