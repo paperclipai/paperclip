@@ -305,6 +305,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
   if (status === "skipped_paused") return "Skipped because the project is paused";
+  if (status === "skipped_company_paused") return "Skipped because the company is paused";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
@@ -1479,9 +1480,11 @@ export function routineService(
         triggeredAt,
         status: input.reason === "paused"
           ? "skipped_paused"
-          : input.reason === "no_external_activity"
-            ? "skipped_no_activity"
-            : "skipped_worktree_execution_cutoff",
+          : input.reason === "company_paused"
+            ? "skipped_company_paused"
+            : input.reason === "no_external_activity"
+              ? "skipped_no_activity"
+              : "skipped_worktree_execution_cutoff",
         nextRunAt: input.nextRunAt,
       }, txDb);
       return createdRun;
@@ -3194,9 +3197,11 @@ export function routineService(
           trigger: routineTriggers,
           routine: routines,
           projectPausedAt: projects.pausedAt,
+          companyStatus: companies.status,
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
@@ -3219,13 +3224,18 @@ export function routineService(
         // at the next cron boundary instead of replaying missed firings. Routines with no
         // project are never suppressed here.
         const projectPaused = !!(row.routine.projectId && row.projectPausedAt);
+        // A paused company suppresses every agent wakeup, so any issue a routine
+        // files while it is paused has nobody to work it. Pausing the company is
+        // also the one lever that covers routines with no project, which a
+        // project pause cannot reach. Same claim-and-advance handling as above.
+        const companyPaused = row.companyStatus === "paused";
         const automaticEligibility = await getAutomaticRoutineDispatchEligibility(row.routine, worktreeActivation);
         const worktreeSuppressed = !automaticEligibility.eligible;
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+        if (!projectPaused && !companyPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
             claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
           } else {
@@ -3257,12 +3267,14 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
 
-        if (projectPaused || worktreeSuppressed) {
+        if (projectPaused || companyPaused || worktreeSuppressed) {
           await recordSuppressedAutomaticRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
-            reason: worktreeSuppressed ? "worktree_execution_cutoff" : "paused",
+            reason: worktreeSuppressed
+              ? "worktree_execution_cutoff"
+              : companyPaused && !projectPaused ? "company_paused" : "paused",
             nextRunAt: claimedNextRunAt,
           });
           continue;
