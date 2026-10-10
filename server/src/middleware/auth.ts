@@ -249,6 +249,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     }
 
     const runIdHeader = req.header("x-paperclip-run-id");
+    // heartbeatRuns.id is a Postgres uuid column, and every non-agent_jwt actor path below
+    // assigns this header straight to req.actor.runId with no validation. Dozens of services
+    // (task-watchdog-scope.ts, authorization.ts, and others) then query heartbeat_runs by
+    // actor.runId trusting it's a real UUID -- a malformed value (e.g. a hand-set header from
+    // an operator/API-key caller, not a genuine agent run) previously crashed the request with
+    // an uncaught 500 ("invalid input syntax for type uuid") instead of a clean rejection.
+    // The agent_jwt path below intentionally keeps using the raw `runIdHeader` for its
+    // mismatch check against the signed `claims.run_id` -- that's a string comparison, not a
+    // query, so a malformed value there just correctly fails the mismatch check, not a crash.
+    const safeRunIdHeader = runIdHeader && isUuidLike(runIdHeader) ? runIdHeader : undefined;
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
@@ -260,7 +270,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // restricted to the unguessable public gateway path; all /api routes retain
     // the normal actor authentication path below.
     if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      if (safeRunIdHeader) req.actor.runId = safeRunIdHeader;
       next();
       return;
     }
@@ -271,7 +281,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            runId: runIdHeader ?? undefined,
+            runId: safeRunIdHeader,
           };
           next();
           return;
@@ -305,14 +315,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
+            runId: safeRunIdHeader,
             source: "session",
           };
           next();
           return;
         }
       }
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      if (safeRunIdHeader) req.actor.runId = safeRunIdHeader;
       next();
       return;
     }
@@ -337,7 +347,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: runIdHeader || undefined,
+          runId: safeRunIdHeader,
           source: "board_key",
         };
         next();
@@ -496,7 +506,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         companyId: key.companyId,
         userId: responsibleUserId,
       }),
-      runId: runIdHeader || undefined,
+      runId: safeRunIdHeader,
       source: "agent_key",
     };
 
