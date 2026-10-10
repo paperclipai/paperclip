@@ -361,7 +361,11 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       executionTarget: target,
       environmentName: environment.name,
       fallbackChecks: [],
-      sandboxIdentityCheck: buildSandboxIdentityCheck({
+      sandboxIdentityCheck: environment.driver === "computer" ? {
+        code: "computer_test_identity", level: "info",
+        message: `Environment test ran on "${environment.name}" with a bounded computer owner.`,
+        detail: `paperclipLeaseId=${leaseRecord.lease.id}; ownerId=${leaseRecord.lease.providerLeaseId}`,
+      } : buildSandboxIdentityCheck({
         environmentName: environment.name,
         lease: leaseRecord.lease,
       }),
@@ -433,7 +437,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
   // The environment drivers the adapter Test route accepts. A local, SSH, or
   // sandbox environment can host a probe; a plugin environment cannot.
-  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
+  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "computer"];
 
   // The fail-closed tenant-binding guard for the adapter Test route. A caller
   // may name any instance environment by id, so the route must reject an

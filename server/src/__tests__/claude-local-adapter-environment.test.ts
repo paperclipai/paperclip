@@ -298,7 +298,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
 
-  it("uses full permission bypass for sandbox hello probes", async () => {
+  it.each(["sandbox", "computer"] as const)("uses full permission bypass for %s hello probes", async (transport) => {
     const executeCalls: Array<{ command: string; args?: string[]; env?: Record<string, string> }> = [];
 
     const result = await testEnvironment({
@@ -310,11 +310,12 @@ describe("claude_local environment diagnostics", () => {
       },
       executionTarget: {
         kind: "remote",
-        transport: "sandbox",
+        transport,
+        resourceAuthority: { computerId: "probe-computer" },
         providerKey: "cloudflare",
         remoteCwd: "/workspace/paperclip",
         runner: {
-          execute: async (input) => {
+          execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
             executeCalls.push({ command: input.command, args: input.args, env: input.env });
             if (input.command === "claude") {
               return {
@@ -345,7 +346,7 @@ describe("claude_local environment diagnostics", () => {
             };
           },
         },
-      },
+      } as never,
       environmentName: "QA Cloudflare",
     });
 

@@ -313,6 +313,25 @@ describe("server adapter registry", () => {
     });
   });
 
+  it("verifies the Claude harness on a computer after checking its platform", async () => {
+    const calls: string[] = [];
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", env: { ANTHROPIC_API_KEY: "test-key" } },
+      executionTarget: { kind: "remote", transport: "computer", remoteCwd: "/workspace", resourceAuthority: { computerId: "computer" },
+        runner: { execute: async (input: { command: string; args?: string[] }) => {
+          calls.push(input.command);
+          const stdout = input.command === "claude" ? JSON.stringify({ type: "result", result: "hello", usage: { input_tokens: 1, output_tokens: 1 } })
+            : input.args?.some(arg => arg.includes("uname -s")) ? "Linux\nx86_64\n" : "";
+          return { exitCode: 0, timedOut: false, stdout, stderr: "", signal: null, pid: null, startedAt: new Date().toISOString() };
+        } },
+      } as never,
+    });
+    expect(calls).toContain("claude");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" }));
+    expect(result.checks.some(check => check.level === "error")).toBe(false);
+  });
+
   it.each([true, false])("checks actual local ACPX installation readiness (%s)", async (ready) => {
     const probe = vi.mocked(probeAcpxClaudeInstallation);
     if (ready) probe.mockResolvedValueOnce(undefined);

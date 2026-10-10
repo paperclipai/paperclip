@@ -3,7 +3,7 @@ import { environmentLeases } from "@paperclipai/db";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { AdapterComputerExecutionTarget, EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
@@ -45,11 +45,13 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
     driver: "computer",
     async acquireRunLease(input) {
       if (!(await instanceSettingsService(db).getExperimental()).enableBoatEnvironments) throw new Error("boat_environments_disabled");
-      if (!input.agentId || !input.heartbeatRunId) throw new Error("computer_agent_run_required");
+      if (!input.agentId) throw new Error("computer_agent_required");
       const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(input.environment.config.runnerIdleTimeoutMs);
-      const binding = await computers.admit({ companyId: input.companyId, environmentId: input.environment.id,
+      const binding = input.heartbeatRunId ? await computers.admit({ companyId: input.companyId, environmentId: input.environment.id,
         agentId: input.agentId, runId: input.heartbeatRunId, idleTimeoutMs,
-        sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType])).digest("hex") });
+        sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType])).digest("hex") })
+        : await computers.admitProbe({ companyId: input.companyId, environmentId: input.environment.id,
+          agentId: input.agentId, probeId: randomUUID(), idleTimeoutMs });
       try {
         // The durable owner advanced generation; prior retained bookkeeping no
         // longer owns the process and must not be reaped as an allocation.
