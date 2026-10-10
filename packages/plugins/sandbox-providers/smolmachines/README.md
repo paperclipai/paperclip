@@ -4,7 +4,7 @@ Run Paperclip agents in isolated SmolVMs on your own computer or in Smol Cloud. 
 
 ## Install and configure
 
-Install `@paperclipai/plugin-smolmachines` from Paperclip's Plugin Manager, then add a sandbox environment in **Instance Settings → Environments** with the **Smol Machines VM** driver. Select `local` or `cloud`.
+Install the provider from a checkout with `paperclipai plugin install --local /path/to/paperclip/packages/plugins/sandbox-providers/smolmachines`, then add a sandbox environment in **Instance Settings → Environments** with the **Smol Machines VM** driver. Select `local` or `cloud`.
 
 - **Local:** Run Paperclip on a Linux host with `/dev/kvm`, an Apple Silicon Mac, or a Windows machine with the Windows Hypervisor Platform. The host needs a working SmolVM installation. A Paperclip Docker deployment needs access to the host hypervisor; ordinary containers cannot run local VMs without it.
 - **Cloud:** Paste a Smol Cloud API key into the environment's `apiKey` field. Paperclip stores it as a company secret. `SMOL_CLOUD_TOKEN` or an existing `smol auth login` session can be used instead. Cloud VMs expire after `ttlSeconds` (one hour by default); increase that value when jobs run longer.
@@ -27,4 +27,4 @@ pnpm -C packages/plugins/sandbox-providers/smolmachines test:live
 # Optional: SMOL_TEST_CLOUD=1 pnpm -C packages/plugins/sandbox-providers/smolmachines test:live
 ```
 
-The provider lives outside the root pnpm workspace so it can publish as a standalone npm plugin. For a managed Paperclip Cloud image, include `smolmachines` in the `CLOUD_BUNDLED_PLUGINS` build argument before enabling it in `plugins.autoInstall`; the default Cloud image bundles only Daytona.
+The provider lives outside the root pnpm workspace so it can publish as a standalone npm plugin. Its first `@paperclipai/plugin-smolmachines` npm publish needs a Paperclip maintainer; until then, install the local package as above. After that first publish, it can be installed from the Plugin Manager and enrolled in CI releases. For a managed Paperclip Cloud image, include `smolmachines` in the `CLOUD_BUNDLED_PLUGINS` build argument before enabling it in `plugins.autoInstall`; the default Cloud image bundles only Daytona.
