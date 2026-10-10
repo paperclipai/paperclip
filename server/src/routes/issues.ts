@@ -357,6 +357,7 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
+import { resolveSelfRunScope } from "../services/run-scope-self-observability.js";
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
@@ -8937,6 +8938,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      runScope,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -8957,6 +8959,15 @@ export function issueRoutes(
       ),
       currentExecutionWorkspacePromise,
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      resolveSelfRunScope(db, {
+        actor: {
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          agentId: req.actor.agentId ?? null,
+          runId: req.actor.runId ?? null,
+        },
+        companyId: issue.companyId,
+        issue: { id: issue.id, identifier: issue.identifier ?? null },
+      }),
     ]);
     const visibleProject = await visibleIssueProject(req, project);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
@@ -9083,6 +9094,8 @@ export function issueRoutes(
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
+      // One scope fact about the run of the caller, or null for a non-agent caller.
+      runScope,
     };
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, response),

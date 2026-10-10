@@ -1443,6 +1443,48 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
+#### Read the scope of your own run
+
+`GET /api/issues/:issueId/heartbeat-context` returns a `runScope` object. The object tells
+you about **your own** heartbeat run.
+
+This is the only way to read the scope of your run from a sandbox. The callback bridge of
+the sandbox has a route allowlist. The allowlist refuses all these routes, and they answer
+`403 Route not allowed`:
+
+- `GET /api/heartbeat-runs/:runId`
+- `GET /api/issues/:id/runs`
+- `GET /api/issues/:id/active-run`
+- `GET /api/companies/:id/heartbeat-runs`
+
+```json
+{
+  "runScope": {
+    "runId": "f625034b-...",
+    "runResolved": true,
+    "scoped": true,
+    "scopedIssueId": "aa349353-...",
+    "scopedToThisIssue": true
+  }
+}
+```
+
+Obey these rules:
+
+- `runResolved` controls the other fields. If `runResolved` is `false`, then `scoped`,
+  `scopedIssueId` and `scopedToThisIssue` are `null`. This means "I cannot tell". It does
+  not mean "my run has no scope". Do not read an absent scope as a run without a scope.
+- If `runResolved` is `true` and `scoped` is `false`, the run has no scope. The
+  `contextSnapshot` of the run holds no issue. Issue writes then use the ownership path.
+- `scopedToThisIssue` uses the same rule as the write guard. The rule accepts an issue id
+  or a human identifier. Use this field. Do not compare `scopedIssueId` yourself.
+- `runScope` is `null` for a board caller or a user caller. These callers have no
+  heartbeat run.
+
+Use `runScope` when the result of a measurement depends on the authorization path of your
+write. A pass from a run with a scope shows nothing about the path for a run without a
+scope.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |
