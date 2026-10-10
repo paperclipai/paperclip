@@ -810,10 +810,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && effectiveLoginEnvironment?.status === "active"
     && effectiveLoginEnvironment.driver === "computer"
     && effectiveLoginEnvironment.config.provider === "boat";
-  const unsupportedBoatCodexEngine = attachedBoat && adapterType === "codex_local"
-    && (isCreate ? props.values.codexEngine : eff("adapterConfig", "engine", config.engine)) !== "cli";
+  const unsupportedBoatLegacyEngine = attachedBoat && (adapterType === "codex_local" || adapterType === "claude_local")
+    && (isCreate
+      ? adapterType === "codex_local" ? props.values.codexEngine : props.values.claudeEngine
+      : eff("adapterConfig", "engine", config.engine)) !== "cli";
   const handleSave = useCallback(async () => {
-    if (isCreate || unsupportedBoatCodexEngine) return;
+    if (isCreate || unsupportedBoatLegacyEngine) return;
     const flushedEnv = flushEnvironmentDraft();
     const nextOverlay = flushedEnv
       ? {
@@ -826,15 +828,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : overlay;
     if (!isOverlayDirty(nextOverlay)) return;
     await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
-  }, [isCreate, isDirty, overlay, props, unsupportedBoatCodexEngine]);
+  }, [isCreate, isDirty, overlay, props, unsupportedBoatLegacyEngine]);
 
   useEffect(() => {
     if (!isCreate) {
       props.onDirtyChange?.(isDirty);
-      props.onSaveActionChange?.(unsupportedBoatCodexEngine ? null : handleSave);
+      props.onSaveActionChange?.(unsupportedBoatLegacyEngine ? null : handleSave);
       props.onCancelActionChange?.(handleCancel);
     }
-  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel, unsupportedBoatCodexEngine]);
+  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel, unsupportedBoatLegacyEngine]);
 
   useEffect(() => {
     if (isCreate) return;
@@ -1104,7 +1106,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [testActionError, setTestActionError] = useState<string | null>(null);
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
-  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId || unsupportedBoatCodexEngine;
+  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId || unsupportedBoatLegacyEngine;
 
   // Drop a stale Test result when the adapter type or the effective environment
   // changes. A held result would keep the login affordance visible for a target
@@ -1409,7 +1411,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">Unsaved changes</span>
-              <Button size="sm" onClick={handleSave} disabled={props.isSaving || unsupportedBoatCodexEngine}>
+              <Button size="sm" onClick={handleSave} disabled={props.isSaving || unsupportedBoatLegacyEngine}>
                 {props.isSaving ? "Saving..." : "Save"}
               </Button>
             </div>
@@ -1461,7 +1463,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={(!isCreate && props.isSaving) || unsupportedBoatCodexEngine}
+              disabled={(!isCreate && props.isSaving) || unsupportedBoatLegacyEngine}
             >
               {!isCreate && props.isSaving ? "Saving..." : "Save"}
             </Button>

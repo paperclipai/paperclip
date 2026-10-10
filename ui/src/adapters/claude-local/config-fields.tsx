@@ -95,7 +95,7 @@ export function ClaudeLocalAdvancedFields({
         Attached computers can select an engine while the managed policy keeps
         every host-path field hidden.
       */}
-      {(!managedSandboxOnly || allowExecutionEngineSelection) && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
+      {(!managedSandboxOnly || allowExecutionEngineSelection) && <Field label="Execution engine" hint={allowExecutionEngineSelection ? "Boat requires Claude CLI for its persistent workspace." : "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."}>
         <select
           className={inputClass}
           value={engine}
@@ -106,10 +106,13 @@ export function ClaudeLocalAdvancedFields({
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
         >
-          <option value="auto">Default (ACP)</option>
+          {(!allowExecutionEngineSelection || engine === "auto") && <option value="auto" disabled={allowExecutionEngineSelection}>Default (ACP){allowExecutionEngineSelection ? " — unsupported on Boat" : ""}</option>}
           <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
+          {(!allowExecutionEngineSelection || engine === "acp") && <option value="acp" disabled={allowExecutionEngineSelection}>ACP{allowExecutionEngineSelection ? " — unsupported on Boat" : ""}</option>}
         </select>
+        {allowExecutionEngineSelection && engine !== "cli" && (
+          <p role="alert" className="text-sm text-destructive">This engine is unsupported on Boat. Choose Claude CLI before saving or testing.</p>
+        )}
       </Field>}
       {acpSelected && (
         <>
