@@ -35,6 +35,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "github",
   "github-code-review-bot",
   "discord",
+  "speko",
   "microsoft-teams",
   "telegram",
   "imessage-photon",

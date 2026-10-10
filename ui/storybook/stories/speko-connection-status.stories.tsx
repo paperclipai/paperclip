@@ -1,0 +1,10 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { StatusBadge } from "@/components/StatusBadge";
+import { voiceStoryLifecycle } from "../fixtures/voiceStoryLifecycle";
+const meta: Meta<typeof StatusBadge> = { ...voiceStoryLifecycle, title: "Connections/Speko/Connection status", component: StatusBadge, args: { className: "text-foreground" }, parameters: { layout: "padded" } };
+export default meta;
+type Story = StoryObj<typeof meta>;
+export const Attention: Story = { args: { status: "attention" } };
+export const Revoked: Story = { args: { status: "revoked" } };
+export const Removed: Story = { args: { status: "archived" } };
+export const Paused: Story = { args: { status: "paused" } };

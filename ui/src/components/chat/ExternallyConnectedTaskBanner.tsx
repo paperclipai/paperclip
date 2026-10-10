@@ -1,3 +1,4 @@
+import { TaskVoiceLauncher } from "@/components/voice/TaskVoiceLauncher";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Paperclip, Radio } from "lucide-react";
@@ -128,23 +129,19 @@ type ConnectedTaskProps = {
   companyId: string;
   issueId: string;
   issueCacheRefs?: string[];
+  assigneeAgentId?: string | null;
 };
 
 export function ExternallyConnectedTaskBanner(props: ConnectedTaskProps) {
   const { binding } = useIssueChatBinding(props.companyId, props.issueId);
-  if (!binding || binding.provider === "agentmail") return null;
-  return (
-    <ConnectedTaskComposer
-      key={boardSendDraftKey(
-        props.companyId,
-        props.issueId,
-        binding.endpointId,
-        binding.conversationId,
-      )}
+  return <>
+    {binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
+      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId)}
       {...props}
       binding={binding}
-    />
-  );
+    />}
+    <TaskVoiceLauncher companyId={props.companyId} issueId={props.issueId} agentId={props.assigneeAgentId} boundEndpointId={binding?.provider === "speko" ? binding.endpointId : undefined} />
+  </>;
 }
 
 function ConnectedTaskComposer({

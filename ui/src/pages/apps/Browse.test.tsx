@@ -1082,6 +1082,7 @@ describe("Connectors landing page", () => {
       "microsoft-teams",
       "notion",
       "slack",
+      "speko",
       "telegram",
       "custom-mcp",
     ]);

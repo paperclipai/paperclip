@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "speko",
+  "name": "Speko",
+  "description": "Talk with a Paperclip agent through an experimental hosted voice connection.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/speko.svg"
+  },
+  "urlPatterns": [
+    "https://speko.ai/*",
+    "https://platform.speko.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "voice-agent",
+      "label": "Talk with an agent",
+      "purpose": "channel",
+      "provider": "speko",
+      "transport": "voice",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use browser voice to start and continue work with a selected Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Speko API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Speko API key",
+          "secret": true
+        },
+        {
+          "key": "agentId",
+          "label": "Speko agent ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "agent_…",
+          "secret": false
+        }
+      ],
+      "guidanceMd": "Create a dedicated Speko voice persona and choose its voice. Paperclip registers signed session tools and keeps the selected Paperclip agent responsible for task work. Public HTTPS callbacks are required. Review provider recording settings; Speko charges are separate from agent costs. Phone calling is withheld pending live qualification.",
+      "consoleLinks": {
+        "register": "https://platform.speko.ai/agents",
+        "docs": "https://docs.speko.ai/guides/tool-calling"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": []
+    }
+  ]
+}

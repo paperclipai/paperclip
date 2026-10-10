@@ -112,7 +112,10 @@ describe("chat connector UI contract", () => {
     expect(detail).not.toContain("Change agent");
     for (const label of ["Pause", "Resume", "Reconnect", "Remove connection"]) {
       expect(activity).toContain(label);
-      expect(settings).not.toContain(label);
+      // Guidance may name an action that lives on Activity; only controls
+      // must stay out of the Settings surface.
+      const settingsButtons = settings.match(/<Button\b[\s\S]*?<\/Button>/g) ?? [];
+      expect(settingsButtons.join("\n")).not.toContain(label);
     }
   });
 

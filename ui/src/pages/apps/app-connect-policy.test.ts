@@ -114,7 +114,7 @@ describe("app connect policy", () => {
   it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
-    for (const source of ["discord", "telegram", "microsoft-teams"]) {
+    for (const source of ["discord", "telegram", "microsoft-teams", "speko"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
       expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);
     }
