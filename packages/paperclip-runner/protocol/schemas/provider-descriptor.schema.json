@@ -18,7 +18,8 @@
         "claude_managed",
         "aws_agentcore",
         "acpx",
-        "openai_dot"
+        "openai_dot",
+        "muse"
       ]
     },
     "driver": {
@@ -28,7 +29,8 @@
         "claude_managed_agents_api",
         "aws_agentcore_harness_api",
         "acpx_runtime",
-        "openai_dot_mcp"
+        "openai_dot_mcp",
+        "muse_external"
       ]
     },
     "model": {
@@ -53,7 +55,8 @@
       "enum": [
         "anthropic_managed_agents",
         "aws_bedrock_agentcore_harness",
-        "openai_dot"
+        "openai_dot",
+        "muse"
       ]
     },
     "providerSessionId": {
@@ -255,6 +258,19 @@
               "const": "remote_service"
             }
           }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "muse"
+            },
+            "driver": {
+              "const": "muse_external"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
         }
       ]
     },
@@ -381,6 +397,120 @@
         "properties": {
           "service": {
             "const": "openai_dot"
+          },
+          "model": {
+            "const": null
+          },
+          "providerSessionId": {
+            "const": null
+          },
+          "agentProcessId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "provider": {
+              "const": "codex"
+            },
+            "driver": {
+              "const": "codex_app_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "opencode"
+            },
+            "driver": {
+              "const": "opencode_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "claude_managed"
+            },
+            "driver": {
+              "const": "claude_managed_agents_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "aws_agentcore"
+            },
+            "driver": {
+              "const": "aws_agentcore_harness_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "acpx"
+            },
+            "driver": {
+              "const": "acpx_runtime"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "muse"
+            },
+            "driver": {
+              "const": "muse_external"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "muse"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "service",
+          "providerSessionId"
+        ],
+        "properties": {
+          "service": {
+            "const": "muse"
           },
           "model": {
             "const": null

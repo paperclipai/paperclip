@@ -773,6 +773,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   resolveRuntimeRequest(input: {
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: Parameters<

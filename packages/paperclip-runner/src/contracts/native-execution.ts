@@ -1,4 +1,4 @@
-import type { DotBindingSnapshot } from "./external-provider.js";
+import type { DotBindingSnapshot, MuseBindingSnapshot } from "./external-provider.js";
 import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
@@ -9,6 +9,7 @@ import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeCo
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V7 = "paperclip.native-execution-input.v7" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V4 = "paperclip.native-execution-input.v4" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v5" as const;
@@ -245,7 +246,13 @@ export interface NativeExecutionInputV6 extends Omit<NativeExecutionInputV5, "sc
   session: Omit<NativeExecutionInputV5["session"], "driverKind"> & { driverKind: "openai_dot_mcp" };
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6;
+export interface NativeExecutionInputV7 extends Omit<NativeExecutionInputV6, "schema" | "provider" | "session"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V7;
+  provider: { kind: "muse"; model: null; binding: MuseBindingSnapshot; bridgeRevision: "muse-v1" };
+  session: Omit<NativeExecutionInputV6["session"], "driverKind"> & { driverKind: "muse_external" };
+}
+
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -369,9 +376,25 @@ function parseDotNativeExecutionInput(input: Record<string, unknown>): NativeExe
     session: { ...common.session, driverKind: "openai_dot_mcp" } };
 }
 
+function parseMuseNativeExecutionInput(input: Record<string, unknown>): NativeExecutionInputV7 {
+  const provider = record(input.provider, "input.provider");
+  exactKeys(provider, ["kind", "model", "binding", "bridgeRevision"], "input.provider");
+  const session = record(input.session, "input.session");
+  if (provider.kind !== "muse" || provider.bridgeRevision !== "muse-v1" || session.driverKind !== "muse_external") {
+    throw new NativeExecutionInputError("Muse v7 requires the muse-v1 bridge and muse_external driver");
+  }
+  const common = parseDotNativeExecutionInput({ ...input, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V6,
+    provider: { kind: "openai_dot", model: provider.model, binding: provider.binding },
+    session: { ...session, driverKind: "openai_dot_mcp" } });
+  return { ...common, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V7,
+    provider: { kind: "muse", model: null, binding: common.provider.binding, bridgeRevision: "muse-v1" },
+    session: { ...common.session, driverKind: "muse_external" } };
+}
+
 export function parseNativeExecutionInput(value: unknown): NativeExecutionInput {
   const input = record(value, "input");
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseDotNativeExecutionInput(input);
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) return parseMuseNativeExecutionInput(input);
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) return parseDotNativeExecutionInput(input);
   const isV5 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
   const isV4 = isV5 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V4;
   const isV3 = isV4 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V3;
@@ -901,7 +924,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")
@@ -920,7 +943,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       },
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
-      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
       completionContract: {
         ...structuredClone(input.completionContract.contract),
         criteria: input.completionContract.contract.criteria.map((criterion) => {

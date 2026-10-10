@@ -27,6 +27,10 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
     throw new Error("native_runtime_context_entry_outside_bundle");
   }
   const entry = readFileSync(entryPath, "utf8");
+  if (input.provider.kind === "muse") {
+    return ["You are running as a named Paperclip agent. Complete the assigned task, follow the attached agent instructions, and use the admitted Paperclip catalog for coordination. Use list_agents and create_task when the work calls for delegation. Record durable text deliverables with write_document. When work depends on another task, preserve the existing dependencies with set_dependencies and report the concrete blocker through paperclip_block. Follow each tool's approval and completion rules.", entry.trim(),
+      "Use the private Muse client's operation command for the admitted first-party Paperclip task and document catalog. Use your own approved tools for external work. Paperclip supplies no connector credentials or filesystem command grants. Keep all Paperclip data within this connection's company, agent, and current task. Use the client's ask command for questions; persist the exact saved answer into this run's continuation before consuming its input receipt. Pending or unconsumed answers block completion. Invoke paperclip_finish or paperclip_block through the native tool catalog, then submit that exact accepted report with the client's finish command."].join("\n\n");
+  }
   if (input.provider.kind === "openai_dot") {
     return [input.runtimeContext.prompt.text, entry.trim(),
       "This provider has no mounted workspace. Use Paperclip semantic tools for task coordination and write_document for durable text deliverables. Read pinned skills with list_assigned_skills and read_assigned_skill. Assigned app tools run through the Paperclip MCP gateway with normal permissions and approvals. If workspace tools are advertised, use them for files and sandboxed commands, then register_deliverable for requested downloadable files. Use get_identity and list_people to discover the responsible person and assignees. Read the current catalog before concluding a capability is unavailable.",

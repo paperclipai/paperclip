@@ -532,6 +532,8 @@ export interface HarnessSession {
   }): Promise<void>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
+    /** Durable controller command identity, distinct from the native request identity. */
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;

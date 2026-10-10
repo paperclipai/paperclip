@@ -15,6 +15,7 @@ mod codex_startup_trust;
 mod configured_environment;
 pub mod dot_provider_backend;
 pub mod durable;
+pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;
