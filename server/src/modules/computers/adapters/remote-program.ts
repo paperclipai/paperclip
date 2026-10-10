@@ -76,8 +76,10 @@ if act=='workspace':
  if p.get('mode')=='worktree':
   if not task:fail('invalid')
   target=os.path.join(root,'tasks',task);os.makedirs(os.path.dirname(target),exist_ok=True)
-  if not os.path.exists(target):run(['git','worktree','add','-b','paperclip/'+task,target,base_ref or branch or 'HEAD'],checkout)
+  task_branch=branch or 'paperclip/task-'+task
+  if not os.path.exists(target):run(['git','worktree','add','-b',task_branch,target,base_ref or 'HEAD'],checkout)
   run(['git','rev-parse','--show-toplevel'],target)
+  if run(['git','symbolic-ref','--quiet','--short','HEAD'],target)!=task_branch:fail('conflict')
  else:
   target=checkout
   if branch:run(['git','checkout',branch],checkout)
@@ -114,14 +116,27 @@ try:
  if act=='list':
   fd=directory(path.split('/'),start=rootfd)
   try:
-   out=[]
-   for entry in os.scandir(fd):
-    if entry.name=='.paperclip-editor.lock' or entry.is_symlink():continue
-    info=entry.stat(follow_symlinks=False)
-    if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):continue
-    out.append({'name':entry.name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000})
-   print(json.dumps(out))
+   limit=p.get('limit',1000)
+   if type(limit)!=int or limit<1 or limit>1000:fail('invalid')
+   out=[];truncated=False;scanned=0
+   with os.scandir(fd) as entries:
+    for entry in entries:
+     if entry.name=='.paperclip-editor.lock':continue
+     if scanned>=limit:truncated=True;break
+     scanned+=1
+     if entry.is_symlink():continue
+     try:info=entry.stat(follow_symlinks=False)
+     except FileNotFoundError:continue
+     if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):continue
+     out.append({'name':entry.name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000})
+   print(json.dumps({'entries':out,'truncated':truncated}))
   finally:os.close(fd)
+ elif act=='stat':
+  parentfd,name=parent(path)
+  try:info=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+  finally:os.close(parentfd)
+  if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):fail('invalid')
+  print(json.dumps({'name':name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000}))
  elif act=='read':
   parentfd,name=parent(path)
   try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)

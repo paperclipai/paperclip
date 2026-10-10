@@ -41,7 +41,7 @@ export async function readPersistentAgentFile(files: NonNullable<Awaited<ReturnT
 /** First attachment only. Existing directories are adopted, including empty ones.
  * Later turns never read/upload the controller copy of personal files. */
 export async function seedPersistentAgentHome(files: NonNullable<Awaited<ReturnType<typeof persistentAgentFiles>>>, localRoot: string) {
-  try { await files.list(); return; }
+  try { await files.listPage("", { limit: 1 }); return; }
   catch (error) { if (!isMissingRemoteFile(error)) throw error; }
   const seed: Record<string, Buffer> = {};
   let total = 0, count = 0;

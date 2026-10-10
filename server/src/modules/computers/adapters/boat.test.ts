@@ -199,12 +199,47 @@ describe("confined computer files", () => {
         expectedSha256: second.sha256,
       }),
     ).toEqual({ sha256: second.sha256 });
-    expect(f.call({ action: "list" }).map((e: any) => e.name)).toEqual([
+    expect(f.call({ action: "list" }).entries.map((e: any) => e.name)).toEqual([
       "other",
     ]);
     expect(
       f.call({ action: "remove", path: "other", expectedSha256: first.sha256 }),
     ).toEqual({ error: "conflict" });
+  });
+  it("bounds directory enumeration and stats files beyond the listing cap", () => {
+    const f = fixture();
+    f.call({ action: "seed", files: {} });
+    for (let i = 0; i < 1005; i++) writeFileSync(join(f.root, `file-${i}`), "content");
+    const page = f.call({ action: "list" });
+    expect(page.entries).toHaveLength(1000);
+    expect(page.truncated).toBe(true);
+    const omitted = Array.from({ length: 1005 }, (_, i) => `file-${i}`).find(name => !page.entries.some((entry: { name: string }) => entry.name === name))!;
+    expect(f.call({ action: "stat", path: omitted })).toMatchObject({ name: omitted, kind: "file", size: 7 });
+    expect(f.call({ action: "list", limit: 2 }).entries).toHaveLength(2);
+    expect(f.call({ action: "list", limit: 1001 })).toEqual({ error: "invalid" });
+  });
+  it.each([false, true])("uses the requested worktree branch separately from its start ref (explicit base: %s)", explicitBase => {
+    const f = fixture();
+    const checkout = join(f.root, "checkout");
+    mkdirSync(checkout, { recursive: true });
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: checkout, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    git("init");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base");
+    const base = git("rev-parse", "HEAD");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "latest");
+    const expectedHead = explicitBase ? base : git("rev-parse", "HEAD");
+    const input = { action: "workspace", mode: "worktree", taskId: "issue-1", branch: "paperclip/task-issue-1", ...(explicitBase ? { baseRef: base } : {}) };
+    const result = f.call(input);
+    expect(result.remoteCwd).toBe(join(f.root, "tasks", "issue-1"));
+    expect(git("-C", result.remoteCwd, "symbolic-ref", "--short", "HEAD")).toBe(input.branch);
+    expect(git("-C", result.remoteCwd, "rev-parse", "HEAD")).toBe(expectedHead);
+    writeFileSync(join(result.remoteCwd, "preserved"), "user work");
+    expect(f.call({ ...input, branch: "another-branch" })).toEqual({ error: "conflict" });
+    expect(git("-C", result.remoteCwd, "status", "--short")).toContain("preserved");
   });
   it("roundtrips binary bytes without interpreting text", () => {
     const f = fixture();

@@ -1061,12 +1061,15 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
     throwIfDenied(normalized.segments);
     const files = await placementFiles(candidate);
     if (directory) {
-      await files.list(normalized.relativePath);
+      if (normalized.relativePath) {
+        if ((await files.stat(normalized.relativePath)).kind !== "directory") throw notFound("Workspace directory not found");
+      } else {
+        await files.listPage("", { limit: 1 });
+      }
       return directoryResource({ candidate, relativePath: normalized.relativePath });
     }
-    const parent = path.posix.dirname(normalized.relativePath);
-    const entry = (await files.list(parent === "." ? undefined : parent)).find(item => item.name === path.posix.basename(normalized.relativePath));
-    if (!entry || entry.kind !== "file") throw notFound("Workspace file not found");
+    const entry = await files.stat(normalized.relativePath);
+    if (entry.kind !== "file") throw notFound("Workspace file not found");
     const item = listItemFromStat({ candidate, relativePath: normalized.relativePath,
       stat: { size: entry.size, mtime: new Date(entry.mtimeMs) } })!;
     const { relativePath: _relative, modifiedAt: _modified, ...resource } = item;
@@ -1092,7 +1095,11 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
     const recursive = mode === "recent" || Boolean(normalizedQuery);
     async function walk(relative: string, depth: number) {
       if (depth > MAX_LIST_DEPTH) { truncated = true; return; }
-      for (const entry of await files.list(relative || undefined)) {
+      const remaining = WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES - scannedCount;
+      if (remaining <= 0) { truncated = true; return; }
+      const page = await files.listPage(relative || undefined, { limit: Math.min(1000, remaining) });
+      truncated ||= page.truncated;
+      for (const entry of page.entries) {
         if (++scannedCount > WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES) { truncated = true; return; }
         const name = relative ? `${relative}/${entry.name}` : entry.name;
         const normalized = normalizeWorkspaceRelativePath(name);
@@ -1103,7 +1110,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
         } else if (matchesSearch(name, normalizedQuery)) {
           items.push(listItemFromStat({ candidate, relativePath: name, stat: { size: entry.size, mtime: new Date(entry.mtimeMs) } })!);
         }
-        if (truncated) return;
+        if (scannedCount >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES) { truncated = true; return; }
       }
     }
     await walk(normalizedPath?.relativePath ?? "", 0);

@@ -681,15 +681,19 @@ finally:
       ) {
         return writeBytes(path, Buffer.from(content), expectedSha256);
       },
-      async list(path = ""): Promise<
-        Array<{
-          name: string;
-          kind: "file" | "directory";
-          size: number;
-          mtimeMs: number;
-        }>
-      > {
-        return remote({ action: "list", path });
+      async listPage(path = "", options: { limit?: number } = {}): Promise<{
+        entries: Array<{ name: string; kind: "file" | "directory"; size: number; mtimeMs: number }>;
+        truncated: boolean;
+      }> {
+        return remote({ action: "list", path, limit: options.limit ?? 1000 });
+      },
+      async list(path = "") {
+        const page = await this.listPage(path);
+        if (page.truncated) throw new ComputerError("invalid", "Computer directory exceeds the listing limit");
+        return page.entries;
+      },
+      async stat(path: string): Promise<{ name: string; kind: "file" | "directory"; size: number; mtimeMs: number }> {
+        return remote({ action: "stat", path });
       },
       async remove(path: string, expectedSha256: string) {
         await remote({ action: "remove", path, expectedSha256 });

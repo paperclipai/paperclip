@@ -79,9 +79,9 @@ describe("persistent agent directories", () => {
     const remoteRoot = "/home/user/paperclip/test/agents/target";
     let exists = false;
     const seedBytes = vi.fn(async () => { exists = true; });
-    const remote = { root: remoteRoot, list: async () => {
+    const remote = { root: remoteRoot, listPage: async () => {
       if (!exists) throw { code: "not_found" };
-      return [];
+      return { entries: [], truncated: false };
     }, seedBytes };
     const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
     const environmentId = randomUUID();
@@ -129,7 +129,7 @@ describe("persistent agent directories", () => {
       remoteFiles.set(relative, bytes); return { sha256: fileHash(bytes) };
     });
     const seedBytes = vi.fn();
-    const remote = { root: remoteRoot, list: async () => [], readBytes, writeBytes, seedBytes };
+    const remote = { root: remoteRoot, list: async () => [], listPage: async () => ({ entries: [], truncated: false }), readBytes, writeBytes, seedBytes };
     const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
     const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand");
     try {
