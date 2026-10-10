@@ -822,7 +822,7 @@ function StreamlinedIssuesList({
       initialStatuses,
     ),
   );
-  const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
+  const [assigneePickerKey, setAssigneePickerKey] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
@@ -1730,7 +1730,7 @@ function StreamlinedIssuesList({
 
   const assignIssue = useCallback((issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
     onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });
-    setAssigneePickerIssueId(null);
+    setAssigneePickerKey(null);
     setAssigneeSearch("");
   }, [onUpdateIssue]);
 
@@ -2128,6 +2128,127 @@ function StreamlinedIssuesList({
                         : viewState.collapsedParents.filter((id) => id !== issue.id),
                     });
                   };
+                  // One picker definition, rendered per surface: the desktop assignee column and the
+                  // mobile meta line each mount their own Radix instance, keyed by surface so only the
+                  // tapped one opens.
+                  const renderAssigneePicker = (surface: "desktop" | "mobile") => {
+                    const pickerKey = `${surface}:${issue.id}`;
+                    // Same guard the inline trailing column used: an assignee id with no
+                    // matching agent record falls through to the user/unassigned branches.
+                    const assigneeAgent = issue.assigneeAgentId && agentName(issue.assigneeAgentId)
+                      ? agents?.find((agent) => agent.id === issue.assigneeAgentId)
+                      : undefined;
+                    return (
+                      <Popover
+                        open={assigneePickerKey === pickerKey}
+                        onOpenChange={(open) => {
+                          setAssigneePickerKey(open ? pickerKey : null);
+                          if (!open) setAssigneeSearch("");
+                        }}
+                      >
+                        <PopoverTrigger asChild>
+                          <button
+                            // Explicit rather than inherited from Radix's Primitive.button default.
+                            type="button"
+                            data-testid={surface === "mobile" ? "issue-row-mobile-assignee" : undefined}
+                            className={surface === "mobile"
+                              ? "inline-flex min-w-0 max-w-full items-center overflow-hidden rounded-md px-1 py-0.5 text-start transition-colors hover:bg-accent/50"
+                              : "flex w-full shrink-0 items-center overflow-hidden rounded-md px-2 py-1 transition-colors hover:bg-accent/50"}
+                            // The row's overlay link is a sibling of this button, never an ancestor, so
+                            // stopPropagation is what keeps the row from navigating. preventDefault here
+                            // would only cancel Radix's own trigger toggle, and the popover could never
+                            // open.
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {assigneeAgent ? (
+                              <AgentIdentity agent={assigneeAgent} size="sm" className="min-w-0" />
+                            ) : issue.assigneeUserId ? (
+                              <Identity
+                                name={assigneeUserLabel ?? "User"}
+                                avatarUrl={assigneeUserProfile?.image ?? null}
+                                size="sm"
+                                className="min-w-0"
+                              />
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                  <User className="h-3.5 w-3.5" />
+                                </span>
+                                Assignee
+                              </span>
+                            )}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          className="w-56 p-1"
+                          align="end"
+                          onClick={(e) => e.stopPropagation()}
+                          onPointerDownOutside={() => setAssigneeSearch("")}
+                        >
+                          <input
+                            className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+                            placeholder="Search responsible..."
+                            value={assigneeSearch}
+                            onChange={(e) => setAssigneeSearch(e.target.value)}
+                            // The soft keyboard would cover the agent list on the mobile surface.
+                            autoFocus={surface === "desktop"}
+                          />
+                          <div className="max-h-48 overflow-y-auto overscroll-contain">
+                            <button
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                                !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
+                              )}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                assignIssue(issue.id, null, null);
+                              }}
+                            >
+                              No responsible
+                            </button>
+                            {currentUserId && (
+                              <button
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                  issue.assigneeUserId === currentUserId && "bg-accent",
+                                )}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  assignIssue(issue.id, null, currentUserId);
+                                }}
+                              >
+                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <span>Me</span>
+                              </button>
+                            )}
+                            {(agents ?? [])
+                              .filter((agent) => {
+                                if (!assigneeSearch.trim()) return true;
+                                return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
+                              })
+                              .map((agent) => (
+                                <button
+                                  key={agent.id}
+                                  className={cn(
+                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                    issue.assigneeAgentId === agent.id && "bg-accent",
+                                  )}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    assignIssue(issue.id, agent.id, null);
+                                  }}
+                                >
+                                  <AgentIdentity agent={agent} size="sm" className="min-w-0" />
+                                </button>
+                              ))}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    );
+                  };
                   const checklistMeta = workflowChecklistMeta;
                   const checklistStepNumber = checklistMeta?.stepNumberByIssueId.get(issue.id) ?? null;
                   const unresolvedVisibleBlockers = checklistMeta?.unresolvedVisibleBlockersByIssueId.get(issue.id) ?? [];
@@ -2319,7 +2440,9 @@ function StreamlinedIssuesList({
                           </>
                         ) : undefined}
                         mobileTitleMeta={rowPresentation === "task" ? issueActivityTimestamp(issue) : undefined}
-                        mobileMeta={rowPresentation === "legacy" ? issueActivityText(issue).toLowerCase() : undefined}
+                        mobileMeta={rowPresentation === "legacy"
+                          ? issueActivityText(issue).toLowerCase()
+                          : renderAssigneePicker("mobile")}
                         trailingMeta={rowPresentation === "task"
                           && visibleIssueColumnSet.has("updated")
                           && availableIssueColumnSet.has("updated")
@@ -2351,106 +2474,7 @@ function StreamlinedIssuesList({
                               currentUserId={currentUserId}
                               parentIdentifier={parentIssue?.identifier ?? null}
                               parentTitle={parentIssue?.title ?? null}
-                              assigneeContent={(
-                                <Popover
-                                  open={assigneePickerIssueId === issue.id}
-                                  onOpenChange={(open) => {
-                                    setAssigneePickerIssueId(open ? issue.id : null);
-                                    if (!open) setAssigneeSearch("");
-                                  }}
-                                >
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      className="flex w-full shrink-0 items-center overflow-hidden rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
-                                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                    >
-                                      {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                                        <AgentIdentity agent={agents!.find((agent) => agent.id === issue.assigneeAgentId)!} size="sm" className="min-w-0" />
-                                      ) : issue.assigneeUserId ? (
-                                        <Identity
-                                          name={assigneeUserLabel ?? "User"}
-                                          avatarUrl={assigneeUserProfile?.image ?? null}
-                                          size="sm"
-                                          className="min-w-0"
-                                        />
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                                          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                            <User className="h-3.5 w-3.5" />
-                                          </span>
-                                          Assignee
-                                        </span>
-                                      )}
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent
-                                    className="w-56 p-1"
-                                    align="end"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onPointerDownOutside={() => setAssigneeSearch("")}
-                                  >
-                                    <input
-                                      className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search responsible..."
-                                      value={assigneeSearch}
-                                      onChange={(e) => setAssigneeSearch(e.target.value)}
-                                      autoFocus
-                                    />
-                                    <div className="max-h-48 overflow-y-auto overscroll-contain">
-                                      <button
-                                        className={cn(
-                                          "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                                          !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
-                                        )}
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          assignIssue(issue.id, null, null);
-                                        }}
-                                      >
-                                        No responsible
-                                      </button>
-                                      {currentUserId && (
-                                        <button
-                                          className={cn(
-                                            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                            issue.assigneeUserId === currentUserId && "bg-accent",
-                                          )}
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            assignIssue(issue.id, null, currentUserId);
-                                          }}
-                                        >
-                                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
-                                        </button>
-                                      )}
-                                      {(agents ?? [])
-                                        .filter((agent) => {
-                                          if (!assigneeSearch.trim()) return true;
-                                          return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
-                                        })
-                                        .map((agent) => (
-                                          <button
-                                            key={agent.id}
-                                            className={cn(
-                                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                              issue.assigneeAgentId === agent.id && "bg-accent",
-                                            )}
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              e.stopPropagation();
-                                              assignIssue(issue.id, agent.id, null);
-                                            }}
-                                          >
-                                            <AgentIdentity agent={agent} size="sm" className="min-w-0" />
-                                          </button>
-                                        ))}
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              )}
+                              assigneeContent={renderAssigneePicker("desktop")}
                             />
                           ) : undefined
                         )}

@@ -164,6 +164,40 @@ describe("IssueRow", () => {
     act(() => root.unmount());
   });
 
+  it("names the canonical mobile meta slots and keeps the trailing grid desktop-only", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-43", title: "Canonical task" })}
+          presentation="task"
+          mobileTitleMeta="2h ago"
+          mobileMeta={<button type="button">Assignee</button>}
+          trailingMeta="Updated now"
+          showIdentifier
+        />,
+      );
+    });
+
+    const row = container.querySelector('[data-slot="task-row"]');
+    const mobileMeta = row?.querySelector('[data-slot="task-row-mobile-meta"]');
+    const mobileTitleMeta = row?.querySelector('[data-slot="task-row-mobile-title-meta"]');
+    const trailing = row?.querySelector('[data-slot="task-row-trailing"]');
+
+    expect(mobileMeta?.textContent).toBe("Assignee");
+    expect(mobileTitleMeta?.textContent).toBe("2h ago");
+    // Both mobile slots stay mobile-only, and the trailing identifier/timestamp grid
+    // stays desktop-only: the mobile meta line is the only assignee surface on a phone.
+    expect(mobileMeta?.className).toContain("sm:hidden");
+    expect(mobileTitleMeta?.className).toContain("sm:hidden");
+    expect(trailing?.className).toContain("hidden");
+    expect(trailing?.className).toContain("sm:flex");
+    expect(trailing?.contains(mobileMeta ?? null)).toBe(false);
+
+    act(() => root.unmount());
+  });
+
   it("keeps the canonical archive action within the shared task-row height", () => {
     const root = createRoot(container);
 
