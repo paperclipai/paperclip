@@ -3553,6 +3553,13 @@ export function buildHostServices(
 
             if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
               notifyWorker("agents.sessions.event", {
+                // `companyId` is the company of the run that produced this
+                // event, not anything the worker supplied. The worker manager
+                // reads it to mint the invocation scope the plugin's session
+                // callback runs inside, so a host write made from that callback
+                // is confined to this one company instead of taking the
+                // proactive path's wider configured-company set.
+                companyId,
                 sessionId: params.sessionId,
                 runId: run.id,
                 seq: (payload.seq as number) ?? 0,
@@ -3565,6 +3572,7 @@ export function buildHostServices(
               const status = payload.status as string;
               if (TERMINAL_STATUSES.has(status)) {
                 notifyWorker("agents.sessions.event", {
+                  companyId,
                   sessionId: params.sessionId,
                   runId: run.id,
                   seq: 0,
@@ -3578,6 +3586,7 @@ export function buildHostServices(
                 cleanup();
               } else {
                 notifyWorker("agents.sessions.event", {
+                  companyId,
                   sessionId: params.sessionId,
                   runId: run.id,
                   seq: 0,

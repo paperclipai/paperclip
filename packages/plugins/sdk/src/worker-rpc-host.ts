@@ -2334,6 +2334,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       } else if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
+        // Run the callback inside the invocation the host stamped on the
+        // notification, exactly like `onEvent` below. Without this the callback
+        // runs with no invocation restored, so every host call it makes takes
+        // the proactive path — admitted for any company the plugin is
+        // configured for, rather than the single company of the run that
+        // produced the event.
         if (cb) void runNotification(() => cb(event)).catch((err) => {
           notifyHost("log", {
             level: "error",
