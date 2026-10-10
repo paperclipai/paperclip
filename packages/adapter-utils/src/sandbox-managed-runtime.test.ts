@@ -2156,7 +2156,15 @@ describe("sandbox managed runtime", () => {
     // `.paperclip-runtime` while replacing the rest of the tree (wipe-except-preserved).
     const gitCommand = op.postUploadCommands![0].command;
     expect(gitCommand).toContain(".paperclip-runtime");
-    expect(gitCommand).toContain("tar -xf");
+    expect(gitCommand).toContain("tar --no-same-owner -xf");
+    // Sandboxes often execute as root. A root `tar -x` restores the host uid on every entry, and git then
+    // rejects the workspace ("detected dubious ownership"); the GitHub launcher blanks system/global git
+    // config, so `safe.directory` cannot fix it. Extracted files must belong to the sandbox user instead.
+    const extractCommands = op.postUploadCommands!.filter((entry) => /\btar\b[^&]*-xf/.test(entry.command));
+    expect(extractCommands.length).toBeGreaterThanOrEqual(2);
+    for (const { command } of extractCommands) {
+      expect(command).toContain("--no-same-owner");
+    }
 
     // The pre-seeded runtime dir survived the git+workspace staging.
     await expect(
@@ -2164,6 +2172,14 @@ describe("sandbox managed runtime", () => {
     ).resolves.toBe("keep\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("tracked\n");
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+
+    // `.paperclip-runtime` holds the agent's managed HOME and adapter config. Git inside the sandbox must
+    // not offer it for commit, or an agent's `git add -A` would put runtime credentials into history.
+    const untracked = await git(remoteWorkspaceDir, ["status", "--porcelain", "--untracked-files=all"]);
+    expect(untracked).not.toContain(".paperclip-runtime");
+    await expect(readFile(path.join(remoteWorkspaceDir, ".git", "info", "exclude"), "utf8")).resolves.toContain(
+      "/.paperclip-runtime/",
+    );
   });
 
   it("the workspace wipe command preserves in-flight sync scratch tarballs (.paperclip-upload-*)", async () => {

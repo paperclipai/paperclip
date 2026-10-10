@@ -652,10 +652,30 @@ function buildWorkspaceTarExtractCommand(input: {
     ? ` && find ${shellQuote(input.workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ` +
       `${preserveFindArgs([...input.wipeExceptNames, ".paperclip-upload-*"])} -exec rm -rf -- {} +`
     : "";
+  // `--no-same-owner`: sandboxes often execute as root, and a root extract would restore the host uid on
+  // every entry. Git then rejects the workspace ("detected dubious ownership"), and the GitHub launcher
+  // blanks system/global git config, so `safe.directory` cannot help. Files belong to the sandbox user.
   return (
     `mkdir -p ${shellQuote(input.workspaceRemoteDir)}${wipe} && ` +
-    `tar -xf ${shellQuote(input.remoteTar)} -C ${shellQuote(input.workspaceRemoteDir)} && ` +
+    `tar --no-same-owner -xf ${shellQuote(input.remoteTar)} -C ${shellQuote(input.workspaceRemoteDir)} && ` +
+    `${buildRuntimeDirGitExcludeCommand(input.workspaceRemoteDir)} && ` +
     `rm -f ${shellQuote(input.remoteTar)}`
+  );
+}
+
+const RUNTIME_DIR_GIT_EXCLUDE_ENTRY = "/.paperclip-runtime/";
+
+// Named builder (C3): hide `.paperclip-runtime` (the agent's managed HOME and adapter config) from git in the
+// sandbox, so an agent's `git add -A` cannot commit runtime credentials. `.git/info/exclude` is repo-local and
+// never committed, and git still reads it when the GitHub launcher blanks system/global config. Idempotent;
+// a workspace without its own `.git` directory (e.g. no git history uploaded) is left untouched.
+function buildRuntimeDirGitExcludeCommand(workspaceRemoteDir: string): string {
+  const gitDir = shellQuote(path.posix.join(workspaceRemoteDir, ".git"));
+  const excludeFile = shellQuote(path.posix.join(workspaceRemoteDir, ".git", "info", "exclude"));
+  const entry = shellQuote(RUNTIME_DIR_GIT_EXCLUDE_ENTRY);
+  return (
+    `{ if [ -d ${gitDir} ]; then mkdir -p ${gitDir}/info && ` +
+    `{ grep -qxF ${entry} ${excludeFile} 2>/dev/null || printf '\\n%s\\n' ${entry} >> ${excludeFile}; }; fi; }`
   );
 }
 
