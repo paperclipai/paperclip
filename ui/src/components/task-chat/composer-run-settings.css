@@ -1,0 +1,110 @@
+.composer-run-effort-range {
+  display: block;
+  appearance: none;
+  height: var(--composer-effort-track-height);
+  border-radius: var(--radius-4xl);
+  background: linear-gradient(to right, var(--tc-mode-ask) var(--fill), var(--muted) var(--fill));
+  cursor: pointer;
+  /* Native input outlines cross the thumb because the input is track-height. */
+  outline: none;
+}
+
+.composer-run-effort-range::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--composer-effort-thumb-size);
+  height: var(--composer-effort-thumb-size);
+  border: 0;
+  border-radius: 50%;
+  background: var(--tc-mode-ask);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out), box-shadow var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.composer-run-effort-range::-moz-range-thumb {
+  width: var(--composer-effort-thumb-size);
+  height: var(--composer-effort-thumb-size);
+  border: 0;
+  border-radius: 50%;
+  background: var(--tc-mode-ask);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out), box-shadow var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+/* Keep native pointer and keyboard behavior; animate only the thumb feedback. */
+.composer-run-effort-range:hover::-webkit-slider-thumb,
+.composer-run-effort-range:focus-visible::-webkit-slider-thumb {
+  transform: scale(var(--composer-effort-hover-scale));
+  box-shadow: var(--shadow-sm), var(--composer-effort-halo);
+}
+.composer-run-effort-range:hover::-moz-range-thumb,
+.composer-run-effort-range:focus-visible::-moz-range-thumb {
+  transform: scale(var(--composer-effort-hover-scale));
+  box-shadow: var(--shadow-sm), var(--composer-effort-halo);
+}
+.composer-run-effort-range:active::-webkit-slider-thumb { transform: scale(var(--composer-effort-press-scale)); }
+.composer-run-effort-range:active::-moz-range-thumb { transform: scale(var(--composer-effort-press-scale)); }
+
+.composer-run-settings-accent { color: var(--tc-mode-ask); }
+.composer-run-settings-height { overflow: hidden; transition: height var(--motion-duration-base) var(--motion-ease-out); }
+.composer-mobile-dialog {
+  top: max(calc(var(--spacing) * 4), env(safe-area-inset-top));
+  width: calc(100vw - var(--spacing) * 4);
+  max-width: calc(var(--spacing) * 96);
+  max-height: calc(
+    var(--mobile-entity-picker-visual-viewport-height)
+    - max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+    - max(calc(var(--spacing) * 4), env(safe-area-inset-bottom))
+  );
+  animation: none;
+}
+
+/* Let the live viewport constrain the list; a measured animation height would
+   keep it clipped when the software keyboard opens or the picker view changes. */
+.composer-mobile-dialog .composer-run-settings-height {
+  display: flex;
+  height: auto !important;
+  min-height: 0;
+  max-height: inherit;
+}
+
+.composer-mobile-dialog .composer-run-settings-height > div {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+
+.composer-mobile-dialog .composer-run-settings-list-view {
+  display: flex;
+  min-height: 0;
+  width: 100%;
+  flex-direction: column;
+}
+
+.composer-mobile-dialog .composer-run-settings-list-view > :not([role="listbox"]) {
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-run-settings-height { transition: none; }
+  .composer-run-effort-range::-webkit-slider-thumb,
+  .composer-run-effort-range:hover::-webkit-slider-thumb,
+  .composer-run-effort-range:focus-visible::-webkit-slider-thumb,
+  .composer-run-effort-range:active::-webkit-slider-thumb { transition: none; transform: none; }
+  .composer-run-effort-range::-moz-range-thumb,
+  .composer-run-effort-range:hover::-moz-range-thumb,
+  .composer-run-effort-range:focus-visible::-moz-range-thumb,
+  .composer-run-effort-range:active::-moz-range-thumb { transition: none; transform: none; }
+}
+
+/* Forced colors suppress shadows, so keep keyboard focus on the thumb. */
+@media (forced-colors: active) {
+  .composer-run-effort-range:focus-visible::-webkit-slider-thumb {
+    outline: calc(var(--spacing) * 0.5) solid Highlight;
+    outline-offset: calc(var(--spacing) * 0.5);
+  }
+  .composer-run-effort-range:focus-visible::-moz-range-thumb {
+    outline: calc(var(--spacing) * 0.5) solid Highlight;
+    outline-offset: calc(var(--spacing) * 0.5);
+  }
+}

@@ -1,0 +1,779 @@
+import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
+
+import {
+  activityLog,
+  agents,
+  authUsers,
+  companies,
+  companyMemberships,
+  createDb,
+  heartbeatRuns,
+  heartbeatRunEvents,
+  issueComments,
+  issueQuestionResponseDeliveries,
+  issueThreadInteractions,
+  issues,
+  nativeRunFinalizations,
+} from "@paperclipai/db";
+import type { PrpEvent } from "@paperclipai/paperclip-runner";
+import { respondIssueThreadInteractionSchema } from "@paperclipai/shared";
+
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "../../__tests__/helpers/drain-heartbeat-runs.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import {
+  deliverNativeQuestionResponse,
+  flushNativeQuestionResponses,
+  nativeQuestionBridgeInternals,
+  nativeQuestionRunToCancel,
+  projectNativeRuntimeRequest,
+  registerNativeQuestionCommandTarget,
+  requestNativeQuestionRunCancellation,
+  validateNativeQuestionResponseInput,
+} from "./native-question-bridge.js";
+import {
+  executeIssuePostCommitActions,
+  issueService,
+  type IssuePostCommitAction,
+} from "../issues.js";
+import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import * as questionPatternValidation from "../question-pattern-validation.js";
+import { heartbeatService } from "../heartbeat.js";
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { readPendingNativeRuntimeRequest } from "./runtime-request-resolution-authority.js";
+import {
+  queueRunnerPrpRuntimeRequestResolution,
+  registerRunnerPrpAuthority,
+  setupRunnerPrpWebSocketServer,
+} from "../../realtime/runner-prp-ws.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping native question bridge tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("native question bridge", () => {
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
+  let companyId: string;
+  let issueId: string;
+  let agentId: string;
+  let runId: string;
+  let sessionId: string;
+  let runnerInstanceId: string;
+
+  beforeAll(async () => {
+    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-question-");
+    db = createDb(temporary.connectionString);
+    heartbeat = heartbeatService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    // A cancelled or reaped run can promote and dispatch its agent's next
+    // queued run fire-and-forget (see startNextQueuedRunForAgent in
+    // heartbeat.ts), so that dispatch can still be writing heartbeat_runs,
+    // issues, or activity_log rows when this hook starts. Drain every
+    // in-flight run to quiescence first, or its late write races the
+    // TRUNCATE below and can deadlock.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    nativeQuestionBridgeInternals.resetForTests();
+    await db.execute(sql.raw(`
+      TRUNCATE TABLE
+        "activity_log",
+        "issue_thread_interactions",
+        "heartbeat_runs",
+        "agent_wakeup_requests",
+        "issues",
+        "agents",
+        "companies"
+      RESTART IDENTITY CASCADE
+    `));
+  });
+
+  afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
+    await temporary?.cleanup();
+  });
+
+  async function seed() {
+    companyId = randomUUID();
+    issueId = randomUUID();
+    agentId = randomUUID();
+    runId = randomUUID();
+    sessionId = randomUUID();
+    runnerInstanceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Native questions",
+      issuePrefix: `NQ${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({
+      id: "operator-1", name: "Operator", email: "operator-1@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "operator-1", status: "active", membershipRole: "member",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Native Codex",
+      adapterType: "paperclip_runner",
+      status: "running",
+      adapterConfig: { provider: "codex" },
+      runtimeConfig: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Answer a native question",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      responsibleUserId: "operator-1",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      nativeIssueId: issueId,
+      nativeSessionId: sessionId,
+      runnerInstanceId,
+      driverKind: "codex",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "observed",
+    });
+  }
+
+  function runtimeRequestEvent(): PrpEvent {
+    return {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "runtime-question-1",
+      sourceSeq: 1,
+      sourceInstanceId: runnerInstanceId,
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: sessionId,
+      turnId: "turn-1",
+      itemId: "item-1",
+      eventType: "runtime_request.created",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-25T18:00:00.000Z",
+      payload: {
+        request: {
+          schema: "paperclip.runtime_request.v2",
+          requestKind: "runtime",
+          requestId: "request-1",
+          type: "input",
+          status: "pending",
+          prompt: "Choose a deployment color",
+          input: {
+            schema: "paperclip.question_set.v1",
+            title: "Deployment",
+            questions: [{
+              id: "color",
+              prompt: "Which color?",
+              required: true,
+              answerMode: "single_select",
+              options: [
+                { id: "blue", label: "Blue" },
+                { id: "green", label: "Green" },
+              ],
+            }],
+          },
+        },
+      },
+    };
+  }
+
+  function binding() {
+    return {
+      companyId,
+      issueId,
+      runId,
+      agentId,
+      normalizedSessionId: sessionId,
+      runnerSourceInstanceId: runnerInstanceId,
+      completionContractId: randomUUID(),
+      completionContractSha256: `sha256:${"a".repeat(64)}`,
+      completionContractRevision: "1",
+      completionContractCriterionIds: [],
+    };
+  }
+
+  function permissionRequestEvent(): PrpEvent {
+    return { ...runtimeRequestEvent(), payload: { request: {
+      schema: "paperclip.runtime_request.v2", requestKind: "permission_approval",
+      requestId: "permission-1", turnId: "turn-1", itemId: "item-1",
+      type: "permission", status: "pending", prompt: "Allow editing src/example.ts?",
+      choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+      details: { toolCallId: "tool-1" },
+      origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+    } } };
+  }
+
+  it("commits and acknowledges an ACP permission, then queues only an admin's exact turn-bound decision", async () => {
+    await seed();
+    const event = permissionRequestEvent();
+    const projection = vi.fn(async (committed: PrpEvent) => {
+      await projectNativeRuntimeRequest({ db, binding: binding(), event: committed });
+    });
+    const port = new PaperclipControlPlanePort(db, {
+      companyId, issueId, runId, agentId, sessionId,
+      completionContractId: binding().completionContractId,
+      completionContractSha256: binding().completionContractSha256,
+      sourceInstanceId: runnerInstanceId, controlPlaneSourceInstanceId: "control-1",
+    }, { onCommittedEvent: projection });
+    const receipt = await port.appendEvent(event);
+    expect(receipt).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
+    expect(projection).toHaveBeenCalledOnce();
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    const [persisted] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    expect(persisted?.payload).toEqual({ prpEvent: event }); // task-chat's exact source, with only offered decisions
+    expect(await port.appendEvent(event)).toMatchObject({ disposition: "duplicate" });
+    const pending = await readPendingNativeRuntimeRequest(db, { companyId, runId, requestId: "permission-1" });
+    expect(pending).toMatchObject({ requestKind: "permission_approval", turnId: "turn-1", resolverPolicy: "instance_admin" });
+    expect(await readPendingNativeRuntimeRequest(db, { companyId: randomUUID(), runId, requestId: "permission-1" })).toBeNull();
+
+    const stateDirectory = mkdtempSync(join(tmpdir(), "native-permission-authority-"));
+    const server = createServer();
+    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    const authority = new DurablePrpControlPlane({
+      stateDirectory,
+      identity: { runnerInstanceId, environmentLeaseId: "lease-1", runId, normalizedSessionId: sessionId, turnId: "turn-1", itemId: "item-1" },
+      expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+    });
+    const registration = await registerRunnerPrpAuthority({ companyId, runId, authority });
+    try {
+      const commandInput = { companyId, runId, pendingRequest: pending!, resolution: { action: "accept" as const },
+        actor: { type: "user" as const, userId: "admin-1", isInstanceAdmin: true } };
+      expect(() => queueRunnerPrpRuntimeRequestResolution({ ...commandInput, actor: { ...commandInput.actor, isInstanceAdmin: false } }))
+        .toThrow("native_runtime_request_resolver_denied");
+      expect(() => queueRunnerPrpRuntimeRequestResolution({ ...commandInput, companyId: randomUUID() }))
+        .toThrow("runner_prp_authority_not_active");
+      const queued = queueRunnerPrpRuntimeRequestResolution(commandInput);
+      expect(queueRunnerPrpRuntimeRequestResolution(commandInput)).toEqual(queued);
+      expect(authority.store.state.commands).toHaveLength(1);
+      expect(authority.store.state.commands[0]).toMatchObject({ type: "request.resolve", payload: {
+        requestId: "permission-1", requestKind: "permission_approval", turnId: "turn-1",
+        resolution: { action: "accept" }, resolutionActor: commandInput.actor,
+      } });
+      expect(() => queueRunnerPrpRuntimeRequestResolution({ ...commandInput, resolution: { action: "decline" } }))
+        .toThrow("runtime_request_resolution_conflict");
+      // Queueing is not delivery: only the runner's post-write receipt closes
+      // the request. ACP sidecar delivery tests exercise that provider edge.
+      expect(await readPendingNativeRuntimeRequest(db, { companyId, runId, requestId: "permission-1" })).toEqual(pending);
+      await port.appendEvent({ ...event, sourceEventId: "permission-delivered", sourceSeq: 2,
+        eventType: "runtime_request.resolved", payload: { requestId: "permission-1", requestKind: "permission_approval",
+          turnId: "turn-1", itemId: "item-1", status: "delivered", action: "accept" } });
+      expect(await readPendingNativeRuntimeRequest(db, { companyId, runId, requestId: "permission-1" })).toBeNull();
+    } finally {
+      await registration.release();
+      await authority.stop();
+      server.close();
+      rmSync(stateDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { requestKind: "runtime" }, { type: "input" }, { turnId: "stale-turn" }, { itemId: "wrong-item" },
+    { choices: [] }, { choices: [{ key: "allow_forever", label: "Always" }] },
+    { choices: [{ key: "accept", label: "One" }, { key: "accept", label: "Two" }] },
+  ])("rejects a malformed permission projection %j", async (override) => {
+    await seed();
+    const event = permissionRequestEvent();
+    Object.assign(event.payload.request as object, override);
+    await expect(projectNativeRuntimeRequest({ db, binding: binding(), event })).rejects.toThrow(/native_runtime_/);
+  });
+
+  it("projects an executor question immediately and routes its durable answer into the same live turn", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 1,
+      eventType: event.eventType, stream: "system", level: "info", payload: { prpEvent: event } });
+    const resolve = vi.fn(async (input: any) => { await input.authorizeBeforeDispatch(); return { commandId: "live-response" }; });
+    const bridge = createLocalNativeQuestionBridge({ db, binding: binding(), resolve });
+    try {
+      await bridge.attach();
+      await bridge.observe(event);
+      await bridge.observe(event); // replay must not create a second card
+      const cards = await issueThreadInteractionService(db).listForIssue(issueId);
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "pending", sourceRunId: runId, continuationPolicy: "none" });
+      const answered = await issueThreadInteractionService(db).answerQuestions(
+        { id: issueId, companyId, status: "in_progress" }, cards[0]!.id,
+        { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" },
+      );
+      if (answered.kind !== "ask_user_questions") throw new Error("wrong question kind");
+      expect(await deliverNativeQuestionResponse(db, answered)).toBe("queued");
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1",
+        resolution: { action: "submit", response: { schema: "paperclip.question_response.v1", answers: { color: { selectedOptionIds: ["green"] } } } },
+      }));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+      await expect(resolve.mock.calls[0]![0].authorizeBeforeDispatch()).rejects.toThrow("native_question_not_pending");
+    } finally { bridge.close(); }
+  });
+
+  it("delivers saved answers without entering pattern validation again", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    (event.payload.request as any).input.questions = [{ id: "url", prompt: "URL?", required: true, answerMode: "text" }];
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    const answered = await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      { answers: [{ questionId: "url", optionIds: [], otherText: "https://example.test" }] }, { userId: "operator-1" },
+    );
+    if (answered.kind !== "ask_user_questions") throw new Error("expected questions");
+    const queueCommand = vi.fn(() => ({ commandId: "question", controllerSeq: 1 }));
+    const release = registerNativeQuestionCommandTarget({ binding: { companyId, issueId, runId, agentId }, queueCommand });
+    const busy = vi.spyOn(questionPatternValidation, "validateQuestionPatterns").mockRejectedValue(new Error("Question format validation is busy; try again"));
+    try {
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).toHaveBeenCalledWith("request.resolve", expect.objectContaining({
+        response: { schema: "paperclip.question_response.v1", answers: { url: { text: "https://example.test" } } },
+      }), `question_${interaction!.id}`);
+      expect(busy).not.toHaveBeenCalled();
+      const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+      expect(delivery).toMatchObject({ status: "delivered" });
+    } finally {
+      busy.mockRestore();
+      release();
+    }
+  });
+
+  it.each(["codex", "claude"])("materializes, validates, and durably resumes a %s question response", async (provider) => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: { ...runtimeRequestEvent(), payload: {
+        request: { ...(runtimeRequestEvent().payload.request as Record<string, unknown>),
+          origin: { adapter: provider === "claude" ? "acpx-runtime-sidecar" : "codex-app-server", provider,
+            method: provider === "claude" ? "elicitation/create" : "item/tool/requestUserInput" },
+        },
+      } },
+    });
+
+    expect(interaction).toMatchObject({
+      kind: "ask_user_questions",
+      status: "pending",
+      sourceRunId: runId,
+      continuationPolicy: "none",
+      effectiveResolverPolicy: "human_only",
+      payload: {
+        runtimeRequestId: "request-1",
+        supersedeOnUserComment: false,
+        questionSet: { schema: "paperclip.question_set.v1" },
+        questions: [{
+          id: "color",
+          selectionMode: "single",
+          allowOther: false,
+          options: [{ id: "blue", label: "Blue" }, { id: "green", label: "Green" }],
+        }],
+      },
+    });
+    expect(await db.select().from(activityLog)).toHaveLength(1);
+
+    const answer = { answers: [{ questionId: "color", optionIds: ["blue"] }] };
+    await validateNativeQuestionResponseInput(interaction!, answer);
+    await expect(validateNativeQuestionResponseInput(interaction!, {
+      answers: [{ questionId: "color", optionIds: ["red"] }],
+    })).rejects.toThrow(/unknown option red/);
+
+    const answered = await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" },
+      interaction!.id,
+      answer,
+      { userId: "operator-1" },
+    );
+    const queueCommand = vi.fn(() => ({ commandId: "question", controllerSeq: 1 }));
+    const release = registerNativeQuestionCommandTarget({
+      binding: { companyId, issueId, runId, agentId },
+      queueCommand,
+    });
+
+    await flushNativeQuestionResponses(db, runId);
+    expect(queueCommand).toHaveBeenCalledWith(
+      "request.resolve",
+      {
+        requestId: "request-1",
+        response: {
+          schema: "paperclip.question_response.v1",
+          answers: { color: { selectedOptionIds: ["blue"] } },
+        },
+      },
+      `question_${interaction!.id}`,
+    );
+    expect(queueCommand).toHaveBeenCalledTimes(1);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      interactionId: interaction!.id,
+      status: "delivered",
+      deliveryMode: "steered",
+      targetRunId: runId,
+    });
+    expect(answered.kind).toBe("ask_user_questions");
+    if (answered.kind !== "ask_user_questions") throw new Error("expected question interaction");
+    await expect(nativeQuestionRunToCancel(db, answered)).resolves.toBe(runId);
+    release();
+  });
+
+  it.each(["legacy", "canonical_select"])("keeps %s custom-answer normalization and rejects blank public answers", async (mode) => {
+    await seed();
+    const event = runtimeRequestEvent();
+    const input = (event.payload.request as { input: { questions: Record<string, unknown>[] } }).input;
+    input.questions[0]!.customAnswer = { enabled: true };
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    if (mode === "legacy") {
+      const payload = { ...interaction!.payload };
+      if ("questionSet" in payload) delete payload.questionSet;
+      await db.update(issueThreadInteractions).set({ payload }).where(eq(issueThreadInteractions.id, interaction!.id));
+    }
+    const service = issueThreadInteractionService(db);
+    await expect(service.answerQuestions({ id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "color", optionIds: [], otherText: " \n " }] }), { userId: "operator-1" },
+    )).rejects.toThrow(/requires an answer/);
+    const answered = await service.answerQuestions({ id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "color", optionIds: [], otherText: "  Extra\\nline  " }] }), { userId: "operator-1" },
+    );
+    expect(answered.result).toMatchObject({ answers: [{ questionId: "color", otherText: "Extra\nline" }] });
+  });
+
+  it("persists initial text without resolving and delivers only an explicit edited answer", async () => {
+    await seed();
+    const initialText = "  Editable draft\n漢字\n";
+    const event = runtimeRequestEvent();
+    const request = event.payload.request as Record<string, unknown>;
+    request.input = { schema: "paperclip.question_set.v1", questions: [{ id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText }] };
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    expect(interaction).toMatchObject({ status: "pending", payload: { questionSet: { questions: [{ initialText }] } } });
+    const [stored] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id));
+    expect(stored).toMatchObject({ status: "pending", result: null, payload: { questionSet: { questions: [{ initialText }] } } });
+    const queueCommand = vi.fn(() => ({ commandId: "edited", controllerSeq: 1 }));
+    const release = registerNativeQuestionCommandTarget({ binding: { companyId, issueId, runId, agentId }, queueCommand });
+    try {
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).not.toHaveBeenCalled();
+      const edited = "\n  Operator 漢字 edited\n\nLiteral \\n stays literal.  \n";
+      await issueThreadInteractionService(db).answerQuestions(
+        { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+        respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "draft", optionIds: [], otherText: edited }] }), { userId: "operator-1" },
+      );
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).toHaveBeenCalledExactlyOnceWith("request.resolve", {
+        requestId: "request-1", response: { schema: "paperclip.question_response.v1", answers: { draft: { text: edited } } },
+      }, `question_${interaction!.id}`);
+    } finally { release(); }
+  });
+
+  it.each(["succeeded", "failed", "cancelled", "timed_out"])("delivers a historical answer exactly once after a %s native run", async status => {
+    await seed();
+    await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: "operator-1", conversationState: "active", conversationSessionGeneration: 1, executionRunId: null }).where(eq(issues.id, issueId));
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event: runtimeRequestEvent() });
+    await db.update(heartbeatRuns).set({ status, finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" });
+    const queueCommand = vi.fn();
+    const release = registerNativeQuestionCommandTarget({ binding: { companyId, issueId, runId, agentId }, queueCommand });
+    const targetRunId = randomUUID();
+    const wakeup = vi.fn(async () => db.insert(heartbeatRuns).values({ id: targetRunId, companyId, agentId, status: "queued",
+      contextSnapshot: { issueId } }).returning().then(rows => rows[0]!));
+    const service = questionResponseDeliveryService(db, { heartbeat: { wakeup } as never,
+      resolveNativeQuestion: candidate => deliverNativeQuestionResponse(db, candidate) });
+    expect(await service.deliver(interaction!.id)).toMatchObject({ status: "fallback_queued", targetRunId });
+    expect((await service.deliver(interaction!.id))?.duplicate).toBe(true);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(wakeup.mock.calls)).toContain(interaction!.id);
+    const [saved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id));
+    expect(saved).toMatchObject({ status: "answered", result: { answers: [{ questionId: "color", optionIds: ["green"] }] } });
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, interaction!.id));
+    expect(delivery).toMatchObject({ targetRunId, sourceRunId: runId, deliveryMode: "wake_fallback", status: "fallback_queued" });
+    expect(queueCommand).not.toHaveBeenCalled();
+    release();
+  });
+
+  it("binds projection to the persisted native run and ignores legacy delivery", async () => {
+    await seed();
+    const mismatched = runtimeRequestEvent();
+    mismatched.runId = randomUUID();
+    await expect(projectNativeRuntimeRequest({ db, binding: binding(), event: mismatched }))
+      .rejects.toThrow("native_runtime_request_binding_mismatch");
+
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    const answered = await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" },
+      interaction!.id,
+      { answers: [{ questionId: "color", optionIds: ["green"] }] },
+      { userId: "operator-1" },
+    );
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, runId));
+    expect(answered.kind).toBe("ask_user_questions");
+    if (answered.kind !== "ask_user_questions") throw new Error("expected question interaction");
+    await expect(deliverNativeQuestionResponse(db, answered)).resolves.toBe("not_native");
+    await expect(nativeQuestionRunToCancel(db, answered)).resolves.toBeNull();
+  });
+
+  it("does not duplicate the task card when the runner replays a request", async () => {
+    await seed();
+    const first = await projectNativeRuntimeRequest({ db, binding: binding(), event: runtimeRequestEvent() });
+    const second = await projectNativeRuntimeRequest({ db, binding: binding(), event: runtimeRequestEvent() });
+    expect(second?.id).toBe(first?.id);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
+    expect(await db.select().from(activityLog)).toHaveLength(1);
+  });
+
+  async function addLaterHumanDirection(interactionId: string) {
+    const [question] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "operator-1",
+      body: "Continue with the configuration already selected.", createdAt: new Date(question.createdAt.getTime() + 1000) });
+  }
+
+  it.each([false, true])("cancels the active native run when the task is cancelled (historical=%s)", async historical => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    if (historical) await addLaterHumanDirection(interaction!.id);
+    await issueService(db).update(issueId, { status: "cancelled" });
+
+    const [persistedInteraction] = await db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+    const [persistedRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(persistedInteraction?.status).toBe("expired");
+    expect(persistedRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        cancelledByIssueStatus: "cancelled",
+        cancelledIssueId: issueId,
+      },
+    });
+  });
+
+  it.each([false, true])("defers native cancellation until task completion commits (historical=%s)", async historical => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    if (historical) await addLaterHumanDirection(interaction!.id);
+    const postCommitActions: IssuePostCommitAction[] = [];
+    await db.transaction(async (tx) => {
+      await issueService(db).update(
+        issueId,
+        { status: "done" },
+        tx,
+        undefined,
+        postCommitActions,
+      );
+      const [runInsideTransaction] = await tx.select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(runInsideTransaction?.status).toBe("running");
+    });
+
+    expect(postCommitActions).toHaveLength(1);
+    await executeIssuePostCommitActions(db, postCommitActions);
+    const [persistedRun] = await db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(persistedRun?.status).toBe("cancelled");
+    const [question] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+    expect(question.status).toBe(historical ? "pending" : "expired");
+    if (historical) {
+      await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId, status: "done" }, interaction!.id,
+        { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" });
+      expect(await db.select().from(issueQuestionResponseDeliveries)).toEqual([]);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("done");
+    }
+  });
+
+  it.each([false, true])("recovers task closure cancellation after process exit (historical=%s)", async historical => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    if (historical) await addLaterHumanDirection(interaction!.id);
+    const postCommitActions: IssuePostCommitAction[] = [];
+    await db.transaction(async (tx) => {
+      await issueService(db).update(
+        issueId,
+        { status: "done" },
+        tx,
+        undefined,
+        postCommitActions,
+      );
+    });
+
+    const [markedRun] = await db.select({
+      status: heartbeatRuns.status,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(markedRun).toMatchObject({
+      status: "running",
+      contextSnapshot: {
+        nativeQuestionCancellation: {
+          version: 1,
+          issueId,
+          issueStatus: "done",
+        },
+      },
+    });
+
+    // Simulate process exit before executeIssuePostCommitActions can run.
+    await heartbeat.reapOrphanedRuns();
+
+    const [persistedRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(persistedRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        cancelledByIssueStatus: "done",
+        cancelledIssueId: issueId,
+      },
+    });
+    const [question] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+    expect(question.status).toBe(historical ? "pending" : "expired");
+  });
+
+  it("recovers an explicit question withdrawal committed with its cancellation intent", async () => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    await issueThreadInteractionService(db).withdrawInteraction(
+      { id: issueId, companyId },
+      interaction!.id,
+      { reason: "No longer needed" },
+      { userId: "operator-1" },
+      {
+        afterResolveInTransaction: async (tx, withdrawn) => {
+          await expect(requestNativeQuestionRunCancellation(tx, withdrawn, {
+            kind: "interaction_withdrawn",
+            interactionId: withdrawn.id,
+          })).resolves.toBe(runId);
+        },
+      },
+    );
+
+    const [markedRun] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(markedRun?.contextSnapshot).toMatchObject({
+      nativeQuestionCancellation: {
+        version: 1,
+        kind: "interaction_withdrawn",
+        interactionId: interaction!.id,
+        issueId,
+      },
+    });
+
+    await heartbeat.reapOrphanedRuns();
+
+    const [cancelledRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(cancelledRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        withdrawnInteractionId: interaction!.id,
+        cancelledIssueId: issueId,
+      },
+    });
+  });
+
+  it("removes the UI-only marker from a canonical custom response", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    const request = event.payload.request as Record<string, unknown>;
+    const input = request.input as Record<string, unknown>;
+    input.questions = [{
+      id: "color",
+      prompt: "Which color?",
+      required: true,
+      answerMode: "single_select",
+      options: [{ id: "blue", label: "Blue" }],
+      customAnswer: { enabled: true, label: "Another color" },
+    }];
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    const answer = {
+      answers: [{
+        questionId: "color",
+        optionIds: ["paperclip_custom_answer"],
+        otherText: "purple",
+      }],
+    };
+    await validateNativeQuestionResponseInput(interaction!, answer);
+    const answered = await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" },
+      interaction!.id,
+      answer,
+      { userId: "operator-1" },
+    );
+    expect(answered.kind).toBe("ask_user_questions");
+    if (answered.kind !== "ask_user_questions") throw new Error("expected question interaction");
+
+    const queueCommand = vi.fn(() => ({ commandId: "question", controllerSeq: 1 }));
+    registerNativeQuestionCommandTarget({
+      binding: { companyId, issueId, runId, agentId },
+      queueCommand,
+    });
+    await expect(deliverNativeQuestionResponse(db, answered)).resolves.toBe("queued");
+    expect(queueCommand).toHaveBeenCalledWith(
+      "request.resolve",
+      {
+        requestId: "request-1",
+        response: {
+          schema: "paperclip.question_response.v1",
+          answers: { color: { selectedOptionIds: [], customText: "purple" } },
+        },
+      },
+      `question_${interaction!.id}`,
+    );
+  });
+});

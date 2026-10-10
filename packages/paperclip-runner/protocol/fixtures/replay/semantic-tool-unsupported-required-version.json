@@ -1,0 +1,55 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Unsupported semantic tool envelope version",
+  "description": "A required semantic_tool v2 envelope must fail closed in a PRP v1 consumer.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_semantic_v2", "issueId": "issue_semantic_v2", "runId": "run_semantic_v2",
+    "environmentLeaseId": "lease_semantic_v2", "runnerInstanceId": "runner_semantic_v2", "normalizedSessionId": "session_semantic_v2", "driverSessionId": "driver_semantic_v2"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": false, "interrupt": true, "resume": true, "runtimeRequests": false, "structuredResult": true, "typedEvents": true, "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_v2_01", "sourceSeq": 1, "sourceInstanceId": "runner_semantic_v2",
+      "sourceKind": "runner", "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2", "itemId": "item_semantic_v2",
+      "eventType": "mcp_app.tool_input", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T11:00:00.000Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v2", "schemaVersion": 2, "phase": "input", "operationId": "get_task_context", "callId": "call_semantic_v2",
+        "correlation": { "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2", "itemId": "item_semantic_v2" },
+        "idempotencyKey": null,
+        "content": { "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "redactionDisposition": "digest_only", "references": [] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_v2_02", "sourceSeq": 2, "sourceInstanceId": "runner_semantic_v2",
+      "sourceKind": "runner", "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2", "itemId": "item_semantic_v2",
+      "eventType": "mcp_app.tool_result", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T11:00:00.010Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result", "operationId": "get_task_context", "callId": "call_semantic_v2",
+        "correlation": { "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2", "itemId": "item_semantic_v2" },
+        "idempotencyKey": null,
+        "content": { "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "redactionDisposition": "digest_only", "references": [] },
+        "outcome": "succeeded", "code": "ok", "retryable": false, "authorizationBoundary": "active_task", "operationReceiptId": "receipt_semantic_v2"
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_v2_03", "sourceSeq": 3, "sourceInstanceId": "runner_semantic_v2",
+      "sourceKind": "runner", "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2",
+      "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T11:00:00.020Z",
+      "payload": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "This result must not replay.", "completionClaim": { "contractRevision": "semantic-receipts-v2", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_v2_04", "sourceSeq": 4, "sourceInstanceId": "runner_semantic_v2",
+      "sourceKind": "runner", "runId": "run_semantic_v2", "normalizedSessionId": "session_semantic_v2", "turnId": "turn_semantic_v2",
+      "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T11:00:00.030Z",
+      "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done" }
+    }
+  ],
+  "requests": [],
+  "result": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "This result must not replay.", "completionClaim": { "contractRevision": "semantic-receipts-v2", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+}

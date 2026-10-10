@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown } from "lucide-react";
+import { createPortal } from "react-dom";
+import { useSidebar } from "../context/SidebarContext";
+import { usePanel } from "../context/PanelContext";
+import { cn } from "../lib/utils";
 
 function resolveScrollTarget() {
   const mainContent = document.getElementById("main-content");
@@ -33,6 +37,25 @@ function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
  */
 export function ScrollToBottom() {
   const [visible, setVisible] = useState(false);
+  const { panelVisible, panelContent } = usePanel();
+  const { isMobile } = useSidebar();
+  const [composerDock, setComposerDock] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setComposerDock(null);
+      return;
+    }
+    const main = document.getElementById("main-content");
+    if (!main) return;
+    const findDock = () => setComposerDock(
+      main.querySelector<HTMLElement>('[data-testid="task-chat-composer-dock"]'),
+    );
+    findDock();
+    const observer = new MutationObserver(findDock);
+    observer.observe(main, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [isMobile]);
 
   useEffect(() => {
     const check = () => {
@@ -67,13 +90,22 @@ export function ScrollToBottom() {
 
   if (!visible) return null;
 
-  return (
+  const button = (
     <button
+      data-slot="icon-button"
       onClick={scroll}
-      className="fixed bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))] right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors md:bottom-6"
+      className={cn(
+        "z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-(--tp-background-color-right) duration-200",
+        isMobile && composerDock
+          ? "absolute bottom-full left-1/2 -translate-x-1/2 mb-3"
+          : "fixed bottom-(--sz-calc-21) right-6 md:bottom-6",
+        !isMobile && panelVisible && panelContent && "md:right-(--sz-calc-22)",
+      )}
       aria-label="Scroll to bottom"
     >
       <ArrowDown className="h-4 w-4" />
     </button>
   );
+  // Anchoring to the dock follows editor growth and the nav's sticky offset.
+  return isMobile && composerDock ? createPortal(button, composerDock) : button;
 }
