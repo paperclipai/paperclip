@@ -1,6 +1,6 @@
 /** Fixed remote program. Inputs travel as JSON, never interpolated into Python or shell. */
 export const remoteProgram = String.raw`
-import os,sys,json,hashlib,base64,tempfile,subprocess,fcntl,stat,shutil
+import os,sys,json,hashlib,base64,tempfile,subprocess,fcntl,stat,shutil,errno
 p=json.load(sys.stdin)
 def fail(code):
  print(json.dumps({'error':code}));sys.exit(0)
@@ -273,7 +273,10 @@ def recover_write():
   info=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
   if stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_dev==receipt.get('device') and info.st_ino==receipt.get('inode'):
    os.unlink(name,dir_fd=parentfd)
- except FileNotFoundError:pass
+ except OSError as error:
+  # A removed/replaced/inaccessible ancestor makes this receipt unusable. Preserve
+  # whatever occupies that path and allow unrelated file operations to proceed.
+  if error.errno not in (errno.ENOENT,errno.ENOTDIR,errno.ELOOP,errno.EACCES,errno.EPERM):raise
  finally:
   if parentfd is not None:os.close(parentfd)
  clear_write_receipt()

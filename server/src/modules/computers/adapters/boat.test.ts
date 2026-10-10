@@ -10,6 +10,7 @@ import {
   writeFileSync,
   mkdirSync,
   renameSync,
+  chmodSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -287,6 +288,35 @@ describe("confined computer files", () => {
     f.call({ action: "list", path: "nested" });
     expect(readFileSync(outside, "utf8")).toBe("preserve");
     expect(existsSync(temp)).toBe(true);
+  });
+  it.each(["missing", "file", "symlink"])("discards an unusable receipt when its parent is %s", (replacement) => {
+    const f = interruptedWrite();
+    renameSync(join(f.root, "nested"), join(f.root, "moved-by-user"));
+    const outside = join(f.temp, "outside"); mkdirSync(outside);
+    writeFileSync(join(outside, "notes"), "outside user content");
+    if (replacement === "file") writeFileSync(join(f.root, "nested"), "replacement parent");
+    if (replacement === "symlink") symlinkSync(outside, join(f.root, "nested"));
+    writeFileSync(join(f.root, "unrelated"), "still readable");
+    expect(f.call({ action: "list", path: "" }).entries).toEqual(expect.any(Array));
+    expect(Buffer.from(f.call({ action: "read", path: "unrelated" }).base64, "base64").toString()).toBe("still readable");
+    expect(f.call({ action: "write", path: "new-file", expectedSha256: null, base64: Buffer.from("new content").toString("base64") }).sha256).toBeTruthy();
+    expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+    expect(readFileSync(join(f.root, "moved-by-user/notes"), "utf8")).toBe("original");
+    expect(readFileSync(join(f.root, "moved-by-user", f.receipt.path.split("/").at(-1)), "utf8")).toBe("interrupted content");
+    expect(readFileSync(join(outside, "notes"), "utf8")).toBe("outside user content");
+    if (replacement === "file") expect(readFileSync(join(f.root, "nested"), "utf8")).toBe("replacement parent");
+    if (replacement === "symlink") expect(existsSync(join(f.root, "nested/notes"))).toBe(true);
+  });
+  it.skipIf(process.getuid?.() === 0)("preserves an inaccessible temp parent without blocking unrelated reads", () => {
+    const f = interruptedWrite();
+    writeFileSync(join(f.root, "unrelated"), "still readable");
+    chmodSync(join(f.root, "nested"), 0);
+    try {
+      expect(Buffer.from(f.call({ action: "read", path: "unrelated" }).base64, "base64").toString()).toBe("still readable");
+      expect(readFileSync(join(f.root, ".paperclip-editor.lock"), "utf8")).toBe("");
+    } finally { chmodSync(join(f.root, "nested"), 0o700); }
+    expect(readFileSync(join(f.root, f.receipt.path), "utf8")).toBe("interrupted content");
+    expect(readFileSync(join(f.root, "nested/notes"), "utf8")).toBe("original");
   });
   it("leaves only an empty temp when killed before its ownership receipt", () => {
     const f = fixture(); f.call({ action: "seed", files: {} });
