@@ -2256,6 +2256,93 @@ describe("agent permission routes", () => {
         resource: { type: "company", companyId },
       }));
     });
+
+    it("returns the non-secret adapterConfig allowlist to an agent actor without a config-read grant", async () => {
+      // The endpoint/topology keys are what makes the "one agent = one profile =
+      // one process = one port" invariant auditable from an agent run. They are
+      // not credentials, and a board reader already sees them. Everything else
+      // in adapterConfig — apiKey, env bindings, arbitrary keys — stays out of
+      // the response, and no secret value may appear anywhere in the payload.
+      const peerAgentId = "55555555-5555-4555-8555-555555555555";
+      const apiKeyCanary = "canary-api-key-value";
+      const envCanary = "canary-env-token-value";
+      const queryCanary = "canary-query-credential-value";
+      const malformedCanary = "canary-malformed-query-credential-value";
+      const peerAgent = {
+        ...baseAgent,
+        id: peerAgentId,
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          // OpenClaw keeps its gateway address - the host and port the
+          // "one agent = one process = one port" invariant is about - in `url`.
+          url: `wss://openclaw-gateway.internal.example:8443/gateway?sig=${queryCanary}`,
+          // An endpoint no URL parser accepts (`:bad` is not a port). The
+          // response must not carry the query credential it was stored with.
+          apiBaseUrl: `https://peer-gateway.internal.example:bad?sig=${malformedCanary}`,
+          paperclipApiUrl: "https://paperclip.internal.example",
+          sessionKeyStrategy: "issue",
+          timeoutSec: 600,
+          adapterType: "openclaw_gateway",
+          extraUnknownKey: "not-on-the-allowlist",
+          apiKey: apiKeyCanary,
+          env: { PAPERCLIP_API_KEY: envCanary },
+        },
+        runtimeConfig: { heartbeat: { enabled: true }, debug: { providerTrace: "raw" } },
+      };
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) return peerAgent;
+        if (id === agentId) {
+          return { ...baseAgent, permissions: { canCreateAgents: false } };
+        }
+        return null;
+      });
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action === "agent:read",
+        action: input.action,
+        reason: input.action === "agent:read" ? "allow_same_company" : "deny_no_grant",
+        explanation: input.action === "agent:read"
+          ? "Allowed inside the company boundary."
+          : "Missing permission: agents:configure or agents:suggest-changes.",
+      }));
+
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await request(app).get(`/api/agents/${peerAgentId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.adapterConfig).toEqual({
+        url: "wss://openclaw-gateway.internal.example:8443/gateway",
+        apiBaseUrl: "https://peer-gateway.internal.example:bad",
+        paperclipApiUrl: "https://paperclip.internal.example",
+        sessionKeyStrategy: "issue",
+        timeoutSec: 600,
+        adapterType: "openclaw_gateway",
+      });
+      expect(Object.keys(res.body.adapterConfig).sort()).toEqual([
+        "adapterType",
+        "apiBaseUrl",
+        "paperclipApiUrl",
+        "sessionKeyStrategy",
+        "timeoutSec",
+        "url",
+      ]);
+      expect(res.body.adapterConfig).not.toHaveProperty("apiKey");
+      expect(res.body.adapterConfig).not.toHaveProperty("env");
+      expect(res.body.runtimeConfig).toEqual({});
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain(apiKeyCanary);
+      expect(serialized).not.toContain(envCanary);
+      expect(serialized).not.toContain("not-on-the-allowlist");
+      expect(serialized).not.toContain(queryCanary);
+      expect(serialized).not.toContain(malformedCanary);
+      expect(serialized).not.toContain("sig=");
+    });
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {

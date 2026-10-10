@@ -153,6 +153,7 @@ import {
 } from "../adapters/index.js";
 import {
   REDACTED_EVENT_VALUE,
+  projectAgentAdapterConfigForAudit,
   redactAgentAdapterConfig,
   redactEventPayload,
 } from "../redaction.js";
@@ -2839,11 +2840,22 @@ export function agentRoutes(
     };
   }
 
+  // Restricted view for an actor outside the configuration-read ladder
+  // (`agent_config:read` / `agents:configure` — see `canReadAgentConfiguration`).
+  // `runtimeConfig` and every non-allowlisted adapter key are still blanked; the
+  // surviving `adapterConfig` keys are the non-secret endpoint/topology fields
+  // from `AGENT_ADAPTER_CONFIG_AUDIT_FIELDS`, so the "one agent = one profile =
+  // one process = one port" invariant stays auditable from an agent run without
+  // widening the secret surface. Credentials (`apiKey`, `env.*`, secret-shaped
+  // keys) are redacted by `projectAgentAdapterConfigForAudit` exactly as in the
+  // full view.
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
       ...agent,
-      adapterConfig: {},
+      adapterConfig: projectAgentAdapterConfigForAudit(
+        asRecord(agent.adapterConfig) ?? {},
+      ),
       runtimeConfig: {},
     };
   }
