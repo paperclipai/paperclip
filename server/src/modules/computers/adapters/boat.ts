@@ -231,7 +231,8 @@ with open(os.path.join(root,'lock'),'a') as lock:
    active=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()=='active'
    if active and old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
   with open(marker,'w') as f:json.dump(claim,f)
-  payload=p['input'];args=['systemd-run','--user','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
+  # Shell launch scripts own expansion of their positional arguments and identity markers.
+  payload=p['input'];args=['systemd-run','--user','--expand-environment=no','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
   for key,value in payload.get('env',{}).items():args.append('--setenv='+key+'='+value)
   state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
   if state!='active':
