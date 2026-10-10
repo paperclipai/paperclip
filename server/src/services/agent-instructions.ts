@@ -1,11 +1,11 @@
-import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome, isMissingRemoteFile } from "./persistent-agent-files.js";
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome, hashPersistentAgentFile, isMissingRemoteFile } from "./persistent-agent-files.js";
 import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
 import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
@@ -854,13 +854,62 @@ export function agentInstructionsService(db?: Db) {
       entryFile?: string;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
-    if (await remoteFiles(agent)) throw unprocessable("Replace individual persistent files using their expected content hash");
     const rootPath = resolveManagedInstructionsRoot(agent);
-    const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
-
+    const entryFile = agentFilePath(options?.entryFile ?? ENTRY_FILE_DEFAULT);
+    const initialFiles: Record<string, string> = Object.create(null);
     for (const [relativePath, content] of Object.entries(files)) {
+      const normalized = agentFilePath(relativePath);
       instructionBytes(content);
-      await assertInstructionPathSafe(rootPath, agentFilePath(relativePath));
+      await assertInstructionPathSafe(rootPath, normalized);
+      if (Object.hasOwn(initialFiles, normalized)) throw unprocessable("Duplicate instruction bundle path");
+      initialFiles[normalized] = content;
+    }
+    if (!Object.hasOwn(initialFiles, entryFile)) initialFiles[entryFile] = "";
+
+    // Initialization must not call remoteFiles: that read path seeds an absent
+    // home before the supplied initial bundle has been installed.
+    const remote = db && agentInstructionsBundleMode(agent) !== "external"
+      ? await persistentAgentFiles(db, agent.companyId, agent.id)
+      : null;
+    if (remote) {
+      if (options?.replaceExisting) throw unprocessable("Replace individual persistent files using their expected content hash");
+      // Existing agents can select Boat before their first remote placement.
+      // Preserve their controller personal files before adding a template.
+      const localEntries = await fs.readdir(rootPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      if (localEntries.some(name => name !== ".paperclip-runtime")) await seedPersistentAgentHome(remote, rootPath);
+      const seeded = await remote.seed(initialFiles);
+      if (!seeded.seeded) {
+        // A failed setup may already have created an empty home. Preflight all
+        // requested files before adding anything; existing bytes are never
+        // replaced, including files outside the requested bundle.
+        const missing: Array<[string, string, string]> = [];
+        for (const [relative, content] of Object.entries(initialFiles)) {
+          const expected = fileHash(instructionBytes(content));
+          const current = await hashPersistentAgentFile(remote, relative);
+          if (current && current.sha256 !== expected) throw conflict(
+            "Existing persistent files differ from this initial bundle. Edit them using their expected content hash.",
+            { code: "AGENT_FILE_CONFLICT", path: relative },
+          );
+          if (!current) missing.push([relative, content, expected]);
+        }
+        for (const [relative, content, expected] of missing) {
+          try { await remote.write(relative, content, null); }
+          catch (error) {
+            // Another initializer may have won the create-only CAS. Only an
+            // identical winner is an idempotent success; shell edits still win.
+            const failure = error as { status?: number; code?: string };
+            if (failure.status !== 409 && failure.code !== "conflict") throw error;
+            if ((await hashPersistentAgentFile(remote, relative))?.sha256 !== expected) throw error;
+          }
+        }
+      }
+      const adapterConfig = applyBundleConfig(asRecord(agent.adapterConfig), {
+        mode: "managed", rootPath, entryFile, clearLegacyPromptTemplate: options?.clearLegacyPromptTemplate,
+      });
+      return { adapterConfig, bundle: await getBundle({ ...agent, adapterConfig }) };
     }
     const previous = await readInstructionBytes(rootPath, entryFile);
     if (previous && !previous.equals(instructionBytes(files[entryFile] ?? ""))) {
