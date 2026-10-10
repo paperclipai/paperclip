@@ -50,6 +50,52 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(overview.items).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: f.workspaceId, projectId: null })]));
   });
 
+  it.each(["explicit", "channel"] as const)("persists the canonical null binding for a %s task-directory selection", async (source) => {
+    const f = await fixture(), settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Legacy source" }).returning();
+      const [workspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        name: "Legacy folder", cwd: "/tmp/legacy-folder" }).returning();
+      const created = await issueService(db).create(f.companyId, {
+        title: "Use a new task folder", projectId: project.id,
+        projectWorkspaceId: workspace.id, executionWorkspaceId: f.workspaceId,
+        executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: "isolated_workspace" },
+        workspaceSelection: { kind: "task_directory" }, workspaceSelectionSource: source, workspaceSelectionActor: f.actor,
+      });
+      const [stored] = await db.select().from(issues).where(eq(issues.id, created.id));
+      expect(stored).toMatchObject({ projectId: project.id, projectWorkspaceId: null, executionWorkspaceId: null,
+        executionWorkspacePreference: null, executionWorkspaceSettings: { mode: "shared_workspace" },
+        workspaceSelection: { selection: { kind: "task_directory" }, source } });
+      expect((await executionWorkspaceService(db).inspectTaskWorkspace(f.companyId, created.id, f.actor)).workspace).toBeNull();
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+  });
+
+  it.each(["create", "createChild"] as const)("inherits a parent task folder through %s with isolated workspaces disabled", async (entryPoint) => {
+    const f = await fixture(), settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: false });
+    try {
+      await executionWorkspaceService(db).bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      const tasks = issueService(db);
+      const input = { title: "Continue parent work", workspaceSelectionActor: f.actor,
+        workspaceSelection: { kind: "task_directory" as const }, workspaceSelectionSource: "channel" as const };
+      const child = entryPoint === "create"
+        ? await tasks.create(f.companyId, { ...input, parentId: f.issueId })
+        : (await tasks.createChild(f.issueId, input)).issue;
+      expect(child).toMatchObject({ parentId: f.issueId, projectId: null, executionWorkspaceId: f.workspaceId,
+        executionWorkspacePreference: "reuse_existing" });
+      const view = await executionWorkspaceService(db).inspectTaskWorkspace(f.companyId, child.id, f.actor);
+      expect(view.workspace).toMatchObject({ id: f.workspaceId, cwd: `/tmp/task-${f.issueId}` });
+      const explicit = await tasks.create(f.companyId, { ...input, title: "Explicit separate folder", parentId: f.issueId,
+        workspaceSelectionSource: "explicit" });
+      expect(explicit.executionWorkspaceId).toBeNull();
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+  });
+
   it("queues explicit root changes without changing the current binding and applies at admission", async () => {
     const f = await fixture(), svc = executionWorkspaceService(db);
     await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);

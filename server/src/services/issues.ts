@@ -10123,9 +10123,10 @@ export function issueService(db: Db) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
             inheritedWorkspaceSelection = true;
           }
+          // Sharing an existing task binding preserves parent files even when
+          // the optional isolated-worktree controls are disabled.
           if (
             inheritsSourceProject &&
-            isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
           ) {
@@ -10401,12 +10402,11 @@ export function issueService(db: Db) {
             projectGoalId,
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
-          ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
-          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
-          ...(executionWorkspacePreference
-            ? { executionWorkspacePreference }
-            : {}),
-          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+          // Nulls from canonical selection must clear conflicting legacy input.
+          projectWorkspaceId,
+          executionWorkspaceId,
+          executionWorkspacePreference,
+          executionWorkspaceSettings,
           companyId,
           issueNumber,
           identifier,

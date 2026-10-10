@@ -15,4 +15,3 @@ export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   delete env.npm_config_authenticated_private;
   return env;
 }
-
