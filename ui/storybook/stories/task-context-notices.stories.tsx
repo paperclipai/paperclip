@@ -25,7 +25,7 @@ function TaskContextNotices() {
           <h1 className="text-xl font-semibold">Chat connection and recovery</h1>
           <ExternallyConnectedTaskBanner className="mt-3" companyId="demo" issueId="context-notices" />
           <ExecutionBlockerNotice companyId="demo" issueId="context-notices" onRetried={() => {}}
-            blocker={{ recoveryActionId: "demo-recovery", cause: "action_outcome_unknown",
+            blocker={{ recoveryActionId: "demo-recovery", runId: null, agentId: null, cause: "action_outcome_unknown",
               nextAction: "Inspect the run before continuing. Recorded work is preserved." }} />
           <EmailMessageCard contextNotice issueId="context-notices" message={{
             id: "email-demo", providerMessageId: "email-demo", direction: "inbound",
