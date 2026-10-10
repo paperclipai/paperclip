@@ -2,7 +2,7 @@ import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile, readFile, realpath, open, lstat } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, realpath, open, lstat, symlink, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { constants as fsConstants } from "node:fs";
@@ -11,6 +11,9 @@ import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, executionWorkspaceRepositories, issues } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
+import { readManagedWorkspaceRepositories, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { captureDirectorySnapshot, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const catalog = vi.hoisted(() => ({ available: true }));
@@ -93,6 +96,16 @@ const support = await getEmbeddedPostgresTestSupport();
           new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Unrelated repository reuse waited for a blocked clone")), 2000); }),
         ]);
         expect(ready[0]).toMatchObject({ id: readyIntent.operationId, pinnedCommit: pin });
+        // These are the actual SSH and native/sandbox discovery paths while
+        // the unrelated clone is incomplete, not inventory-only assertions.
+        expect(await listLocalProjectRepositories(taskRoot)).toEqual([readyIntent.repository.relativePath]);
+        const snapshots = await readManagedWorkspaceRepositories(taskRoot);
+        try { expect(snapshots.map(repo => repo.path)).toEqual([readyIntent.repository.relativePath]); }
+        finally { await Promise.all(snapshots.map(repo => disposeGitWorkspaceSnapshot(repo.snapshot))); }
+        expect((await readdir(path.join(taskRoot, ".paperclip-runtime", "repository-staging"))).length).toBe(1);
+        const baseline = await captureDirectorySnapshot(taskRoot, { exclude: [".paperclip-runtime"] });
+        try { expect([...baseline.entries.keys()].some(entry => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
+        finally { await disposeDirectorySnapshot(baseline); }
       } finally {
         clearTimeout(timeout);
         await writeFile(cloneReleased, "released");
@@ -111,6 +124,23 @@ const support = await getEmbeddedPostgresTestSupport();
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
       await rm(root, { recursive: true, force: true });
     }
+  });
+  it.skipIf(process.platform === "win32")("rejects a symlinked runtime staging parent before cloning", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-unsafe-repository-staging-"));
+    try {
+      const taskRoot = path.join(root, "task"), outside = path.join(root, "outside");
+      await mkdir(taskRoot); await mkdir(outside);
+      await symlink(outside, path.join(taskRoot, ".paperclip-runtime"));
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Unsafe staging", cwd: taskRoot,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Unsafe staging", executionWorkspaceId: workspace.id }).returning();
+      await executionWorkspaceRepositoryService(db).request({ companyId, issueId: task.id, actor,
+        request: { repository: { kind: "catalog", id: "123" }, requestKey: "unsafe-staging" } });
+      await expect(executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId: task.id,
+        workspaceId: workspace.id, cwd: taskRoot, agentId, runId: randomUUID(), responsibleUserId: "local-board" }))
+        .rejects.toThrow("staging directory escapes");
+      expect(await readdir(outside)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("converges concurrent requests and persists each retry key without creating a project", async () => {
     const [peerIssue] = await db.insert(issues).values({ companyId, title: "Peer task sharing the root", executionWorkspaceId: workspaceId }).returning();

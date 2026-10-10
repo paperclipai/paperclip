@@ -129,6 +129,19 @@ export function executionWorkspaceRepositoryService(db: Db) {
     const repositoryRoot = path.join(root, ".paperclip-repositories");
     await fs.mkdir(repositoryRoot, { recursive: true });
     if ((await fs.lstat(repositoryRoot)).isSymbolicLink() || await fs.realpath(repositoryRoot) !== repositoryRoot) throw conflict("Repository directory escapes the task workspace");
+    // Incomplete clones belong to the runtime tree, which is excluded from
+    // transfer and recovery. The published namespace contains checkouts only.
+    let stagingParent = root;
+    for (const name of [".paperclip-runtime", "repository-staging"]) {
+      stagingParent = path.join(stagingParent, name);
+      await fs.mkdir(stagingParent, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      const entry = await fs.lstat(stagingParent);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || await fs.realpath(stagingParent) !== stagingParent) {
+        throw conflict("Repository staging directory escapes the task workspace");
+      }
+    }
     await ensureManagedRepositoriesIgnored(root);
     const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
     for (const row of rows) {
@@ -167,6 +180,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           }
           const result = await materializeManagedProjectWorkspace(cwd, {
             repoUrl: row.repoUrl,
+            stagingParent,
             repoRef: authorizedPin ?? (row.requestedRef === "HEAD" ? null : row.requestedRef),
             resolveGitAuth: source.catalogRepositoryId ? resolveAuth : async () => anonymous,
             beforePublish: async cloneCwd => {

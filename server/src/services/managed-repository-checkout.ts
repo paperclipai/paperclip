@@ -22,6 +22,8 @@ export async function materializeManagedProjectWorkspace(
     resolveGitAuth?: GitRemoteAuthProvider | null;
     /** Internal preparation receipt is committed inside the clone before atomic publication. */
     beforePublish?: (cloneCwd: string) => Promise<void>;
+    /** Existing, validated private staging parent outside published repositories. */
+    stagingParent?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
   await fs.mkdir(path.dirname(cwd), { recursive: true });
@@ -54,14 +56,16 @@ export async function materializeManagedProjectWorkspace(
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
-  // Clone into a temp sibling, then move into place atomically. The shared target directory
+  // Clone into a private temp directory (a sibling by default), then publish atomically. The target
   // is never created in a partial state and never removed on failure, so a concurrent
   // materialization (another process, or a run racing this one) can neither adopt a broken
   // checkout nor lose its own completed one.
   const auth = input.resolveGitAuth && !input.localSource
     ? await input.resolveGitAuth(input.repoUrl)
     : null;
-  const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
+  const cloneTmpDir = await fs.mkdtemp(input.stagingParent
+    ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
+    : `${cwd}.clone-`);
   try {
     try {
       await execFile(

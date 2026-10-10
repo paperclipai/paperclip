@@ -631,6 +631,9 @@ describe("sandbox managed runtime", () => {
     const localAssetsDir = path.join(rootDir, "local-assets");
     const linkedAssetPath = path.join(rootDir, "linked-skill.md");
     await mkdir(path.join(localWorkspaceDir, ".claude"), { recursive: true });
+    const cloneStaging = path.join(".paperclip-runtime", "repository-staging", "pending.clone-abc", "partial.txt");
+    await mkdir(path.dirname(path.join(localWorkspaceDir, cloneStaging)), { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, cloneStaging), "Incomplete private clone");
     await mkdir(localAssetsDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "._README.md"), "appledouble\n", "utf8");
@@ -691,6 +694,7 @@ describe("sandbox managed runtime", () => {
     });
 
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
+    await expect(readFile(path.join(remoteWorkspaceDir, cloneStaging), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, "._README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, ".claude", "settings.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(prepared.assetDirs.skills, "skill.md"), "utf8")).resolves.toBe("skill body\n");
@@ -719,6 +723,7 @@ describe("sandbox managed runtime", () => {
       expect.stringMatching(/^config_sync:Syncing skills to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
       expect.stringMatching(/^restore:Restoring workspace from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
     ]));
+    await expect(readFile(path.join(localWorkspaceDir, cloneStaging), "utf8")).resolves.toBe("Incomplete private clone");
     expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing workspace");
   });
 
