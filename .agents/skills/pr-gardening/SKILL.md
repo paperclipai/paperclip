@@ -72,6 +72,25 @@ For every candidate, the script re-fetches the current head SHA and records:
 
 Verdicts are `ready`, `needs_gardening`, or `report_only` for drafts. Always rerun this stage after any wake or claim that a PR was fixed. Never trust issue comments as proof of readiness.
 
+### `--require-signoffs` — SHA-pinned sign-off gate
+
+Pass `--require-signoffs` to enforce a recorded QA + Security sign-off gate (the AUT-2230 model). Stage B then reads the originating issue's comments and extracts the `qa-approved` / `security-approved` markers.
+
+A marker only counts at the current head when the comment names that head: the first hex SHA token in the comment (full 40-character, or a 7-character-or-longer prefix) is the certified head, and it must match the PR's current `headRefOid`. Consequences:
+
+- `signoff_missing` (blocking) — no marker recorded for that reviewer.
+- `signoff_stale_head` (blocking, details carry `pinnedSha` and `headSha`) — a marker exists but certifies an older head.
+
+Both block the `ready` verdict and drop confidence to `low`, so a marker from a previous head can never satisfy the gate for a moved head: re-issue sign-offs whenever the head moves. Requires `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` (or `--api-url` / `--api-key`), same as Stage A. Comment-form markers are the machine-checkable form; a label-only sign-off carries no SHA and therefore cannot certify a head.
+
+```bash
+node .agents/skills/pr-gardening/scripts/check-readiness.mjs \
+  --input "$RUN_DIR/candidates.json" \
+  --output "$RUN_DIR/readiness.json" \
+  --require-signoffs \
+  --dry-run
+```
+
 ## Follow-up Create-PR Task Deduplication
 
 If gardening decides a branch needs a follow-up task to create a single pull request, deduplicate before creating anything.

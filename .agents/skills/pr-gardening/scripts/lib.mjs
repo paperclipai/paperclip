@@ -187,6 +187,29 @@ export function reason(code, message, severity = "blocking", details = {}) {
   return { code, severity, message, ...details };
 }
 
+const SIGNOFF_MARKER_PATTERNS = {
+  qa: /\bqa-approved\b/i,
+  security: /\bsecurity-approved\b/i,
+};
+const SIGNOFF_SHA_PATTERN = /\b[0-9a-f]{7,40}\b/g;
+
+export function assessSignOffs(comments, headSha) {
+  const signOffs = {};
+  for (const [kind, marker] of Object.entries(SIGNOFF_MARKER_PATTERNS)) {
+    const matching = comments.filter((comment) => marker.test(String(comment?.body ?? "")));
+    const pinnedSha = matching
+      .flatMap((comment) => [...String(comment.body).matchAll(SIGNOFF_SHA_PATTERN)])
+      .map((match) => match[0])[0] ?? null;
+    signOffs[kind] = {
+      present: matching.length > 0,
+      pinnedSha,
+      atHead: Boolean(pinnedSha && headSha && headSha.toLowerCase().startsWith(pinnedSha.toLowerCase())),
+      markerCount: matching.length,
+    };
+  }
+  return signOffs;
+}
+
 export function isTerminalIssue(status) {
   return TERMINAL_ISSUE_STATUSES.has(status);
 }
