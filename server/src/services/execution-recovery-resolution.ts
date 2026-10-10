@@ -14,6 +14,7 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
+import { canonicalUuidFromText } from "./canonical-uuid.js";
 import { conflict } from "../errors.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import {
@@ -392,7 +393,7 @@ export async function settleUnrecoverableExecutions(
       heartbeatRuns,
       and(
         eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-        sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
+        sql`${heartbeatRuns.id} = ${canonicalUuidFromText(sql`${issueRecoveryActions.evidence}->>'runId'`)}`,
         sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
       ),
     )

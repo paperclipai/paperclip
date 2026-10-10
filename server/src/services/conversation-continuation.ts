@@ -1,6 +1,7 @@
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { canonicalUuidFromText } from "./canonical-uuid.js";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
@@ -70,7 +71,7 @@ export function conversationRecoveryActionPredicate() {
     sql`exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
-        and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
+        and ${heartbeatRuns.id} = ${canonicalUuidFromText(sql`${issueRecoveryActions.evidence}->>'runId'`)}
         and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
         and ${heartbeatRuns.runtimeMode} = 'legacy'
         and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
