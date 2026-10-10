@@ -1,9 +1,19 @@
 {
   "name": "@paperclipai/create-paperclip-plugin",
   "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/create-paperclip-plugin"
+  },
   "type": "module",
   "bin": {
-    "create-paperclip-plugin": "./dist/index.js"
+    "create-paperclip-plugin": "./dist/bin.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -11,7 +21,7 @@
   "publishConfig": {
     "access": "public",
     "bin": {
-      "create-paperclip-plugin": "./dist/index.js"
+      "create-paperclip-plugin": "./dist/bin.js"
     },
     "exports": {
       ".": {
@@ -28,13 +38,17 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
+    "test": "pnpm -w exec vitest run --root packages/plugins/create-paperclip-plugin --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
-    "typescript": "^5.7.3"
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

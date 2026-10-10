@@ -1,83 +1,141 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
+import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
+import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
+import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
+import { useNavigate } from "../lib/router";
+import {
+  defaultExecutionWorkspaceModeForProject,
+  defaultProjectWorkspaceIdForProject,
+  issueExecutionWorkspaceModeForExistingWorkspace,
+} from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
-import { useToast } from "../context/ToastContext";
-import {
-  assigneeValueFromSelection,
-  currentUserAssigneeOption,
-  parseAssigneeValue,
-} from "../lib/assignees";
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecency, trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
+import { getLastProjectId, getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { recordRecentTask } from "../lib/recent-tasks";
+import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { createUuid } from "../lib/uuid";
+import { isIssueWorkMode, nextWorkMode } from "../lib/work-mode-meta";
+import { useToastActions } from "../context/ToastContext";
+import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeValue } from "../lib/assignees";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Maximize2,
-  Minimize2,
-  MoreHorizontal,
-  ChevronRight,
-  ChevronDown,
-  CircleDot,
-  Minus,
-  ArrowUp,
-  ArrowDown,
-  AlertTriangle,
-  Tag,
-  Calendar,
-  Paperclip,
-  FileText,
-  Loader2,
-  X,
-} from "lucide-react";
+import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown, Lock } from "lucide-react";
 import { cn } from "../lib/utils";
-import { extractProviderIdWithFallback } from "../lib/model-utils";
-import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
-import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
-import { AgentIcon } from "./AgentIconPicker";
+import type { MentionOption } from "./MarkdownEditor";
+import { TaskChatComposer } from "./task-chat/TaskChatComposer";
+import { ComposerWorktreePicker } from "./task-chat/ComposerWorktreePicker";
+import { TaskChatPresentationProvider } from "./task-chat/presentation-mode";
+import { mergeComposerRunSettings, type ComposerRunSettings } from "./task-chat/composer-run-settings";
+import { useSidebar } from "../context/SidebarContext";
+import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
-/** Return black or white hex based on background luminance (WCAG perceptual weights). */
-function getContrastTextColor(hexColor: string): string {
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.5 ? "#000000" : "#ffffff";
+type VisualViewportLayout = {
+  height: number;
+  offsetTop: number;
+  constrained: boolean;
+};
+
+type NewIssueDialogViewportStyle = CSSProperties & {
+  "--new-issue-visual-viewport-height"?: string;
+  "--new-issue-dialog-top"?: string;
+  "--new-issue-dialog-height"?: string;
+};
+
+type MobileEntityPickerViewportStyle = CSSProperties & {
+  "--mobile-entity-picker-visual-viewport-height"?: string;
+};
+
+function readVisualViewportLayout(): VisualViewportLayout | null {
+  if (typeof window === "undefined" || !window.visualViewport) return null;
+  const { height, offsetTop } = window.visualViewport;
+  // Mobile browsers can briefly report unusable geometry while the visual
+  // viewport initializes or animates. Applying it collapses the dialog.
+  if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(offsetTop) || offsetTop < 0) {
+    return null;
+  }
+  return {
+    height,
+    offsetTop,
+    constrained: height < window.innerHeight,
+  };
+}
+
+function useVisualViewportLayout(enabled: boolean) {
+  const [layout, setLayout] = useState<VisualViewportLayout | null>(() =>
+    enabled ? readVisualViewportLayout() : null,
+  );
+
+  useEffect(() => {
+    if (!enabled) {
+      setLayout(null);
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const updateLayout = () => {
+      const nextLayout = readVisualViewportLayout();
+      // Keep the last valid keyboard geometry during transient invalid readings.
+      if (nextLayout) setLayout(nextLayout);
+    };
+    updateLayout();
+    viewport.addEventListener("resize", updateLayout);
+    viewport.addEventListener("scroll", updateLayout);
+    window.addEventListener("resize", updateLayout);
+    return () => {
+      viewport.removeEventListener("resize", updateLayout);
+      viewport.removeEventListener("scroll", updateLayout);
+      window.removeEventListener("resize", updateLayout);
+    };
+  }, [enabled]);
+
+  return layout;
 }
 
 interface IssueDraft {
+  isPrivate?: boolean;
   title: string;
   description: string;
   status: string;
   priority: string;
   assigneeValue: string;
+  reviewerValue: string;
+  approverValue: string;
+  watchdogAgentId?: string;
+  watchdogInstructions?: string;
   assigneeId?: string;
   projectId: string;
+  projectWorkspaceId?: string;
+  assigneeModelLane?: IssueModelLane;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
-  useIsolatedExecutionWorkspace: boolean;
+  executionWorkspaceMode?: string;
+  selectedExecutionWorkspaceId?: string;
+  useIsolatedExecutionWorkspace?: boolean;
+  workMode?: IssueWorkMode;
+  composerSettings?: ComposerRunSettings | null;
 }
 
 type StagedIssueFile = {
@@ -88,67 +146,8 @@ type StagedIssueFile = {
   title?: string | null;
 };
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
-const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
-
-const ISSUE_THINKING_EFFORT_OPTIONS = {
-  claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-  ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-  ],
-  opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "max", label: "Max" },
-  ],
-} as const;
-
-function buildAssigneeAdapterOverrides(input: {
-  adapterType: string | null | undefined;
-  modelOverride: string;
-  thinkingEffortOverride: string;
-  chrome: boolean;
-}): Record<string, unknown> | null {
-  const adapterType = input.adapterType ?? null;
-  if (!adapterType || !ISSUE_OVERRIDE_ADAPTER_TYPES.has(adapterType)) {
-    return null;
-  }
-
-  const adapterConfig: Record<string, unknown> = {};
-  if (input.modelOverride) adapterConfig.model = input.modelOverride;
-  if (input.thinkingEffortOverride) {
-    if (adapterType === "codex_local") {
-      adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
-    } else if (adapterType === "claude_local") {
-      adapterConfig.effort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
-    }
-  }
-  if (adapterType === "claude_local" && input.chrome) {
-    adapterConfig.chrome = true;
-  }
-
-  const overrides: Record<string, unknown> = {};
-  if (Object.keys(adapterConfig).length > 0) {
-    overrides.adapterConfig = adapterConfig;
-  }
-  return Object.keys(overrides).length > 0 ? overrides : null;
-}
+import { Badge } from "@/components/ui/badge";
+import { buildAssigneeAdapterOverrides, type IssueModelLane } from "../lib/issue-assignee-overrides";
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -221,56 +220,111 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses = [
-  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
-];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
-const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
-];
+function isRequiredUserSecretBinding(value: unknown): value is Extract<EnvBinding, { type: "user_secret_ref" }> {
+  return (
+    isRecord(value) &&
+    value.type === "user_secret_ref" &&
+    typeof value.key === "string" &&
+    value.key.trim().length > 0 &&
+    value.required !== false &&
+    value.allowMissingOverride !== true
+  );
+}
+
+function collectRequiredUserSecretKeysFromEnv(
+  env: AgentEnvConfig | Record<string, unknown> | null | undefined,
+): string[] {
+  if (!isRecord(env)) return [];
+  return Object.values(env).flatMap((binding) => (isRequiredUserSecretBinding(binding) ? [binding.key.trim()] : []));
+}
+
+function uniqueRequiredUserSecretKeys(
+  inputs: Array<AgentEnvConfig | Record<string, unknown> | null | undefined>,
+): string[] {
+  return [...new Set(inputs.flatMap(collectRequiredUserSecretKeysFromEnv))];
+}
+
+function shouldWarnAboutRunUserSecrets(status: string, assigneeAgentId: string | null | undefined) {
+  return Boolean(assigneeAgentId) && (status === "todo" || status === "in_progress");
+}
+
+function defaultExecutionWorkspaceModeForIssueDefaults(
+  defaults: {
+    executionWorkspaceId?: unknown;
+    executionWorkspaceMode?: unknown;
+  },
+  project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined,
+) {
+  if (typeof defaults.executionWorkspaceId === "string" && defaults.executionWorkspaceId.length > 0) {
+    return "reuse_existing";
+  }
+  return typeof defaults.executionWorkspaceMode === "string" && defaults.executionWorkspaceMode.length > 0
+    ? defaults.executionWorkspaceMode
+    : defaultExecutionWorkspaceModeForProject(project);
+}
+
+function isWorkModePeriodShortcut(e: Pick<React.KeyboardEvent, "code" | "ctrlKey" | "key" | "metaKey">) {
+  const isPeriod = e.code === "Period" || e.key === ".";
+  return (e.metaKey || e.ctrlKey) && isPeriod;
+}
+
+function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
+  return e.metaKey && e.key === "Escape";
+}
 
 export function NewIssueDialog() {
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
-  const { companies, selectedCompanyId, selectedCompany } = useCompany();
+  const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
+  const dialogBodyRef = useRef<HTMLDivElement>(null);
+  const { companies, selectedCompanyId: effectiveCompanyId } = useCompany();
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
+  const navigate = useNavigate();
+  const { pushToast } = useToastActions();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [title, setTitle] = useState("");
+  const [hasTitle, setHasTitle] = useState(false);
   const [description, setDescription] = useState("");
+  const titleRef = useRef("");
+  const descriptionRef = useRef("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
+  const [reviewerValue, setReviewerValue] = useState("");
+  const [approverValue, setApproverValue] = useState("");
+  const [watchdogAgentId, setWatchdogAgentId] = useState("");
+  const [watchdogInstructions, setWatchdogInstructions] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
+  const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
+  const [assigneeModelLane, setAssigneeModelLane] = useState<IssueModelLane>("primary");
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
+  const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [isPrivate, setIsPrivate] = useState(false);
+  const { isMobile } = useSidebar();
+  const [composerSettings, setComposerSettings] = useState<ComposerRunSettings | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const initializationKeyRef = useRef<string | null>(null);
+  const defaultAssigneePendingRef = useRef(false);
+  const defaultProjectPendingRef = useRef(false);
+  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
 
-  const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
-  const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
-
-  // Popover states
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [priorityOpen, setPriorityOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [companyOpen, setCompanyOpen] = useState(false);
-  const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
-  const stageFileInputRef = useRef<HTMLInputElement | null>(null);
-  const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
-  const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
+  const primaryAgent = usePrimaryAgentPresentation(effectiveCompanyId);
+  const isSubIssueMode = Boolean(newIssueDefaults.parentId);
+  const parentIssueLabel =
+    newIssueDefaults.parentIdentifier ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
+  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
+  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
@@ -283,64 +337,102 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
-  const { data: session } = useQuery({
+  const { data: mentionIssues } = useQuery({
+    queryKey: queryKeys.issues.mentionPool(effectiveCompanyId!),
+    queryFn: () => issuesApi.list(effectiveCompanyId!, {
+      limit: 100,
+      sortField: "updated",
+      sortDir: "desc",
+    }),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen,
+    staleTime: 60_000,
+  });
+  const { data: session, isFetched: sessionFetched } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: companyMembers, isFetched: membersFetched } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(effectiveCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(effectiveCompanyId!),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen,
+  });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: newIssueOpen,
+    retry: false,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const activeProjects = useMemo(() => projects ?? [], [projects]);
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects: activeProjects,
     companyId: effectiveCompanyId,
     userId: currentUserId,
   });
+  const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentProjectExecutionWorkspacePolicy =
+    experimentalSettings?.enableIsolatedWorkspaces === true ? (currentProject?.executionWorkspacePolicy ?? null) : null;
+  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const canChooseWorktrees = workspaceIsolationControlsVisible && currentProjectSupportsExecutionWorkspace;
+  const {
+    data: reusableExecutionWorkspaces,
+    isPending: worktreesLoading,
+    isError: worktreesError,
+    refetch: refetchWorktrees,
+  } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
+      projectId,
+      reuseEligible: true,
+    }),
+    queryFn: () => executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
+      projectId,
+      reuseEligible: true,
+    }),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && canChooseWorktrees,
+    retry: false,
+  });
+
+  const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
+    queryKey: queryKeys.issues.detail(newIssueDefaults.parentId ?? ""),
+    queryFn: () => issuesApi.get(newIssueDefaults.parentId!),
+    enabled: newIssueOpen && Boolean(newIssueDefaults.parentId),
+    retry: false,
+  });
+  const parentPrivacyUnresolved = isSubIssueMode && !privacyParent;
+  const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
+  const privateParentProject = privacyParent?.project?.visibility === "private" ? privacyParent.project : null;
+  const inheritedPrivateProject = privateParentProject ?? (!isPrivate && currentProject?.visibility === "private" ? currentProject : null);
+  const inheritedPrivacyReason = privacyParent?.visibility === "private"
+    ? `Subtask of private task ${privacyParent.title || newIssueDefaults.parentTitle || parentIssueLabel}`
+    : inheritedPrivateProject ? `In private project ${inheritedPrivateProject.name}` : undefined;
+  const effectivePrivate = isPrivate || inheritsPrivateAccess
+    || orderedProjects.some(project => project.id === projectId && project.visibility === "private");
 
   const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
-  const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
+  const selectedAssigneeAgent = useMemo(
+    () => (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null,
+    [agents, selectedAssigneeAgentId],
   );
+  const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
   const mentionOptions = useMemo<MentionOption[]>(() => {
-    const options: MentionOption[] = [];
-    const activeAgents = [...(agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of activeAgents) {
-      options.push({
-        id: `agent:${agent.id}`,
-        name: agent.name,
-        kind: "agent",
-      });
-    }
-    for (const project of orderedProjects) {
-      options.push({
-        id: `project:${project.id}`,
-        name: project.name,
-        kind: "project",
-        projectId: project.id,
-        projectColor: project.color,
-      });
-    }
-    return options;
-  }, [agents, orderedProjects]);
-
-  const { data: assigneeAdapterModels } = useQuery({
-    queryKey:
-      effectiveCompanyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
-        : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
-    enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
-  });
+    return buildMarkdownMentionOptions({
+      agents,
+      projects: orderedProjects,
+      members: companyMembers?.users,
+      issues: mentionIssues,
+    });
+  }, [agents, companyMembers?.users, orderedProjects, mentionIssues]);
 
   const createIssue = useMutation({
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
+      navigateOnCreate,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
+    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
       const issue = await issuesApi.create(companyId, data);
       const failures: string[] = [];
 
@@ -349,7 +441,7 @@ export function NewIssueDialog() {
           if (stagedFile.kind === "document") {
             const body = await stagedFile.file.text();
             await issuesApi.upsertDocument(issue.id, stagedFile.documentKey ?? "document", {
-              title: stagedFile.documentKey === "plan" ? null : stagedFile.title ?? null,
+              title: stagedFile.documentKey === "plan" ? null : (stagedFile.title ?? null),
               format: "markdown",
               body,
               baseRevisionId: null,
@@ -362,98 +454,232 @@ export function NewIssueDialog() {
         }
       }
 
-      return { issue, companyId, failures };
+      return { issue, companyId, failures, navigateOnCreate };
     },
-    onSuccess: ({ issue, companyId, failures }) => {
+    onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
+      trackRecentProject(issue.projectId ?? "", companyId);
+      if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
+      if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
+      if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+      const issueRef = issue.identifier ?? issue.id;
+      const openIssueAction = prefix
+        ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+        : undefined;
       if (failures.length > 0) {
-        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
-        const issueRef = issue.identifier ?? issue.id;
         pushToast({
           title: `Created ${issueRef} with upload warnings`,
           body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
           tone: "warn",
-          action: prefix
-            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
-            : undefined,
+          action: openIssueAction,
+        });
+      } else {
+        pushToast({
+          title: `Created ${issueRef}`,
+          tone: "success",
+          action: openIssueAction,
         });
       }
       clearDraft();
       reset();
       closeNewIssue();
-    },
-  });
-
-  const uploadDescriptionImage = useMutation({
-    mutationFn: async (file: File) => {
-      if (!effectiveCompanyId) throw new Error("No company selected");
-      return assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
+      if (navigateOnCreate) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
     },
   });
 
   // Debounced draft saving
-  const scheduleSave = useCallback(
-    (draft: IssueDraft) => {
-      if (draftTimer.current) clearTimeout(draftTimer.current);
-      draftTimer.current = setTimeout(() => {
-        if (draft.title.trim()) saveDraft(draft);
-      }, DEBOUNCE_MS);
+  const scheduleSave = useCallback((draft: IssueDraft) => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => {
+      if (draft.title.trim() || draft.description.trim()) saveDraft(draft);
+    }, DEBOUNCE_MS);
+  }, []);
+
+  const setIssueText = useCallback((nextTitle: string, nextDescription: string) => {
+    setHasTitle(Boolean(nextTitle));
+    titleRef.current = nextTitle;
+    descriptionRef.current = nextDescription;
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+  }, []);
+
+  const queueDraftSave = useCallback(
+    (overrides: { title?: string; description?: string } = {}) => {
+      if (!newIssueOpen) return;
+      const nextTitle = overrides.title ?? titleRef.current;
+      const nextDescription = overrides.description ?? descriptionRef.current;
+      scheduleSave({
+        title: nextTitle,
+        description: nextDescription,
+        status,
+        priority,
+        assigneeValue,
+        reviewerValue,
+        approverValue,
+        watchdogAgentId,
+        watchdogInstructions,
+        projectId,
+        projectWorkspaceId,
+        assigneeModelLane,
+        assigneeModelOverride,
+        assigneeThinkingEffort,
+        assigneeChrome,
+        executionWorkspaceMode,
+        selectedExecutionWorkspaceId,
+        workMode,
+        isPrivate,
+        composerSettings,
+      });
     },
-    [],
+    [
+      newIssueOpen,
+      scheduleSave,
+      status,
+      priority,
+      assigneeValue,
+      reviewerValue,
+      approverValue,
+      watchdogAgentId,
+      watchdogInstructions,
+      projectId,
+      projectWorkspaceId,
+      assigneeModelOverride,
+      assigneeThinkingEffort,
+      assigneeChrome,
+      executionWorkspaceMode,
+      selectedExecutionWorkspaceId,
+      workMode,
+      isPrivate,
+      composerSettings,
+    ],
+  );
+
+  const handleDescriptionChange = useCallback(
+    (nextDescription: string) => {
+      descriptionRef.current = nextDescription;
+      setDescription(nextDescription);
+
+      queueDraftSave({ description: nextDescription });
+    },
+    [queueDraftSave],
   );
 
   // Save draft on meaningful changes
   useEffect(() => {
     if (!newIssueOpen) return;
-    scheduleSave({
-      title,
-      description,
-      status,
-      priority,
-      assigneeValue,
-      projectId,
-      assigneeModelOverride,
-      assigneeThinkingEffort,
-      assigneeChrome,
-      useIsolatedExecutionWorkspace,
-    });
+    queueDraftSave();
   }, [
-    title,
-    description,
     status,
     priority,
     assigneeValue,
+    reviewerValue,
+    approverValue,
+    watchdogAgentId,
+    watchdogInstructions,
     projectId,
+    projectWorkspaceId,
+    assigneeModelLane,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    useIsolatedExecutionWorkspace,
+    executionWorkspaceMode,
+    selectedExecutionWorkspaceId,
+    workMode,
     newIssueOpen,
-    scheduleSave,
+    queueDraftSave,
   ]);
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
-    if (!newIssueOpen) return;
-    setDialogCompanyId(selectedCompanyId);
+    if (!newIssueOpen) {
+      initializationKeyRef.current = null;
+      defaultAssigneePendingRef.current = false;
+      defaultProjectPendingRef.current = false;
+      return;
+    }
+    const initializationKey = `${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
+    if (initializationKeyRef.current === initializationKey) return;
+    initializationKeyRef.current = initializationKey;
+
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
-    if (newIssueDefaults.title) {
-      setTitle(newIssueDefaults.title);
-      setDescription(newIssueDefaults.description ?? "");
+    defaultProjectPendingRef.current = newIssueDefaults.projectId === undefined && !newIssueDefaults.parentId;
+    defaultAssigneePendingRef.current = !newIssueDefaults.assigneeAgentId && !newIssueDefaults.assigneeUserId;
+    setComposerSettings(null);
+    setIsPrivate(false);
+    createIssue.reset();
+    if (newIssueDefaults.parentId) {
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const defaultProjectWorkspaceId =
+        newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject);
+      const defaultExecutionWorkspaceMode = defaultExecutionWorkspaceModeForIssueDefaults(
+        newIssueDefaults,
+        defaultProject,
+      );
+      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
-      setProjectId(newIssueDefaults.projectId ?? "");
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(defaultProjectWorkspaceId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setUseIsolatedExecutionWorkspace(false);
-    } else if (draft && draft.title.trim()) {
-      setTitle(draft.title);
-      setDescription(draft.description);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
+      setWorkMode(nextWorkMode);
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current =
+        hasExplicitProjectWorkspaceId || defaultProject ? defaultProjectId || null : null;
+    } else if (newIssueDefaults.title || newIssueDefaults.description) {
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
+      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
+      setStatus(newIssueDefaults.status ?? "todo");
+      setPriority(newIssueDefaults.priority ?? "");
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setReviewerValue("");
+      setApproverValue("");
+
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+
+      setAssigneeModelOverride("");
+      setAssigneeThinkingEffort("");
+      setAssigneeChrome(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setWorkMode(nextWorkMode);
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current =
+        hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+          ? defaultProjectId || null
+          : null;
+    } else if (draft && (draft.title.trim() || draft.description.trim())) {
+      defaultAssigneePendingRef.current = false;
+      defaultProjectPendingRef.current = false;
+      const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
+      const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
+      const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
+      const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
+      setIsPrivate(draft.isPrivate ?? false);
+      setIssueText(draft.title, draft.description);
+      setComposerSettings(draft.composerSettings ?? null);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
       setAssigneeValue(
@@ -461,42 +687,68 @@ export function NewIssueDialog() {
           ? assigneeValueFromSelection(newIssueDefaults)
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
-      setProjectId(newIssueDefaults.projectId ?? draft.projectId);
+      setReviewerValue(draft.reviewerValue ?? "");
+      setApproverValue(draft.approverValue ?? "");
+
+      setWatchdogAgentId(draft.watchdogAgentId ?? "");
+      setWatchdogInstructions(draft.watchdogInstructions ?? "");
+
+      setProjectId(restoredProjectId);
+      setProjectWorkspaceId(
+        hasExplicitProjectWorkspaceId
+          ? (newIssueDefaults.projectWorkspaceId ?? "")
+          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+      );
+      setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
-      setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
+      setExecutionWorkspaceMode(
+        hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
+          ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
+          : (draft.executionWorkspaceMode ??
+              (draft.useIsolatedExecutionWorkspace
+                ? "isolated_workspace"
+                : defaultExecutionWorkspaceModeForProject(restoredProject))),
+      );
+      setWorkMode(nextWorkMode);
+      setSelectedExecutionWorkspaceId(
+        hasExplicitExecutionWorkspaceId
+          ? (newIssueDefaults.executionWorkspaceId ?? "")
+          : (draft.selectedExecutionWorkspaceId ?? ""),
+      );
+      executionWorkspaceDefaultProjectId.current =
+        hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
+          ? restoredProjectId || null
+          : null;
     } else {
+      setWorkMode(isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard");
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      setIssueText("", "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
-      setProjectId(newIssueDefaults.projectId ?? "");
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setReviewerValue("");
+      setApproverValue("");
+
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setUseIsolatedExecutionWorkspace(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current =
+        hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+          ? defaultProjectId || null
+          : null;
     }
-  }, [newIssueOpen, newIssueDefaults]);
-
-  useEffect(() => {
-    if (!supportsAssigneeOverrides) {
-      setAssigneeOptionsOpen(false);
-      setAssigneeModelOverride("");
-      setAssigneeThinkingEffort("");
-      setAssigneeChrome(false);
-      return;
-    }
-
-    const validThinkingValues =
-      assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-        : assigneeAdapterType === "opencode_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
-    if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
-      setAssigneeThinkingEffort("");
-    }
-  }, [supportsAssigneeOverrides, assigneeAdapterType, assigneeThinkingEffort]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, effectiveCompanyId, setIssueText]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -506,83 +758,135 @@ export function NewIssueDialog() {
   }, []);
 
   function reset() {
-    setTitle("");
-    setDescription("");
+    createRequestRef.current = null;
+    setIssueText("", "");
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
+    setReviewerValue("");
+    setApproverValue("");
+
+    setWatchdogAgentId("");
+    setWatchdogInstructions("");
+
     setProjectId("");
-    setAssigneeOptionsOpen(false);
+    setProjectWorkspaceId("");
+    setAssigneeModelLane("primary");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setUseIsolatedExecutionWorkspace(false);
-    setExpanded(false);
-    setDialogCompanyId(null);
+    setExecutionWorkspaceMode("shared_workspace");
+    setSelectedExecutionWorkspaceId("");
+    setWorkMode("standard");
+
+    setComposerSettings(null);
+    setIsPrivate(false);
+
     setStagedFiles([]);
     setIsFileDragOver(false);
-    setCompanyOpen(false);
+
     executionWorkspaceDefaultProjectId.current = null;
+    initializationKeyRef.current = null;
   }
 
-  function handleCompanyChange(companyId: string) {
-    if (companyId === effectiveCompanyId) return;
-    setDialogCompanyId(companyId);
-    setAssigneeValue("");
-    setProjectId("");
-    setAssigneeModelOverride("");
-    setAssigneeThinkingEffort("");
-    setAssigneeChrome(false);
-    setUseIsolatedExecutionWorkspace(false);
-  }
-
-  function discardDraft() {
-    clearDraft();
-    reset();
-    closeNewIssue();
-  }
-
-  function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
-    const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
+  async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
+    const currentTitle = titleRef.current.trim();
+    const currentDescription = body.trim();
+    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
+    const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
+      lane: assigneeChrome ? "custom" : assigneeModelLane,
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
-    const executionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
-      ? selectedProject?.executionWorkspacePolicy
-      : null;
+    // Hidden selectors must not submit a restored draft over the managed default.
+    const executionWorkspacePolicy =
+      workspaceIsolationControlsVisible && experimentalSettings?.enableIsolatedWorkspaces === true
+        ? (selectedProject?.executionWorkspacePolicy ?? null)
+        : null;
+    const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
+      (workspace) => workspace.id === selectedExecutionWorkspaceId,
+    );
+    const requestedExecutionWorkspaceMode =
+      executionWorkspaceMode === "reuse_existing"
+        ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
+        : executionWorkspaceMode;
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
-      ? {
-          mode: useIsolatedExecutionWorkspace ? "isolated" : "project_primary",
-        }
+      ? { mode: requestedExecutionWorkspaceMode }
       : null;
-    createIssue.mutate({
+    const requestedProjectWorkspaceId = canChooseWorktrees && executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace
+      ? selectedReusableExecutionWorkspace.projectWorkspaceId
+      : projectWorkspaceId;
+    // A task launched from a workspace (or its parent task) keeps that explicit
+    // context. Draft-only choices are ignored while the selector is hidden.
+    const contextualWorkspaceId =
+      !workspaceIsolationControlsVisible && newIssueDefaults.projectId === projectId
+        ? newIssueDefaults.executionWorkspaceId
+        : undefined;
+    const executionPolicy = buildExecutionPolicy({
+      reviewerValues: reviewerValue ? [reviewerValue] : [],
+      approverValues: approverValue ? [approverValue] : [],
+    });
+    const assigneeAdapterOverrides = settings
+      ? mergeComposerRunSettings(inheritedOverrides, assigneeAdapterType ?? undefined, settings)
+      : inheritedOverrides;
+    const createData = {
       companyId: effectiveCompanyId,
       stagedFiles,
-      title: title.trim(),
-      description: description.trim() || undefined,
+      ...(currentTitle ? { title: currentTitle } : {}),
+      description: currentDescription || undefined,
       status,
       priority: priority || "medium",
+      workMode: mode,
+      ...(effectivePrivate ? { visibility: "private" } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
+      ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
+      ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(requestedProjectWorkspaceId ? { projectWorkspaceId: requestedProjectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
+      ...(canChooseWorktrees &&
+      executionWorkspaceMode === "reuse_existing" &&
+      selectedExecutionWorkspaceId
+        ? { executionWorkspaceId: selectedExecutionWorkspaceId }
+        : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      ...(contextualWorkspaceId
+        ? { executionWorkspaceId: contextualWorkspaceId, executionWorkspacePreference: "reuse_existing" }
+        : {}),
+      ...(executionPolicy ? { executionPolicy } : {}),
+      ...(watchdogAgentId
+        ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
+        : {}),
+    };
+    // An explicit board create is a new task even when its title already exists.
+    // Reuse the request key only for retries of the same submitted draft.
+    const fingerprint = JSON.stringify(createData);
+    if (createRequestRef.current?.fingerprint !== fingerprint) {
+      createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
+    }
+    await createIssue.mutateAsync({
+      ...createData,
+      allowDuplicate: true,
+      idempotencyKey: createRequestRef.current.idempotencyKey,
+      navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
     });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (isWorkModePeriodShortcut(e)) {
       e.preventDefault();
-      handleSubmit();
+      setWorkMode((current) => nextWorkMode(current));
+      return;
     }
   }
 
   function stageFiles(files: File[]) {
-    if (files.length === 0) return;
+    if (files.length === 0 || createIssue.isPending) return;
     setStagedFiles((current) => {
       const next = [...current];
       for (const file of files) {
@@ -606,13 +910,6 @@ export function NewIssueDialog() {
       }
       return next;
     });
-  }
-
-  function handleStageFilesPicked(evt: ChangeEvent<HTMLInputElement>) {
-    stageFiles(Array.from(evt.target.files ?? []));
-    if (stageFileInputRef.current) {
-      stageFileInputRef.current.value = "";
-    }
   }
 
   function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
@@ -644,46 +941,70 @@ export function NewIssueDialog() {
     setStagedFiles((current) => current.filter((file) => file.id !== id));
   }
 
-  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || stagedFiles.length > 0;
-  const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
-  const currentPriority = priorities.find((p) => p.value === priority);
-  const currentAssignee = selectedAssigneeAgentId
-    ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
-    : null;
-  const currentProject = orderedProjects.find((project) => project.id === projectId);
-  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
-    ? currentProject?.executionWorkspacePolicy ?? null
-    : null;
-  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const assigneeOptionsTitle =
-    assigneeAdapterType === "claude_local"
-      ? "Claude options"
-      : assigneeAdapterType === "codex_local"
-        ? "Codex options"
-        : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
-  const thinkingEffortOptions =
-    assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-      : assigneeAdapterType === "opencode_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+  const currentAssignee = selectedAssigneeAgentId ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId) : null;
+  const currentAssigneeLowTrust = getTrustPreset(currentAssignee?.permissions) === "low_trust_review";
+  const neededUserSecretKeys = useMemo(() => {
+    if (!shouldWarnAboutRunUserSecrets(status, selectedAssigneeAgentId)) return [];
+    return uniqueRequiredUserSecretKeys([
+      isRecord(currentAssignee?.adapterConfig) ? (currentAssignee.adapterConfig.env as Record<string, unknown>) : null,
+      currentProject?.env ?? null,
+    ]);
+  }, [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status]);
+  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
+  const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
+  const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
+    && (worktreesLoading || worktreesError || !selectedReusableWorktree);
+  const isUsingParentExecutionWorkspace =
+    isSubIssueMode && parentExecutionWorkspaceId
+      ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
+      : false;
+  const showParentWorkspaceWarning =
+    isSubIssueMode &&
+    currentProjectSupportsExecutionWorkspace &&
+    Boolean(parentExecutionWorkspaceId) &&
+    !isUsingParentExecutionWorkspace;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
       ...currentUserAssigneeOption(currentUserId),
-      ...sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
-        recentAssigneeIds,
-      ).map((agent) => ({
+      ...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }),
+      ...sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds).map((agent) => ({
         id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
         label: agent.name,
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
     ],
-    [agents, currentUserId, recentAssigneeIds],
+    [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
   );
+  // Resolve once after the directory loads, without resetting text typed while
+  // the queries were in flight or replacing an explicit/restored assignee.
+  useEffect(() => {
+    if (!newIssueOpen || !effectiveCompanyId || !defaultAssigneePendingRef.current
+      || !agents || !sessionFetched || !membersFetched || primaryAgent?.loading) return;
+    defaultAssigneePendingRef.current = false;
+    const available = new Set(assigneeOptions.map((option) => option.id));
+    const scopedRecents = getRecentAssigneeSelectionIds(effectiveCompanyId);
+    // Older history has no company key. Agent IDs identify their company;
+    // human IDs can belong to several companies and cannot be migrated safely.
+    const recents = scopedRecents.length ? scopedRecents
+      : getRecentAssigneeSelectionIds().filter((value) => value.startsWith("agent:"));
+    const recent = recents.find((value) => available.has(value));
+    const targets = agents.filter(isAgentTaskTarget);
+    const fallback = targets.find((agent) => agent.id === primaryAgent?.primaryAgentId)
+      ?? targets.find((agent) => agent.role === "ceo") ?? targets[0];
+    setAssigneeValue(recent ?? (fallback ? assigneeValueFromSelection({ assigneeAgentId: fallback.id }) : ""));
+  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched, primaryAgent?.loading, primaryAgent?.primaryAgentId]);
+  useEffect(() => {
+    if (!newIssueOpen || !effectiveCompanyId || !defaultProjectPendingRef.current || !projects) return;
+    defaultProjectPendingRef.current = false;
+    const available = new Set(orderedProjects.filter((project) => !project.archivedAt).map((project) => project.id));
+    const last = getLastProjectId(effectiveCompanyId);
+    const remembered = last !== undefined
+      ? (available.has(last) ? last : "")
+      : (getRecentProjectIds().find((id) => available.has(id)) ?? "");
+    setProjectId(remembered);
+  }, [newIssueOpen, effectiveCompanyId, projects, orderedProjects]);
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
       orderedProjects.map((project) => ({
@@ -693,55 +1014,93 @@ export function NewIssueDialog() {
       })),
     [orderedProjects],
   );
-  const savedDraft = loadDraft();
-  const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
-  const canDiscardDraft = hasDraft || hasSavedDraft;
-  const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
-  const handleProjectChange = useCallback((nextProjectId: string) => {
-    setProjectId(nextProjectId);
-    const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
-    const policy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI ? nextProject?.executionWorkspacePolicy : null;
-    executionWorkspaceDefaultProjectId.current = nextProjectId || null;
-    setUseIsolatedExecutionWorkspace(Boolean(policy?.enabled && policy.defaultMode === "isolated"));
-  }, [orderedProjects]);
+  const handleProjectChange = useCallback(
+    (nextProjectId: string) => {
+      defaultProjectPendingRef.current = false;
+      trackRecentProject(nextProjectId, effectiveCompanyId ?? undefined);
+      setProjectId(nextProjectId);
+      const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+      executionWorkspaceDefaultProjectId.current = nextProjectId || null;
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
+      setSelectedExecutionWorkspaceId("");
+    },
+    [orderedProjects, effectiveCompanyId],
+  );
 
   useEffect(() => {
-    if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
+    if (
+      !newIssueOpen ||
+      !projectId ||
+      selectedExecutionWorkspaceId ||
+      executionWorkspaceDefaultProjectId.current === projectId
+    ) {
       return;
     }
     const project = orderedProjects.find((entry) => entry.id === projectId);
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
-    setUseIsolatedExecutionWorkspace(
-      Boolean(
-        SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI &&
-        project.executionWorkspacePolicy?.enabled &&
-        project.executionWorkspacePolicy.defaultMode === "isolated",
-      ),
-    );
-  }, [newIssueOpen, orderedProjects, projectId]);
-  const modelOverrideOptions = useMemo<InlineEntityOption[]>(
-    () => {
-      return [...(assigneeAdapterModels ?? [])]
-        .sort((a, b) => {
-          const providerA = extractProviderIdWithFallback(a.id);
-          const providerB = extractProviderIdWithFallback(b.id);
-          const byProvider = providerA.localeCompare(providerB);
-          if (byProvider !== 0) return byProvider;
-          return a.id.localeCompare(b.id);
-        })
-        .map((model) => ({
-          id: model.id,
-          label: model.label,
-          searchText: `${model.id} ${extractProviderIdWithFallback(model.id)}`,
-        }));
-    },
-    [assigneeAdapterModels],
-  );
+    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
+    setSelectedExecutionWorkspaceId("");
+  }, [newIssueOpen, orderedProjects, projectId, selectedExecutionWorkspaceId]);
+  const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
+    const dialogGeometry = {
+      // Fixed-position coordinates are relative to Safari's visual viewport.
+      // Adding visualViewport.offsetTop here places the dialog below that
+      // viewport after the software keyboard pans the page.
+      "--new-issue-dialog-top": "var(--new-issue-dialog-top-gap)",
+      "--new-issue-dialog-height":
+        "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    };
+    if (!visualViewportLayout) return dialogGeometry;
+    return {
+      ...dialogGeometry,
+      "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
+      ...(visualViewportLayout.constrained
+        ? {
+            top: "var(--new-issue-dialog-top)",
+            maxHeight: "var(--new-issue-dialog-height)",
+            translate: "var(--pct-neg-50)",
+          }
+        : {}),
+    };
+  }, [visualViewportLayout]);
+  const entityPickerViewportStyle = useMemo<MobileEntityPickerViewportStyle>(() => {
+    if (!visualViewportLayout) return {};
+    return {
+      "--mobile-entity-picker-visual-viewport-height": `${visualViewportLayout.height}px`,
+    };
+  }, [visualViewportLayout]);
+
+  useEffect(() => {
+    if (!visualViewportLayout?.constrained) return;
+    const focusedElement = document.activeElement;
+    if (
+      !(focusedElement instanceof HTMLElement) ||
+      !dialogBodyRef.current?.contains(focusedElement) ||
+      typeof focusedElement.scrollIntoView !== "function"
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      focusedElement.scrollIntoView({ block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [visualViewportLayout]);
+
+  const modelAgents = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
+  const inheritedOverrides = buildAssigneeAdapterOverrides({
+    adapterType: assigneeAdapterType,
+    lane: assigneeChrome ? "custom" : assigneeModelLane,
+    modelOverride: assigneeModelOverride,
+    thinkingEffortOverride: assigneeThinkingEffort,
+    chrome: assigneeChrome,
+  });
 
   return (
     <Dialog
@@ -753,588 +1112,349 @@ export function NewIssueDialog() {
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
-        className={cn(
-          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
-          expanded
-            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
-            : "sm:max-w-lg"
-        )}
+        style={dialogViewportStyle}
+        className="flex max-h-(--new-issue-dialog-height) flex-col gap-0 overflow-hidden rounded-(--radius-task-composer) border-0 bg-transparent p-0 shadow-none sm:max-w-2xl"
         onKeyDown={handleKeyDown}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          dialogBodyRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+        }}
         onEscapeKeyDown={(event) => {
-          if (createIssue.isPending) {
+          if (event.defaultPrevented) return;
+          if (isWorkModeEscapeShortcut(event)) {
             event.preventDefault();
-          }
+            setWorkMode((current) => nextWorkMode(current));
+          } else if (createIssue.isPending) event.preventDefault();
         }}
         onPointerDownOutside={(event) => {
-          if (createIssue.isPending) {
-            event.preventDefault();
-            return;
-          }
-          // Radix Dialog's modal DismissableLayer calls preventDefault() on
-          // pointerdown events that originate outside the Dialog DOM tree.
-          // Popover portals render at the body level (outside the Dialog), so
-          // touch events on popover content get their default prevented — which
-          // kills scroll gesture recognition on mobile.  Telling Radix "this
-          // event is handled" skips that preventDefault, restoring touch scroll.
           const target = event.detail.originalEvent.target as HTMLElement | null;
-          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+          if (
+            createIssue.isPending ||
+            target?.closest("[data-radix-popper-content-wrapper], [data-paperclip-floating-ui]")
+          ) {
             event.preventDefault();
           }
         }}
       >
-        {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Popover open={companyOpen} onOpenChange={setCompanyOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  className={cn(
-                    "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
-                    !dialogCompany?.brandColor && "bg-muted",
-                  )}
-                  style={
-                    dialogCompany?.brandColor
-                      ? {
-                          backgroundColor: dialogCompany.brandColor,
-                          color: getContrastTextColor(dialogCompany.brandColor),
-                        }
-                      : undefined
-                  }
-                >
-                  {(dialogCompany?.name ?? "").slice(0, 3).toUpperCase()}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-48 p-1" align="start">
-                {companies.filter((c) => c.status !== "archived").map((c) => (
-                  <button
-                    key={c.id}
-                    className={cn(
-                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                      c.id === effectiveCompanyId && "bg-accent",
-                    )}
-                    onClick={() => {
-                      handleCompanyChange(c.id);
-                      setCompanyOpen(false);
-                    }}
-                  >
-                    <span
-                      className={cn(
-                        "px-1 py-0.5 rounded text-[10px] font-semibold leading-none",
-                        !c.brandColor && "bg-muted",
-                      )}
-                      style={
-                        c.brandColor
-                          ? {
-                              backgroundColor: c.brandColor,
-                              color: getContrastTextColor(c.brandColor),
-                            }
-                          : undefined
-                      }
-                    >
-                      {c.name.slice(0, 3).toUpperCase()}
-                    </span>
-                    <span className="truncate">{c.name}</span>
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
-            <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => setExpanded(!expanded)}
-              disabled={createIssue.isPending}
-            >
-              {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => closeNewIssue()}
-              disabled={createIssue.isPending}
-            >
-              <span className="text-lg leading-none">&times;</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* Title */}
-        <div className="px-4 pt-4 pb-2 shrink-0">
-          <textarea
-            className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
-            rows={1}
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = `${e.target.scrollHeight}px`;
-            }}
-            readOnly={createIssue.isPending}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                !e.metaKey &&
-                !e.ctrlKey &&
-                !e.nativeEvent.isComposing
-              ) {
-                e.preventDefault();
-                descriptionEditorRef.current?.focus();
-              }
-              if (e.key === "Tab" && !e.shiftKey) {
-                e.preventDefault();
-                if (assigneeValue) {
-                  // Assignee already set — skip to project or description
-                  if (projectId) {
-                    descriptionEditorRef.current?.focus();
-                  } else {
-                    projectSelectorRef.current?.focus();
-                  }
-                } else {
-                  assigneeSelectorRef.current?.focus();
-                }
-              }
-            }}
-            autoFocus
-          />
-        </div>
-
-        <div className="px-4 pb-2 shrink-0">
-          <div className="overflow-x-auto overscroll-x-contain">
-            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span>For</span>
-              <InlineEntitySelector
-                ref={assigneeSelectorRef}
-                value={assigneeValue}
-                options={assigneeOptions}
-                placeholder="Assignee"
-                disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
-                onChange={(value) => {
-                  const nextAssignee = parseAssigneeValue(value);
-                  if (nextAssignee.assigneeAgentId) {
-                    trackRecentAssignee(nextAssignee.assigneeAgentId);
-                  }
-                  setAssigneeValue(value);
-                }}
-                onConfirm={() => {
-                  if (projectId) {
-                    descriptionEditorRef.current?.focus();
-                  } else {
-                    projectSelectorRef.current?.focus();
-                  }
-                }}
-                renderTriggerValue={(option) =>
-                  option ? (
-                    currentAssignee ? (
-                      <>
-                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{option.label}</span>
-                      </>
-                    ) : (
-                      <span className="truncate">{option.label}</span>
-                    )
-                  ) : (
-                    <span className="text-muted-foreground">Assignee</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const assignee = parseAssigneeValue(option.id).assigneeAgentId
-                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
-                    : null;
-                  return (
-                    <>
-                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
-              <span>in</span>
-              <InlineEntitySelector
-                ref={projectSelectorRef}
-                value={projectId}
-                options={projectOptions}
-                placeholder="Project"
-                disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
-                onChange={handleProjectChange}
-                onConfirm={() => {
-                  descriptionEditorRef.current?.focus();
-                }}
-                renderTriggerValue={(option) =>
-                  option && currentProject ? (
-                    <>
-                      <span
-                        className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
-                      />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">Project</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const project = orderedProjects.find((item) => item.id === option.id);
-                  return (
-                    <>
-                      <span
-                        className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: project?.color ?? "#6366f1" }}
-                      />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {currentProjectSupportsExecutionWorkspace && (
-          <div className="px-4 pb-2 shrink-0">
-            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-              <div className="space-y-0.5">
-                <div className="text-xs font-medium">Use isolated issue checkout</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Create an issue-specific execution workspace instead of using the project's primary checkout.
-                </div>
-              </div>
-              <button
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
-                )}
-                onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
-                type="button"
-              >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
-                  )}
-                />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {supportsAssigneeOverrides && (
-          <div className="px-4 pb-2 shrink-0">
-            <button
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setAssigneeOptionsOpen((open) => !open)}
-            >
-              {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              {assigneeOptionsTitle}
-            </button>
-            {assigneeOptionsOpen && (
-              <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model</div>
-                  <InlineEntitySelector
-                    value={assigneeModelOverride}
-                    options={modelOverrideOptions}
-                    placeholder="Default model"
-                    disablePortal
-                    noneLabel="Default model"
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models found."
-                    onChange={setAssigneeModelOverride}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Thinking effort</div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {thinkingEffortOptions.map((option) => (
-                      <button
-                        key={option.value || "default"}
-                        className={cn(
-                          "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                          assigneeThinkingEffort === option.value && "bg-accent"
-                        )}
-                        onClick={() => setAssigneeThinkingEffort(option.value)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {assigneeAdapterType === "claude_local" && (
-                  <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
-                    <button
-                      className={cn(
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        assigneeChrome ? "bg-green-600" : "bg-muted"
-                      )}
-                      onClick={() => setAssigneeChrome((value) => !value)}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                          assigneeChrome ? "translate-x-4.5" : "translate-x-0.5"
-                        )}
-                      />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Description */}
+        <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
         <div
-          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}
+          ref={dialogBodyRef}
+          className={cn("min-h-0 overflow-y-auto overscroll-contain", isFileDragOver && "bg-accent/20")}
           onDragEnter={handleFileDragEnter}
           onDragOver={handleFileDragOver}
           onDragLeave={handleFileDragLeave}
           onDrop={handleFileDrop}
         >
-          <div
-            className={cn(
-              "rounded-md transition-colors",
-              isFileDragOver && "bg-accent/20",
-            )}
-          >
-            <MarkdownEditor
-              ref={descriptionEditorRef}
-              value={description}
-              onChange={setDescription}
-              placeholder="Add description..."
-              bordered={false}
+          <TaskChatPresentationProvider mode={streamlinedUiEnabled ? "streamlined" : "production"}>
+            <TaskChatComposer
+              workMode={workMode}
+              onWorkModeChange={setWorkMode}
+              disabled={createIssue.isPending || !effectiveCompanyId}
+              placeholder="Describe a task…"
+              mobile={isMobile}
               mentions={mentionOptions}
-              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-              imageUploadHandler={async (file) => {
-                const asset = await uploadDescriptionImage.mutateAsync(file);
+              onImageUpload={async (file) => {
+                if (!effectiveCompanyId) throw new Error("No organization selected");
+                const asset = await assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
                 return asset.contentPath;
               }}
+              companyId={effectiveCompanyId}
+              enableReassign
+              reassignOptions={assigneeOptions}
+              modelAgents={modelAgents}
+              agentMap={modelAgents}
+              currentAssigneeValue={assigneeValue}
+              assigneeAdapterOverrides={inheritedOverrides}
+              onPendingAssigneeChange={(value) => {
+                if (value === null) return;
+                defaultAssigneePendingRef.current = false;
+                const next = parseAssigneeValue(value);
+                if (next.assigneeAgentId) trackRecentAssignee(next.assigneeAgentId, effectiveCompanyId ?? undefined);
+                if (next.assigneeUserId) trackRecentAssigneeUser(next.assigneeUserId, effectiveCompanyId ?? undefined);
+                setAssigneeValue(value);
+                setComposerSettings(null);
+                setAssigneeModelLane("primary");
+                setAssigneeModelOverride("");
+                setAssigneeThinkingEffort("");
+                setAssigneeChrome(false);
+                if (value && status === "backlog") setStatus("todo");
+              }}
+              creation={{
+                value: description,
+                onChange: handleDescriptionChange,
+                onSubmit: handleSubmit,
+                privacy: parentPrivacyUnresolved ? undefined : {
+                  private: effectivePrivate,
+                  inherited: inheritedPrivacyReason,
+                  onChange: (checked) => {
+                    setIsPrivate(checked);
+                    if (!checked && currentProject?.visibility === "private") handleProjectChange("");
+                    if (checked && !projectId && currentUserId) {
+                      const personalProject = orderedProjects.find(project => project.personalOwnerUserId === currentUserId);
+                      if (personalProject) handleProjectChange(personalProject.id);
+                    }
+                  },
+                },
+                submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
+                canSubmitWithoutBody: Boolean(title.trim()),
+                onSelectFiles: stageFiles,
+                runSettings: composerSettings,
+                onRunSettingsChange: setComposerSettings,
+                header:
+                  hasTitle || isSubIssueMode ? (
+                    <div className="mb-3 flex flex-col gap-2 text-xs">
+                      {hasTitle ? (
+                        <input
+                          aria-label="Task title"
+                          value={title}
+                          disabled={createIssue.isPending}
+                          className="w-full bg-transparent text-sm text-foreground outline-none"
+                          onChange={(event) => {
+                            titleRef.current = event.target.value;
+                            setTitle(event.target.value);
+                            queueDraftSave({ title: event.target.value });
+                          }}
+                        />
+                      ) : null}
+                      {isSubIssueMode ? (
+                        <div className="px-4 pb-2">
+                          <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-1.5">
+                              <ListTree className="h-3.5 w-3.5 shrink-0" />
+                              <span className="shrink-0">Sub-task of</span>
+                              <span className="font-medium text-foreground">{parentIssueLabel}</span>
+                            </div>
+                            {newIssueDefaults.parentTitle ? (
+                              <div className="pl-5 text-foreground/80 truncate">{newIssueDefaults.parentTitle}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : undefined,
+                details: (
+                  <>
+                    {parentPrivacyUnresolved ? (
+                      <div role={parentPrivacyError ? "alert" : "status"} className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{parentPrivacyError ? "Couldn't check parent access." : "Checking parent access…"}</span>
+                        {parentPrivacyError ? <Button variant="ghost" size="sm" onClick={() => void refetchParentPrivacy()}>Retry</Button> : null}
+                      </div>
+                    ) : null}
+                    {worktreeSelectionIncomplete && !worktreesLoading ? (
+                      <p role="alert" className="mb-2 text-xs text-destructive">
+                        {worktreesError ? "Couldn't check the selected worktree. Retry in Worktrees or choose New worktree."
+                          : "The selected worktree is no longer available. Choose another worktree or start a new one."}
+                      </p>
+                    ) : null}
+                    {stagedFiles.length > 0 ? (
+                      <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+                        {stagedDocuments.length > 0 ? (
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                            <div className="space-y-2">
+                              {stagedDocuments.map((file) => (
+                                <div
+                                  key={file.id}
+                                  className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Badge
+                                        variant="outline"
+                                        className="border-border font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground"
+                                      >
+                                        {file.documentKey}
+                                      </Badge>
+                                      <span className="truncate text-sm">{file.file.name}</span>
+                                    </div>
+                                    <div className="mt-1 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+                                      <FileText className="h-3.5 w-3.5" />
+                                      <span>{file.title || file.file.name}</span>
+                                      <span>•</span>
+                                      <span>{formatFileSize(file.file)}</span>
+                                    </div>
+                                  </div>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    className="shrink-0 text-muted-foreground"
+                                    onClick={() => removeStagedFile(file.id)}
+                                    disabled={createIssue.isPending}
+                                    title="Remove document"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {stagedAttachments.length > 0 ? (
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                            <div className="space-y-2">
+                              {stagedAttachments.map((file) => (
+                                <div
+                                  key={file.id}
+                                  className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                      <span className="truncate text-sm">{file.file.name}</span>
+                                    </div>
+                                    <div className="mt-1 text-(length:--text-micro) text-muted-foreground">
+                                      {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
+                                    </div>
+                                  </div>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    className="shrink-0 text-muted-foreground"
+                                    onClick={() => removeStagedFile(file.id)}
+                                    disabled={createIssue.isPending}
+                                    title="Remove attachment"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {assigneeValue && status === "backlog" ? (
+                      <div
+                        data-testid="new-issue-assigned-backlog-note"
+                        className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+                      >
+                        <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+                        <span className="leading-snug">
+                          Assigning implies executable intent - leave status as{" "}
+                          <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will
+                          not be woken until status moves to <span className="font-medium">Todo</span> or{" "}
+                          <span className="font-medium">In Progress</span>.
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {selectedAssigneeAgent?.status === "paused" ? (
+                      <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
+                        <InlineBanner tone="warning" icon={PauseCircle} compact>
+                          <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start
+                          work on this task until it is resumed
+                          {selectedAssigneeAgent.pauseReason === "import"
+                            ? " — it arrived paused from an organization import"
+                            : ""}
+                          . You can resume it from the task page after creating the task.
+                        </InlineBanner>
+                      </div>
+                    ) : null}
+
+                    {currentAssigneeLowTrust ? (
+                      <div
+                        data-testid="new-issue-low-trust-assignee-note"
+                        className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+                      >
+                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+                        <span className="leading-snug">
+                          Low-trust review agent. It can only act inside its assigned review boundary; task, project, or
+                          run policy defines the concrete scope.
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {showParentWorkspaceWarning ? (
+                      <div className="mb-2">
+                        <InlineBanner tone="warning" compact>
+                          This sub-task will no longer use the parent task workspace
+                          {parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                        </InlineBanner>
+                      </div>
+                    ) : null}
+                    {effectiveCompanyId && neededUserSecretKeys.length > 0 ? (
+                      <MissingUserSecretsBanner companyId={effectiveCompanyId} definitionKeys={neededUserSecretKeys} />
+                    ) : null}
+                  </>
+                ),
+                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved,
+                contextBar: (
+                  <>
+                    <InlineEntitySelector
+                      value={projectId}
+                      options={projectOptions}
+                      recentOptionIds={recentProjectIds}
+                      placeholder="Project"
+                      mobileTitle="Select project"
+                      modal
+                      className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
+                      disabled={createIssue.isPending}
+                      triggerDataSlot="new-issue-compact-control"
+                      contentStyle={entityPickerViewportStyle}
+                      noneLabel="No project"
+                      noneAtTop
+                      searchPlaceholder="Search projects..."
+                      emptyMessage="No projects found."
+                      onChange={handleProjectChange}
+                      renderTriggerValue={(option) =>
+                        option && currentProject ? (
+                          <>
+                            <Folder className="size-3.5 shrink-0" style={{ color: currentProject.color ?? "var(--project-seed)" }} aria-hidden />
+                            <span className="truncate">{option.label}</span>
+                            {currentProject.visibility === "private" ? <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                            <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                          </>
+                        ) : (
+                          <>
+                            <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                            <span className="truncate text-muted-foreground">Project</span>
+                            <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                          </>
+                        )
+                      }
+                      renderOption={(option) => {
+                        if (!option.id) return <><Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden /><span className="truncate">{option.label}</span></>;
+                        const project = orderedProjects.find((item) => item.id === option.id);
+                        return (
+                          <>
+                            <Folder className="size-4 shrink-0" style={{ color: project?.color ?? "var(--project-seed)" }} aria-hidden />
+                            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                            {project?.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                          </>
+                        );
+                      }}
+                    />
+                    {canChooseWorktrees ? (
+                      <ComposerWorktreePicker
+                        mode={executionWorkspaceMode}
+                        workspaceId={selectedExecutionWorkspaceId}
+                        selectedWorkspaceLabel={selectedReusableWorktree?.name ?? (selectedExecutionWorkspaceId === parentExecutionWorkspaceId ? newIssueDefaults.parentExecutionWorkspaceLabel : undefined)}
+                        workspaces={selectableReusableWorkspaces}
+                        onChange={(mode, workspaceId) => {
+                          setExecutionWorkspaceMode(mode);
+                          setSelectedExecutionWorkspaceId(workspaceId);
+                          if (workspaceId) {
+                            const workspace = selectableReusableWorkspaces.find((entry) => entry.id === workspaceId);
+                            if (workspace) setProjectWorkspaceId(workspace.projectWorkspaceId ?? "");
+                          } else {
+                            setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(currentProject));
+                          }
+                        }}
+                        loading={worktreesLoading}
+                        error={worktreesError}
+                        onRetry={() => void refetchWorktrees()}
+                        disabled={createIssue.isPending}
+                        mobile={isMobile}
+                        contentStyle={entityPickerViewportStyle}
+                      />
+                    ) : null}
+                  </>
+                ),
+              }}
             />
-          </div>
-          {stagedFiles.length > 0 ? (
-            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
-              {stagedDocuments.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
-                  <div className="space-y-2">
-                    {stagedDocuments.map((file) => (
-                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                              {file.documentKey}
-                            </span>
-                            <span className="truncate text-sm">{file.file.name}</span>
-                          </div>
-                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                            <FileText className="h-3.5 w-3.5" />
-                            <span>{file.title || file.file.name}</span>
-                            <span>•</span>
-                            <span>{formatFileSize(file.file)}</span>
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="shrink-0 text-muted-foreground"
-                          onClick={() => removeStagedFile(file.id)}
-                          disabled={createIssue.isPending}
-                          title="Remove document"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {stagedAttachments.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
-                  <div className="space-y-2">
-                    {stagedAttachments.map((file) => (
-                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate text-sm">{file.file.name}</span>
-                          </div>
-                          <div className="mt-1 text-[11px] text-muted-foreground">
-                            {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="shrink-0 text-muted-foreground"
-                          onClick={() => removeStagedFile(file.id)}
-                          disabled={createIssue.isPending}
-                          title="Remove attachment"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Property chips bar */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
-          {/* Status chip */}
-          <Popover open={statusOpen} onOpenChange={setStatusOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
-                {currentStatus.label}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {statuses.map((s) => (
-                <button
-                  key={s.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    s.value === status && "bg-accent"
-                  )}
-                  onClick={() => { setStatus(s.value); setStatusOpen(false); }}
-                >
-                  <CircleDot className={cn("h-3 w-3", s.color)} />
-                  {s.label}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Priority chip */}
-          <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                {currentPriority ? (
-                  <>
-                    <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
-                    {currentPriority.label}
-                  </>
-                ) : (
-                  <>
-                    <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
-                  </>
-                )}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {priorities.map((p) => (
-                <button
-                  key={p.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    p.value === priority && "bg-accent"
-                  )}
-                  onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
-                >
-                  <p.icon className={cn("h-3 w-3", p.color)} />
-                  {p.label}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button>
-
-          <input
-            ref={stageFileInputRef}
-            type="file"
-            accept={STAGED_FILE_ACCEPT}
-            className="hidden"
-            onChange={handleStageFilesPicked}
-            multiple
-          />
-          <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
-            onClick={() => stageFileInputRef.current?.click()}
-            disabled={createIssue.isPending}
-          >
-            <Paperclip className="h-3 w-3" />
-            Upload
-          </button>
-
-          {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-                <MoreHorizontal className="h-3 w-3" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
-            </PopoverContent>
-          </Popover>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground"
-            onClick={discardDraft}
-            disabled={createIssue.isPending || !canDiscardDraft}
-          >
-            Discard Draft
-          </Button>
-          <div className="flex items-center gap-3">
-            <div className="min-h-5 text-right">
-              {createIssue.isPending ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
-                </span>
-              ) : createIssue.isError ? (
-                <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
-              ) : null}
-            </div>
-            <Button
-              size="sm"
-              className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
-              onClick={handleSubmit}
-              aria-busy={createIssue.isPending}
-            >
-              <span className="inline-flex items-center justify-center gap-1.5">
-                {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
-              </span>
-            </Button>
-          </div>
+          </TaskChatPresentationProvider>
         </div>
       </DialogContent>
     </Dialog>

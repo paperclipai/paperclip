@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -11,14 +12,17 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
 export function PiLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
   config,
   eff,
   mark,
+  hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  return (
+  if (hideInstructionsFile) return null;
+  return configFieldsForSection(section, (
     <Field label="Agent instructions file" hint={instructionsFileHint}>
       <div className="flex items-center gap-2">
         <DraftInput
@@ -43,5 +47,5 @@ export function PiLocalConfigFields({
         <ChoosePathButton />
       </div>
     </Field>
-  );
+  ));
 }

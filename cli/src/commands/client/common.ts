@@ -1,5 +1,7 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
+import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
@@ -11,6 +13,7 @@ export interface BaseClientOptions {
   profile?: string;
   apiBase?: string;
   apiKey?: string;
+  runId?: string;
   companyId?: string;
   json?: boolean;
 }
@@ -21,6 +24,7 @@ export interface ResolvedClientContext {
   profileName: string;
   profile: ClientContextProfile;
   json: boolean;
+  authSource: "explicit" | "env" | "profile_env" | "stored_board" | "none";
 }
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
@@ -31,6 +35,7 @@ export function addCommonClientOptions(command: Command, opts?: { includeCompany
     .option("--profile <name>", "CLI context profile name")
     .option("--api-base <url>", "Base URL for the Paperclip API")
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+    .option("--run-id <id>", "Heartbeat run id for agent-authenticated mutations (checkout/release/interactions/in-progress update); falls back to $PAPERCLIP_RUN_ID")
     .option("--json", "Output raw JSON");
 
   if (opts?.includeCompany) {
@@ -47,16 +52,12 @@ export function resolveCommandContext(
   const context = readContext(options.context);
   const { name: profileName, profile } = resolveProfile(context, options.profile);
 
-  const apiBase =
-    options.apiBase?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
-    profile.apiBase ||
-    inferApiBaseFromConfig(options.config);
+  const apiBase = resolveApiBase(options, profile);
 
-  const apiKey =
-    options.apiKey?.trim() ||
-    process.env.PAPERCLIP_API_KEY?.trim() ||
-    readKeyFromProfileEnv(profile);
+  const resolvedApiKey = resolveApiKey(options, profile);
+  const explicitApiKey = resolvedApiKey.value;
+  const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
+  const apiKey = explicitApiKey || storedBoardCredential?.token;
 
   const companyId =
     options.companyId?.trim() ||
@@ -69,14 +70,124 @@ export function resolveCommandContext(
     );
   }
 
-  const api = new PaperclipApiClient({ apiBase, apiKey });
+  // Agent-authenticated mutations (checkout, release, interactions, PATCH of an
+  // in-progress issue) require the X-Paperclip-Run-Id header (the server returns
+  // "401 Agent run id required" without it). Source it from --run-id, else the
+  // PAPERCLIP_RUN_ID env the adapter/embodiment context already exports.
+  const runId = options.runId?.trim() || process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
+
+  const api = new PaperclipApiClient({
+    apiBase,
+    apiKey,
+    runId,
+    recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
+      ? undefined
+      : async ({ error }) => {
+          const requestedAccess = error.message.includes("Instance admin required")
+            ? "instance_admin_required"
+            : "board";
+          if (!shouldRecoverBoardAuth(error)) {
+            return null;
+          }
+          const login = await loginBoardCli({
+            apiBase,
+            requestedAccess,
+            requestedCompanyId: companyId ?? null,
+            command: buildCliCommandLabel(),
+          });
+          return login.token;
+        },
+  });
   return {
     api,
     companyId,
     profileName,
     profile,
     json: Boolean(options.json),
+    authSource: explicitApiKey ? resolvedApiKey.source : storedBoardCredential ? "stored_board" : "none",
   };
+}
+
+export function resolveApiBase(options: Pick<BaseClientOptions, "apiBase" | "config">, profile: ClientContextProfile = {}): string {
+  return normalizeApiBase(
+    options.apiBase?.trim() ||
+    process.env.PAPERCLIP_API_URL?.trim() ||
+    profile.apiBase ||
+    inferApiBaseFromConfig(options.config),
+  );
+}
+
+export function normalizeApiBase(apiBase: string): string {
+  return apiBase.trim().replace(/\/+$/, "");
+}
+
+export function apiPath(strings: TemplateStringsArray, ...values: Array<string | number | boolean | null | undefined>): string {
+  let path = strings[0] ?? "";
+  values.forEach((value, index) => {
+    if (value === null || value === undefined || String(value).trim() === "") {
+      throw new Error("Cannot build API path with an empty path segment.");
+    }
+    path += `${encodeURIComponent(String(value))}${strings[index + 1] ?? ""}`;
+  });
+  return path;
+}
+
+export function inferContentTypeFromPath(filePath: string): string | undefined {
+  const ext = filePath.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  // These MIME strings are matched against the server's issue-attachment
+  // allowlist (server/src/attachment-types.ts DEFAULT_ALLOWED_TYPES) by EXACT
+  // string, so text types must carry no "; charset=..." parameter or the upload
+  // is rejected with "422 Unsupported attachment content type". Keep this set in
+  // sync with that allowlist (plus svg/avif, accepted by the asset routes).
+  return {
+    avif: "image/avif",
+    csv: "text/csv",
+    gif: "image/gif",
+    htm: "text/html",
+    html: "text/html",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    json: "application/json",
+    m4v: "video/x-m4v",
+    md: "text/markdown",
+    mov: "video/quicktime",
+    mp4: "video/mp4",
+    pdf: "application/pdf",
+    png: "image/png",
+    qt: "video/quicktime",
+    svg: "image/svg+xml",
+    txt: "text/plain",
+    webm: "video/webm",
+    webp: "image/webp",
+    zip: "application/zip",
+  }[ext];
+}
+
+function resolveApiKey(
+  options: Pick<BaseClientOptions, "apiKey">,
+  profile: ClientContextProfile,
+): { value: string | undefined; source: "explicit" | "env" | "profile_env" | "none" } {
+  const optionValue = options.apiKey?.trim();
+  if (optionValue) return { value: optionValue, source: "explicit" };
+
+  const envValue = process.env.PAPERCLIP_API_KEY?.trim();
+  if (envValue) return { value: envValue, source: "env" };
+
+  const profileEnvValue = readKeyFromProfileEnv(profile);
+  if (profileEnvValue) return { value: profileEnvValue, source: "profile_env" };
+
+  return { value: undefined, source: "none" };
+}
+
+function shouldRecoverBoardAuth(error: ApiRequestError): boolean {
+  if (error.status === 401) return true;
+  if (error.status !== 403) return false;
+  return error.message.includes("Board access required") || error.message.includes("Instance admin required");
+}
+
+function canAttemptInteractiveBoardAuth(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 export function printOutput(data: unknown, opts: { json?: boolean; label?: string } = {}): void {
@@ -149,7 +260,7 @@ function renderValue(value: unknown): string {
   return "[object]";
 }
 
-function inferApiBaseFromConfig(configPath?: string): string {
+export function inferApiBaseFromConfig(configPath?: string): string {
   const envHost = process.env.PAPERCLIP_SERVER_HOST?.trim() || "localhost";
   let port = Number(process.env.PAPERCLIP_SERVER_PORT || "");
 

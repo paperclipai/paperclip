@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
 const BAYER_4X4 = [
@@ -10,8 +10,9 @@ const BAYER_4X4 = [
 
 interface CompanyPatternIconProps {
   companyName: string;
-  brandColor?: string | null;
+  logoUrl?: string | null;
   className?: string;
+  logoFit?: "cover" | "contain";
 }
 
 function hashString(value: string): number {
@@ -73,22 +74,7 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   ];
 }
 
-function hexToHue(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const d = max - min;
-  if (d === 0) return 0;
-  let h = 0;
-  if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  return ((h * 60) + 360) % 360;
-}
-
-function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, logicalSize = 22, cellSize = 2): string {
+function makeCompanyPatternDataUrl(seed: string, logicalSize = 22, cellSize = 2): string {
   if (typeof document === "undefined") return "";
 
   const canvas = document.createElement("canvas");
@@ -100,7 +86,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
 
   const rand = mulberry32(hashString(seed));
 
-  const hue = brandColor ? hexToHue(brandColor) : Math.floor(rand() * 360);
+  const hue = Math.floor(rand() * 360);
   const [offR, offG, offB] = hslToRgb(
     hue,
     54 + Math.floor(rand() * 14),
@@ -123,6 +109,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   const diagonalPhase = rand() * Math.PI * 2;
   const antiDiagonalPhase = rand() * Math.PI * 2;
 
+  // token-extraction: allowlisted — canvas 2D fillStyle computed at runtime from numeric channel props; not a static literal.
   ctx.fillStyle = `rgb(${offR} ${offG} ${offB})`;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -159,11 +146,21 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   return canvas.toDataURL("image/png");
 }
 
-export function CompanyPatternIcon({ companyName, brandColor, className }: CompanyPatternIconProps) {
+export function CompanyPatternIcon({
+  companyName,
+  logoUrl,
+  className,
+  logoFit = "cover",
+}: CompanyPatternIconProps) {
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
+  const [imageError, setImageError] = useState(false);
+  const logo = !imageError && typeof logoUrl === "string" && logoUrl.trim().length > 0 ? logoUrl : null;
+  useEffect(() => {
+    setImageError(false);
+  }, [logoUrl]);
   const patternDataUrl = useMemo(
-    () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor),
-    [companyName, brandColor],
+    () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase()),
+    [companyName],
   );
 
   return (
@@ -173,7 +170,17 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
         className,
       )}
     >
-      {patternDataUrl ? (
+      {logo ? (
+        <img
+          src={logo}
+          alt={`${companyName} logo`}
+          onError={() => setImageError(true)}
+          className={cn(
+            "absolute inset-0 h-full w-full",
+            logoFit === "contain" ? "object-contain" : "object-cover",
+          )}
+        />
+      ) : patternDataUrl ? (
         <img
           src={patternDataUrl}
           alt=""
@@ -184,9 +191,11 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
       ) : (
         <div className="absolute inset-0 bg-muted" />
       )}
-      <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
-        {initial}
-      </span>
+      {!logo && (
+        <span className="relative z-10 drop-shadow-(--drop-shadow-extract-1)">
+          {initial}
+        </span>
+      )}
     </div>
   );
 }

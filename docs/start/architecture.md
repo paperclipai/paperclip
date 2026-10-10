@@ -19,7 +19,7 @@ Paperclip is a monorepo with four main layers.
 │  Schema, migrations, embedded mode  │
 ├─────────────────────────────────────┤
 │  Adapters                           │
-│  Claude Local, Codex Local,         │
+│  Claude Code, Codex,                │
 │  Process, HTTP                      │
 └─────────────────────────────────────┘
 ```
@@ -29,7 +29,7 @@ Paperclip is a monorepo with four main layers.
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 19, Vite 6, React Router 7, Radix UI, Tailwind CSS 4, TanStack Query |
-| Backend | Node.js 20+, Express.js 5, TypeScript |
+| Backend | Node.js 24.11+, Express.js 5, TypeScript |
 | Database | PostgreSQL 17 (or embedded PGlite), Drizzle ORM |
 | Auth | Better Auth (sessions + API keys) |
 | Adapters | Claude Code CLI, Codex CLI, shell process, HTTP webhook |
@@ -72,7 +72,7 @@ paperclip/
 
 When a heartbeat fires:
 
-1. **Trigger** — Scheduler, manual invoke, or event (assignment, mention) triggers a heartbeat
+1. **Trigger** — Scheduler, manual invoke, or event (assignment, assignee feedback) triggers a heartbeat
 2. **Adapter invocation** — Server calls the configured adapter's `execute()` function
 3. **Agent process** — Adapter spawns the agent (e.g. Claude Code CLI) with Paperclip env vars and a prompt
 4. **Agent work** — The agent calls Paperclip's REST API to check assignments, checkout tasks, do work, and update status

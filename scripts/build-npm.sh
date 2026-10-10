@@ -15,9 +15,11 @@ CLI_DIR="$REPO_ROOT/cli"
 DIST_DIR="$CLI_DIR/dist"
 
 skip_checks=false
+skip_typecheck=false
 for arg in "$@"; do
   case "$arg" in
     --skip-checks) skip_checks=true ;;
+    --skip-typecheck) skip_typecheck=true ;;
   esac
 done
 
@@ -32,12 +34,16 @@ else
 fi
 
 # ── Step 2: TypeScript type-check ──────────────────────────────────────────────
-echo "  [2/5] Type-checking..."
-cd "$REPO_ROOT"
-pnpm -r typecheck
+if [ "$skip_typecheck" = false ]; then
+  echo "  [2/6] Type-checking..."
+  cd "$REPO_ROOT"
+  corepack pnpm -r typecheck
+else
+  echo "  [2/6] Skipping type-check (--skip-typecheck)"
+fi
 
 # ── Step 3: Bundle CLI with esbuild ────────────────────────────────────────────
-echo "  [3/5] Bundling CLI with esbuild..."
+echo "  [3/6] Bundling CLI with esbuild..."
 cd "$CLI_DIR"
 rm -rf dist
 
@@ -58,8 +64,18 @@ echo "  [5/6] Generating publishable package.json..."
 cp "$CLI_DIR/package.json" "$CLI_DIR/package.dev.json"
 node "$REPO_ROOT/scripts/generate-npm-package-json.mjs"
 
-# Copy root README so npm shows the repo README on the package page
-cp "$REPO_ROOT/README.md" "$CLI_DIR/README.md"
+# Copy the root README so npm shows the repo README on the package page, but
+# rewrite repository-relative image assets because npm resolves README links
+# under the package's `repository.directory` (`cli`), not the repository root.
+README_ASSET_REF="${PAPERCLIP_README_ASSET_REF:-}"
+if [ -z "$README_ASSET_REF" ]; then
+  README_ASSET_REF="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+README_ASSET_REF="${README_ASSET_REF:-master}"
+node "$REPO_ROOT/scripts/prepare-npm-readme.mjs" \
+  "$REPO_ROOT/README.md" \
+  "$CLI_DIR/README.md" \
+  "$README_ASSET_REF"
 
 # ── Step 6: Summary ───────────────────────────────────────────────────────────
 BUNDLE_SIZE=$(wc -c < "$DIST_DIR/index.js" | xargs)

@@ -1,12 +1,93 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 
 const itWindows = process.platform === "win32" ? it : it.skip;
+const itPosix = process.platform === "win32" ? it.skip : it;
+
+async function runProbeFixture(options: { failCleanup?: boolean; error?: string; managedProvider?: boolean } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-probe-result-"));
+  const capture = path.join(root, "capture.json");
+  const command = path.join(root, "codex");
+  const managedHome = path.join(root, "managed");
+  if (options.managedProvider) {
+    await fs.mkdir(managedHome);
+    await fs.writeFile(path.join(managedHome, "config.toml"), 'model_provider = "paperclip"\n');
+  }
+  await fs.writeFile(command, `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), home: process.env.CODEX_HOME, nativeKey: process.env.OPENAI_API_KEY, providerKey: process.env.PAPERCLIP_AI_PROVIDER_KEY, config: fs.existsSync(process.env.CODEX_HOME + "/config.toml") ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8") : null }));
+console.error('WARN codex_core_plugins::manager: remote installed plugin bundle sync failed error=chatgpt authentication required for remote plugin catalog');
+const error = process.env.PROBE_ERROR;
+if (error) { console.error(error); process.exit(1); }
+console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'hello'}}));
+console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));
+`, { mode: 0o755 });
+  if (options.failCleanup) {
+    // Deterministic equivalent of rm observing a concurrent plugin writer.
+    await fs.writeFile(path.join(root, "rm"), '#!/bin/sh\nif [ "$1" = "-rf" ]; then echo "rm: Directory not empty" >&2; exit 1; fi\nexec /bin/rm "$@"\n', { mode: 0o755 });
+  }
+  try {
+    const result = await testEnvironment({
+      companyId: "company-1", adapterType: "codex_local",
+      config: { engine: "cli", command, cwd: root, ...(options.managedProvider ? { managedAiConnection: { identity: "fixture" }, managedAiRouting: { kind: "openrouter" } } : {}), env: {
+        ...(options.managedProvider ? { CODEX_HOME: managedHome, PAPERCLIP_AI_PROVIDER_KEY: "gateway-fixture-key" } : {}),
+        OPENAI_API_KEY: options.managedProvider ? "" : "fixture-key", PROBE_CAPTURE: capture,
+        PROBE_ERROR: options.error ?? "", PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
+      } },
+    });
+    return { result, capture: JSON.parse(await fs.readFile(capture, "utf8")) as { args: string[]; home: string; nativeKey: string; providerKey: string; config: string | null } };
+  } finally {
+    const recorded = await fs.readFile(capture, "utf8").then(JSON.parse).catch(() => null);
+    if (recorded?.home) await fs.rm(recorded.home, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
 
 describe("codex_local environment diagnostics", () => {
+  beforeEach(() => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  itPosix("tests the managed provider without falling back to the host OpenAI key", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "unrelated-host-key");
+    const { result, capture } = await runProbeFixture({ managedProvider: true });
+    expect(result.status).toBe("pass");
+    expect(capture.nativeKey).toBe("");
+    expect(capture.providerKey).toBe("gateway-fixture-key");
+    expect(capture.config).toContain('model_provider = "paperclip"');
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ code: "codex_openai_api_key_present" }));
+  });
+
+  itPosix("preserves a successful hello when probe cleanup races a background writer", async () => {
+    const { result } = await runProbeFixture({ failCleanup: true });
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_passed" }));
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ code: "codex_hello_probe_auth_required" }));
+  });
+
+  itPosix("does not diagnose an unrelated plugin login warning as model authentication failure", async () => {
+    const { result } = await runProbeFixture({ error: "Unable to start turn: disk is full" });
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_failed", detail: "Unable to start turn: disk is full" }));
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ code: "codex_hello_probe_auth_required" }));
+  });
+
+  itPosix("still reports genuine provider authentication failures", async () => {
+    const { result } = await runProbeFixture({ error: "Invalid API key" });
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_auth_required" }));
+  });
+
+  itPosix("keeps hello probes free of plugin synchronization and repository instructions", async () => {
+    const { capture } = await runProbeFixture();
+    expect(capture.args).toContain("features.plugins=false");
+    expect(capture.args).toContain("features.remote_plugin=false");
+    expect(capture.args).toContain("project_doc_max_bytes=0");
+    expect(capture.args).toContain("--ephemeral");
+  });
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
@@ -20,6 +101,7 @@ describe("codex_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
@@ -30,6 +112,69 @@ describe("codex_local environment diagnostics", () => {
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+  });
+
+  it("emits codex_native_auth_present when ~/.codex/auth.json exists and OPENAI_API_KEY is unset", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const codexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", accountId: "acct-1" }),
+      );
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          engine: "cli",
+          command: process.execPath,
+          cwd,
+          env: { CODEX_HOME: codexHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits codex_openai_api_key_missing when neither env var nor native auth exists", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const codexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      // No auth.json written
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          engine: "cli",
+          command: process.execPath,
+          cwd,
+          env: { CODEX_HOME: codexHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
@@ -57,6 +202,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: "codex",
           cwd,
           env: {

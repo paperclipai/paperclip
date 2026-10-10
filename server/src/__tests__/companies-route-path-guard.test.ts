@@ -15,12 +15,31 @@ vi.mock("../services/index.js", () => ({
   }),
   companyPortabilityService: () => ({
     exportBundle: vi.fn(),
+    previewExport: vi.fn(),
     previewImport: vi.fn(),
     importBundle: vi.fn(),
+  }),
+  companyArtifactsService: () => ({
+    list: vi.fn(),
   }),
   accessService: () => ({
     canUser: vi.fn(),
     ensureMembership: vi.fn(),
+  }),
+  budgetService: () => ({
+    upsertPolicy: vi.fn(),
+  }),
+  agentService: () => ({
+    getById: vi.fn(),
+  }),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(),
+    listFeedbackTraces: vi.fn(),
+    getFeedbackTraceById: vi.fn(),
+    saveIssueVote: vi.fn(),
+  }),
+  instanceSettingsService: () => ({
+    getExperimental: vi.fn(),
   }),
   logActivity: vi.fn(),
 }));

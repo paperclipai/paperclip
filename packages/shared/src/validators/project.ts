@@ -1,13 +1,22 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
+import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema } from "./trust-policy.js";
+import { objectWithoutDefaults } from "./partial.js";
+
+export const projectDiscoverySchema = z.object({
+  limit: z.number().int().min(1).max(50).default(50),
+  cursor: z.string().uuid().transform(value => value.toLowerCase()).optional(),
+}).strict();
 
 const executionWorkspaceStrategySchema = z
   .object({
-    type: z.enum(["project_primary", "git_worktree"]).optional(),
+    type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
+    runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
   .strict();
@@ -15,30 +24,64 @@ const executionWorkspaceStrategySchema = z
 export const projectExecutionWorkspacePolicySchema = z
   .object({
     enabled: z.boolean(),
-    defaultMode: z.enum(["project_primary", "isolated"]).optional(),
+    sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
+    defaultMode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch", "adapter_default"]).optional(),
     allowIssueOverride: z.boolean().optional(),
+    defaultProjectWorkspaceId: z.string().guid().optional().nullable(),
+    environmentId: z.string().guid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
-    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-    branchPolicy: z.record(z.unknown()).optional().nullable(),
-    pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
-    cleanupPolicy: z.record(z.unknown()).optional().nullable(),
+    workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+    branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    pullRequestPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
   })
   .strict();
 
+export const projectWorkspaceRuntimeConfigSchema = z.object({
+  workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.string(), z.enum(["running", "stopped", "manual"])).optional().nullable(),
+}).strict();
+
+const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);
+const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
+
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
+  sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
   repoUrl: z.string().url().optional().nullable(),
   repoRef: z.string().optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  defaultRef: z.string().optional().nullable(),
+  visibility: projectWorkspaceVisibilitySchema.optional(),
+  setupCommand: z.string().optional().nullable(),
+  cleanupCommand: z.string().optional().nullable(),
+  remoteProvider: z.string().optional().nullable(),
+  remoteWorkspaceRef: z.string().optional().nullable(),
+  sharedWorkspaceKey: z.string().optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  runtimeConfig: projectWorkspaceRuntimeConfigSchema.optional().nullable(),
 };
 
-export const createProjectWorkspaceSchema = z.object({
-  ...projectWorkspaceFields,
-  isPrimary: z.boolean().optional().default(false),
-}).superRefine((value, ctx) => {
+function validateProjectWorkspace(value: Record<string, unknown>, ctx: z.RefinementCtx) {
+  const sourceType = value.sourceType ?? "local_path";
   const hasCwd = typeof value.cwd === "string" && value.cwd.trim().length > 0;
   const hasRepo = typeof value.repoUrl === "string" && value.repoUrl.trim().length > 0;
+  const hasRemoteRef = typeof value.remoteWorkspaceRef === "string" && value.remoteWorkspaceRef.trim().length > 0;
+
+  if (sourceType === "remote_managed") {
+    if (!hasRemoteRef && !hasRepo) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Remote-managed workspace requires remoteWorkspaceRef or repoUrl.",
+        path: ["remoteWorkspaceRef"],
+      });
+    }
+    return;
+  }
+
   if (!hasCwd && !hasRepo) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -46,7 +89,12 @@ export const createProjectWorkspaceSchema = z.object({
       path: ["cwd"],
     });
   }
-});
+}
+
+export const createProjectWorkspaceSchema = z.object({
+  ...projectWorkspaceFields,
+  isPrimary: z.boolean().optional().default(false),
+}).superRefine(validateProjectWorkspace);
 
 export type CreateProjectWorkspace = z.infer<typeof createProjectWorkspaceSchema>;
 
@@ -59,27 +107,42 @@ export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema
 
 const projectFields = {
   /** @deprecated Use goalIds instead */
-  goalId: z.string().uuid().optional().nullable(),
-  goalIds: z.array(z.string().uuid()).optional(),
+  goalId: z.string().guid().optional().nullable(),
+  goalIds: z.array(z.string().guid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
-  leadAgentId: z.string().uuid().optional().nullable(),
+  leadAgentId: z.string().guid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
+  icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
+  env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 
 export const createProjectSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
+  repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
+  repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
 });
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
-export const updateProjectSchema = z.object(projectFields).partial();
+export const updateProjectSchema = objectWithoutDefaults(
+  z.object(projectFields),
+).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const addProjectAccessMemberSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().min(1),
+});
+
+export type AddProjectAccessMember = z.infer<typeof addProjectAccessMemberSchema>;
 
 export type ProjectExecutionWorkspacePolicy = z.infer<typeof projectExecutionWorkspacePolicySchema>;

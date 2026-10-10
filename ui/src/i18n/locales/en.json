@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Create your first organization",
+      "description": "Get started by creating an organization.",
+      "newCompany": "New Organization"
+    }
+  }
+}

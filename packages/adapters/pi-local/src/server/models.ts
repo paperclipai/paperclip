@@ -131,7 +131,9 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  return sortModels(dedupeModels(parseModelsOutput(result.stdout)));
+  // Pi outputs model list to stderr, but fall back to stdout for older versions
+  const output = result.stderr || result.stdout;
+  return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
@@ -186,9 +188,8 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
-      `Configured Pi model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      `Configured Pi model is unavailable: ${model}. ${models.length} models are available; list them with \`pi --list-models\`.`,
     );
   }
 

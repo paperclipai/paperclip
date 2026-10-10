@@ -1,218 +1,404 @@
 # Releasing Paperclip
 
-Maintainer runbook for shipping a full Paperclip release across npm, GitHub, and the website-facing changelog surface.
+Maintainer runbook for shipping Paperclip across npm, GitHub, and the website-facing changelog surface.
 
-The release model is branch-driven:
+The release model is now commit-driven:
 
-1. Start a release train on `release/X.Y.Z`
-2. Draft the stable changelog on that branch
-3. Publish one or more canaries from that branch
-4. Publish stable from that same branch head
-5. Push the branch commit and tag
-6. Create the GitHub Release
-7. Merge `release/X.Y.Z` back to `master` without squash or rebase
+1. Every push to `master` publishes a canary automatically.
+2. Once a night, the newest master commit with a green canary publish is
+   smoke-tested and republished as the nightly.
+3. Betas are manual, human-approved promotions of a chosen nightly.
+4. Stable releases promote a beta that has soaked for at least 3 days
+   (bypass requires a written justification).
+5. Stable release notes live in `releases/vYYYY.MDD.P.md`. They are
+   drafted automatically when a beta is published (as
+   `releases/beta/v<beta-version>.md` on `master`), edited during the
+   soak, and moved to the versioned name after the stable ships.
+6. Only stable releases get GitHub Releases.
+
+The user-facing guide to the channels is [`CHANNELS.md`](CHANNELS.md).
+
+## Versioning Model
+
+Paperclip uses calendar versions that still fit semver syntax:
+
+- stable: `YYYY.MDD.P`
+- canary: `YYYY.MDD.P-canary.N`
+- nightly: `YYYY.MDD.P-nightly.N`
+- beta: `YYYY.MDD.P-beta.N`
+
+Examples:
+
+- first stable on March 18, 2026: `2026.318.0`
+- second stable on March 18, 2026: `2026.318.1`
+- fourth canary for the `2026.318.1` line: `2026.318.1-canary.3`
+- first nightly cut on March 18, 2026: `2026.318.1-nightly.0`
+- first beta promoted on March 18, 2026: `2026.318.1-beta.0`
+
+A promotion republishes the exact source commit of the previous lane's build
+(canary → nightly → beta); the version dates the promotion, not the source
+build.
+
+Important constraints:
+
+- the middle numeric slot is `MDD`, where `M` is the UTC month and `DD` is the zero-padded UTC day
+- use `2026.303.0` for March 3, not `2026.33.0`
+- do not use leading zeroes such as `2026.0318.0`
+- do not use four numeric segments such as `2026.3.18.1`
+- the semver-safe canary form is `2026.318.0-canary.1`
 
 ## Release Surfaces
 
-Every release has four separate surfaces:
+Every stable release has four separate surfaces:
 
 1. **Verification** — the exact git SHA passes typecheck, tests, and build
 2. **npm** — `paperclipai` and public workspace packages are published
 3. **GitHub** — the stable release gets a git tag and GitHub Release
 4. **Website / announcements** — the stable changelog is published externally and announced
 
-A release is done only when all four surfaces are handled.
+A stable release is done only when all four surfaces are handled.
+
+Canaries, nightlies, and betas only cover the first two surfaces plus an
+internal traceability tag.
 
 ## Core Invariants
 
-- Canary and stable for `X.Y.Z` must come from the same `release/X.Y.Z` branch.
-- The release scripts must run from the matching `release/X.Y.Z` branch.
-- Once `vX.Y.Z` exists locally, on GitHub, or on npm, that release train is frozen.
-- Do not squash-merge or rebase-merge a release branch PR back to `master`.
-- The stable changelog is always `releases/vX.Y.Z.md`. Never create canary changelog files.
-
-The reason for the merge rule is simple: the tag must keep pointing at the exact published commit. Squash or rebase breaks that property.
+- canaries publish from `master`
+- nightlies republish a commit that already shipped a canary (the commit must
+  carry a `canary/v*` tag), and only after the release smoke suite passes
+  against that exact published canary
+- betas republish a commit that already shipped a nightly (the commit must
+  carry a `nightly/v*` tag), behind the `npm-beta` approval gate, and the
+  published beta is re-smoked
+- stables publish from an explicitly chosen source ref, which must have
+  shipped as a beta at least 3 days earlier unless a written justification
+  is provided
+- tags point at the original source commit, not a generated release commit
+- stable notes are always `releases/vYYYY.MDD.P.md` in the end state: a
+  promoted beta's notes are drafted and edited at
+  `releases/beta/v<beta-version>.md` on `master` during the soak (the
+  promoted commit cannot carry a file named for a promotion date that was
+  unknown when it was created), and a post-stable canonicalization PR
+  moves them to the versioned name
+- canaries, nightlies, and betas never create GitHub Releases
+- canaries, nightlies, and betas never require changelog generation
+- Docker `:latest` moves only on stable releases; master builds publish
+  `:canary`, nightly builds `:nightly`, and beta builds `:beta`
 
 ## TL;DR
 
-### 1. Start the release train
+### Canary
 
-Use this to compute the next version, create or resume the branch, create or resume a dedicated worktree, and push the branch to GitHub.
+Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
-```bash
-./scripts/release-start.sh patch
-```
+It:
 
-That script:
+- verifies the pushed commit
+- computes the canary version for the current UTC date
+- publishes workspace packages dependency-first under npm dist-tag `canary`
+- waits for each package version to become registry-visible before continuing
+- publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
+- verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
+- installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; only npm `ETARGET` install failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
+- fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
+- creates a git tag `canary/vYYYY.MDD.P-canary.N`
 
-- fetches the release remote and tags
-- computes the next stable version from the latest `v*` tag
-- creates or resumes `release/X.Y.Z`
-- creates or resumes a dedicated worktree
-- pushes the branch to the remote by default
-- refuses to reuse a frozen release train
+After publication, the onboarding smoke checks out the same source SHA and
+installs its test dependencies from the publisher's resolved lockfile with
+`--frozen-lockfile`. The same-run artifact is captured before tracked files are
+restored or release versions are rewritten. This lets a source commit use its
+current patches and manifests while the separate lockfile-refresh PR is still
+pending, without resolving new dependencies in the smoke job. The smoke still installs and tests
+the exact published canary version, not a workspace build.
 
-### 2. Draft the stable changelog
-
-From the release worktree:
-
-```bash
-VERSION=X.Y.Z
-claude --print --output-format stream-json --verbose --dangerously-skip-permissions --model claude-opus-4-6 "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and .agents/skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
-```
-
-### 3. Verify and publish a canary
-
-```bash
-./scripts/release-preflight.sh canary patch
-./scripts/release.sh patch --canary --dry-run
-./scripts/release.sh patch --canary
-PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
-```
+The lockfile artifact is retained for 14 days. A publisher-job rerun replaces its
+source-named artifact; a smoke-only rerun uses the existing artifact. A missing
+artifact fails the job rather than falling back to a different dependency set.
 
 Users install canaries with:
 
 ```bash
 npx paperclipai@canary onboard
-```
-
-### 4. Publish stable
-
-```bash
-./scripts/release-preflight.sh stable patch
-./scripts/release.sh patch --dry-run
-./scripts/release.sh patch
-git push public-gh HEAD --follow-tags
-./scripts/create-github-release.sh X.Y.Z
-```
-
-Then open a PR from `release/X.Y.Z` to `master` and merge without squash or rebase.
-
-## Release Branches
-
-Paperclip uses one release branch per target stable version:
-
-- `release/0.3.0`
-- `release/0.3.1`
-- `release/1.0.0`
-
-Do not create separate per-canary branches like `canary/0.3.0-1`. A canary is just a prerelease snapshot of the same stable train.
-
-## Script Entry Points
-
-- [`scripts/release-start.sh`](../scripts/release-start.sh) — create or resume the release train branch/worktree
-- [`scripts/release-preflight.sh`](../scripts/release-preflight.sh) — validate branch, version plan, git/npm state, and verification gate
-- [`scripts/release.sh`](../scripts/release.sh) — publish canary or stable from the release branch
-- [`scripts/create-github-release.sh`](../scripts/create-github-release.sh) — create or update the GitHub Release after pushing the tag
-- [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) — repoint `latest` to the last good stable version
-
-## Detailed Workflow
-
-### 1. Start or resume the release train
-
-Run:
-
-```bash
-./scripts/release-start.sh <patch|minor|major>
-```
-
-Useful options:
-
-```bash
-./scripts/release-start.sh patch --dry-run
-./scripts/release-start.sh minor --worktree-dir ../paperclip-release-0.4.0
-./scripts/release-start.sh patch --no-push
-```
-
-The script is intentionally idempotent:
-
-- if `release/X.Y.Z` already exists locally, it reuses it
-- if the branch already exists on the remote, it resumes it locally
-- if the branch is already checked out in another worktree, it points you there
-- if `vX.Y.Z` already exists locally, remotely, or on npm, it refuses to reuse that train
-
-### 2. Write the stable changelog early
-
-Create or update:
-
-- `releases/vX.Y.Z.md`
-
-That file is for the eventual stable release. It should not include `-canary` in the filename or heading.
-
-Recommended structure:
-
-- `Breaking Changes` when needed
-- `Highlights`
-- `Improvements`
-- `Fixes`
-- `Upgrade Guide` when needed
-- `Contributors` — @-mention every contributor by GitHub username (no emails)
-
-Package-level `CHANGELOG.md` files are generated as part of the release mechanics. They are not the main release narrative.
-
-### 3. Run release preflight
-
-From the `release/X.Y.Z` worktree:
-
-```bash
-./scripts/release-preflight.sh canary <patch|minor|major>
 # or
-./scripts/release-preflight.sh stable <patch|minor|major>
+npx paperclipai@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
 ```
 
-The preflight script now checks all of the following before it runs the verification gate:
+### Nightly
 
-- the worktree is clean, including untracked files
-- the current branch matches the computed `release/X.Y.Z`
-- the release train is not frozen
-- the target version is still free on npm
-- the target tag does not already exist locally or remotely
-- whether the remote release branch already exists
-- whether `releases/vX.Y.Z.md` is present
+A scheduled job in [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+runs once a night at 09:00 UTC.
 
-Then it runs:
+It:
+
+- selects the newest commit on `master` that carries a `canary/v*` tag (the
+  tag is pushed only after a successful canary publish, so it is the
+  green-publish signal)
+- skips with a job-summary reason when there is no new candidate or the
+  candidate already shipped as a nightly
+- runs the release smoke suite ([`release-smoke.yml`](../.github/workflows/release-smoke.yml))
+  against that exact published canary version — red smoke means no nightly
+  tonight
+- republishes the same source commit as `YYYY.MDD.P-nightly.N` under the npm
+  dist-tag `nightly` (the commit was already verified by its canary run, so
+  verification is not repeated)
+- creates and pushes the git tag `nightly/vYYYY.MDD.P-nightly.N`
+- dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
+  publish the `:nightly` images
+
+To force a nightly outside the schedule (recovery, or promoting a specific
+canary), dispatch `release.yml` with `channel: nightly`. Leave
+`source_version` empty for automatic selection, or set it to an exact
+canary version. `dry_run: true` previews the publish and skips smoke, the tag
+push, and the Docker dispatch.
+
+Users install nightlies with:
 
 ```bash
-pnpm -r typecheck
-pnpm test:run
-pnpm build
+npx paperclipai@nightly onboard
 ```
 
-### 4. Publish one or more canaries
+### Beta
 
-Run:
+Betas are manual promotions. Dispatch
+[`release.yml`](../.github/workflows/release.yml) with `channel: beta`.
+
+- leave `source_version` empty to promote the newest nightly, or set it to an
+  exact nightly version such as `2026.807.0-nightly.0`
+- the selection job resolves the nightly's source commit and fails loudly if
+  it does not exist or already shipped as a beta
+- the publish waits for approval in the **`npm-beta` environment** — its
+  required reviewers are the promotion gate
+- promotions run the release tooling of the source commit, so the source
+  nightly must postdate the beta channel's introduction; the selection job
+  rejects older sources with a clear error (in practice every nightly cut
+  after the beta tooling merged qualifies)
+- the same commit is republished as `YYYY.MDD.P-beta.N` under the npm
+  dist-tag `beta`, tagged `beta/vYYYY.MDD.P-beta.N`, and `docker.yml` is
+  dispatched at that tag to publish the `:beta` images
+- after publishing, the release smoke suite runs against the exact published
+  beta version as verification
+- a `draft_stable_notes` job also generates the eventual stable's notes
+  skeleton — `releases/beta/v<beta-version>.md`, grouped from
+  `git log <last-stable-tag>..<source-commit>` — and force-pushes it to the
+  machine-owned `release-notes/v<beta-version>` branch. Open the PR from
+  the job-summary link (a human opens it so CI runs) and edit the notes
+  during the soak; the stable promotion reads the merged file from
+  `master`
+- `dry_run: true` previews the publish and skips the tag push, Docker
+  dispatch, and post-publish smoke
+
+Users install betas with:
 
 ```bash
-./scripts/release.sh <patch|minor|major> --canary --dry-run
-./scripts/release.sh <patch|minor|major> --canary
+npx paperclipai@beta onboard
 ```
 
-Result:
+#### Beta fix path: candidate branches
 
-- npm gets a prerelease such as `1.2.3-canary.0` under dist-tag `canary`
-- `latest` is unchanged
-- no git tag is created
-- no GitHub Release is created
-- the worktree returns to clean after the script finishes
+When one or two targeted fixes are needed before beta and waiting for the
+next nightly (or absorbing a whole day of `master`) is wrong, build the beta
+from a short-lived candidate branch:
 
-Guardrails:
+1. cut `candidate/beta-<target>` from the chosen nightly's source commit
+   (for example `candidate/beta-2026.811.0`)
+2. cherry-pick only the required fix commits onto it and push the branch
+3. dispatch `release.yml` with `channel: beta` and `candidate_branch:
+   candidate/beta-<target>`
+4. selection validates the branch name, rejects heads that already shipped
+   as a beta, records the cherry-picked commits in the job summary, and the
+   head runs **full verification** before publishing (it never went through
+   a canary or nightly)
+5. after the beta ships, land the fixes on `master` normally and delete the
+   candidate branch
 
-- the script refuses to run from the wrong branch
-- the script refuses to publish from a frozen train
-- the canary is always derived from the next stable version
-- if the stable notes file is missing, the script warns before you forget it
+Use this sparingly: the happy path is promoting a nightly. A candidate build
+has its own `-beta.N` identity and is never pretended to be the nightly it
+was cut from.
 
-Concrete example:
+### Stable
 
-- if the latest stable is `0.2.7`, a patch canary targets `0.2.8-canary.0`
-- `0.2.7-canary.N` is invalid because `0.2.7` is already stable
+Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
 
-### 5. Smoke test the canary
+[Run the action here](https://github.com/paperclipai/paperclip/actions/workflows/release.yml)
 
-Run the actual install path in Docker:
+Inputs:
+
+- `channel`
+  - `stable` (the default) for a stable release; `beta` and `nightly` run
+    those lanes instead (see above)
+- `source_ref`
+  - commit SHA, branch, or tag
+- `stable_date`
+  - optional UTC date override in `YYYY-MM-DD`
+  - enter a date like `2026-03-18`, not a version like `2026.318.0`
+- `skip_soak_justification`
+  - written reason for releasing a stable whose source has not soaked as a
+    beta for 3 days; leave empty for normal releases
+- `dry_run`
+  - preview only when true
+
+The stable preflight enforces the beta soak: the source commit must carry a
+`beta/v*` tag whose npm publish time is at least 3 days old. If it is not,
+the run fails unless `skip_soak_justification` is provided; the justification
+is echoed into the job summary. Dry runs report soak state without blocking.
+
+For a cherry-picked stable (the release fix path), cut
+`candidate/release-<target>` from the chosen beta's source commit,
+cherry-pick the required fixes, push the branch, and use it as
+`source_ref`. The candidate head carries no `beta/v*` tag, so the soak gate
+requires `skip_soak_justification` — that is deliberate: the exact bits were
+not soaked, and the justification is the recorded trade-off. Reconcile the
+fixes back to `master` and delete the branch after shipping.
+
+Before running stable:
+
+1. pick the beta you are promoting (its source commit is the `source_ref`)
+2. confirm the beta has soaked for 3 days with no open blockers
+3. resolve the target stable version with `./scripts/release.sh stable --date "$(date +%F)" --print-version`
+4. make sure the notes PR from the beta's draft branch
+   (`release-notes/v<beta-version>`, adding
+   `releases/beta/v<beta-version>.md`) is merged on `master` — or, for
+   candidate builds, that the candidate branch itself carries
+   `releases/vYYYY.MDD.P.md`
+5. run the stable workflow from that source ref
+
+Example:
+
+- `source_ref`: `master`
+- `stable_date`: `2026-03-18`
+- resulting stable version: `2026.318.0`
+
+The workflow:
+
+- re-verifies the exact source ref
+- computes the next stable patch slot for the chosen UTC date
+- resolves the release notes in preflight: `releases/vYYYY.MDD.P.md` at
+  the source commit (the candidate fix path) takes precedence, otherwise
+  `releases/beta/v<beta-version>.md` on `master` (a promoted beta). When
+  neither exists the run fails before the `npm-stable` approval gate with
+  the missing path named
+- publishes `YYYY.MDD.P` under npm dist-tag `latest`
+- creates git tag `vYYYY.MDD.P`
+- dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
+  publish `:latest` and the versioned stable images
+- creates or updates the GitHub Release from the resolved notes file
+- for master-side beta notes, pushes a `release-notes/v<version>-canonicalize`
+  branch that `git mv`s them to `releases/vYYYY.MDD.P.md` — open and merge
+  its PR to restore the canonical layout
+
+## Docker Image Tags
+
+[`docker.yml`](../.github/workflows/docker.yml) publishes both the self-hosted
+image and the `-cloud` variant with the same lane mapping:
+
+| Build ref | Tags |
+| --- | --- |
+| `master` push | `:canary`, `:sha-<short>` |
+| `nightly/v*` tag | `:nightly`, `:sha-<short>` |
+| `beta/v*` tag | `:beta`, `:sha-<short>` |
+| `v*` tag (stable) | `:latest`, `:YYYY.MDD.P`, `:YYYY.MDD`, `:sha-<short>` |
+
+Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
+suppresses push-triggered workflow runs for those pushes. The release jobs
+therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
+mapping keys off `github.ref` either way.
+
+The Docker build matrix and the release preview image builder configure
+BuildKit to check `mirror.gcr.io` for Docker Hub images first. This covers
+both the Dockerfile frontend and base images. BuildKit keeps Docker Hub as
+the fallback when the cache has no usable copy. The image references,
+build arguments, GHCR publication, and release gates stay the same.
+
+This is an availability improvement, not an outage guarantee. Google can
+evict cached images, and mutable tags can lag upstream changes or deletions.
+Matching manifests at one point does not guarantee later tag freshness or
+blob availability. The initial `moby/buildkit` bootstrap still uses the host
+Docker daemon and can fail on Docker Hub before this configuration takes
+effect. See the [BuildKit mirror configuration](https://docs.docker.com/build/ci/github-actions/configure-builder/#registry-mirror)
+and [Google cache limits](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images).
+
+## Local Commands
+
+### Preview a canary locally
+
+```bash
+./scripts/release.sh canary --dry-run
+```
+
+### Preview a nightly locally
+
+Requires HEAD to be a commit that already shipped a canary (it must carry a
+`canary/v*` tag):
+
+```bash
+./scripts/release.sh nightly --dry-run
+```
+
+### Preview a beta locally
+
+Requires HEAD to be a commit that already shipped a nightly (it must carry a
+`nightly/v*` tag):
+
+```bash
+./scripts/release.sh beta --dry-run
+```
+
+### Preview a stable locally
+
+```bash
+./scripts/release.sh stable --dry-run
+```
+
+### Publish a stable locally
+
+This is mainly for emergency/manual use. The normal path is the GitHub workflow.
+
+```bash
+./scripts/release.sh stable
+git push public-gh refs/tags/vYYYY.MDD.P
+PUBLISH_REMOTE=public-gh ./scripts/create-github-release.sh YYYY.MDD.P
+```
+
+## Stable Changelog Workflow
+
+Stable changelog files live at:
+
+- `releases/vYYYY.MDD.P.md`
+
+Canaries do not get changelog files.
+
+The `draft_stable_notes` job seeds a deterministic skeleton (grouped
+commit subjects) on the `release-notes/v<beta-version>` branch at beta
+publish; the flows below turn that skeleton into narrative release notes
+during the soak. Run them against the draft branch's
+`releases/beta/v<beta-version>.md` and push to the notes PR.
+
+Recommended local generation flow:
+
+```bash
+VERSION="$(./scripts/release.sh stable --date 2026-03-18 --print-version)"
+claude --print --output-format stream-json --verbose --dangerously-skip-permissions --model claude-opus-4-6 "Use the release-changelog skill to draft or update releases/v${VERSION}.md for Paperclip. Read doc/RELEASING.md and .agents/skills/release-changelog/SKILL.md, then generate the stable changelog for v${VERSION} from commits since the last stable tag. Do not create a canary changelog."
+```
+
+The repo intentionally does not run this through GitHub Actions because:
+
+- canaries are too frequent
+- stable notes are the only public narrative surface that needs LLM help
+- maintainer LLM tokens should not live in Actions
+
+## Smoke Testing
+
+For a canary:
 
 ```bash
 PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
+```
+
+For the current stable:
+
+```bash
+PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
 Useful isolated variants:
@@ -222,201 +408,117 @@ HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary PAPERCLIPAI_VERSION=canary .
 HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
-If you want to exercise onboarding from the current committed ref instead of npm, use:
+Automated browser smoke is also available:
 
 ```bash
-./scripts/clean-onboard-ref.sh
-PAPERCLIP_PORT=3234 ./scripts/clean-onboard-ref.sh
-./scripts/clean-onboard-ref.sh HEAD
+gh workflow run release-smoke.yml -f paperclip_version=canary
+gh workflow run release-smoke.yml -f paperclip_version=nightly
+gh workflow run release-smoke.yml -f paperclip_version=beta
+gh workflow run release-smoke.yml -f paperclip_version=latest
 ```
+
+The nightly lane runs this same suite automatically against its candidate
+before publishing, and the beta lane runs it against the published beta as
+post-publish verification.
 
 Minimum checks:
 
 - `npx paperclipai@canary onboard` installs
 - onboarding completes without crashes
-- the server boots
-- the UI loads
-- basic company creation and dashboard load work
+- authenticated login works with the smoke credentials
+- the browser lands in onboarding on a fresh instance
+- company creation succeeds
+- the first CEO agent is created
+- the first CEO heartbeat run is triggered
 
-If smoke testing fails:
+## Rollback
 
-1. stop the stable release
-2. fix the issue on the same `release/X.Y.Z` branch
-3. publish another canary
-4. rerun smoke testing
+Rollback does not unpublish versions.
 
-### 6. Publish stable from the same release branch
-
-Once the branch head is vetted, run:
+It only moves the `latest` dist-tag back to a previous stable:
 
 ```bash
-./scripts/release.sh <patch|minor|major> --dry-run
-./scripts/release.sh <patch|minor|major>
+./scripts/rollback-latest.sh 2026.318.0 --dry-run
+./scripts/rollback-latest.sh 2026.318.0
 ```
 
-Stable publish:
-
-- publishes `X.Y.Z` to npm under `latest`
-- creates the local release commit
-- creates the local tag `vX.Y.Z`
-
-Stable publish refuses to proceed if:
-
-- the current branch is not `release/X.Y.Z`
-- the remote release branch does not exist yet
-- the stable notes file is missing
-- the target tag already exists locally or remotely
-- the stable version already exists on npm
-
-Those checks intentionally freeze the train after stable publish.
-
-### 7. Push the stable branch commit and tag
-
-After stable publish succeeds:
-
-```bash
-git push public-gh HEAD --follow-tags
-./scripts/create-github-release.sh X.Y.Z
-```
-
-The GitHub Release notes come from:
-
-- `releases/vX.Y.Z.md`
-
-### 8. Merge the release branch back to `master`
-
-Open a PR:
-
-- base: `master`
-- head: `release/X.Y.Z`
-
-Merge rule:
-
-- allowed: merge commit or fast-forward
-- forbidden: squash merge
-- forbidden: rebase merge
-
-Post-merge verification:
-
-```bash
-git fetch public-gh --tags
-git merge-base --is-ancestor "vX.Y.Z" "public-gh/master"
-```
-
-That command must succeed. If it fails, the published tagged commit is not reachable from `master`, which means the merge strategy was wrong.
-
-### 9. Finish the external surfaces
-
-After GitHub is correct:
-
-- publish the changelog on the website
-- write and send the announcement copy
-- ensure public docs and install guidance point to the stable version
-
-## GitHub Actions Release
-
-There is also a manual workflow at [`.github/workflows/release.yml`](../.github/workflows/release.yml).
-
-Use it from the Actions tab on the relevant `release/X.Y.Z` branch:
-
-1. Choose `Release`
-2. Choose `channel`: `canary` or `stable`
-3. Choose `bump`: `patch`, `minor`, or `major`
-4. Choose whether this is a `dry_run`
-5. Run it from the release branch, not from `master`
-
-The workflow:
-
-- reruns `typecheck`, `test:run`, and `build`
-- gates publish behind the `npm-release` environment
-- can publish canaries without touching `latest`
-- can publish stable, push the stable branch commit and tag, and create the GitHub Release
-
-It does not merge the release branch back to `master` for you.
-
-## Release Checklist
-
-### Before any publish
-
-- [ ] The release train exists on `release/X.Y.Z`
-- [ ] The working tree is clean, including untracked files
-- [ ] If package manifests changed, the CI-owned `pnpm-lock.yaml` refresh is already merged on `master` before the train is cut
-- [ ] The required verification gate passed on the exact branch head you want to publish
-- [ ] The bump type is correct for the user-visible impact
-- [ ] The stable changelog file exists or is ready at `releases/vX.Y.Z.md`
-- [ ] You know which previous stable version you would roll back to if needed
-
-### Before a stable
-
-- [ ] The candidate has already passed smoke testing
-- [ ] The remote `release/X.Y.Z` branch exists
-- [ ] You are ready to push the stable branch commit and tag immediately after npm publish
-- [ ] You are ready to create the GitHub Release immediately after the push
-- [ ] You are ready to open the PR back to `master`
-
-### After a stable
-
-- [ ] `npm view paperclipai@latest version` matches the new stable version
-- [ ] The git tag exists on GitHub
-- [ ] The GitHub Release exists and uses `releases/vX.Y.Z.md`
-- [ ] `vX.Y.Z` is reachable from `master`
-- [ ] The website changelog is updated
-- [ ] Announcement copy matches the stable release, not the canary
+Then fix forward with a new stable patch slot or release date.
 
 ## Failure Playbooks
 
-### If the canary publishes but the smoke test fails
+### If the canary publishes but smoke testing fails
 
-Do not publish stable.
+Do not run stable.
 
 Instead:
 
-1. fix the issue on `release/X.Y.Z`
-2. publish another canary
-3. rerun smoke testing
+1. fix the issue on `master`
+2. merge the fix
+3. wait for the next automatic canary
+4. rerun smoke testing
 
-### If stable npm publish succeeds but push or GitHub release creation fails
+### If the nightly skipped or failed
+
+A skipped nightly is working as designed — the job summary names the reason
+(no new green candidate, candidate already shipped, or red smoke). Nothing was
+published, so there is nothing to clean up.
+
+To recover after fixing the cause, either wait for the next scheduled run or
+force one: dispatch `release.yml` with `channel: nightly` (optionally pinning
+`source_version` to a specific canary).
+
+If the nightly published to npm but the tag push or Docker dispatch failed,
+push the `nightly/v*` tag manually and run `docker.yml` at that tag.
+
+### If a tag push is rejected with a workflows-permission error
+
+GITHUB_TOKEN may not create refs that point at commits which modify workflow
+files when the run was started by dispatch or schedule (push-triggered runs
+are exempt, which is why canary tags on the same commit succeed). The npm
+publish is already complete and correct when this happens. The failed job's
+summary contains the exact recovery commands: create and push the tag with
+maintainer credentials, then dispatch `docker.yml` at the tag (and for
+stable, run `create-github-release.sh`). This only occurs when a
+release-infrastructure commit itself becomes a promotion source.
+
+### If a beta looks bad during soak
+
+Do not promote it to stable. Fix forward: land the fix on `master`, let it
+ship through canary and nightly, and promote a new beta. The soak clock
+starts over for the new beta.
+
+If the published beta is actively harmful to beta users, move the `beta`
+dist-tag back to the previous beta version with `npm dist-tag add` per
+package, and re-point the `:beta` Docker tags at the previous beta's images.
+
+### If stable npm publish succeeds but tag push or GitHub release creation fails
 
 This is a partial release. npm is already live.
 
 Do this immediately:
 
-1. fix the git or GitHub issue from the same checkout
-2. push the stable branch commit and tag
-3. create the GitHub Release
+1. push the missing tag
+2. rerun `PUBLISH_REMOTE=public-gh ./scripts/create-github-release.sh YYYY.MDD.P`
+3. verify the GitHub Release notes point at `releases/vYYYY.MDD.P.md`
 
 Do not republish the same version.
 
 ### If `latest` is broken after stable publish
 
-Preview:
+Roll back the dist-tag:
 
 ```bash
-./scripts/rollback-latest.sh X.Y.Z --dry-run
+./scripts/rollback-latest.sh YYYY.MDD.P
 ```
 
-Roll back:
+Then fix forward with a new stable release.
 
-```bash
-./scripts/rollback-latest.sh X.Y.Z
-```
+## Related Files
 
-This does not unpublish anything. It only moves the `latest` dist-tag back to the last good stable release.
-
-Then fix forward with a new patch release.
-
-### If the GitHub Release notes are wrong
-
-Re-run:
-
-```bash
-./scripts/create-github-release.sh X.Y.Z
-```
-
-If the release already exists, the script updates it.
-
-## Related Docs
-
-- [doc/PUBLISHING.md](PUBLISHING.md) — low-level npm build and packaging internals
-- [.agents/skills/release/SKILL.md](../.agents/skills/release/SKILL.md) — maintainer release coordination workflow
-- [.agents/skills/release-changelog/SKILL.md](../.agents/skills/release-changelog/SKILL.md) — stable changelog drafting workflow
+- [`scripts/release.sh`](../scripts/release.sh)
+- [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
+- [`scripts/create-github-release.sh`](../scripts/create-github-release.sh)
+- [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh)
+- [`doc/RELEASE-CHECKLIST.md`](RELEASE-CHECKLIST.md)
+- [`doc/PUBLISHING.md`](PUBLISHING.md)
+- [`doc/RELEASE-AUTOMATION-SETUP.md`](RELEASE-AUTOMATION-SETUP.md)

@@ -1,464 +1,72 @@
-import { createHash, randomBytes } from "node:crypto";
+import { type BudgetServiceHooks } from "./budgets.js";
+
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import {
-  agents,
-  agentConfigRevisions,
-  agentApiKeys,
-  agentRuntimeState,
-  agentTaskSessions,
-  agentWakeupRequests,
-  heartbeatRunEvents,
-  heartbeatRuns,
-} from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { agents, agentConfigRevisions, agentApiKeys, heartbeatRuns } from "@paperclipai/db";
+import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type AgentApiKeyScope } from "@paperclipai/shared";
+
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { normalizeAgentPermissions } from "./agent-permissions.js";
-import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 
-function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
-}
+import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 
-function createToken() {
-  return `pcp_${randomBytes(24).toString("hex")}`;
-}
+import {
+  agentRecordQueries,
+  hashToken,
+  createToken,
+  containsRedactedMarker,
+  configPatchFromSnapshot,
+} from "../lib/agent-records.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 
-const CONFIG_REVISION_FIELDS = [
-  "name",
-  "role",
-  "title",
-  "reportsTo",
-  "capabilities",
-  "adapterType",
-  "adapterConfig",
-  "runtimeConfig",
-  "budgetMonthlyCents",
-  "metadata",
-] as const;
+export { hasAgentShortnameCollision, deduplicateAgentName } from "../lib/agent-records.js";
 
-type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
-type AgentConfigSnapshot = Pick<typeof agents.$inferSelect, ConfigRevisionField>;
-
-interface RevisionMetadata {
-  createdByAgentId?: string | null;
-  createdByUserId?: string | null;
-  source?: string;
-  rolledBackFromRevisionId?: string | null;
-}
-
-interface UpdateAgentOptions {
-  recordRevision?: RevisionMetadata;
-}
-
-interface AgentShortnameRow {
-  id: string;
-  name: string;
-  status: string;
-}
-
-interface AgentShortnameCollisionOptions {
-  excludeAgentId?: string | null;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function jsonEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function buildConfigSnapshot(
-  row: Pick<typeof agents.$inferSelect, ConfigRevisionField>,
-): AgentConfigSnapshot {
-  const adapterConfig =
-    typeof row.adapterConfig === "object" && row.adapterConfig !== null && !Array.isArray(row.adapterConfig)
-      ? sanitizeRecord(row.adapterConfig as Record<string, unknown>)
-      : {};
-  const runtimeConfig =
-    typeof row.runtimeConfig === "object" && row.runtimeConfig !== null && !Array.isArray(row.runtimeConfig)
-      ? sanitizeRecord(row.runtimeConfig as Record<string, unknown>)
-      : {};
-  const metadata =
-    typeof row.metadata === "object" && row.metadata !== null && !Array.isArray(row.metadata)
-      ? sanitizeRecord(row.metadata as Record<string, unknown>)
-      : row.metadata ?? null;
-  return {
-    name: row.name,
-    role: row.role,
-    title: row.title,
-    reportsTo: row.reportsTo,
-    capabilities: row.capabilities,
-    adapterType: row.adapterType,
-    adapterConfig,
-    runtimeConfig,
-    budgetMonthlyCents: row.budgetMonthlyCents,
-    metadata,
-  };
-}
-
-function containsRedactedMarker(value: unknown): boolean {
-  if (value === REDACTED_EVENT_VALUE) return true;
-  if (Array.isArray(value)) return value.some((item) => containsRedactedMarker(item));
-  if (typeof value !== "object" || value === null) return false;
-  return Object.values(value as Record<string, unknown>).some((entry) => containsRedactedMarker(entry));
-}
-
-function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
-  return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
-}
-
-function diffConfigSnapshot(
-  before: AgentConfigSnapshot,
-  after: AgentConfigSnapshot,
-): string[] {
-  return CONFIG_REVISION_FIELDS.filter((field) => !jsonEqual(before[field], after[field]));
-}
-
-function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$inferInsert> {
-  if (!isPlainRecord(snapshot)) throw unprocessable("Invalid revision snapshot");
-
-  if (typeof snapshot.name !== "string" || snapshot.name.length === 0) {
-    throw unprocessable("Invalid revision snapshot: name");
-  }
-  if (typeof snapshot.role !== "string" || snapshot.role.length === 0) {
-    throw unprocessable("Invalid revision snapshot: role");
-  }
-  if (typeof snapshot.adapterType !== "string" || snapshot.adapterType.length === 0) {
-    throw unprocessable("Invalid revision snapshot: adapterType");
-  }
-  if (typeof snapshot.budgetMonthlyCents !== "number" || !Number.isFinite(snapshot.budgetMonthlyCents)) {
-    throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
-  }
-
-  return {
-    name: snapshot.name,
-    role: snapshot.role,
-    title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
-    reportsTo:
-      typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
-    capabilities:
-      typeof snapshot.capabilities === "string" || snapshot.capabilities === null
-        ? snapshot.capabilities
-        : null,
-    adapterType: snapshot.adapterType,
-    adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
-    runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
-    budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
-    metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
-  };
-}
-
-export function hasAgentShortnameCollision(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-  options?: AgentShortnameCollisionOptions,
-): boolean {
-  const candidateShortname = normalizeAgentUrlKey(candidateName);
-  if (!candidateShortname) return false;
-
-  return existingAgents.some((agent) => {
-    if (agent.status === "terminated") return false;
-    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
-    return normalizeAgentUrlKey(agent.name) === candidateShortname;
-  });
-}
-
-export function deduplicateAgentName(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-): string {
-  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
-    return candidateName;
-  }
-  for (let i = 2; i <= 100; i++) {
-    const suffixed = `${candidateName} ${i}`;
-    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
-      return suffixed;
-    }
-  }
-  return `${candidateName} ${Date.now()}`;
-}
-
-export function agentService(db: Db) {
-  function withUrlKey<T extends { id: string; name: string }>(row: T) {
-    return {
-      ...row,
-      urlKey: normalizeAgentUrlKey(row.name) ?? row.id,
-    };
-  }
-
-  function normalizeAgentRow(row: typeof agents.$inferSelect) {
-    return withUrlKey({
-      ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
-    });
-  }
-
-  async function getById(id: string) {
-    const row = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .then((rows) => rows[0] ?? null);
-    return row ? normalizeAgentRow(row) : null;
-  }
-
-  async function ensureManager(companyId: string, managerId: string) {
-    const manager = await getById(managerId);
-    if (!manager) throw notFound("Manager not found");
-    if (manager.companyId !== companyId) {
-      throw unprocessable("Manager must belong to same company");
-    }
-    return manager;
-  }
-
-  async function assertNoCycle(agentId: string, reportsTo: string | null | undefined) {
-    if (!reportsTo) return;
-    if (reportsTo === agentId) throw unprocessable("Agent cannot report to itself");
-
-    let cursor: string | null = reportsTo;
-    while (cursor) {
-      if (cursor === agentId) throw unprocessable("Reporting relationship would create cycle");
-      const next = await getById(cursor);
-      cursor = next?.reportsTo ?? null;
-    }
-  }
-
-  async function assertCompanyShortnameAvailable(
-    companyId: string,
-    candidateName: string,
-    options?: AgentShortnameCollisionOptions,
-  ) {
-    const candidateShortname = normalizeAgentUrlKey(candidateName);
-    if (!candidateShortname) return;
-
-    const existingAgents = await db
-      .select({
-        id: agents.id,
-        name: agents.name,
-        status: agents.status,
-      })
-      .from(agents)
-      .where(eq(agents.companyId, companyId));
-
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
-    if (hasCollision) {
-      throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
-      );
-    }
-  }
-
-  async function updateAgent(
-    id: string,
-    data: Partial<typeof agents.$inferInsert>,
-    options?: UpdateAgentOptions,
-  ) {
-    const existing = await getById(id);
-    if (!existing) return null;
-
-    if (existing.status === "terminated" && data.status && data.status !== "terminated") {
-      throw conflict("Terminated agents cannot be resumed");
-    }
-    if (
-      existing.status === "pending_approval" &&
-      data.status &&
-      data.status !== "pending_approval" &&
-      data.status !== "terminated"
-    ) {
-      throw conflict("Pending approval agents cannot be activated directly");
-    }
-
-    if (data.reportsTo !== undefined) {
-      if (data.reportsTo) {
-        await ensureManager(existing.companyId, data.reportsTo);
-      }
-      await assertNoCycle(id, data.reportsTo);
-    }
-
-    if (data.name !== undefined) {
-      const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
-      if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-      }
-    }
-
-    const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
-    if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
-    }
-
-    const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
-    const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
-
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
-
-    if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
-      if (changedKeys.length > 0) {
-        await db.insert(agentConfigRevisions).values({
-          companyId: normalizedUpdated.companyId,
-          agentId: normalizedUpdated.id,
-          createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
-          createdByUserId: options?.recordRevision?.createdByUserId ?? null,
-          source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
-          changedKeys,
-          beforeConfig: beforeConfig as unknown as Record<string, unknown>,
-          afterConfig: afterConfig as unknown as Record<string, unknown>,
-        });
-      }
-    }
-
-    return normalizedUpdated;
-  }
-
+export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+  const {
+    normalizeAgentRows,
+    listCompanyAgentRows,
+    hydrateAgentSpend,
+    getById
+  } = agentRecordQueries(db);
+  const updateAgent = (...args: Parameters<ReturnType<typeof createAgentLifecycle>["updateConfiguration"]>) =>
+    createAgentLifecycle(db, budgetHooks).updateConfiguration(...args);
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
-      const rows = await db.select().from(agents).where(and(...conditions));
-      return rows.map(normalizeAgentRow);
+      const [rows, allCompanyRows] = await Promise.all([
+        db.select().from(agents).where(and(...conditions)),
+        listCompanyAgentRows(companyId),
+      ]);
+      const hydrated = await hydrateAgentSpend(rows);
+      return normalizeAgentRows(hydrated, allCompanyRows);
     },
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
-      if (data.reportsTo) {
-        await ensureManager(companyId, data.reportsTo);
-      }
-
-      const existingAgents = await db
-        .select({ id: agents.id, name: agents.name, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const uniqueName = deduplicateAgentName(data.name, existingAgents);
-
-      const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
-      const created = await db
-        .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
-        .returning()
-        .then((rows) => rows[0]);
-
-      return normalizeAgentRow(created);
-    },
-
-    update: updateAgent,
-
-    pause: async (id: string) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
-      if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
-
-      const updated = await db
-        .update(agents)
-        .set({ status: "paused", updatedAt: new Date() })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
-    },
-
-    resume: async (id: string) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-      if (existing.status === "terminated") throw conflict("Cannot resume terminated agent");
       if (existing.status === "pending_approval") {
-        throw conflict("Pending approval agents cannot be resumed");
+        throw conflict("Pending approval agent permissions cannot be changed before board approval", {
+          code: "pending_approval_agent_config_frozen",
+          agentId: id,
+          fields: ["permissions"],
+        });
       }
-
-      const updated = await db
-        .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
-    },
-
-    terminate: async (id: string) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-
-      await db
-        .update(agents)
-        .set({ status: "terminated", updatedAt: new Date() })
-        .where(eq(agents.id, id));
-
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
-
-      return getById(id);
-    },
-
-    remove: async (id: string) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-
-      return db.transaction(async (tx) => {
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
-        const deleted = await tx
-          .delete(agents)
-          .where(eq(agents.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return deleted ? normalizeAgentRow(deleted) : null;
-      });
-    },
-
-    activatePendingApproval: async (id: string) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-      if (existing.status !== "pending_approval") return existing;
-
-      const updated = await db
-        .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-
-      return updated ? normalizeAgentRow(updated) : null;
-    },
-
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
-      const existing = await getById(id);
-      if (!existing) return null;
 
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
     },
 
     listConfigRevisions: async (id: string) =>
@@ -501,7 +109,12 @@ export function agentService(db: Db) {
       });
     },
 
-    createApiKey: async (id: string, name: string) => {
+    createApiKey: async (
+      id: string,
+      name: string,
+      scope: AgentApiKeyScope = { kind: "standard" },
+      options?: { responsibleUserId?: string | null },
+    ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
       if (existing.status === "pending_approval") {
@@ -520,6 +133,8 @@ export function agentService(db: Db) {
           companyId: existing.companyId,
           name,
           keyHash,
+          responsibleUserId: options?.responsibleUserId?.trim() || null,
+          scopeConfig: scope.kind === "standard" ? null : scope,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -527,6 +142,8 @@ export function agentService(db: Db) {
       return {
         id: created.id,
         name: created.name,
+        scope: normalizeAgentApiKeyScope(created.scopeConfig),
+        responsibleUserId: created.responsibleUserId,
         token,
         createdAt: created.createdAt,
       };
@@ -537,30 +154,62 @@ export function agentService(db: Db) {
         .select({
           id: agentApiKeys.id,
           name: agentApiKeys.name,
+          responsibleUserId: agentApiKeys.responsibleUserId,
+          scopeConfig: agentApiKeys.scopeConfig,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
         .from(agentApiKeys)
-        .where(eq(agentApiKeys.agentId, id)),
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          responsibleUserId: row.responsibleUserId,
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
 
-    revokeKey: async (keyId: string) => {
+    getKeyById: async (keyId: string) =>
+      db
+        .select({
+          id: agentApiKeys.id,
+          agentId: agentApiKeys.agentId,
+          companyId: agentApiKeys.companyId,
+          name: agentApiKeys.name,
+          responsibleUserId: agentApiKeys.responsibleUserId,
+          scopeConfig: agentApiKeys.scopeConfig,
+          createdAt: agentApiKeys.createdAt,
+          revokedAt: agentApiKeys.revokedAt,
+        })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.id, keyId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row
+            ? {
+              ...row,
+              scope: normalizeAgentApiKeyScope(row.scopeConfig),
+            }
+            : null;
+        }),
+
+    revokeKey: async (agentId: string, keyId: string) => {
       const rows = await db
         .update(agentApiKeys)
         .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.id, keyId))
+        .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
         .returning();
       return rows[0] ?? null;
     },
 
     orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-      const normalizedRows = rows.map(normalizeAgentRow);
+      const allCompanyRows = await listCompanyAgentRows(companyId);
+      const rows = allCompanyRows.filter((row) => row.status !== "terminated");
+      const normalizedRows = normalizeAgentRows(rows, allCompanyRows);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
+        const key = row.reportsTo && rows.some((candidate) => candidate.id === row.reportsTo) ? row.reportsTo : null;
         const group = byManager.get(key) ?? [];
         group.push(row);
         byManager.set(key, group);
@@ -618,8 +267,7 @@ export function agentService(db: Db) {
       }
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-      const matches = rows
-        .map(normalizeAgentRow)
+      const matches = normalizeAgentRows(rows, rows)
         .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;
@@ -629,5 +277,8 @@ export function agentService(db: Db) {
       }
       return { agent: null, ambiguous: false } as const;
     },
+    update: updateAgent,
+    remove: (id: string) => createAgentLifecycle(db, budgetHooks).purgeAgent(id),
+    clearError: (id: string) => createAgentLifecycle(db, budgetHooks).clearError(id),
   };
 }

@@ -16,7 +16,7 @@ describe("codex_local parser", () => {
     expect(parsed.sessionId).toBe("thread-123");
     expect(parsed.summary).toBe("hello");
     expect(parsed.usage).toEqual({
-      inputTokens: 10,
+      inputTokens: 8,
       cachedInputTokens: 2,
       outputTokens: 4,
     });
@@ -117,7 +117,7 @@ describe("codex_local ui stdout parser", () => {
       {
         kind: "system",
         ts,
-        text: "file changes: update /Users/[]/project/ui/src/pages/AgentDetail.tsx",
+        text: "file changes: update /Users/paperclipuser/project/ui/src/pages/AgentDetail.tsx",
       },
     ]);
   });

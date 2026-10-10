@@ -1,4 +1,4 @@
-import type { AssetImage } from "@paperclipai/shared";
+import { sanitizeAssetNamespace, type AssetImage } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const assetsApi = {
@@ -11,11 +11,22 @@ export const assetsApi = {
     const safeFile = new File([buffer], file.name, { type: file.type });
 
     const form = new FormData();
-    form.append("file", safeFile);
-    if (namespace && namespace.trim().length > 0) {
-      form.append("namespace", namespace.trim());
+    // Callers build namespaces from ids and filenames that can hold characters
+    // the API rejects. Clean the namespace here so every caller is covered.
+    const safeNamespace = namespace ? sanitizeAssetNamespace(namespace) : undefined;
+    if (safeNamespace) {
+      form.append("namespace", safeNamespace);
     }
+    form.append("file", safeFile);
     return api.postForm<AssetImage>(`/companies/${companyId}/assets/images`, form);
   },
-};
 
+  uploadCompanyLogo: async (companyId: string, file: File) => {
+    const buffer = await file.arrayBuffer();
+    const safeFile = new File([buffer], file.name, { type: file.type });
+
+    const form = new FormData();
+    form.append("file", safeFile);
+    return api.postForm<AssetImage>(`/companies/${companyId}/logo`, form);
+  },
+};

@@ -1,21 +1,113 @@
+import { and, eq } from "drizzle-orm";
+import { runnerApiResponseReservations, heartbeatRuns, issues, issueAttachments } from "@paperclipai/db";
+import { authorizationService } from "../services/authorization.js";
+import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import createDOMPurify from "dompurify";
+import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, isUuidLike, createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import {
+  formatAttachmentSize,
+  isAllowedContentType,
+  isInlineAttachmentContentType,
+  MAX_ATTACHMENT_BYTES,
+} from "../attachment-types.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+const SVG_CONTENT_TYPE = "image/svg+xml";
+const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+  SVG_CONTENT_TYPE,
+]);
+
+function sanitizeSvgBuffer(input: Buffer): Buffer | null {
+  const raw = input.toString("utf8").trim();
+  if (!raw) return null;
+
+  const baseDom = new JSDOM("");
+  const domPurify = createDOMPurify(
+    baseDom.window as unknown as Parameters<typeof createDOMPurify>[0],
+  );
+  domPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+    const attrName = data.attrName.toLowerCase();
+    const attrValue = (data.attrValue ?? "").trim();
+
+    if (attrName.startsWith("on")) {
+      data.keepAttr = false;
+      return;
+    }
+
+    if ((attrName === "href" || attrName === "xlink:href") && attrValue && !attrValue.startsWith("#")) {
+      data.keepAttr = false;
+    }
+  });
+
+  let parsedDom: JSDOM | null = null;
+  try {
+    const sanitized = domPurify.sanitize(raw, {
+      USE_PROFILES: { svg: true, svgFilters: true, html: false },
+      FORBID_TAGS: ["script", "foreignObject"],
+      FORBID_CONTENTS: ["script", "foreignObject"],
+      RETURN_TRUSTED_TYPE: false,
+    });
+
+    parsedDom = new JSDOM(sanitized, { contentType: SVG_CONTENT_TYPE });
+    const document = parsedDom.window.document;
+    const root = document.documentElement;
+    if (!root || root.tagName.toLowerCase() !== "svg") return null;
+
+    for (const el of Array.from(root.querySelectorAll("script, foreignObject"))) {
+      el.remove();
+    }
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      for (const attr of Array.from(el.attributes)) {
+        const attrName = attr.name.toLowerCase();
+        const attrValue = attr.value.trim();
+        if (attrName.startsWith("on")) {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+        if ((attrName === "href" || attrName === "xlink:href") && attrValue && !attrValue.startsWith("#")) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    }
+
+    const output = root.outerHTML.trim();
+    if (!output || !/^<svg[\s>]/i.test(output)) return null;
+    return Buffer.from(output, "utf8");
+  } catch {
+    return null;
+  } finally {
+    parsedDom?.window.close();
+    baseDom.window.close();
+  }
+}
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
-  const upload = multer({
+  const assetUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+  });
+  const companyLogoUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
-  async function runSingleFileUpload(req: Request, res: Response) {
+  async function runSingleFileUpload(
+    upload: ReturnType<typeof multer>,
+    req: Request,
+    res: Response,
+  ) {
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
         if (err) reject(err);
@@ -29,11 +121,13 @@ export function assetRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
 
     try {
-      await runSingleFileUpload(req, res);
+      await runSingleFileUpload(assetUpload, req, res);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `File is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -48,30 +142,42 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const contentType = (file.mimetype || "").toLowerCase();
-    if (!isAllowedContentType(contentType)) {
-      res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });
-      return;
-    }
-    if (file.buffer.length <= 0) {
-      res.status(422).json({ error: "Image is empty" });
-      return;
-    }
-
     const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+      res.status(400).json({
+        error: `Invalid image metadata: ${ASSET_NAMESPACE_RULE}`,
+        details: parsedMeta.error.issues,
+      });
       return;
     }
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
+    const contentType = (file.mimetype || "").toLowerCase();
+    if (contentType !== SVG_CONTENT_TYPE && !isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });
+      return;
+    }
+    let fileBody = file.buffer;
+    if (contentType === SVG_CONTENT_TYPE) {
+      const sanitized = sanitizeSvgBuffer(file.buffer);
+      if (!sanitized || sanitized.length <= 0) {
+        res.status(422).json({ error: "SVG could not be sanitized" });
+        return;
+      }
+      fileBody = sanitized;
+    }
+    if (fileBody.length <= 0) {
+      res.status(422).json({ error: "Image is empty" });
+      return;
+    }
+
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
-      body: file.buffer,
+      body: fileBody,
     });
 
     const asset = await svc.create(companyId, {
@@ -82,7 +188,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       sha256: stored.sha256,
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : req.actor.onBehalfOfUserId ?? null,
     });
 
     await logActivity(db, {
@@ -91,11 +197,12 @@ export function assetRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "asset.created",
       entityType: "asset",
       entityId: asset.id,
       details: {
-        originalFilename: asset.originalFilename,
+        ...(namespaceSuffix.startsWith("issues/") ? {} : { originalFilename: asset.originalFilename }),
         contentType: asset.contentType,
         byteSize: asset.byteSize,
       },
@@ -118,28 +225,191 @@ export function assetRoutes(db: Db, storage: StorageService) {
     });
   });
 
-  router.get("/assets/:assetId/content", async (req, res, next) => {
-    const assetId = req.params.assetId as string;
-    const asset = await svc.getById(assetId);
-    if (!asset) {
-      res.status(404).json({ error: "Asset not found" });
+  router.post("/companies/:companyId/logo", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    try {
+      await runSingleFileUpload(companyLogoUpload, req, res);
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({
+            error: `Image is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+    if (!file) {
+      res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
-    res.setHeader("Content-Type", asset.contentType || object.contentType || "application/octet-stream");
-    res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
-    res.setHeader("Cache-Control", "private, max-age=60");
+    const contentType = (file.mimetype || "").toLowerCase();
+    if (!ALLOWED_COMPANY_LOGO_CONTENT_TYPES.has(contentType)) {
+      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
+      return;
+    }
+
+    let fileBody = file.buffer;
+    if (contentType === SVG_CONTENT_TYPE) {
+      const sanitized = sanitizeSvgBuffer(file.buffer);
+      if (!sanitized || sanitized.length <= 0) {
+        res.status(422).json({ error: "SVG could not be sanitized" });
+        return;
+      }
+      fileBody = sanitized;
+    }
+
+    if (fileBody.length <= 0) {
+      res.status(422).json({ error: "Image is empty" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const stored = await storage.putFile({
+      companyId,
+      namespace: "assets/companies",
+      originalFilename: file.originalname || null,
+      contentType,
+      body: fileBody,
+    });
+
+    const asset = await svc.create(companyId, {
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "asset.created",
+      entityType: "asset",
+      entityId: asset.id,
+      details: {
+        originalFilename: asset.originalFilename,
+        contentType: asset.contentType,
+        byteSize: asset.byteSize,
+        namespace: "assets/companies",
+      },
+    });
+
+    res.status(201).json({
+      assetId: asset.id,
+      companyId: asset.companyId,
+      provider: asset.provider,
+      objectKey: asset.objectKey,
+      contentType: asset.contentType,
+      byteSize: asset.byteSize,
+      sha256: asset.sha256,
+      originalFilename: asset.originalFilename,
+      createdByAgentId: asset.createdByAgentId,
+      createdByUserId: asset.createdByUserId,
+      createdAt: asset.createdAt,
+      updatedAt: asset.updatedAt,
+      contentPath: `/api/assets/${asset.id}/content`,
+    });
+  });
+
+  router.get("/assets/:assetId/content", async (req, res, next) => {
+    const assetId = req.params.assetId as string;
+    const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
+    if (!asset) return;
+    const access = authorizationService(db);
+    // Persisted storage namespaces retain provenance after attachment rows are deleted.
+    const objectParts = asset.objectKey.split("/");
+    const isDraftImage = objectParts[1] === "assets" && objectParts[2] === "issues" && objectParts[3] === "drafts";
+    const namespace = objectParts[1] === "assets" ? objectParts[2] : objectParts[1];
+    const sourceIssueId = objectParts[1] === "assets" ? objectParts[3] : objectParts[2];
+    const sourceExists = namespace !== "issues" || isDraftImage || (sourceIssueId && isUuidLike(sourceIssueId) && await db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, asset.companyId))).limit(1).then(rows => rows.length > 0));
+    if (namespace === "issues" && !isDraftImage && (!sourceExists || !(await access.decide({ actor: req.actor, action: "issue:read",
+      resource: { type: "issue", companyId: asset.companyId, issueId: sourceIssueId } })).allowed)) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
+    const captures = await db.select({ run: heartbeatRuns }).from(runnerApiResponseReservations)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, runnerApiResponseReservations.runId))
+      .where(and(eq(runnerApiResponseReservations.assetId, asset.id), eq(runnerApiResponseReservations.companyId, asset.companyId)));
+    if (namespace === "runner-api" && !captures.length) { res.status(404).json({ error: "Asset not found" }); return; }
+    for (const { run } of captures) {
+      if (!run || !(await canActorReadHeartbeatRun(db, access, req.actor, run))) {
+        res.status(404).json({ error: "Asset not found" }); return;
+      }
+    }
+    const attachments = await db.select({ issueId: issueAttachments.issueId }).from(issueAttachments)
+      .where(and(eq(issueAttachments.assetId, asset.id), eq(issueAttachments.companyId, asset.companyId)));
+    if (isDraftImage && !attachments.length && !(req.actor.type === "board"
+      ? req.actor.source === "local_implicit" || req.actor.isInstanceAdmin || req.actor.userId === asset.createdByUserId
+      : req.actor.type === "agent" && req.actor.agentId === asset.createdByAgentId
+        && (!asset.createdByUserId || req.actor.onBehalfOfUserId === asset.createdByUserId))) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
+    for (const attachment of attachments) {
+      if (!(await access.decide({ actor: req.actor, action: "issue:read", resource: {
+        type: "issue", companyId: asset.companyId, issueId: attachment.issueId,
+      } })).allowed) { res.status(404).json({ error: "Asset not found" }); return; }
+    }
+
+
+    // Use the persisted size only after resource authorization. Single ranges
+    // keep saved API text pages bounded all the way to disk or object storage.
+    const rawRange = req.headers.range;
+    const rangeSyntax = rawRange && /^bytes=(\d*)-(\d*)$/i.exec(rawRange);
+    const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
+    const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
+    res.setHeader("Accept-Ranges", "bytes");
+    if (/^[a-f0-9]{64}$/.test(asset.sha256)) res.setHeader("ETag", `"${asset.sha256}"`);
+    if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
+      || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
+      res.setHeader("Content-Range", `bytes */${asset.byteSize}`);
+      res.status(416).end();
+      return;
+    }
+    const range = Array.isArray(ranges) ? ranges[0] : undefined;
+    const object = await storage.getObject(asset.companyId, asset.objectKey, range ? { range } : undefined);
+    const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const inlineSafe = mediaType !== SVG_CONTENT_TYPE
+      && isInlineAttachmentContentType(mediaType);
+    res.setHeader("Content-Type", responseContentType);
+    res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
+    }
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (!inlineSafe) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+    }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = inlineSafe
+      ? "inline"
+      : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);
     });
+    res.on("close", () => object.stream.destroy());
     object.stream.pipe(res);
   });
 
   return router;
 }
-
