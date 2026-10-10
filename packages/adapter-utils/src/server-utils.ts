@@ -3629,6 +3629,7 @@ async function resolveSpawnTarget(
   options: {
     remoteExecution?: RemoteExecutionSpec | null;
     remoteEnv?: Record<string, string> | null;
+    runId?: string | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   } = {},
 ): Promise<SpawnTarget> {
@@ -3647,6 +3648,7 @@ async function resolveSpawnTarget(
           (entry): entry is [string, string] => typeof entry[1] === "string",
         ),
       ),
+      runId: options.runId ?? null,
     });
     return {
       command: sshResolved,
@@ -4743,6 +4745,7 @@ export async function runChildProcess(
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
+      runId,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
