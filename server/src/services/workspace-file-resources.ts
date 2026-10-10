@@ -1049,8 +1049,11 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor, options: { allowComputerAccess?: boolean } = {}) {
   async function placementFiles(candidate: WorkspaceCandidate) {
+    // Computer reads acquire a bounded machine owner and may resume it. Pure
+    // inspection transactions must remain read-only, including provider effects.
+    if (options.allowComputerAccess === false) throw unprocessable("Computer access is unavailable in read-only inspection", { code: "remote_workspace" });
     if (!candidate.placement) throw unprocessable("Workspace placement is unavailable", { code: "remote_workspace" });
     return computerFileAccess(() => computerService(db).workspaceFiles(candidate.placement!));
   }

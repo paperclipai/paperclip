@@ -235,6 +235,10 @@ describeEmbeddedPostgres("workspace file resources", () => {
       await expect(service.readContent(graph.issueId, { path: ".env", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
       await expect(service.readContent(graph.issueId, { path: "../other-company/secret", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
       expect(readBytes).not.toHaveBeenCalled();
+      workspaceFiles.mockClear();
+      const readOnly = workspaceFileResourceService(db, undefined, { allowComputerAccess: false });
+      await expect(readOnly.prepareDownload(graph.issueId, { path: "README.md", workspace: "execution" })).rejects.toMatchObject({ status: 422, details: { code: "remote_workspace" } });
+      expect(workspaceFiles).not.toHaveBeenCalled();
     } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
   });
 
