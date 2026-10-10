@@ -45,6 +45,7 @@ const mockAgentService = vi.hoisted(() => ({
   getConfigRevision: vi.fn(),
   listConfigRevisions: vi.fn(),
   list: vi.fn(),
+  listConfigRevisions: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
@@ -2081,6 +2082,43 @@ describe("agent permission routes", () => {
   });
 
   describe("agent configuration read gate", () => {
+    it("allows an agent to list its own redacted configuration revisions without grants", async () => {
+      mockAgentService.listConfigRevisions.mockResolvedValue([{
+        id: "revision-1",
+        agentId,
+        companyId,
+        beforeConfig: { adapterConfig: { env: { TOKEN: { type: "secret_ref", secretId: "secret-1" } } } },
+        afterConfig: { adapterConfig: { env: { TOKEN: { type: "secret_ref", secretId: "secret-1" } } } },
+        changedKeys: ["adapterConfig"],
+        createdAt: new Date("2026-08-23T00:00:00.000Z"),
+      }]);
+      mockAccessService.decide.mockResolvedValue({
+        allowed: true,
+        reason: "allow_self",
+        explanation: "Allowed because the actor is reading its own agent configuration.",
+      });
+
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await request(app).get(`/api/agents/${agentId}/config-revisions`);
+
+      expect(res.status).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "agent_config:read",
+        resource: { type: "agent", companyId, agentId },
+      }));
+      expect(res.body[0].afterConfig.adapterConfig.env.TOKEN).toEqual({
+        type: "secret_ref",
+        secretId: "secret-1",
+      });
+    });
+
     it("allows a board member without agents:create to read agent configuration", async () => {
       // Board (human) users with company membership but no agents:create
       // grant should still be able to view agent configuration — this is
@@ -2212,7 +2250,7 @@ describe("agent permission routes", () => {
       expect(res.status).toBe(403);
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
-        resource: { type: "company", companyId },
+        resource: { type: "agent", companyId, agentId: peerAgentId },
       }));
     });
 
@@ -2253,7 +2291,7 @@ describe("agent permission routes", () => {
       expect(res.status).toBe(200);
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
-        resource: { type: "company", companyId },
+        resource: { type: "agent", companyId, agentId: peerAgentId },
       }));
     });
   });
