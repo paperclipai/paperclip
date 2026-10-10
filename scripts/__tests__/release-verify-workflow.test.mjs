@@ -102,6 +102,131 @@ test("canary reuses exact-source proof while stable keeps full verification", ()
   );
 });
 
+function canaryAttachmentScript() {
+  const publish = readWorkflow("release.yml").split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+  const step = publish.split("      - name: Attach verified canary source to local master\n")[1]?.split("\n      - ")[0];
+  assert.ok(step, "the trusted publisher must attach its pinned checkout before releasing");
+  assert.match(step, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  const script = step.match(/run: \|\n((?: {10}[^\n]*\n)+)/)?.[1];
+  assert.ok(script, "missing inline canary branch attachment shell");
+  return script.replace(/^ {10}/gm, "");
+}
+
+function withCanaryGitFixture(check) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "canary-publisher-git-"));
+  const cwd = path.join(root, "repository with spaces");
+  mkdirSync(cwd);
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--initial-branch=master");
+    git("config", "user.name", "Release fixture");
+    git("config", "user.email", "release-fixture@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    git("config", "core.hooksPath", "/dev/null");
+    writeFileSync(path.join(cwd, "source.txt"), "pinned source\n");
+    git("add", "source.txt");
+    git("commit", "-m", "Create pinned source");
+    const pinned = git("rev-parse", "HEAD");
+    writeFileSync(path.join(cwd, "source.txt"), "newer master source\n");
+    git("commit", "-am", "Advance master");
+    const newer = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/master", newer);
+    git("checkout", "--detach", pinned);
+    const env = {
+      ...process.env, REPO_ROOT: cwd, SOURCE_SHA: pinned,
+      GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "paperclipai/paperclip",
+      GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/master",
+    };
+    const attach = (overrides = {}) => spawnSync("bash", ["--noprofile", "--norc", "-c", canaryAttachmentScript()], {
+      cwd, env: { ...env, ...overrides }, encoding: "utf8", timeout: 5_000,
+    });
+    // Run the original release guard without running release.sh, npm, or a publisher.
+    const guard = () => spawnSync("bash", ["-c", 'source "$1"; require_on_master_branch', "guard", path.join(repoRoot, "scripts/release-lib.sh")], {
+      cwd, env, encoding: "utf8", timeout: 5_000,
+    });
+    check({ cwd, git, pinned, newer, attach, guard });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("canary publisher attaches the exact source while local and remote master are newer", () => {
+  withCanaryGitFixture(({ cwd, git, pinned, newer, attach, guard }) => {
+    assert.equal(guard().status, 1, "the unchanged release guard must reject detached HEAD even in Actions");
+    assert.equal(git("rev-parse", "master"), newer);
+    const result = attach();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(git("symbolic-ref", "--short", "HEAD"), "master");
+    assert.equal(git("rev-parse", "HEAD"), pinned);
+    assert.equal(git("rev-parse", "master"), pinned);
+    assert.equal(git("rev-parse", "origin/master"), newer, "do not fetch or follow floating remote master");
+    assert.equal(readFileSync(path.join(cwd, "source.txt"), "utf8"), "pinned source\n");
+    assert.equal(git("status", "--porcelain"), "");
+    assert.equal(guard().status, 0, "the real release guard must accept the pinned local master");
+  });
+});
+
+for (const [name, overrides] of [
+  ["fork repository", { GITHUB_REPOSITORY: "example/paperclip" }],
+  ["manual dispatch", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
+  ["scheduled release", { GITHUB_EVENT_NAME: "schedule" }],
+  ["non-master push", { GITHUB_REF: "refs/heads/topic" }],
+  ["tag push", { GITHUB_REF: "refs/tags/canary/v1" }],
+  ["missing source SHA", { SOURCE_SHA: "" }],
+  ["abbreviated source SHA", { SOURCE_SHA: "a".repeat(12) }],
+  ["malformed source SHA", { SOURCE_SHA: "z".repeat(40) }],
+]) {
+  test(`canary publisher rejects ${name} before changing any Git reference`, () => {
+    withCanaryGitFixture(({ git, pinned, attach, guard }) => {
+      const refs = git("show-ref");
+      const result = attach(overrides);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(git("show-ref"), refs);
+      assert.equal(git("rev-parse", "HEAD"), pinned);
+      assert.equal(guard().status, 1, "the rejected checkout must remain detached");
+    });
+  });
+}
+
+test("canary publisher rejects a different valid source SHA before changing Git references", () => {
+  withCanaryGitFixture(({ git, pinned, newer, attach, guard }) => {
+    const refs = git("show-ref");
+    const result = attach({ SOURCE_SHA: newer });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(git("show-ref"), refs);
+    assert.equal(git("rev-parse", "HEAD"), pinned);
+    assert.equal(guard().status, 1);
+  });
+});
+
+test("the original canary release guard still rejects a non-master local branch in Actions", () => {
+  withCanaryGitFixture(({ git, pinned, guard }) => {
+    git("checkout", "-b", "topic", pinned);
+    const refs = git("show-ref");
+    assert.equal(guard().status, 1);
+    assert.equal(git("symbolic-ref", "--short", "HEAD"), "topic");
+    assert.equal(git("show-ref"), refs);
+  });
+});
+
+test("canary branch attachment keeps exact-source checkout and artifact order in its publishing lane", () => {
+  const workflow = readWorkflow("release.yml");
+  const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+  assert.equal(workflow.split("name: Attach verified canary source to local master").length, 2);
+  assert.match(publish, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(publish, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  const steps = ["Checkout repository", "Attach verified canary source to local master", "Install dependencies", "Save canary smoke lockfile", "Restore tracked install-time changes", "Publish canary"];
+  for (let i = 1; i < steps.length; i++) {
+    assert.ok(publish.indexOf(`name: ${steps[i - 1]}`) < publish.indexOf(`name: ${steps[i]}`));
+  }
+  assert.match(publish, /run: \.\/scripts\/release\.sh canary --skip-verify/);
+  assert.doesNotMatch(canaryAttachmentScript(), /git fetch|git pull|checkout (?:master|origin\/master)(?:\s|$)/);
+});
+
 test("source proof requires every source check and does not wait on image publication", () => {
   const readiness = readWorkflow("cloud-readiness.yml");
   const proof = readiness.split("  source_verified:\n")[1];

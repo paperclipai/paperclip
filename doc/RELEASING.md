@@ -64,6 +64,10 @@ internal traceability tag.
 ## Core Invariants
 
 - canaries publish from `master`
+- the canary publisher checks out the exact master push SHA. It verifies the
+  repository, event, branch, and checked-out commit before attaching local
+  `master` at that same SHA. It never switches to a newer branch tip. The local
+  release script still rejects detached or non-master checkouts.
 - nightlies republish a commit that already shipped a canary (the commit must
   carry a `canary/v*` tag), and only after the release smoke suite passes
   against that exact published canary
