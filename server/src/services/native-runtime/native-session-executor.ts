@@ -10877,11 +10877,7 @@ export async function verifyRemoteRunnerReattachment(input: {
   }
   const runner = target.runner;
   const stateDirectory = posix.join(
-    target.remoteCwd,
-    ".paperclip-runtime",
-    "paperclip-runner",
-    "sessions",
-    createHash("sha256").update(input.normalizedSessionId).digest("hex"),
+    remoteRunnerStorageRoots(target, input.normalizedSessionId).sessionRoot,
     "runner",
   );
   const runnerState = await readRemoteRunnerState({ runner, stateDirectory });

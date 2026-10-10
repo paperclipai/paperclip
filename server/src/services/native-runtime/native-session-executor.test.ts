@@ -488,12 +488,16 @@ describe("remote controller restart adoption", () => {
     const { sandboxLeaseAcquisition, ...common } = sandbox;
     const inspectProcess = vi.fn(async () => ({ running: true, claim: { nonce: "process-claim" } }));
     const target = { ...common, transport: "computer", listenerPort: 45101,
+      fileAuthority: { kind: "remote-persistent", root: "/workspace", placementId: "workspace", agentHome: "/home/user/agent" },
       resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: "owner", generation: 7 }, inspectProcess };
     const computerClaim = { ...claim, remote: { ...claim.remote, providerLeaseId: "owner",
       computerOwner: { computerId: "computer", ownerId: "owner", generation: 7, listenerPort: 45101 } } };
     const adopted = await verifyRemoteRunnerReattachment({ claim: computerClaim, target: target as never,
       identity, runId: "run", normalizedSessionId: "session" });
     expect(adopted.pid).toBe(123);
+    const storage = remoteRunnerStorageRoots(target as never, "session");
+    expect(execute.mock.calls[0]![0].args.join(" ")).toContain(`${storage.sessionRoot}/runner/runner-state.json`);
+    expect(execute.mock.calls.some(([request]) => request.args.includes(`${storage.sessionRoot}/runner/runner-process.identity`))).toBe(true);
     expect(inspectProcess).toHaveBeenCalledOnce();
     const readCount = execute.mock.calls.length;
     await expect(verifyRemoteRunnerReattachment({ claim: { ...computerClaim, remote: {
