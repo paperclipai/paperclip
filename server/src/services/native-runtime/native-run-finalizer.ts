@@ -31,6 +31,11 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
+import {
+  buildNativeFailureCauseResultJson,
+  describeNativeFailureCause,
+  type NativeFailureCauseDetail,
+} from "./native-failure-cause.js";
 import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import {
   arbitrateNativeStatus,
@@ -282,6 +287,10 @@ async function recordRetryableFailure(input: {
   coordinator: typeof nativeRunFinalizations.$inferSelect;
   failureCode: string;
   message: string;
+  /** Machine-readable cause chain; carries the Postgres SQLSTATE. */
+  causeDetail?: NativeFailureCauseDetail;
+  /** Exit code already observed on the run, preserved when a terminal write fails. */
+  exitCode?: number | null;
   nextAction: string;
   projectRunStatus?: boolean;
   failureScope?: "provider" | "workspace";
@@ -423,6 +432,15 @@ async function recordRetryableFailure(input: {
         failureDetail: {
           message: input.message.slice(0, 2_000),
           originalFailureCode: input.failureCode,
+          // The rendered message is not machine-readable: `DrizzleQueryError`
+          // omits the SQLSTATE from it. Without these hops a failed finalization
+          // write is indistinguishable from a lock timeout after the fact.
+          ...(input.causeDetail?.causeCode
+            ? { causeCode: input.causeDetail.causeCode, sqlstate: input.causeDetail.sqlstate }
+            : {}),
+          ...(input.causeDetail && input.causeDetail.causeChain.length > 0
+            ? { causeChain: input.causeDetail.causeChain }
+            : {}),
           ...(priorFailureDetail.workspaceExportRetry ? { workspaceExportRetry: priorFailureDetail.workspaceExportRetry } : {}),
           ...(workspaceFinalizeAttempt === null
             ? {}
@@ -463,6 +481,15 @@ async function recordRetryableFailure(input: {
           finalizationPhase: phase,
           failureCode,
           originalFailureCode: input.failureCode,
+          // Queryable without parsing the rendered statement out of `error`:
+          // `result_json->>'finalizationCauseCode'` is the SQLSTATE.
+          ...(input.causeDetail ? buildNativeFailureCauseResultJson(input.causeDetail) : {}),
+          // A terminal write that fails takes `exit_code` down with it. Keep the
+          // observed value in the run json so the crash code survives the crash
+          // of the very statement that was going to record it.
+          ...(input.exitCode !== undefined && input.exitCode !== null
+            ? { finalizationExitCode: input.exitCode }
+            : {}),
           nextAttemptAt:
             supersededByNewerRun || exhausted
               ? null
@@ -590,6 +617,8 @@ export async function recordNativeFinalizationFailure(input: {
     coordinator,
     failureCode,
     message,
+    causeDetail: describeNativeFailureCause(input.error),
+    exitCode: run.exitCode,
     nextAction:
       input.failureScope === "workspace"
         ? input.permanent
@@ -1125,6 +1154,12 @@ export async function finalizeNativeRun(input: {
   projectRunStatus?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
+  /**
+   * Exit code already observed by the caller. `run.exit_code` is still null on
+   * the live path, because the heartbeat persists `adapterResult.exitCode` only
+   * after finalization returns, so reading the stored row cannot recover it.
+   */
+  observedExitCode?: number | null;
   failpoint?: NativeStatusCommitFailpoint;
 }) {
   const run = await input.db
@@ -1610,6 +1645,12 @@ export async function finalizeNativeRun(input: {
             ? "status_cas_exhausted"
             : "side_effect_planning_failed",
         message: error instanceof Error ? error.message : String(error),
+        // This is the measured signature: an ownership-guarded UPDATE on
+        // heartbeat_runs that fails inside the commit. The rendered message
+        // names the statement but not the SQLSTATE, so the cause has to be
+        // walked here or the reason is lost with the write.
+        causeDetail: describeNativeFailureCause(error),
+        exitCode: input.observedExitCode ?? run.exitCode,
         nextAction:
           error instanceof NativeStatusRaceError
             ? "Reassess against the latest authoritative issue status version."
