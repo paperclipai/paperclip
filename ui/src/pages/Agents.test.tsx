@@ -8,8 +8,8 @@ import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/s
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
-import { Agents } from "./Agents";
-import { Agents as ProductionAgents } from "./Agents.production";
+import { Agents, groupAgentsByRole } from "./Agents";
+import { Agents as ProductionAgents, groupAgentsByRole as productionGroupAgentsByRole } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const mockRouterState = vi.hoisted(() => ({
@@ -1103,4 +1103,31 @@ describe("Agents", () => {
     expect(container.textContent).toContain("Alpha");
     expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
   });
+});
+
+describe("groupAgentsByRole", () => {
+  const agents = [
+    makeAgent({ id: "a", name: "Alpha", role: "engineer" }),
+    makeAgent({ id: "b", name: "Bravo", role: "ceo" }),
+    makeAgent({ id: "c", name: "Charlie", role: "engineer" }),
+    // A company-package import validates role as a free string, so the roster can
+    // hold a value outside AGENT_ROLES even though the type forbids it.
+    makeAgent({ id: "d", name: "Delta", role: "vibes-officer" as Agent["role"] }),
+  ];
+
+  for (const [variant, group] of [
+    ["streamlined", groupAgentsByRole],
+    ["production", productionGroupAgentsByRole],
+  ] as const) {
+    it(`groups by role and keeps empty roles out (${variant})`, () => {
+      const grouped = group(agents);
+      expect([...grouped.keys()]).toEqual(["ceo", "engineer", "vibes-officer"]);
+      expect(grouped.get("engineer")?.map((a) => a.id)).toEqual(["a", "c"]);
+    });
+
+    it(`never drops an agent with a custom role (${variant})`, () => {
+      const grouped = group(agents);
+      expect([...grouped.values()].flat().map((a) => a.id).sort()).toEqual(["a", "b", "c", "d"]);
+    });
+  }
 });

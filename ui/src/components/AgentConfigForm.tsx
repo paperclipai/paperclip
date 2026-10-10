@@ -75,6 +75,7 @@ import {
   DraftNumberInput,
   help,
   adapterLabels,
+  roleLabels,
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -1479,6 +1480,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="Agent name"
               />
             </Field>
+            <Field label="Role" hint={help.role}>
+              <select
+                aria-label="Role"
+                className={inputClass}
+                value={eff("identity", "role", props.agent.role)}
+                onChange={(e) => mark("identity", "role", e.target.value)}
+              >
+                {Object.entries(roleLabels).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </Field>
             <Field label="Title" hint={help.title}>
               <DraftInput
                 value={eff("identity", "title", props.agent.title ?? "")}
@@ -1564,6 +1577,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Environment override">
               <div className="space-y-2">
                 <select
+                  aria-label="Environment"
                   className={inputClass}
                   value={currentDefaultEnvironmentId}
                   onChange={(event) => {

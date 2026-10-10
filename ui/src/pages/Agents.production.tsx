@@ -89,6 +89,20 @@ function matchesFilter(status: string, tab: FilterTab): boolean {
   return true;
 }
 
+// Known roles first, in roleLabels order, then any custom role. Custom roles are
+// reachable: the company-package manifest validates role as a free string, and the
+// column is plain text, so an imported agent can hold a value outside AGENT_ROLES.
+// Grouping must never drop one of those from the roster.
+export function groupAgentsByRole(agents: Agent[]): Map<string, Agent[]> {
+  const grouped = new Map<string, Agent[]>(Object.keys(roleLabels).map((role) => [role, []]));
+  for (const agent of agents) {
+    const known = grouped.get(agent.role);
+    if (known) known.push(agent);
+    else grouped.set(agent.role, [agent]);
+  }
+  return new Map([...grouped].filter(([, list]) => list.length > 0));
+}
+
 function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<string>): Agent[] {
   return agents
     .filter((a) => {
@@ -195,6 +209,7 @@ export function Agents() {
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
   const [view, setView] = useState<"list" | "org">("org");
+  const [groupByRole, setGroupByRole] = useState(false);
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
 
@@ -479,6 +494,18 @@ export function Agents() {
               </button>
             </div>
           )}
+          {effectiveView === "list" && (
+            <Button
+              size="sm"
+              variant={groupByRole ? "secondary" : "outline"}
+              onClick={() => setGroupByRole(!groupByRole)}
+              title="Group by role"
+              aria-label="Group by role"
+              aria-pressed={groupByRole}
+            >
+              Group by role
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
@@ -504,7 +531,18 @@ export function Agents() {
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
         <div>
-          {filtered.map(renderAgentRow)}
+          {groupByRole ? (
+            Array.from(groupAgentsByRole(filtered)).map(([role, agents]) => (
+              <div key={role}>
+                <h3 className="text-sm font-semibold text-muted-foreground my-3">{roleLabels[role] ?? role}</h3>
+                <div>
+                  {agents.map(renderAgentRow)}
+                </div>
+              </div>
+            ))
+          ) : (
+            filtered.map(renderAgentRow)
+          )}
         </div>
       )}
 
