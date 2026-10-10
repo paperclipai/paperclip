@@ -797,6 +797,7 @@ export type {
   FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
   PluginSandboxEnvironmentConfig,
+  BoatEnvironmentConfig,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,

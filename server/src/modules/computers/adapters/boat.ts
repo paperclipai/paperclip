@@ -1,0 +1,385 @@
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import {
+  createSshCommandManagedRuntimeRunner,
+  shellQuote,
+} from "@paperclipai/adapter-utils/ssh";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import type { ComputerBackend } from "../application/ports.js";
+import {
+  ComputerError,
+  segment,
+  type ComputerRecord,
+  type Owner,
+} from "../domain/ledger.js";
+import { remoteProgram } from "./remote-program.js";
+
+const apiOrigin = "https://boat.dev/api/v1";
+const transportCache = new Map<string, Promise<CommandManagedRuntimeRunner>>();
+const desktopCache = new Map<
+  string,
+  { viewerUrl: string; expiresAt: string }
+>();
+export function boatBackend(
+  resolveKey: (record: ComputerRecord) => Promise<string>,
+  fetcher: typeof fetch = fetch,
+): ComputerBackend {
+  async function api(
+    record: ComputerRecord,
+    method: string,
+    suffix = "",
+    body?: unknown,
+  ): Promise<any> {
+    const response = await fetcher(
+      `${apiOrigin}/sandboxes/${segment(record.providerId)}${suffix}`,
+      {
+        method,
+        headers: {
+          authorization: `Bearer ${await resolveKey(record)}`,
+          "content-type": "application/json",
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(90_000),
+      },
+    );
+    if (!response.ok)
+      throw new ComputerError(
+        "provider_error",
+        `Boat request failed (${response.status})`,
+      );
+    const data = await response.json();
+    if (!data || typeof data !== "object")
+      throw new ComputerError("provider_error", "Invalid Boat response");
+    return data;
+  }
+  async function inspect(record: ComputerRecord) {
+    const data = await api(record, "GET");
+    const sandbox = data.sandbox ?? data;
+    if (sandbox.id !== record.providerId || typeof sandbox.state !== "string")
+      throw new ComputerError(
+        "provider_error",
+        "Boat returned a different computer",
+      );
+    return {
+      state: sandbox.state as string,
+      snapshots: sandbox.snapshots === true,
+      stop: sandbox.stop ?? null,
+    };
+  }
+  async function runner(
+    record: ComputerRecord,
+  ): Promise<CommandManagedRuntimeRunner> {
+    const key = `${record.id}:${record.ledger.secretRef.secretId}:${record.ledger.secretRef.version ?? "latest"}`;
+    let pending = transportCache.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const pair = generateKeyPairSync("ed25519");
+        const jwk = pair.publicKey.export({ format: "jwk" });
+        const publicBytes = Buffer.from(jwk.x!, "base64url");
+        const name = Buffer.from("ssh-ed25519");
+        const length = (n: number) => {
+          const b = Buffer.alloc(4);
+          b.writeUInt32BE(n);
+          return b;
+        };
+        const publicKey = `ssh-ed25519 ${Buffer.concat([length(name.length), name, length(publicBytes.length), publicBytes]).toString("base64")} paperclip-computer`;
+        // OpenSSH cannot read PKCS8 Ed25519 keys; emit its unencrypted private format in memory.
+        const seed = Buffer.from(
+          pair.privateKey.export({ format: "jwk" }).d!,
+          "base64url",
+        );
+        const field = (b: Buffer) => Buffer.concat([length(b.length), b]);
+        const check = Buffer.from("70617065", "hex");
+        let privateBody = Buffer.concat([
+          check,
+          check,
+          field(name),
+          field(publicBytes),
+          field(Buffer.concat([seed, publicBytes])),
+          field(Buffer.from("paperclip-computer")),
+        ]);
+        const padding = 8 - (privateBody.length % 8);
+        privateBody = Buffer.concat([
+          privateBody,
+          Buffer.from(Array.from({ length: padding }, (_, i) => i + 1)),
+        ]);
+        const publicBlob = Buffer.concat([field(name), field(publicBytes)]);
+        const blob = Buffer.concat([
+          Buffer.from("openssh-key-v1\0"),
+          field(Buffer.from("none")),
+          field(Buffer.from("none")),
+          field(Buffer.alloc(0)),
+          length(1),
+          field(publicBlob),
+          field(privateBody),
+        ]);
+        const privateKey = `-----BEGIN OPENSSH PRIVATE KEY-----\n${blob
+          .toString("base64")
+          .match(/.{1,70}/g)!
+          .join("\n")}\n-----END OPENSSH PRIVATE KEY-----\n`;
+        const result = await api(record, "POST", "/sshkey", { key: publicKey });
+        if (
+          typeof result.hostKey !== "string" ||
+          !/^ssh-ed25519 [A-Za-z0-9+/=]+$/.test(result.hostKey.trim())
+        )
+          throw new ComputerError(
+            "provider_error",
+            "Boat did not provide a valid SSH host key",
+          );
+        const endpoint =
+          typeof result.sshEndpoint === "string" ? result.sshEndpoint : null;
+        const parsed = endpoint?.match(/^([A-Za-z0-9.-]+):(\d+)$/);
+        const host = parsed?.[1] ?? result.machineIp;
+        const port = parsed ? Number(parsed[2]) : 22;
+        if (
+          typeof host !== "string" ||
+          !host ||
+          /[\s/]/.test(host) ||
+          !Number.isInteger(port) ||
+          port < 1 ||
+          port > 65535
+        )
+          throw new ComputerError(
+            "provider_error",
+            "Invalid Boat SSH endpoint",
+          );
+        const knownHost = port === 22 ? host : `[${host}]:${port}`;
+        return createSshCommandManagedRuntimeRunner({
+          spec: {
+            host,
+            port,
+            username: "user",
+            remoteWorkspacePath: "/home/user",
+            remoteCwd: "/home/user",
+            privateKey,
+            knownHosts: `${knownHost} ${result.hostKey.trim()}\n`,
+            strictHostKeyChecking: true,
+          },
+          maxBufferBytes: 24 * 1024 * 1024,
+        });
+      })();
+      transportCache.set(key, pending);
+      pending.catch(() => transportCache.delete(key));
+    }
+    return pending;
+  }
+  async function execute(
+    record: ComputerRecord,
+    code: string,
+    payload: unknown,
+  ) {
+    const result = await (
+      await runner(record)
+    ).execute({
+      command: "python3",
+      args: ["-c", code],
+      stdin: JSON.stringify(payload),
+      timeoutMs: 120_000,
+    });
+    if (result.exitCode !== 0)
+      throw new ComputerError("provider_error", "Computer operation failed");
+    let value: any;
+    try {
+      value = JSON.parse(result.stdout);
+    } catch {
+      throw new ComputerError(
+        "provider_error",
+        "Invalid computer operation response",
+      );
+    }
+    if (value?.error)
+      throw new ComputerError(
+        ["not_found", "conflict", "invalid"].includes(value.error)
+          ? value.error
+          : "provider_error",
+        `Computer operation: ${value.error}`,
+      );
+    return value;
+  }
+  const processProgram = String.raw`
+import os,sys,json,fcntl,subprocess
+p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
+owner=p['owner'];oid=owner['id'];root=os.path.join(base,oid);os.makedirs(root,exist_ok=True)
+with open(os.path.join(root,'lock'),'a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ tombstone=os.path.join(root,'retired');unit='paperclip-'+oid+'.service';slice='paperclip-'+oid+'.slice'
+ boot=open('/proc/sys/kernel/random/boot_id').read().strip()
+ generation_path=os.path.join(root,'generation')
+ generation=int(open(generation_path).read()) if os.path.exists(generation_path) else 0
+ if owner['generation']<generation:print(json.dumps({'error':'conflict'}));sys.exit(0)
+ if p['action']=='advance':
+  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  with open(generation_path,'w') as f:f.write(str(owner['generation']))
+  print('{}')
+ elif p['action']=='retire':
+  open(tombstone,'a').close()
+  subprocess.run(['systemctl','--user','stop',slice,unit],capture_output=True)
+  state=subprocess.run(['systemctl','--user','show',slice,'--property=ActiveState','--value'],capture_output=True,text=True).stdout.strip()
+  if state not in ('inactive','failed',''):raise RuntimeError('process retirement unconfirmed')
+  print('{}')
+ elif p['action']=='inspect':
+  claim=owner.get('process');state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
+  print(json.dumps({'running':bool(claim and claim['bootId']==boot and state=='active' and not os.path.exists(tombstone)),'claim':claim}))
+ else:
+  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  claim=owner['process'];claim['bootId']=boot
+  marker=os.path.join(root,'claim.json')
+  if os.path.exists(marker):
+   old=json.load(open(marker))
+   if old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
+  with open(marker,'w') as f:json.dump(claim,f)
+  payload=p['input'];args=['systemd-run','--user','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
+  for key,value in payload.get('env',{}).items():args.append('--setenv='+key+'='+value)
+  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
+  if state!='active':
+   result=subprocess.run(args+['--',payload['command']]+payload.get('args',[]),capture_output=True)
+   if result.returncode:raise RuntimeError('launch failed')
+  print(json.dumps(claim))
+`;
+  async function host(record: ComputerRecord, port: number) {
+    if (!Number.isInteger(port) || port < 1024 || port > 65535)
+      throw new ComputerError("invalid", "Invalid preview port");
+    const result = await api(record, "POST", "/host", {
+      port,
+      access: "private",
+    });
+    const url = new URL(result.url);
+    if (
+      url.protocol !== "https:" ||
+      !url.hostname.endsWith(".on.boat.dev") ||
+      url.username ||
+      url.password ||
+      !url.searchParams.get("_token") ||
+      result.access === "public"
+    )
+      throw new ComputerError(
+        "provider_error",
+        "Boat did not provide private hosting",
+      );
+    return url;
+  }
+  return {
+    inspect,
+    runner,
+    async ready(record) {
+      const state = await inspect(record);
+      if (!state.snapshots)
+        throw new ComputerError("invalid", "Boat snapshots must be enabled");
+      if (state.stop && ["pending", "failing"].includes(state.stop.status))
+        throw new ComputerError(
+          "conflict",
+          "Boat is still saving a previous stop",
+        );
+      if (!["ready", "idle", "running"].includes(state.state)) {
+        await api(record, "POST", "/resume", { ttlSeconds: 300 });
+        transportCache.delete(
+          `${record.id}:${record.ledger.secretRef.secretId}:${record.ledger.secretRef.version ?? "latest"}`,
+        );
+        for (let i = 0; i < 90; i++) {
+          const status = await inspect(record);
+          if (["ready", "idle", "running"].includes(status.state)) return;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        throw new ComputerError("provider_error", "Boat did not become ready");
+      }
+    },
+    async claim(record) {
+      await execute(
+        record,
+        String.raw`
+import os,sys,json,fcntl
+p=json.load(sys.stdin);path='/home/user/.paperclip-controller.json'
+fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+with os.fdopen(fd,'r+') as f:
+ fcntl.flock(f,fcntl.LOCK_EX);old=f.read()
+ if old and json.loads(old)!=p:print(json.dumps({'error':'conflict'}));sys.exit(0)
+ if not old:f.write(json.dumps(p));f.flush();os.fsync(f.fileno())
+print('{}')
+`,
+        {
+          controllerId: record.ledger.controllerId,
+          companyId: record.companyId,
+          computerId: record.id,
+        },
+      );
+    },
+    async advance(record, owner) {
+      await execute(record, processProgram, { action: "advance", owner });
+    },
+    async launch(record, owner, input) {
+      return execute(record, processProgram, {
+        action: "launch",
+        owner,
+        input,
+      });
+    },
+    async inspectProcess(record, owner) {
+      return execute(record, processProgram, { action: "inspect", owner });
+    },
+    async retire(record, owner) {
+      await execute(record, processProgram, { action: "retire", owner });
+    },
+    async stop(record) {
+      const value = await api(record, "POST", "/stop", {});
+      const stop = value.stop ?? value.sandbox?.stop;
+      if (!stop?.id)
+        throw new ComputerError("provider_error", "Boat stop receipt missing");
+      return stop;
+    },
+    async stopStatus(record, id) {
+      const value = await api(record, "GET", `/stops/${segment(id)}`);
+      return value.stop ?? value;
+    },
+    async renew(record) {
+      await api(record, "PATCH", "", { ttlSeconds: 300 });
+    },
+    async desktop(record) {
+      const cached = desktopCache.get(record.id);
+      if (cached && Date.parse(cached.expiresAt) > Date.now() + 60_000)
+        return cached;
+      const value = await api(record, "POST", "/desktop", {});
+      const url = new URL(value.desktopUrl);
+      if (url.protocol !== "https:" || !url.hostname.endsWith(".on.boat.dev"))
+        throw new ComputerError("provider_error", "Invalid Boat desktop URL");
+      url.searchParams.set("overlay", "0");
+      const result = {
+        viewerUrl: url.toString(),
+        expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+      };
+      desktopCache.set(record.id, result);
+      return result;
+    },
+    async preview(record, port) {
+      return { url: (await host(record, port)).toString() };
+    },
+    async ingress(record, port, path) {
+      if (
+        !path.startsWith("/") ||
+        path.startsWith("//") ||
+        /[?#\r\n]/.test(path)
+      )
+        throw new ComputerError("invalid", "Invalid runner ingress path");
+      const url = await host(record, port);
+      const response = await fetcher(url, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(30_000),
+      });
+      const cookie = response.headers
+        .getSetCookie()
+        .find((value) => value.startsWith("_port_auth="))
+        ?.split(";")[0];
+      if (!cookie || response.status < 200 || response.status >= 400)
+        throw new ComputerError(
+          "provider_error",
+          "Boat private hosting authentication failed",
+        );
+      url.search = "";
+      url.hash = "";
+      url.protocol = "wss:";
+      url.pathname = path;
+      return { url: url.toString(), secretHeaders: { Cookie: cookie } };
+    },
+    async remote(record, input) {
+      return execute(record, remoteProgram, input);
+    },
+  };
+}
