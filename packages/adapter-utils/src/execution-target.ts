@@ -1312,11 +1312,15 @@ export function adapterExecutionTargetSessionIdentity(
 ): Record<string, unknown> | null {
   if (!target || target.kind === "local") return null;
   if (target.transport === "ssh") return buildRemoteExecutionSessionIdentity(target.spec);
+  // A reusable sandbox comes back under a new Paperclip lease row on every
+  // heartbeat, so the row id cannot identify it. The provider lease id can:
+  // same provider lease, same sandbox, same session files on its disk.
+  const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId ?? null;
   return {
     transport: "sandbox",
     providerKey: target.providerKey ?? null,
     environmentId: target.environmentId ?? null,
-    leaseId: target.leaseId ?? null,
+    ...(providerLeaseId ? { providerLeaseId } : { leaseId: target.leaseId ?? null }),
     remoteCwd: target.remoteCwd,
   };
 }
@@ -1331,11 +1335,14 @@ export function adapterExecutionTargetSessionMatches(
   if (target.transport === "ssh") return remoteExecutionSessionMatches(saved, target.spec);
   const current = adapterExecutionTargetSessionIdentity(target);
   const parsedSaved = parseObject(saved);
+  const sameLease = typeof current?.providerLeaseId === "string"
+    ? readStringMeta(parsedSaved, "providerLeaseId") === current.providerLeaseId
+    : readStringMeta(parsedSaved, "leaseId") === current?.leaseId;
   return (
     readStringMeta(parsedSaved, "transport") === current?.transport &&
     readStringMeta(parsedSaved, "providerKey") === current?.providerKey &&
     readStringMeta(parsedSaved, "environmentId") === current?.environmentId &&
-    readStringMeta(parsedSaved, "leaseId") === current?.leaseId &&
+    sameLease &&
     readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd
   );
 }

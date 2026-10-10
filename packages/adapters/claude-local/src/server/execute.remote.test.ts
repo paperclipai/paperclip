@@ -318,7 +318,10 @@ describe("claude remote execution", () => {
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
+    // The cwd saved by an earlier run differs; the remote identity still matches.
+    const previousRunCwd = "/remote/workspace/.paperclip-runtime/runs/run-ssh-previous/workspace";
     await mkdir(workspaceDir, { recursive: true });
+    const logs: string[] = [];
 
     await execute({
       runId: "run-ssh-resume",
@@ -333,7 +336,7 @@ describe("claude remote execution", () => {
         sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
           sessionId: "12345678-1234-4abc-9def-123456789012",
-          cwd: managedRemoteWorkspace,
+          cwd: previousRunCwd,
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
@@ -367,13 +370,16 @@ describe("claude remote execution", () => {
           strictHostKeyChecking: true,
         },
       },
-      onLog: async () => {},
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
     });
 
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
+    expect(logs.join("")).not.toContain("Starting a fresh remote session");
   });
 
   it("forwards the duplex_channel_lost transport code on the unparsed Claude result path", async () => {

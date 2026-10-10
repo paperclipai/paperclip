@@ -4,6 +4,15 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+// The saved remote execution identity is what the resume gate compares with
+// the next run's target. Dropping it here made every remote session look like
+// it came from another target, so no remote run could ever resume.
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : null;
+}
+
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -17,9 +26,11 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
       readNonEmptyString(record.folder);
+    const remoteExecution = readRecord(record.remoteExecution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
     };
   },
   serialize(params: Record<string, unknown> | null) {
@@ -33,9 +44,11 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
       readNonEmptyString(params.folder);
+    const remoteExecution = readRecord(params.remoteExecution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
     };
   },
   getDisplayId(params: Record<string, unknown> | null) {

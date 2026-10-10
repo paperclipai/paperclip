@@ -27,6 +27,7 @@ import {
   adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
   adapterExecutionTargetToRemoteSpec,
   adapterExecutionTargetUsesPaperclipBridge,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -7493,5 +7494,84 @@ describe("EffectiveSandboxCapabilities deprecated alias", () => {
     };
     const aliased: EffectiveSandboxCapabilities = snapshot;
     expect(aliased).toEqual(snapshot);
+  });
+});
+
+describe("sandbox session identity across reused leases", () => {
+  const remoteCwd = "/home/coder/.sessions/paperclip";
+  const firstRun: AdapterSandboxExecutionTarget = {
+    kind: "remote",
+    transport: "sandbox",
+    providerKey: "coder",
+    environmentId: "env-1",
+    leaseId: "lease-row-1",
+    remoteCwd,
+    sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "ws-682b0cef" },
+  };
+  const reused: AdapterSandboxExecutionTarget = {
+    ...firstRun,
+    leaseId: "lease-row-2",
+    sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "ws-682b0cef" },
+  };
+
+  it("keys the identity on the provider lease when the host knows it", () => {
+    expect(adapterExecutionTargetSessionIdentity(firstRun)).toEqual({
+      transport: "sandbox",
+      providerKey: "coder",
+      environmentId: "env-1",
+      providerLeaseId: "ws-682b0cef",
+      remoteCwd,
+    });
+  });
+
+  it("matches the same sandbox under a new Paperclip lease row", () => {
+    const saved = adapterExecutionTargetSessionIdentity(firstRun);
+    expect(adapterExecutionTargetSessionMatches(saved, reused)).toBe(true);
+  });
+
+  it("does not match a replacement sandbox", () => {
+    const saved = adapterExecutionTargetSessionIdentity(firstRun);
+    const replaced: AdapterSandboxExecutionTarget = {
+      ...reused,
+      sandboxLeaseAcquisition: {
+        outcome: "replacement",
+        providerLeaseId: "ws-new",
+        previousProviderLeaseId: "ws-682b0cef",
+        reason: "not_found",
+      },
+    };
+    expect(adapterExecutionTargetSessionMatches(saved, replaced)).toBe(false);
+  });
+
+  it("does not match another remote cwd or environment on the same sandbox", () => {
+    const saved = adapterExecutionTargetSessionIdentity(firstRun);
+    expect(adapterExecutionTargetSessionMatches(saved, { ...reused, remoteCwd: "/tmp/x" })).toBe(false);
+    expect(adapterExecutionTargetSessionMatches(saved, { ...reused, environmentId: "env-2" })).toBe(false);
+  });
+
+  it("keeps the lease row identity when there is no acquisition record", () => {
+    const { sandboxLeaseAcquisition: _ignored, ...plain } = firstRun;
+    expect(adapterExecutionTargetSessionIdentity(plain)).toEqual({
+      transport: "sandbox",
+      providerKey: "coder",
+      environmentId: "env-1",
+      leaseId: "lease-row-1",
+      remoteCwd,
+    });
+    const saved = adapterExecutionTargetSessionIdentity(plain);
+    expect(adapterExecutionTargetSessionMatches(saved, plain)).toBe(true);
+    expect(adapterExecutionTargetSessionMatches(saved, { ...plain, leaseId: "lease-row-2" })).toBe(false);
+  });
+
+  it("starts fresh once for an identity saved before the provider lease was recorded", () => {
+    const legacy = {
+      transport: "sandbox",
+      providerKey: "coder",
+      environmentId: "env-1",
+      leaseId: "lease-row-1",
+      remoteCwd,
+    };
+    expect(adapterExecutionTargetSessionMatches(legacy, reused)).toBe(false);
+    expect(adapterExecutionTargetSessionMatches({}, reused)).toBe(false);
   });
 });
