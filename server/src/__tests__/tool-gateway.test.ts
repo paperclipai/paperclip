@@ -54,7 +54,7 @@ import {
   signToolArguments,
   summarizeToolValue,
 } from "../services/tool-content-guards.js";
-import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { createToolGatewayService, resolveToolTimeoutMs, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { resolveConnectionGrantSecret } from "../services/connection-credentials.js";
 import { secretService } from "../services/secrets.js";
 import * as cogneeBridge from "../services/cognee-connection.js";
@@ -4647,6 +4647,53 @@ rl.on("line", (line) => {
     expect(usedSession.lastUsedAt).toBeInstanceOf(Date);
   });
 
+  it("uses the operator-configured default timeout for calls that carry none", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(() => ({ delayMs: 150 }));
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: `timeouts-${randomUUID().slice(0, 8)}`,
+        toolName: "slow_query",
+        riskLevel: "read",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const slowTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(slowTool).toBeTruthy();
+
+      // Same shape as the MCP `tools/call` route: no per-call timeoutMs.
+      vi.stubEnv("PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS", "5000");
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result.result).toMatchObject({ content: "ok" });
+
+      // The timed-out call goes last so the test does not depend on the
+      // connection health after a timeout.
+      vi.stubEnv("PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS", "20");
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      }).then(
+        () => {
+          throw new Error("Expected the slow remote tool to time out");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      await fake.close();
+    }
+  });
+
   it("rejects gateway session tokens passed through query strings", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -5944,5 +5991,67 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+});
+
+describe("tool gateway timeout configuration", () => {
+  it("keeps the 10 second default and 60 second cap when nothing is configured", () => {
+    expect(resolveToolTimeoutMs(undefined, {})).toBe(10_000);
+    expect(resolveToolTimeoutMs(Number.NaN, {})).toBe(10_000);
+    expect(resolveToolTimeoutMs(25_000, {})).toBe(25_000);
+    expect(resolveToolTimeoutMs(300_000, {})).toBe(60_000);
+    expect(resolveToolTimeoutMs(0, {})).toBe(1);
+  });
+
+  it("ignores values that are not positive integers", () => {
+    for (const value of ["", "abc", "0", "-5"]) {
+      const env = {
+        PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: value,
+        PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS: value,
+      };
+      expect(resolveToolTimeoutMs(undefined, env)).toBe(10_000);
+      expect(resolveToolTimeoutMs(300_000, env)).toBe(60_000);
+    }
+  });
+
+  it("lets an operator raise the default and the cap", () => {
+    expect(resolveToolTimeoutMs(undefined, { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: "45000" })).toBe(45_000);
+    // A default above the built-in cap lifts the cap with it.
+    const raisedDefault = { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: "120000" };
+    expect(resolveToolTimeoutMs(undefined, raisedDefault)).toBe(120_000);
+    expect(resolveToolTimeoutMs(300_000, raisedDefault)).toBe(120_000);
+    const raisedCap = { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS: "180000" };
+    expect(resolveToolTimeoutMs(undefined, raisedCap)).toBe(10_000);
+    expect(resolveToolTimeoutMs(300_000, raisedCap)).toBe(180_000);
+    // A cap below the default never undercuts the default.
+    expect(resolveToolTimeoutMs(undefined, {
+      PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: "90000",
+      PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS: "30000",
+    })).toBe(90_000);
+  });
+
+  it("requires the whole value to be a positive integer", () => {
+    for (const value of ["120000junk", "1e5", "1.5", "+120000", "0x10", "12 000"]) {
+      const env = {
+        PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: value,
+        PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS: value,
+      };
+      expect(resolveToolTimeoutMs(undefined, env)).toBe(10_000);
+      expect(resolveToolTimeoutMs(300_000, env)).toBe(60_000);
+    }
+    expect(resolveToolTimeoutMs(undefined, { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: " 45000 " })).toBe(45_000);
+  });
+
+  it("bounds configured values to the Node timer range", () => {
+    const timerMax = 2_147_483_647;
+    expect(resolveToolTimeoutMs(undefined, { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: "2147483647" })).toBe(timerMax);
+    for (const value of ["2147483648", "9007199254740993", "9".repeat(400)]) {
+      expect(resolveToolTimeoutMs(undefined, { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS: value })).toBe(timerMax);
+      const cap = { PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS: value };
+      expect(resolveToolTimeoutMs(undefined, cap)).toBe(10_000);
+      expect(resolveToolTimeoutMs(timerMax, cap)).toBe(timerMax);
+      expect(resolveToolTimeoutMs(timerMax + 1, cap)).toBe(timerMax);
+      expect(resolveToolTimeoutMs(Number.MAX_SAFE_INTEGER, cap)).toBe(timerMax);
+    }
   });
 });

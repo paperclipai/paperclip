@@ -370,6 +370,48 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(consumed.status).toBe("executed");
   });
 
+  it("keeps the fixed 60 second approved execution budget under a lower configured cap", async () => {
+    vi.stubEnv("PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MS", "5000");
+    vi.stubEnv("PAPERCLIP_MCP_GATEWAY_TOOL_TIMEOUT_MAX_MS", "20000");
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await initializeRunIdentity(db, {
+      companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: null, cause: "company_default",
+    });
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const approved = await gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+    expect(approved).toMatchObject({ status: "executed" });
+
+    const [executedEvent] = await db.select().from(toolCallEvents).where(and(
+      eq(toolCallEvents.actionRequestId, actionRequest.id),
+      eq(toolCallEvents.reasonCode, "approved_action_executed"),
+    ));
+    expect(executedEvent?.metadata).toMatchObject({ timeoutMs: 60_000 });
+  });
+
   it("commits one human decision and delivers once after the original run yields, including after service restart", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });

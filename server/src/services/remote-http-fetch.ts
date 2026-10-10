@@ -30,7 +30,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
  * Deliberately far tighter than undici's 300 s: everything that reaches this
  * transport is metadata discovery, a token exchange, a DCR call or an MCP
  * JSON-RPC round trip, none of which has any business taking minutes. Callers
- * that own a longer budget — `tools/call`, which an operator can raise to 60 s —
+ * that own a longer budget — `tools/call`, whose budget an operator can raise —
  * pass `responseTimeoutMs` so this default never truncates it.
  */
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
