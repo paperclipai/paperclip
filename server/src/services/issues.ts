@@ -209,6 +209,7 @@ const ALL_ISSUE_STATUSES = [
   "todo",
   "in_progress",
   "in_review",
+  "ready_for_qa",
   "blocked",
   "done",
   "cancelled",
