@@ -2029,6 +2029,145 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(serialized).not.toContain(maliciousContent);
   });
 
+  describe("approved plugin actions after the originating run ends", () => {
+    function writePageDispatcher(
+      executeTool: PluginToolDispatcher["executeTool"],
+    ): PluginToolDispatcher {
+      return {
+        ...fakePluginDispatcher(),
+        listToolsForAgent: () => [
+          {
+            name: "fixture:write_page",
+            displayName: "Write page",
+            description: "Writes a wiki page.",
+            parametersSchema: { type: "object" },
+            pluginId: "fixture-plugin",
+          },
+        ],
+        executeTool,
+      };
+    }
+
+    async function requestApprovalThenEndRun(
+      executeTool: PluginToolDispatcher["executeTool"],
+    ) {
+      const { company, agent, issue, run } = await createRunFixture(db);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review wiki writes",
+        policyType: "require_approval",
+        selectors: { toolName: "fixture:write_page" },
+      });
+      const wakeup = vi.fn(async (agentId: string, input: any) => {
+        const [wake] = await db.insert(agentWakeupRequests).values({
+          companyId: company.id,
+          agentId,
+          source: input.source,
+          idempotencyKey: input.idempotencyKey,
+          payload: input.payload,
+        }).returning();
+        return wake as any;
+      });
+      const deliveries = toolActionDeliveryService(db, { wakeup });
+      const gateway = createTestToolGatewayService(db, {
+        pluginToolDispatcher: writePageDispatcher(executeTool),
+        onToolActionSettled: deliveries.deliver,
+      });
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+      });
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: "fixture:write_page",
+        parameters: { path: "wiki/index.md", contents: "# Index" },
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      // The emitting run finishes before anyone reviews the card.
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      const [request] = await db.select().from(toolActionRequests);
+      return { company, agent, issue, run, gateway, deliveries, wakeup, request };
+    }
+
+    it("executes the reviewed arguments with the original run context and wakes the agent", async () => {
+      const calls: unknown[] = [];
+      const { company, agent, issue, run, gateway, deliveries, wakeup, request } = await requestApprovalThenEndRun(
+        async (tool, parameters, runContext) => {
+          calls.push({ tool, parameters, runContext });
+          return { pluginId: "fixture-plugin", toolName: "write_page", result: { content: "page written", data: { ok: true } } };
+        },
+      );
+
+      const approved = await gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: request.id,
+        actor: { userId: "reviewer" },
+      });
+
+      expect(approved).toMatchObject({ status: "executed", resultSummary: expect.stringContaining("page written") });
+      expect(calls).toEqual([{
+        tool: "fixture:write_page",
+        parameters: { path: "wiki/index.md", contents: "# Index" },
+        runContext: { agentId: agent.id, runId: run.id, companyId: company.id, projectId: "" },
+      }]);
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({ status: "succeeded", approvalState: "approved", errorCode: null });
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+      expect(interaction).toMatchObject({
+        issueId: issue.id,
+        status: "accepted",
+        result: { toolAction: { status: "executed", resultSummary: expect.stringContaining("page written") } },
+      });
+      await deliveries.sweepPending();
+      expect(wakeup).toHaveBeenCalledTimes(1);
+      expect(wakeup.mock.calls[0][0]).toBe(agent.id);
+      expect(wakeup.mock.calls[0][1].payload.toolAction).toMatchObject({ executionStatus: "executed" });
+    });
+
+    it("fails the approved action cleanly when the plugin worker is not running", async () => {
+      const { company, gateway, request } = await requestApprovalThenEndRun(async () => {
+        throw new Error('Cannot execute tool "fixture:write_page" — worker for plugin "fixture-plugin" is not running.');
+      });
+
+      const approved = await gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: request.id,
+        actor: { userId: "reviewer" },
+      });
+
+      expect(approved).toMatchObject({ status: "failed" });
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({
+        status: "failed",
+        errorCode: "tool_execution_failed",
+        errorMessage: expect.stringContaining('worker for plugin "fixture-plugin" is not running'),
+      });
+      expect(invocation.errorMessage).not.toContain("originating run");
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+      expect(interaction).toMatchObject({ status: "accepted", result: { toolAction: { status: "failed" } } });
+    });
+
+    it("records a plugin-reported error as a failed action", async () => {
+      const { company, gateway, request } = await requestApprovalThenEndRun(async () => ({
+        pluginId: "fixture-plugin",
+        toolName: "write_page",
+        result: { error: "index hash conflict" },
+      }));
+
+      await expect(gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: request.id,
+        actor: { userId: "reviewer" },
+      })).resolves.toMatchObject({ status: "failed" });
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({
+        status: "failed",
+        errorCode: "tool_execution_failed",
+        errorMessage: 'Plugin tool "fixture:write_page" failed: index hash conflict',
+      });
+    });
+  });
+
   it("passes original sensitive arguments to plugin executors while redacting stored summaries", async () => {
     const { company, agent, run } = await createRunFixture(db);
     let executedParameters: unknown;

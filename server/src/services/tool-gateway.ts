@@ -7854,6 +7854,56 @@ export function createToolGatewayService(
       origin.cause === "company_default" ? null : origin.responsibleUserId;
   }
 
+  // An approved plugin action usually settles after its originating run has
+  // finished, so it dispatches with the run context recorded on the original
+  // invocation. Plugin workers do not require that run to still be active.
+  // Every failure, including a stopped worker or a plugin-reported error, maps
+  // to tool_execution_failed so the review card and continuation wake get a
+  // persisted failure instead of an unexpected server error.
+  async function executeApprovedPluginTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+    executionTimeoutMs: number,
+  ) {
+    if (!pluginToolDispatcher) {
+      throw new ToolGatewayHttpError(
+        502,
+        `Plugin tool "${tool.name}" could not run: plugin tool dispatch is not enabled`,
+        "tool_execution_failed",
+      );
+    }
+    let execution: Awaited<ReturnType<PluginToolDispatcher["executeTool"]>>;
+    try {
+      execution = await runWithTimeout(
+        pluginToolDispatcher.executeTool(tool.name, parameters, {
+          agentId: session.agentId ?? "",
+          runId: session.runId ?? "",
+          companyId: session.companyId,
+          projectId: session.projectId ?? "",
+        }),
+        executionTimeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) throw error;
+      throw new ToolGatewayHttpError(
+        502,
+        `Plugin tool "${tool.name}" could not run: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "tool_execution_failed",
+      );
+    }
+    if (execution.result.error) {
+      throw new ToolGatewayHttpError(
+        502,
+        `Plugin tool "${tool.name}" failed: ${execution.result.error}`,
+        "tool_execution_failed",
+      );
+    }
+    return execution;
+  }
+
   async function executeApprovedAgentInvocation(input: {
     actionRequest: typeof toolActionRequests.$inferSelect;
     invocation: typeof toolInvocations.$inferSelect;
@@ -8137,18 +8187,17 @@ export function createToolGatewayService(
                   executionTimeoutMs,
                 )
               ).result
-            : tool.providerType !== "paperclip_plugin"
-              ? await runWithTimeout(
-                  executeBuiltinTool(session, tool, parameters, invocation.id),
+            : tool.providerType === "paperclip_plugin"
+              ? await executeApprovedPluginTool(
+                  session,
+                  tool,
+                  parameters,
                   executionTimeoutMs,
                 )
-              : (() => {
-                  throw new ToolGatewayHttpError(
-                    409,
-                    "Plugin actions cannot execute outside their originating run",
-                    "approved_execution_unsupported",
-                  );
-                })();
+              : await runWithTimeout(
+                  executeBuiltinTool(session, tool, parameters, invocation.id),
+                  executionTimeoutMs,
+                );
       const resultRecord = asRecord(result);
       if (resultRecord?.error)
         throw new ToolGatewayHttpError(
