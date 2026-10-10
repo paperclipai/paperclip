@@ -50,6 +50,8 @@ import {
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  TRANSIENT_FAILURE_RETRY_REASON,
+  BOUNDED_TRANSIENT_RETRY_DELAYS_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   isNonAssigneeWorkspaceBusyRetry,
@@ -110,13 +112,12 @@ export interface HeartbeatRetryDependencies {
   applyRunDispatchPostCommitEffects: (effects: PostCommitEffect[]) => void;
 }
 
-export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
-  30_000, 30_000,
-] as const;
+// The run-dispatch domain owns this backoff: its early upstream re-probe
+// derives its far-future pin threshold from the same ceiling this scheduler
+// backs off to, so the two can never drift apart.
+export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = BOUNDED_TRANSIENT_RETRY_DELAYS_MS;
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
-
-const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
@@ -411,7 +412,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const now = opts?.now ?? new Date();
     const retryReason =
-      opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+      opts?.retryReason ?? TRANSIENT_FAILURE_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(
@@ -446,7 +447,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
     const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      retryReason === TRANSIENT_FAILURE_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =

@@ -23,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { createRunDispatch } from "../index.js";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 
@@ -1011,6 +1012,267 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ agentId: null });
     await db.update(issueRecoveryActions).set({ evidence: { runId: "invalid" } }).where(eq(issueRecoveryActions.id, action!.id));
     expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId: null, agentId: null });
+  });
+
+  // A transient-upstream retry can inherit a usage-limit reset hint hours away
+  // as its pin. These prove the rows the early re-probe reads and writes, and
+  // that a promoter sweep releases such a pin only on recovery evidence.
+  describe("early upstream re-probe", () => {
+    const NOW = new Date("2026-06-22T02:46:00.000Z");
+    const FAR_FUTURE_PIN = new Date(NOW.getTime() + 15 * 60 * 60 * 1000);
+
+    async function seedPinnedTransientRetry(input: {
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      scheduledRetryAt?: Date;
+      scheduledRetryReason?: string;
+      pinSetAt?: Date;
+      adapterType?: string;
+    }) {
+      const runId = randomUUID();
+      const predecessorId = randomUUID();
+      const pinSetAt = input.pinSetAt ?? new Date(NOW.getTime() - 6 * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: predecessorId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "failed",
+        runnerProfileJson: { adapterDispatch: { adapterType: input.adapterType ?? "codex_local" } },
+        createdAt: new Date(pinSetAt.getTime() - 60_000),
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        retryOfRunId: predecessorId,
+        invocationSource: "retry",
+        status: "scheduled_retry",
+        scheduledRetryAttempt: 1,
+        scheduledRetryAt: input.scheduledRetryAt ?? FAR_FUTURE_PIN,
+        scheduledRetryReason: input.scheduledRetryReason ?? "transient_failure",
+        contextSnapshot: { issueId: input.issueId, errorFamily: "transient_upstream" },
+        updatedAt: pinSetAt,
+        createdAt: pinSetAt,
+      });
+      return runId;
+    }
+
+    async function seedSucceededRun(input: { companyId: string; agentId: string; finishedAt: Date; adapterType?: string }) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        finishedAt: input.finishedAt,
+        runnerProfileJson: { adapterDispatch: { adapterType: input.adapterType ?? "codex_local" } },
+        contextSnapshot: {},
+        createdAt: input.finishedAt,
+        updatedAt: input.finishedAt,
+      });
+      return runId;
+    }
+
+    it("selects only far-future transient pins as candidates", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const pinnedRunId = await seedPinnedTransientRetry({ companyId, agentId, issueId });
+      // An ordinary backoff inside the bounded ceiling, and a far-future pin
+      // scheduled for a different reason: neither is this gate's business.
+      await seedPinnedTransientRetry({
+        companyId,
+        agentId,
+        issueId,
+        scheduledRetryAt: new Date(NOW.getTime() + 20_000),
+      });
+      await seedPinnedTransientRetry({
+        companyId,
+        agentId,
+        issueId,
+        scheduledRetryReason: "max_turns_continuation",
+      });
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const candidates = await adapter.listEarlyUpstreamReprobeCandidates({
+        now: NOW,
+        cutoff: null,
+        limit: 50,
+      });
+
+      expect(candidates).toEqual([
+        {
+          runId: pinnedRunId,
+          companyId,
+          agentId,
+          adapterType: "codex_local",
+          retryReason: "transient_failure",
+          scheduledRetryAt: FAR_FUTURE_PIN,
+          pinSetAt: new Date(NOW.getTime() - 6 * 60_000),
+          createdAt: new Date(NOW.getTime() - 6 * 60_000),
+        },
+      ]);
+    });
+
+    it("reads only the same agent and adapter's latest success inside the lookback window", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const other = await seedCompanyAndAgent();
+      const otherAgentId = randomUUID();
+      await seedAgent({ id: otherAgentId, companyId, name: "Other" });
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const scope = { companyId, agentId, adapterType: "codex_local", now: NOW };
+
+      await seedSucceededRun({ companyId, agentId, finishedAt: new Date(NOW.getTime() - 45 * 60_000) });
+      await seedSucceededRun({ companyId, agentId: otherAgentId, finishedAt: new Date(NOW.getTime() - 30_000) });
+      await seedSucceededRun({ companyId, agentId, adapterType: "claude_local", finishedAt: new Date(NOW.getTime() - 30_000) });
+      expect(await adapter.findUpstreamRecoveryEvidence(scope)).toBeNull();
+
+      await seedSucceededRun({ companyId, agentId, finishedAt: new Date(NOW.getTime() - 10 * 60_000) });
+      const latestRunId = await seedSucceededRun({
+        companyId,
+        agentId,
+        finishedAt: new Date(NOW.getTime() - 60_000),
+      });
+      expect(await adapter.findUpstreamRecoveryEvidence(scope)).toEqual({
+        runId: latestRunId,
+        finishedAt: new Date(NOW.getTime() - 60_000),
+      });
+      // Another company's green run says nothing about this account's upstream.
+      expect(
+        await adapter.findUpstreamRecoveryEvidence({ ...scope, companyId: other.companyId }),
+      ).toBeNull();
+    });
+
+    it("uses the retry row's creation time when unrelated updates move updatedAt", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runId = await seedPinnedTransientRetry({ companyId, agentId, issueId });
+      await db.update(heartbeatRuns)
+        .set({ updatedAt: NOW })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const [candidate] = await createPostgresRunDispatchAdapter(db)
+        .listEarlyUpstreamReprobeCandidates({ now: NOW, cutoff: null, limit: 50 });
+
+      expect(candidate?.pinSetAt).toEqual(new Date(NOW.getTime() - 6 * 60_000));
+    });
+
+    it("paginates tied retry pins without repeating the first page", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runIds = await Promise.all(Array.from({ length: 51 }, () =>
+        seedPinnedTransientRetry({ companyId, agentId, issueId }),
+      ));
+      const adapter = createPostgresRunDispatchAdapter(db);
+
+      const first = await adapter.listEarlyUpstreamReprobeCandidates({ now: NOW, cutoff: null, limit: 50 });
+      const last = first[first.length - 1]!;
+      const second = await adapter.listEarlyUpstreamReprobeCandidates({
+        now: NOW,
+        cutoff: null,
+        limit: 50,
+        after: { scheduledRetryAt: last.scheduledRetryAt!, createdAt: last.createdAt, runId: last.runId },
+      });
+
+      expect(first).toHaveLength(50);
+      expect(second).toHaveLength(1);
+      expect(new Set([...first, ...second].map((candidate) => candidate.runId)))
+        .toEqual(new Set(runIds));
+    });
+
+    it("advances a still-future pin once and records why", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runId = await seedPinnedTransientRetry({ companyId, agentId, issueId });
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const advanceInput = {
+        runId,
+        companyId,
+        now: NOW,
+        originalScheduledRetryAt: FAR_FUTURE_PIN,
+        evidenceRunId: "green-run",
+      };
+      expect(await adapter.advanceScheduledRetryPin(advanceInput)).toEqual({ advanced: true });
+
+      const [row] = await db
+        .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row).toMatchObject({ status: "scheduled_retry", scheduledRetryAt: NOW });
+
+      const [event] = await db
+        .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+      expect(event?.message).toContain("re-probed early");
+      expect(event?.payload).toMatchObject({
+        originalScheduledRetryAt: FAR_FUTURE_PIN.toISOString(),
+        upstreamRecoveryEvidenceRunId: "green-run",
+      });
+
+      // The pin is no longer in the future, so a second sweep is a no-op.
+      expect(await adapter.advanceScheduledRetryPin(advanceInput)).toEqual({ advanced: false });
+    });
+
+    it("does not release a pin changed after candidate selection", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runId = await seedPinnedTransientRetry({ companyId, agentId, issueId });
+      const changedPin = new Date(FAR_FUTURE_PIN.getTime() + 60_000);
+      await db.update(heartbeatRuns)
+        .set({ scheduledRetryAt: changedPin })
+        .where(eq(heartbeatRuns.id, runId));
+
+      expect(await createPostgresRunDispatchAdapter(db).advanceScheduledRetryPin({
+        runId,
+        companyId,
+        now: NOW,
+        originalScheduledRetryAt: FAR_FUTURE_PIN,
+        evidenceRunId: "green-run",
+      })).toEqual({ advanced: false });
+      const [row] = await db.select({ scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(row?.scheduledRetryAt).toEqual(changedPin);
+    });
+
+    it("promotes a far-future pin on recovery and holds it while the upstream is down", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runId = await seedPinnedTransientRetry({ companyId, agentId, issueId });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      const runDispatch = createRunDispatch(db);
+
+      // No green run yet: the reset pin is preserved exactly.
+      expect(await runDispatch.promoteDueScheduledRetries({ now: NOW, cutoff: null })).toMatchObject({
+        promoted: 0,
+        runIds: [],
+      });
+      const [held] = await db
+        .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(held).toMatchObject({ status: "scheduled_retry", scheduledRetryAt: FAR_FUTURE_PIN });
+
+      // A success after the pin proves the upstream is serving again.
+      await seedSucceededRun({ companyId, agentId, finishedAt: new Date(NOW.getTime() - 60_000) });
+      expect(await runDispatch.promoteDueScheduledRetries({ now: NOW, cutoff: null })).toMatchObject({
+        promoted: 1,
+        runIds: [runId],
+      });
+      const [promoted] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(promoted?.status).toBe("queued");
+    });
   });
 
 });
