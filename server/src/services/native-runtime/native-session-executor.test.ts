@@ -13460,7 +13460,11 @@ describe("runnerd provider runtime wiring", () => {
     { condition: "warm-origin", expected: "verified" },
     { condition: "origin-other-session", expected: "scope_mismatch" },
     { condition: "origin-wrong-profile-run", expected: "scope_mismatch" },
-    { condition: "origin-other-owner", expected: "scope_mismatch" },
+    { condition: "origin-replaced-owner", expected: "verified" },
+    { condition: "origin-replaced-owner-high-generation", expected: "verified" },
+    { condition: "origin-lease-other-owner", expected: "scope_mismatch" },
+    { condition: "origin-lease-other-generation", expected: "scope_mismatch" },
+    { condition: "origin-other-placement", expected: "scope_mismatch" },
     { condition: "origin-newer-generation", expected: "scope_mismatch" },
     { condition: "origin-active", expected: "scope_mismatch" },
     { condition: "origin-ambiguous", expected: "scope_mismatch" },
@@ -13486,16 +13490,19 @@ describe("runnerd provider runtime wiring", () => {
     const originExecution = { ...prior, binding: { ...prior.binding, runId: "origin-workspace", executionWorkspaceId: "origin-workspace" },
       session: { ...prior.session, normalizedSessionId: condition === "origin-other-session" ? "other-session" : prior.session.normalizedSessionId } };
     const originDescriptor = { ...descriptor, leaseId: "origin-lease",
-      providerLeaseId: condition === "origin-other-owner" ? "other-owner" : owner.ownerId,
-      ownerGeneration: condition === "origin-newer-generation" ? 3 : 1 };
+      providerLeaseId: condition.startsWith("origin-replaced-owner") ? "original-owner" : owner.ownerId,
+      placementId: condition === "origin-other-placement" ? "other-placement" : descriptor.placementId,
+      ownerGeneration: condition === "origin-newer-generation" || condition === "origin-replaced-owner-high-generation" ? 3 : 1 };
     const originRow = { id: condition === "origin-wrong-profile-run" ? "other-run" : originExecution.binding.runId, status: condition === "origin-active" ? "running" : "succeeded",
       runnerProfileJson: { nativeExecutionInput: originExecution, nativeComputerWorkspace: originDescriptor } };
     const workspaceCoordinate = ["workspace-coordinate", "wrong-workspace-run"].includes(condition);
     const db = { select: () => ({ from: (table: unknown) => ({ where: (query: SQL) => { if (table === environmentLeases) leaseQuery = query; return ({ limit: async (limit: number) =>
       table === environmentLeases ? condition === "wrong-lease" ? [] : [{
-        providerLeaseId: owner.ownerId,
+        providerLeaseId: originCase ? originDescriptor.providerLeaseId : owner.ownerId,
         heartbeatRunId: condition === "wrong-workspace-run" || condition === "origin-wrong-lease-run" ? "unrelated-run" : originCase ? "origin-workspace" : prior.binding.runId,
-        metadata: { agentId: prior.binding.agentId, computerOwner: { ...owner, generation: 1 } },
+        metadata: { agentId: prior.binding.agentId, computerOwner: { ...owner,
+          ownerId: condition === "origin-lease-other-owner" ? "unrelated-owner" : originCase ? originDescriptor.providerLeaseId : owner.ownerId,
+          generation: condition === "origin-lease-other-generation" ? 2 : originCase ? originDescriptor.ownerGeneration : workspaceCoordinate ? owner.generation : 1 } },
       }] : limit === 2 ? (originCase ? condition === "origin-ambiguous" ? [originRow, originRow] : [originRow] : []) : [{ status: condition === "active-run" ? "running" : "succeeded",
         runnerProfileJson: { nativeExecutionInput: prior, nativeComputerWorkspace: descriptor } }],
     }); } }) }) } as unknown as Db;
@@ -13525,7 +13532,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(computerRetirement.isRetired).not.toHaveBeenCalled();
       }
       expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: false })).toBe(expected);
-      if (["retired", "workspace-coordinate", "warm-origin", "uncertain", "stale-generation", "unavailable"].includes(condition)) {
+      if (["retired", "workspace-coordinate", "warm-origin", "origin-replaced-owner", "origin-replaced-owner-high-generation", "uncertain", "stale-generation", "unavailable"].includes(condition)) {
         expect(computerRetirement.isRetired).toHaveBeenCalledExactlyOnceWith({
           companyId: current.binding.companyId, environmentId: "environment", agentId: current.binding.agentId,
           runId: prior.binding.runId, owner,
@@ -13540,6 +13547,69 @@ describe("runnerd provider runtime wiring", () => {
         const query = new PgDialect().sqlToQuery(leaseQuery!);
         expect(query.params).toContain(descriptor.leaseId);
         expect(query.params).not.toContain(prior.binding.executionWorkspaceId);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["codex", "acpx"] as const)("preserves %s authority across warm turns, two idle retirements, and controller restart", async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-repeated-idle-lineage-"));
+    const makeExecution = (runId: string) => parseNativeExecutionInput({ ...execution,
+      provider: kind === "codex" ? execution.provider : { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive",
+        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+          agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
+          agentRuntimeVersion: null, commandDigest: "fixture" } },
+      binding: { ...execution.binding, runId, executionWorkspaceId: runId },
+      session: { ...execution.session, driverKind: kind === "codex" ? "codex_app_server" : "acpx_runtime" },
+    });
+    const records = [
+      { id: "cold", ownerId: "first-owner", generation: 1 },
+      { id: "first-warm", ownerId: "first-owner", generation: 2 },
+      { id: "after-first-idle", ownerId: "second-owner", generation: 1 },
+      { id: "second-warm", ownerId: "second-owner", generation: 2 },
+    ].map((entry) => ({ ...entry, status: "succeeded", runnerProfileJson: {
+      nativeExecutionInput: makeExecution(entry.id), nativeComputerWorkspace: {
+        kind: "remote-persistent", leaseId: `${entry.id}-lease`, providerLeaseId: entry.ownerId,
+        remoteCwd: "/remote/agent", computerId: "computer", ownerGeneration: entry.generation,
+        listenerPort: 16127, placementId: "placement",
+      },
+    } }));
+    const db = { select: () => ({ from: (table: unknown) => ({ where: (query: SQL) => ({ limit: async (limit: number) => {
+      const { params } = new PgDialect().sqlToQuery(query);
+      expect(params).toContain(execution.binding.companyId);
+      if (table === environmentLeases) {
+        const row = records.find((entry) => params.includes(`${entry.id}-lease`));
+        return row ? [{ providerLeaseId: row.ownerId, heartbeatRunId: row.id,
+          metadata: { agentId: execution.binding.agentId, computerOwner: {
+            computerId: "computer", ownerId: row.ownerId, generation: row.generation,
+          } } }] : [];
+      }
+      expect(params).toContain(execution.binding.agentId);
+      return records.filter((row) => params.includes(limit === 2
+        ? row.runnerProfileJson.nativeExecutionInput.binding.executionWorkspaceId : row.id));
+    } }) }) }) } as unknown as Db;
+    try {
+      // Each verification has no local runner checkpoint or retained controller
+      // owner. Only the original coordinate and durable records survive restart.
+      for (const prior of records.slice(1)) {
+        computerRetirement.isRetired.mockReset().mockImplementation(async (scope) =>
+          scope.runId === prior.id && scope.owner.ownerId === prior.ownerId && scope.owner.generation === prior.generation);
+        const target = { kind: "remote", transport: "computer", environmentId: "environment",
+          remoteCwd: "/remote/agent", resourceAuthority: { computerId: "computer", ownerId: "next-owner", generation: 1 },
+          fileAuthority: { placementId: "placement" } } as never;
+        const input = { db, root, execution: makeExecution(`next-${prior.id}`),
+          identity: { runId: prior.id, environmentLeaseId: "cold", runnerInstanceId: "durable-runner",
+            normalizedSessionId: execution.session.normalizedSessionId! },
+          allowVerifiedBackup: false, remoteRunnerState: true, runnerExecutionTarget: target };
+        expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: true }))
+          .toBe("retained_warm_runner");
+        expect(computerRetirement.isRetired).not.toHaveBeenCalled();
+        expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: false })).toBe("verified");
+        expect(computerRetirement.isRetired).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          runId: prior.id, owner: expect.objectContaining({ ownerId: prior.ownerId, generation: prior.generation }),
+        }));
+        computerRetirement.isRetired.mockResolvedValue(false);
+        expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: false }))
+          .toBe("terminal_state_indeterminate");
       }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
