@@ -3850,14 +3850,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [issue],
   );
 
+  const { data: assignmentActivity } = useQuery({
+    queryKey: queryKeys.issues.activity(issueId!),
+    queryFn: () => activityApi.forIssue(issueId!),
+    enabled: Boolean(issueId && currentUserId && issue?.assigneeUserId === currentUserId),
+  });
+
   const suggestedAssigneeValue = useMemo(
     () =>
       suggestedCommentAssigneeValue(
         issue ?? {},
         mergeIssueComments(comments ?? [], optimisticComments),
         currentUserId,
+        undefined,
+        assignmentActivity,
       ),
-    [issue, comments, optimisticComments, currentUserId],
+    [issue, comments, optimisticComments, currentUserId, assignmentActivity],
   );
 
   const threadComments = useMemo(

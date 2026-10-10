@@ -1275,7 +1275,7 @@ export class PaperclipRunnerToolAuthority {
           agentId: this.binding.agentId, runId: this.binding.runId, issueId: child.id,
           action: "issue.created", entityType: "issue", entityId: child.id,
           details: { identifier: child.identifier, title: child.title, parentId: child.parentId,
-            assigneeAgentId: child.assigneeAgentId, status: childStatus, source: "paperclip_runner_protocol" },
+            assigneeAgentId: child.assigneeAgentId, assigneeUserId: child.assigneeUserId, status: childStatus, source: "paperclip_runner_protocol" },
         });
         publication = activity.publication;
       }
@@ -1475,7 +1475,8 @@ export class PaperclipRunnerToolAuthority {
         agentId: this.binding.agentId, runId: this.binding.runId, issueId: taskId,
         action: "issue.reassigned", entityType: "issue", entityId: taskId,
         details: { source: "paperclip_runner_protocol", reassignmentKey: durableKey, inputFingerprint: fingerprint,
-          previousAssigneeAgentId: target.assigneeAgentId, assigneeAgentId, reason, changed, receipt },
+          previousAssigneeAgentId: target.assigneeAgentId, previousAssigneeUserId: target.assigneeUserId,
+          assigneeAgentId, assigneeUserId, reason, changed, receipt },
       });
       publication = activity.publication;
       return receipt;

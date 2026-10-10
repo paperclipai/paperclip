@@ -1,3 +1,5 @@
+import type { ActivityEvent } from "@paperclipai/shared";
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -30,7 +32,32 @@ export function suggestedCommentAssigneeValue(
   comments: CommentAssigneeSuggestionComment[] | null | undefined,
   currentUserId: string | null | undefined,
   currentAgentId?: string | null | undefined,
+  activity: readonly ActivityEvent[] = [],
 ): string {
+  const assignedToCurrentUser = Boolean(currentUserId && issue.assigneeUserId === currentUserId);
+  if (assignedToCurrentUser) {
+    const assignment = activity
+      .filter((event) => {
+        if (event.actorType !== "agent" || !event.actorId || event.actorId === currentAgentId) return false;
+        const details = event.details;
+        if (!details || details.assigneeUserId !== currentUserId) return false;
+        if (event.action === "issue.created") return true;
+        if (event.action === "issue.reassigned") {
+          return details.changed === true
+            && Object.hasOwn(details, "previousAssigneeUserId")
+            && details.previousAssigneeUserId !== currentUserId;
+        }
+        if (event.action !== "issue.updated") return false;
+        const previous = details._previous;
+        // Updates can resend unchanged fields. Only a real assignment counts.
+        return previous !== null && typeof previous === "object"
+          && Object.hasOwn(previous, "assigneeUserId")
+          && (previous as Record<string, unknown>).assigneeUserId !== currentUserId;
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (assignment) return `agent:${assignment.actorId}`;
+  }
+
   if (comments && comments.length > 0 && (currentUserId || currentAgentId)) {
     for (let i = comments.length - 1; i >= 0; i--) {
       const comment = comments[i];
@@ -43,7 +70,7 @@ export function suggestedCommentAssigneeValue(
     }
   }
 
-  return assigneeValueFromSelection(issue);
+  return assignedToCurrentUser ? "" : assigneeValueFromSelection(issue);
 }
 
 export function parseAssigneeValue(value: string): AssigneeSelection {

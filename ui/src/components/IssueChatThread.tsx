@@ -4762,6 +4762,12 @@ const IssueChatComposer = forwardRef<
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue =
     suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(
     effectiveSuggestedAssigneeValue,
   );
@@ -4918,8 +4924,12 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   useEffect(() => {
     setPendingWorkMode(resolvedIssueWorkMode);
@@ -5064,6 +5074,7 @@ const IssueChatComposer = forwardRef<
       setComposerAttachments((current) =>
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
       setRunSettings(null);
     } catch (error) {
@@ -5605,7 +5616,7 @@ const IssueChatComposer = forwardRef<
             overrides={assigneeAdapterOverrides}
             settings={runSettings}
             onSettingsChange={setRunSettings}
-            onAssigneeChange={setReassignTarget}
+            onAssigneeChange={selectAssignee}
             triggerRef={reassignTriggerRef}
             renderAssigneeIdentity={(value) => {
               const selected = value.startsWith("agent:") ? agentMap.get(value.slice(6)) : null;
@@ -5621,7 +5632,7 @@ const IssueChatComposer = forwardRef<
             noneLabel="No responsible"
             searchPlaceholder="Search responsible..."
             emptyMessage="No responsible found."
-            onChange={setReassignTarget}
+            onChange={selectAssignee}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
               if (!option)

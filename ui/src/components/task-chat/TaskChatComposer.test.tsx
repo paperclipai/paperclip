@@ -1701,6 +1701,25 @@ describe("TaskChatComposer", () => {
     ).toBe("agent:a2");
   });
 
+  it("uses assignment suggestions and retains a manual human choice after refresh", async () => {
+    const view = (suggestion: string) => <TaskChatComposer onAdd={vi.fn()} workMode="standard"
+      enableReassign currentAssigneeValue="user:u1" suggestedAssigneeValue={suggestion}
+      reassignOptions={[{ id: "agent:a1", label: "Alpha" }, { id: "agent:a2", label: "Beta" }, { id: "user:u1", label: "Me" }]}
+      agentMap={new Map([["a1", { icon: "bot" }], ["a2", { icon: "bot" }]])} />;
+    render(view("agent:a1"));
+    const trigger = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!;
+    expect(trigger().textContent).toContain("Alpha");
+    flushSync(() => root!.render(view("agent:a2")));
+    expect(trigger().textContent).toContain("Beta");
+    flushSync(() => trigger().click());
+    await flushAsync();
+    const me = document.querySelector('[data-assignee-identity="user:u1"]')!.closest("button")!;
+    flushSync(() => me.click());
+    await flushAsync();
+    flushSync(() => root!.render(view("agent:a1")));
+    expect(trigger().textContent).toContain("Me");
+  });
+
   it("shows human avatars in assignee options and after selection", async () => {
     render(
       <TaskChatComposer
