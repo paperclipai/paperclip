@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { WorkspaceManifestWriter, WorkspaceManifestMap, workspacePaths } from "./workspace-manifest.js";
+import { WorkspaceManifestWriter, WorkspaceManifestMap, workspacePaths, workspacePathMatcher } from "./workspace-manifest.js";
 import { shouldExcludePath, excludePatternMatches, isRelativePathOrDescendant } from "./exclude-patterns.js";
 import { openDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 
@@ -125,12 +125,19 @@ export function readCheckpointSnapshot(filePath: string, baseline: DirectorySnap
  * it. Verify changed entries before the existing merge engine sees the source. */
 export async function validateCheckpointPayload(input: { baseline: DirectorySnapshot; snapshot: DirectorySnapshot; payload: string }): Promise<WorkspaceCheckpointMetrics> {
   const { captureDirectorySnapshot, disposeDirectorySnapshot } = await import("./workspace-restore-merge.js");
-  const actual = await captureDirectorySnapshot(input.payload, { diskBacked: true });
+  const ignored = workspacePathMatcher(input.baseline.ignoredPaths);
+  let actual: DirectorySnapshot | null = null;
   const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+  const assertIncluded = (relative: string) => {
+    if (shouldExcludePath(relative, input.baseline.exclude) || ignored.matches(relative)) {
+      throw new Error("Excluded workspace checkpoint entry");
+    }
+  };
   let changedFiles = 0, payloadBytes = 0;
   try {
+    actual = await captureDirectorySnapshot(input.payload, { diskBacked: true });
     for (const [relative, entry] of input.snapshot.entries) {
-      if (shouldExcludePath(relative, input.baseline.exclude)) throw new Error("Excluded workspace checkpoint entry");
+      assertIncluded(relative);
       if (entry.kind === "symlink") {
         const target = path.resolve(input.payload, path.dirname(relative), entry.target);
         if (path.isAbsolute(entry.target) || (target !== path.resolve(input.payload) && !target.startsWith(`${path.resolve(input.payload)}/`))) {
@@ -140,11 +147,24 @@ export async function validateCheckpointPayload(input: { baseline: DirectorySnap
       if (!equal(entry, input.baseline.entries.get(relative)) && !equal(entry, actual.entries.get(relative))) throw new Error("Workspace checkpoint payload mismatch");
     }
     for (const [relative, entry] of actual.entries) {
+      assertIncluded(relative);
       if (!equal(entry, input.snapshot.entries.get(relative))) throw new Error("Unexpected workspace checkpoint payload");
       if (entry.kind === "file") { changedFiles++; payloadBytes += (await fs.stat(path.join(input.payload, relative))).size; }
     }
+    // Replacing an ancestor directory with a file/link recursively removes its
+    // host-only ignored children. Directory entries and ordinary tombstones
+    // remain valid: the merge removes empty directories without deleting those
+    // retained children. Stream the trusted ignore manifest, never buffer it.
+    if (input.baseline.ignoredPaths) for (const relative of workspacePaths(input.baseline.ignoredPaths)) {
+      for (let slash = relative.lastIndexOf("/"); slash >= 0; slash = relative.lastIndexOf("/", slash - 1)) {
+        const ancestor = relative.slice(0, slash);
+        for (const entry of [input.snapshot.entries.get(ancestor), actual.entries.get(ancestor)]) {
+          if (entry && entry.kind !== "dir") throw new Error("Workspace checkpoint replaces an ignored path ancestor");
+        }
+      }
+    }
     return { mode: "sparse", scannedEntries: input.snapshot.entries.size, changedFiles, payloadBytes };
-  } finally { await disposeDirectorySnapshot(actual); }
+  } finally { ignored.close(); await disposeDirectorySnapshot(actual); }
 }
 
 export interface WorkspaceCheckpointMetrics {

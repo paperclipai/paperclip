@@ -3321,7 +3321,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3515,7 +3515,9 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       }
     }
 
-    const configuredCwd = !forceTaskDirectory ? readNonEmptyString(parseObject(agent.adapterConfig).cwd) : null;
+    const configuredCwd = forceTaskDirectory ? null
+      : opts?.configuredCwd !== undefined ? opts.configuredCwd
+      : readNonEmptyString(parseObject(agent.adapterConfig).cwd);
     const cwd = configuredCwd ? path.resolve(configuredCwd)
       : issueId ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId })
       : resolveDefaultAgentWorkspaceDir(agent.id);
@@ -3563,6 +3565,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     previousSessionParams: Record<string, unknown> | null,
     opts?: {
       useProjectWorkspace?: boolean | null;
+      configuredCwd?: string | null;
       executionEnvironmentDriver?: string | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },

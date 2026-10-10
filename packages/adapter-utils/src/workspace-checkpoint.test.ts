@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import { writeCheckpointBaseline, workspaceCheckpointScript, readCheckpointSnapshot, validateCheckpointPayload } from "./workspace-checkpoint.js";
 import { publishWorkspaceSeedGeneration, readWorkspaceSeedGeneration, workspaceSeedGeneration } from "./workspace-seed-cache.js";
+import { WorkspaceManifestWriter } from "./workspace-manifest.js";
 const execute = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))); });
@@ -98,6 +99,65 @@ describe("workspace sparse checkpoint", () => {
     const result = await f.capture(); await fs.writeFile(path.join(result.payload, "new"), "tampered");
     await expect(validateCheckpointPayload({ baseline: f.baseline, snapshot: result.snapshot, payload: result.payload })).rejects.toThrow("payload mismatch");
     await disposeDirectorySnapshot(result.snapshot); await disposeDirectorySnapshot(f.baseline);
+  });
+  it.each(["array", "manifest"] as const)("rejects ignored entries and ancestor replacements before merge with %s ignore paths", async storage => {
+    for (const attack of ["matching_file", "matching_descendant", "payload_only", "ancestor_file", "ancestor_link"] as const) {
+      const f = await fixture(); await disposeDirectorySnapshot(f.baseline);
+      await fs.writeFile(path.join(f.root, ".env"), "host secret");
+      await fs.mkdir(path.join(f.root, "private")); await fs.writeFile(path.join(f.root, "private", "token"), "private token");
+      await fs.mkdir(path.join(f.root, "config")); await fs.writeFile(path.join(f.root, "config", ".env"), "nested secret");
+      const paths = [".env", "private", "config/.env"];
+      const writer = new WorkspaceManifestWriter(path.join(f.temp, "ignored.sqlite"));
+      for (const relative of paths) writer.add("ignored", relative);
+      const ignoredPaths = storage === "manifest" ? writer.paths("ignored") : paths;
+      writer.close();
+      const baseline = await captureDirectorySnapshot(f.root, { exclude: ["cache"], ignoredPaths, diskBacked: true });
+      const payload = path.join(f.temp, "forged-payload"); await fs.mkdir(payload);
+      await fs.writeFile(path.join(payload, "unchanged"), "otherwise valid edit");
+      if (attack === "matching_file" || attack === "payload_only") await fs.writeFile(path.join(payload, ".env"), "injected secret");
+      if (attack === "matching_descendant") {
+        await fs.mkdir(path.join(payload, "private")); await fs.writeFile(path.join(payload, "private", "token"), "injected token");
+      }
+      if (attack === "ancestor_file") await fs.writeFile(path.join(payload, "config"), "replace directory");
+      if (attack === "ancestor_link") await fs.symlink("unchanged", path.join(payload, "config"));
+      const captured = await captureDirectorySnapshot(payload);
+      const entries = new Map(baseline.entries);
+      entries.delete("deleted"); // An otherwise valid deletion must not apply on rejection.
+      for (const [relative, entry] of captured.entries) if (!(attack === "payload_only" && relative === ".env")) entries.set(relative, entry);
+      if (attack === "matching_descendant") entries.delete("private"); // Reject the descendant itself, too.
+      const manifestPath = path.join(f.temp, "forged.sqlite");
+      await writeCheckpointBaseline({ ...baseline, entries }, manifestPath);
+      const snapshot = readCheckpointSnapshot(manifestPath, baseline);
+      try {
+        await expect((async () => {
+          await validateCheckpointPayload({ baseline, snapshot, payload });
+          await mergeDirectoryWithBaseline({ baseline, sourceDir: payload, targetDir: f.root, snapshots: { source: snapshot } });
+        })()).rejects.toThrow(attack.startsWith("ancestor") ? "ignored path ancestor" : "Excluded workspace checkpoint entry");
+        expect(await fs.readFile(path.join(f.root, "unchanged"), "utf8")).toBe("retained");
+        expect(await fs.readFile(path.join(f.root, "deleted"), "utf8")).toBe("delete me");
+        expect(await fs.readFile(path.join(f.root, ".env"), "utf8")).toBe("host secret");
+        expect(await fs.readFile(path.join(f.root, "private", "token"), "utf8")).toBe("private token");
+        expect(await fs.readFile(path.join(f.root, "config", ".env"), "utf8")).toBe("nested secret");
+      } finally { await disposeDirectorySnapshot(snapshot); await disposeDirectorySnapshot(baseline); }
+    }
+  });
+  it("allows directory tombstones while retaining ignored host children", async () => {
+    const f = await fixture(); await disposeDirectorySnapshot(f.baseline);
+    await fs.mkdir(path.join(f.root, "config"));
+    await fs.writeFile(path.join(f.root, "config", ".env"), "host only");
+    await fs.writeFile(path.join(f.root, "config", "tracked"), "delete tracked child");
+    const baseline = await captureDirectorySnapshot(f.root, { exclude: ["cache"], ignoredPaths: ["config/.env"], diskBacked: true });
+    const payload = path.join(f.temp, "payload"); await fs.mkdir(payload);
+    await fs.writeFile(path.join(payload, "unchanged"), "valid edit");
+    const captured = await captureDirectorySnapshot(payload);
+    const snapshot = { ...baseline, entries: new Map(captured.entries) };
+    await validateCheckpointPayload({ baseline, snapshot, payload });
+    await mergeDirectoryWithBaseline({ baseline, sourceDir: payload, targetDir: f.root, snapshots: { source: snapshot } });
+    expect(await fs.readFile(path.join(f.root, "config", ".env"), "utf8")).toBe("host only");
+    expect(await fs.readFile(path.join(f.root, "unchanged"), "utf8")).toBe("valid edit");
+    await expect(fs.stat(path.join(f.root, "config", "tracked"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(f.root, "deleted"))).rejects.toMatchObject({ code: "ENOENT" });
+    await disposeDirectorySnapshot(baseline);
   });
   it("reuses durable seed generations and rejects corruption after run cleanup", async () => {
     const f = await fixture(); const cache = path.join(f.temp, "cache-seeds");

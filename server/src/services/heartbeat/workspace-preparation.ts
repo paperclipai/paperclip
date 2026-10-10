@@ -279,6 +279,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
         {
           useProjectWorkspace:
             requestedExecutionWorkspaceMode !== "agent_default",
+          configuredCwd: readNonEmptyString(mergedConfig.cwd),
           anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
             ? await resolveReusedGitWorkspaceAnchor({
                 agent,

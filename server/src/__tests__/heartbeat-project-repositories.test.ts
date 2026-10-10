@@ -197,6 +197,56 @@ suite("task project repository provisioning", () => {
     }
   }, 25_000);
 
+  it.each([
+    { name: "task override without agent cwd", agentCwd: false, taskDirectory: false },
+    { name: "task override replacing agent cwd", agentCwd: true, taskDirectory: false },
+    { name: "explicit task directory ahead of cwd overrides", agentCwd: true, taskDirectory: true },
+  ])("resolves $name before binding and retains that root on continuation", async ({ agentCwd, taskDirectory }) => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const overrideCwd = path.join(root, companyId, "task-override");
+    const agentDefaultCwd = path.join(root, companyId, "agent-default");
+    const laterCwd = path.join(root, companyId, "later-override");
+    for (const cwd of [overrideCwd, agentDefaultCwd, laterCwd]) {
+      await mkdir(cwd, { recursive: true });
+      await writeFile(path.join(cwd, "input.txt"), cwd);
+    }
+    await db.insert(companies).values({ id: companyId, name: "Task cwd", issuePrefix: `W${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", status: "idle", adapterType: "codex_local", adapterConfig: agentCwd ? { cwd: agentDefaultCwd } : {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Use task files", status: "todo", assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { adapterConfig: { cwd: overrideCwd } },
+      workspaceSelection: taskDirectory ? { version: 1, source: "explicit", selection: { kind: "task_directory" } } : null });
+    const expectedCwd = taskDirectory
+      ? path.join(root, "home", "instances", "default", "isolated-workspaces", companyId, issueId)
+      : overrideCwd;
+    let bindingId: string | null = null;
+    for (let admission = 0; admission < 2; admission++) {
+      const defaultExecute = execute.getMockImplementation()!;
+      execute.mockImplementationOnce(async (input) => {
+        const cwd = input.context.paperclipWorkspace.cwd;
+        expect(await realpath(cwd)).toBe(await realpath(expectedCwd));
+        if (!taskDirectory) expect(await readFile(path.join(cwd, "input.txt"), "utf8")).toBe(overrideCwd);
+        if (admission === 1) expect(await readFile(path.join(cwd, "output.txt"), "utf8")).toBe("first admission");
+        await writeFile(path.join(cwd, "output.txt"), admission === 0 ? "first admission" : "continued");
+        return defaultExecute(input);
+      });
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(workspace.projectId).toBeNull();
+      expect(await realpath(workspace.cwd!)).toBe(await realpath(expectedCwd));
+      if (bindingId) expect(workspace.id).toBe(bindingId);
+      bindingId = workspace.id;
+      await db.update(issues).set({ status: "todo", assigneeAdapterOverrides: { adapterConfig: { cwd: laterCwd } } }).where(eq(issues.id, issueId));
+    }
+    expect(await readFile(path.join(expectedCwd, "output.txt"), "utf8")).toBe("continued");
+    await expect(readFile(path.join(laterCwd, "output.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(agentDefaultCwd, "output.txt"), "utf8")).rejects.toThrow();
+  }, 40_000);
+
   it("keeps a task directory source projectless across chat admissions with an organizational project", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Chat files", issuePrefix: `C${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
