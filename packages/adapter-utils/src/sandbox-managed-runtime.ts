@@ -149,6 +149,14 @@ export interface SandboxManagedRuntimeAsset {
   /** Optional inbound provisioning contribution (staged files + extract command). */
   provision?: SandboxManagedRuntimeAssetProvision;
   /**
+   * Top-level entries the host owns in this asset. When the asset directory is
+   * retained across runs (ssh `assetStateKey`), these entries are removed
+   * before the upload, so anything the host no longer ships (a removed
+   * credential, config file or skill) does not linger. Everything else in the
+   * retained directory, such as session state written by the agent CLI, is kept.
+   */
+  replaceEntries?: readonly string[];
+  /**
    * Optional teardown/outbound contribution, invoked once per asset during
    * `restoreWorkspace`. Defaults to a no-op when omitted.
    */
