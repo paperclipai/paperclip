@@ -131,6 +131,7 @@ function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
   if (retryReason === "native_safe_replacement" || retryReason === "native_provider_overloaded") return "native_safe_replacement";
+  if (retryReason === "provider_quota_hold") return "provider_quota_hold";
   return "other";
 }
 
@@ -276,6 +277,8 @@ export function createPostgresRunDispatchAdapter(
       null;
     const issueId = readNonEmptyString(input.contextSnapshot.issueId);
     const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const wakeCommentIdPresent = Boolean(deriveCommentId(input.contextSnapshot));
+    const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason);
 
     // Facts fill in through the same rule order `decideScheduledRetryGate`
     // evaluates. A field still awaiting its own read keeps a value that
@@ -300,6 +303,15 @@ export function createPostgresRunDispatchAdapter(
       agentInvokabilityDetails: {},
       agentInvokabilityInvalidOrgChain: false,
       heartbeatWakeOnDemandEnabled: true,
+      isInteractionWake: allowsIssueInteractionWake(
+        input.contextSnapshot,
+        ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+      ),
+      resumeIntent:
+        input.contextSnapshot.resumeIntent === true ||
+        input.contextSnapshot.followUpRequested === true,
+      wakeCommentIdPresent,
+      isCompletedOnboardingHandoffWake: false,
       issueFound: false,
       issueStatus: null,
       issueAssigneeAgentId: null,
@@ -389,6 +401,19 @@ export function createPostgresRunDispatchAdapter(
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
     });
+    if (
+      retryReasonKind === "provider_quota_hold" &&
+      wakeReason === "issue_children_completed"
+    ) {
+      facts.isCompletedOnboardingHandoffWake =
+        await isCompletedOnboardingHandoffWake(dbOrTx, {
+          companyId: input.companyId,
+          issueId,
+          agentId: input.agentId,
+          reason: wakeReason,
+          contextSnapshot: input.contextSnapshot,
+        });
+    }
 
     // The gate checks a disposition repair's own supersession before it
     // checks ownership or status, so this read must land before the next

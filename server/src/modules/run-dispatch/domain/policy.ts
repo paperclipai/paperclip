@@ -11,6 +11,7 @@ export type RetryReasonKind =
   | "disposition_repair"
   | "native_safe_replacement"
   | "ai_connection_wait"
+  | "provider_quota_hold"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -89,6 +90,12 @@ export type ScheduledRetryFacts = {
   agentInvokabilityInvalidOrgChain: boolean;
 
   heartbeatWakeOnDemandEnabled: boolean;
+
+  /** Queued-path admission evidence preserved while a quota hold waits. */
+  isInteractionWake: boolean;
+  resumeIntent: boolean;
+  wakeCommentIdPresent: boolean;
+  isCompletedOnboardingHandoffWake: boolean;
 
   issueFound: boolean;
   issueStatus: string | null;
@@ -262,6 +269,7 @@ export function decideScheduledRetryGate(
   facts: ScheduledRetryFacts,
   _now: Date,
 ): GateDecision {
+  const preservesQueuedAdmission = facts.retryReasonKind === "provider_quota_hold";
   if (facts.budgetBlock) {
     return {
       allowed: false,
@@ -341,6 +349,7 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isInteractionWake: preservesQueuedAdmission && facts.isInteractionWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.hasParticipant &&
@@ -378,6 +387,11 @@ export function decideScheduledRetryGate(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
+    terminalBypass:
+      preservesQueuedAdmission &&
+      (facts.resumeIntent ||
+        facts.wakeCommentIdPresent ||
+        facts.isCompletedOnboardingHandoffWake),
   });
   if (statusOutcome === "terminal") {
     return {
@@ -431,6 +445,7 @@ export function decideScheduledRetryGate(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
+    bypass: preservesQueuedAdmission && facts.wakeCommentIdPresent,
   });
   if (participantOutcome === "participant_changed") {
     return {
