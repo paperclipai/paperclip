@@ -8455,12 +8455,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .set({ status: "paused" })
           .where(eq(agents.id, agentId));
         release();
-        if (next!)
-          await vi.waitFor(async () =>
-            expect((await heartbeat.getRun(next!.id))?.status).not.toBe(
-              "running",
-            ),
-          );
+        // Wait for the released executor and its cleanup, not the default
+        // one-second polling window. The next case must not inherit live work.
+        await heartbeat.drainActiveRunExecutions();
+        if (next!) expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running");
       }
     },
   );
@@ -12124,6 +12122,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.reconcileStrandedAssignedIssues();
     await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 31_000));
     await heartbeat.resumeQueuedRuns();
+    // The continuation is produced by completion; wait for that durable boundary.
+    await heartbeat.drainActiveRunExecutions();
 
     const livenessWake = await waitForValue(async () => {
       const rows = await db
