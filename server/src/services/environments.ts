@@ -901,6 +901,13 @@ export function environmentService(db: Db) {
     },
 
     getLeaseById: async (id: string): Promise<EnvironmentLease | null> => {
+      // Guard against empty / non-UUID inputs so the SQL driver never sees
+      // an invalid value (which Postgres would reject with
+      // "invalid input syntax for type uuid" and pollute the activity log).
+      // Returning null matches the existing not-found contract.
+      if (!id || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i.test(id)) {
+        return null;
+      }
       const row = await db
         .select()
         .from(environmentLeases)
