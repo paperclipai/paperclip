@@ -325,6 +325,44 @@ function bindSql(statement: string, params: readonly unknown[] = []): SQL {
   return sql.join(chunks, sql.raw(""));
 }
 
+/**
+ * Drizzle reports a failed statement as `Failed query: <sql>\nparams: <values>`
+ * and keeps the Postgres error in `cause`, so a plugin saw the SQL but never the
+ * reason. Rebuild the message from the statement plus the Postgres SQLSTATE and
+ * message. Bound parameters never leave the host: neither the Drizzle message
+ * nor the Postgres `detail` (which can echo row values) is carried over.
+ */
+export function describePluginSqlError(error: unknown, statement: string): unknown {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as { code?: unknown; severity?: unknown; message?: unknown; cause?: unknown };
+    if (
+      typeof candidate.code === "string"
+      && /^[0-9A-Z]{5}$/.test(candidate.code)
+      && typeof candidate.severity === "string"
+      && typeof candidate.message === "string"
+    ) {
+      return new Error(`Failed query: ${statement}\nSQLSTATE ${candidate.code}: ${candidate.message}`);
+    }
+    current = candidate.cause;
+  }
+  if (error instanceof Error && error.message.startsWith("Failed query:")) {
+    return new Error(`Failed query: ${statement}`);
+  }
+  return error;
+}
+
+async function runPluginSql(client: PluginDatabaseClient, statement: string, params?: unknown[]) {
+  const bound = bindSql(statement, params);
+  try {
+    return await client.execute(bound);
+  } catch (error) {
+    throw describePluginSqlError(error, statement);
+  }
+}
+
 async function listSqlMigrationFiles(migrationsDir: string): Promise<string[]> {
   const entries = await readdir(migrationsDir, { withFileTypes: true });
   return entries
@@ -558,14 +596,14 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
       const plugin = await getPluginRecord(pluginId);
       const namespace = await getRuntimeNamespace(pluginId);
       validatePluginRuntimeQuery(statement, namespace, plugin.manifestJson.database?.coreReadTables ?? []);
-      const result = await db.execute(bindSql(statement, params));
+      const result = await runPluginSql(db, statement, params);
       return Array.from(result as Iterable<T>);
     },
 
     async execute(pluginId: string, statement: string, params?: unknown[]): Promise<{ rowCount: number }> {
       const namespace = await getRuntimeNamespace(pluginId);
       validatePluginRuntimeExecute(statement, namespace);
-      const result = await db.execute(bindSql(statement, params));
+      const result = await runPluginSql(db, statement, params);
       return { rowCount: Number((result as { count?: number | string }).count ?? 0) };
     },
   };
