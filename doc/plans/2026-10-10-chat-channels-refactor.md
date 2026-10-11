@@ -166,3 +166,54 @@ by the service. No state or registration moves in this slice.
 - Existing CI fixtures cover exact outbound ownership, interleaved control
   messages, consumed progress, interactions, committed failure replacement and
   issue-to-run lock order. Local database capacity remains blocked.
+
+
+### Slice 5: failed chat run retry coordination
+
+Extract source validation, native failure evidence, retry preparation, claims,
+wake authorization and retry notices into `failed-run-retry.ts`. Keep the
+in-flight promise map, notice cursor, error class and two authority registrations
+inside the factory so each service retains its own lifetime. Keep the live
+shutdown and heartbeat callbacks. The service still owns cleanup order and waits
+for the module's pending retries before unregistering authorities.
+
+- Source: 36,393 lines / 1,400,636 bytes → 34,606 lines / 1,336,443 bytes.
+  Net reduction: 1,787 lines / 64,193 bytes.
+- Destination: 1,936 lines / 68,329 bytes.
+- Baseline: all 52 checks and 5/5 review passed on slice 4 (`166ea04ac6`, #15844).
+- Added three tests through the existing public service before the move. All
+  three passed before and after: duplicate calls share a promise, shutdown
+  during a pending read prevents a new claim and waits for completion, rejected
+  work permits a later attempt, and old-service cleanup preserves replacement
+  authority. These tests use controlled reads and do not require PostgreSQL.
+- All 21 moved declarations and every remaining statement match the predecessor
+  after restoring the documented live callbacks and pending-task accessor.
+  Server typecheck, module boundaries and whitespace checks pass.
+- Existing CI database fixtures cover corrected/edited sources, lifecycle epochs,
+  native recovery evidence, recreated services and concurrent retries. Local
+  full database execution remains blocked by the host's shared-memory limit.
+  Current-head full CI, broad local gates and review results belong in the PR.
+
+## Reassessment after five slices
+
+The service falls from 39,155 lines / 1,509,090 bytes at the rebased baseline to
+34,606 lines / 1,336,443 bytes: 4,549 lines and 172,647 bytes removed (11.6% of
+source lines). The five modules total 4,857 lines / 185,635 bytes, including their
+imports and typed boundaries. This is useful separation, not completion of the
+larger decomposition.
+
+The service function still spans 32,254 lines. Its 244 direct nested functions
+occupy 31,525 lines; 48 other statements occupy 435 lines of state, wiring,
+registration and public API. The remaining lines are whitespace, comments and
+syntax. The largest functions are `processMessage` (2,166), `handleAction`
+(1,074), `configureWithCredentialLease` (868), `processSelectedPublication` (729),
+`handleModalSubmit` (708), `handleWebhook` (685), `processLifecycleDelivery` (657)
+and `applyProviderLifecycleEffect` (593).
+
+The best next planning candidate is inbound message admission and persistence,
+starting from `processMessage` and its conversation/drain ownership. Define the
+transaction, live-message retention and scheduling contracts before moving it;
+do not move that entire function and claim its complexity is resolved. Action
+resolution and endpoint configuration are later candidates. Keep runtime lease
+acquisition, partial startup and shutdown together until their ownership contract
+is explicit. This batch ends with five stacked PRs; merging is separate work.
