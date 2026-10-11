@@ -149,3 +149,20 @@ transaction locks, token consumption, membership checks and post-commit notice.
   body substitution moves the runtime lookup behind the supplied live callback.
   All remaining statements are unchanged. Local PostgreSQL remains unavailable;
   record this slice's complete CI and review in its PR before continuing.
+
+### Slice 4: publication replacement and supersession
+
+Move 13 functions into `publication-replacement.ts`. The module selects the exact
+provider message a publication can replace and suppresses obsolete progress. It
+uses the database, endpoint lookup and retained-source authorization callback.
+Transport execution, publication claims and receipt reactions remain coordinated
+by the service. No state or registration moves in this slice.
+
+- Source: 37,295 lines / 1,436,867 bytes → 36,393 lines / 1,400,636 bytes.
+- Destination: 963 lines / 38,724 bytes.
+- Baseline: all 51 checks and 5/5 review passed on slice 3 (`581dd656c1`, #15836).
+- All 13 bodies and every remaining statement match the predecessor exactly.
+  Server typecheck, module boundaries and whitespace checks pass.
+- Existing CI fixtures cover exact outbound ownership, interleaved control
+  messages, consumed progress, interactions, committed failure replacement and
+  issue-to-run lock order. Local database capacity remains blocked.
