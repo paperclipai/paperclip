@@ -719,21 +719,35 @@ export interface PluginActivityLogEntry {
   entityId?: string;
   /** Optional additional metadata. */
   metadata?: Record<string, unknown>;
+  /**
+   * Optional human company member who initiated the action, for actions a
+   * person took through the plugin (for example a message relayed from chat).
+   * The entry stays plugin-attributed; this user is recorded as its
+   * initiating actor. Requires the additional
+   * `activity.log.write_human_attributed` capability. The host verifies the
+   * user is an active, non-viewer human member of `companyId` and rejects the
+   * call otherwise.
+   */
+  actorUserId?: string;
 }
 
 /**
  * `ctx.activity` — write plugin-originated activity log entries.
  *
- * Requires `activity.log.write` capability.
+ * Requires `activity.log.write` capability. Entries that pass `actorUserId`
+ * also require `activity.log.write_human_attributed`.
  *
  * @see PLUGIN_SPEC.md §21.4 — Activity Log Changes
  */
 export interface PluginActivityClient {
   /**
-   * Write an activity log entry attributed to this plugin.
+   * Write an activity log entry.
    *
-   * The host writes the entry with `actor_type = plugin` and
-   * `actor_id = <pluginId>`.
+   * The host always writes the entry attributed to this plugin, with
+   * `actor_type = plugin` and `actor_id = <pluginId>`. When `actorUserId` is
+   * set, the verified user is recorded in details as the initiating actor
+   * (`initiatingActorType = user`, `initiatingActorId` / `initiatingUserId`
+   * = `actorUserId`).
    *
    * @param entry - The activity log entry to write
    */
@@ -2170,7 +2184,10 @@ export interface PluginContext {
   /** Resolve secret references. Requires `secrets.read-ref`. */
   secrets: PluginSecretsClient;
 
-  /** Write activity log entries. Requires `activity.log.write`. */
+  /**
+   * Write activity log entries. Requires `activity.log.write`, plus
+   * `activity.log.write_human_attributed` for entries that pass `actorUserId`.
+   */
   activity: PluginActivityClient;
 
   /** Read and write scoped plugin state. Requires `plugin.state.read` / `plugin.state.write`. */

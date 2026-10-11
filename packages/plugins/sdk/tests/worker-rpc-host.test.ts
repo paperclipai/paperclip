@@ -1179,3 +1179,110 @@ describe("Durable lifecycle inbox RPC", () => {
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });
+
+describe("worker ctx.activity.log", () => {
+  // Run one data handler that writes an activity entry, and capture the
+  // `activity.log` request params the worker sends to the host.
+  async function runActivityLogProbe(entry: Record<string, unknown>) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const activityCalls: unknown[] = [];
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => {
+          await ctx.activity.log(entry as Parameters<typeof ctx.activity.log>[0]);
+          return { ok: true };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown, inv?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(inv ? { paperclipInvocation: inv } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method === "activity.log") {
+        activityCalls.push(message.params);
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, null)));
+      }
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.activity-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Activity test",
+          description: "Activity test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["activity.log.write", "activity.log.write_human_attributed"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+      await callWorker(
+        "getData",
+        { key: "probe", companyId: "company-a", params: {} },
+        { id: "invocation-a", scope: { companyId: "company-a" } },
+      );
+      return activityCalls;
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  }
+
+  it("forwards actorUserId to the host for a human-attributed entry", async () => {
+    const calls = await runActivityLogProbe({
+      companyId: "company-a",
+      message: "chat.message_relayed",
+      actorUserId: "user-a",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      companyId: "company-a",
+      message: "chat.message_relayed",
+      actorUserId: "user-a",
+    });
+  });
+
+  it("sends no actorUserId for a plugin-attributed entry", async () => {
+    const calls = await runActivityLogProbe({ companyId: "company-a", message: "sync.completed" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty("actorUserId");
+  });
+});

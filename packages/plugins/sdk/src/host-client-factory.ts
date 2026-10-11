@@ -166,6 +166,8 @@ export interface HostServices {
       entityType?: string;
       entityId?: string;
       metadata?: Record<string, unknown>;
+      /** Human company member recorded as the initiating actor; gated by `activity.log.write_human_attributed`. */
+      actorUserId?: string;
     }): Promise<void>;
   };
 
@@ -788,6 +790,13 @@ export function createHostClientHandlers(
 
     // Activity
     "activity.log": gated("activity.log", async (params) => {
+      if (params.actorUserId && !capabilitySet.has("activity.log.write_human_attributed")) {
+        throw new CapabilityDeniedError(
+          pluginId,
+          "activity.log",
+          "activity.log.write_human_attributed",
+        );
+      }
       return services.activity.log(params);
     }),
 

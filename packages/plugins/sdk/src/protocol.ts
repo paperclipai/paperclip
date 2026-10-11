@@ -1681,6 +1681,8 @@ export interface WorkerToHostMethods {
       entityType?: string;
       entityId?: string;
       metadata?: Record<string, unknown>;
+      /** Active human company member recorded as the entry's initiating actor. Requires `activity.log.write_human_attributed`. */
+      actorUserId?: string;
     },
     result: void,
   ];

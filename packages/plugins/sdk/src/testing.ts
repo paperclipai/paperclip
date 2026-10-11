@@ -143,7 +143,14 @@ export interface TestHarness {
   /** Simulate a streaming event arriving for an active session. */
   simulateSessionEvent(sessionId: string, event: Omit<AgentSessionEvent, "sessionId">): void;
   logs: TestHarnessLogEntry[];
-  activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
+  activity: Array<{
+    message: string;
+    entityType?: string;
+    entityId?: string;
+    metadata?: Record<string, unknown>;
+    /** Set when a verified human company member initiated the entry. */
+    actorUserId?: string;
+  }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
@@ -953,6 +960,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     activity: {
       async log(entry) {
         requireCapability(manifest, capabilitySet, "activity.log.write");
+        if (entry.actorUserId) {
+          requireCapability(manifest, capabilitySet, "activity.log.write_human_attributed");
+          assertActiveHumanMemberCanWrite(entry.companyId, entry.actorUserId);
+        }
         activity.push(entry);
       },
     },

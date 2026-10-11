@@ -1013,8 +1013,8 @@ export function buildHostServices(
    * web app's own board routes apply — a plugin can only ever attribute an
    * action to an identity that could have taken it in the web app itself.
    * Used by any plugin capability that accepts an `actorUserId`
-   * (`createComment`'s human-attributed path, `respondInteraction`, and
-   * `approvals.decide`).
+   * (`createComment`'s human-attributed path, `respondInteraction`,
+   * `approvals.decide`, and `activity.log`'s human-attributed path).
    *
    * All current call sites are non-safe (write) actions, so by default this
    * also rejects a `viewer`-role member — the web app's board write-routes
@@ -1753,14 +1753,20 @@ export function buildHostServices(
       async log(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        await logActivity(db, {
+        // Human-attributed entries (`activity.log.write_human_attributed`,
+        // gated in the host client handlers) stay plugin-attributed, like
+        // every other plugin `actorUserId` path: after the active-human-member
+        // check, the verified user is recorded as the initiating actor.
+        if (params.actorUserId) {
+          await requireActiveHumanMember(companyId, params.actorUserId);
+        }
+        await logPluginActivity({
           companyId,
-          actorType: "plugin",
-          actorId: pluginId,
           action: params.message,
           entityType: params.entityType ?? "plugin",
           entityId: params.entityId ?? pluginId,
-          details: pluginActivityDetails(params.metadata),
+          details: params.metadata,
+          actor: params.actorUserId ? { actorUserId: params.actorUserId } : undefined,
         });
       },
     },

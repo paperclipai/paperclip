@@ -235,7 +235,9 @@ Worker:
 - launchers
 - http
 - secrets
-- activity
+- activity (entries are always plugin-attributed; pass `actorUserId` with the
+  `activity.log.write_human_attributed` capability to record a verified, active
+  company member as the entry's initiating actor)
 - state
 - database namespace via `ctx.db`
 - scoped JSON API routes declared with `apiRoutes`
