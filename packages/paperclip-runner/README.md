@@ -69,6 +69,17 @@ Package identity and executable containment remain checked. Browser login keeps
 its existing provider-specific credential home. Linux ARM64 retains its existing
 legacy login path because native execution is not qualified there.
 
+Native Codex sessions keep the selected custom provider from the local
+`CODEX_HOME/config.toml` paired with its authentication. Only the selected
+provider's Responses endpoint and authentication settings enter the isolated
+home; host model defaults, unselected providers, tools, and hooks do not.
+Providers using `requires_openai_auth = true` retain their login cache, including
+explicitly configured HTTP gateways. Environment authentication can reference
+the runner's admitted `OPENAI_API_KEY`, `CODEX_API_KEY`, or
+`PAPERCLIP_AI_PROVIDER_KEY` credentials. Paperclip-managed connections retain
+their HTTPS or loopback HTTP requirement. Invalid selected provider settings
+fail explicitly instead of falling back to OpenAI with the gateway's key.
+
 Exact dependency pins remain release and ACPX artifact-qualification checks.
 They make published builds reproducible and verify sandbox artifacts; they do not
 add a version-number gate to ordinary native Codex startup or browser login.
@@ -153,6 +164,22 @@ It validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+
+For the native Codex provider (`codex_app_server`), a Paperclip task with
+`workMode: "planning"` uses the app-server's native `plan` collaboration mode.
+Runnerd negotiates `collaborationMode/list` on each provider process start or
+thread resume, confirms the effective settings in `session.open` and
+`session.snapshot`, and sends them on every `turn/start`. The effective thread
+model takes priority over the configured model and preset; explicit reasoning
+effort takes priority over preset effort. Planning uses the existing workspace
+read-only permission profile. Standard tasks keep the default turn behavior.
+
+An app-server without a usable plan preset fails with
+`planning_mode_unsupported`. Older daemons without mode confirmation cannot
+claim native plan support. Upgrade the TypeScript transport, runnerd and remote
+Runner image together. Warm attachment keeps the durable mode immutable;
+after plan approval, the existing planning-to-standard session boundary starts
+default execution without retaining plan settings.
 
 Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation
 does not download it. Run setup as the OS user that runs Paperclip (the service

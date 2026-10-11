@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::codex_provider::{
-    CodexProvider, CodexProviderConfig, CodexProviderEvent, CodexSkillInput, CodexTurnOptions,
-    ProviderStartupObservation, ProviderStartupStage, RejectedAcceptedTurn,
+    validate_codex_effort, CodexProvider, CodexProviderConfig, CodexProviderEvent, CodexSkillInput,
+    CodexTurnOptions, ProviderStartupObservation, ProviderStartupStage, RejectedAcceptedTurn,
     MAX_SETTLED_PROVIDER_TURN_IDS,
 };
 use crate::durable::{
@@ -2227,6 +2227,10 @@ impl CodexCommandExecutor {
         // persisted profiles unchanged even when an older controller sends it.
         if config.provider != "codex" {
             config.include_skill_instructions = None;
+            config.collaboration_mode = None;
+            config.include_collaboration_mode_instructions = None;
+        } else if config.collaboration_mode.as_deref() == Some("default") {
+            config.collaboration_mode = None;
         }
         config
             .validate()
@@ -2456,7 +2460,7 @@ impl CodexCommandExecutor {
             .map_err(|_| {
                 DurableRunnerError::invalid("run.attach runtime launch arguments are invalid")
             })?;
-        let mut upgraded_skill_config = false;
+        let mut upgraded_thread_config = false;
         if let Some(provider) = payload.get("provider") {
             let mut config: CodexProviderConfig = serde_json::from_value(provider.clone())
                 .map_err(|error| {
@@ -2464,6 +2468,10 @@ impl CodexCommandExecutor {
                 })?;
             if config.provider != "codex" {
                 config.include_skill_instructions = None;
+                config.collaboration_mode = None;
+                config.include_collaboration_mode_instructions = None;
+            } else if config.collaboration_mode.as_deref() == Some("default") {
+                config.collaboration_mode = None;
             }
             config
                 .validate()
@@ -2475,16 +2483,27 @@ impl CodexCommandExecutor {
             {
                 config.args = next_state.config.args.clone();
             }
-            // Pre-fix checkpoints dropped this field. A fresh settled run may
-            // adopt the explicit controller setting once, then must reopen the
-            // same thread so the provider receives it. Known settings remain
-            // immutable within this profile, like the other durable fields.
+            // Older checkpoints omitted these optional thread instruction settings.
+            // A fresh settled run may adopt an explicit controller setting once,
+            // then must reopen the same thread so the provider receives it.
+            // Known settings remain immutable, like the other durable fields.
             if next_state.config.provider == "codex"
                 && next_state.config.include_skill_instructions.is_none()
                 && config.include_skill_instructions.is_some()
             {
                 next_state.config.include_skill_instructions = config.include_skill_instructions;
-                upgraded_skill_config = true;
+                upgraded_thread_config = true;
+            }
+            if next_state.config.provider == "codex"
+                && next_state
+                    .config
+                    .include_collaboration_mode_instructions
+                    .is_none()
+                && config.include_collaboration_mode_instructions.is_some()
+            {
+                next_state.config.include_collaboration_mode_instructions =
+                    config.include_collaboration_mode_instructions;
+                upgraded_thread_config = true;
             }
             if config != next_state.config {
                 return Err(DurableRunnerError::invalid(
@@ -2535,7 +2554,7 @@ impl CodexCommandExecutor {
         next_state.last_agent_message = None;
         let retained_provider = if let Some(provider) = self.provider.as_mut() {
             !runtime_launch_changed
-                && !upgraded_skill_config
+                && !upgraded_thread_config
                 && provider
                     .attach_run_in_place(
                         next_state.tool_bridge.authorized_tools().cloned(),
@@ -2688,6 +2707,7 @@ impl CodexCommandExecutor {
                 "providerVersion": provider_version,
                 "providerSessionId": thread_id,
                 "processId": process_id,
+                "collaborationMode": self.provider.as_ref().and_then(CodexProvider::collaboration_mode),
             }),
             events: vec![
                 (
@@ -2903,6 +2923,15 @@ impl CodexCommandExecutor {
                 .validate()
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
+        let effort = match payload.get("effort") {
+            None => None,
+            Some(Value::String(effort)) => {
+                validate_codex_effort(effort)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                Some(effort.as_str())
+            }
+            Some(_) => return Err(DurableRunnerError::invalid("invalid turn.effort")),
+        };
         let reasoning_mode = match payload.get("reasoningMode") {
             None => None,
             Some(Value::String(mode)) if matches!(mode.as_str(), "default" | "disabled") => {
@@ -2911,6 +2940,14 @@ impl CodexCommandExecutor {
             Some(_) => return Err(DurableRunnerError::invalid("invalid turn.reasoningMode")),
         };
         self.restore_provider_if_needed()?;
+        if effort.is_some()
+            && self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.config.provider != "codex")
+        {
+            return Err(DurableRunnerError::invalid("turn.effort requires Codex"));
+        }
         if reasoning_mode.is_some()
             && self
                 .state
@@ -3009,6 +3046,7 @@ impl CodexCommandExecutor {
                 CodexTurnOptions {
                     skills: &skills,
                     reasoning_mode,
+                    effort,
                 },
             );
             (
@@ -3966,6 +4004,7 @@ impl CodexCommandExecutor {
             "warmAttachReady": warm_attach_ready,
             "warmAttachBlockers": warm_attach_blockers,
             "cwd": state.config.cwd,
+            "collaborationMode": self.provider.as_ref().and_then(CodexProvider::collaboration_mode),
         })))
     }
 
@@ -4999,6 +5038,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             Some(CompletionContractBinding {
@@ -5380,6 +5421,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             Some(CompletionContractBinding {
@@ -5471,6 +5514,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             opencode_launch_profile_digest: None,
@@ -5524,6 +5569,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -5567,6 +5614,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             Some(CompletionContractBinding {
@@ -5659,6 +5708,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -5726,6 +5777,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -5776,6 +5829,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -5900,6 +5955,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6012,6 +6069,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6069,6 +6128,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6211,6 +6272,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6252,6 +6315,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6290,6 +6355,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
@@ -6367,6 +6434,8 @@ mod tests {
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
                 include_skill_instructions: None,
+                collaboration_mode: None,
+                include_collaboration_mode_instructions: None,
                 conversation_mode: None,
             },
             None,
