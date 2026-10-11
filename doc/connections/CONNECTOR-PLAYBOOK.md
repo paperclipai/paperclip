@@ -1712,27 +1712,31 @@ The broker implements this in `discoverOAuthEndpoints`
 unconditional. `oauthEndpointsForConnection` resolves endpoints in this
 order:
 
-1. If the manifest's method `defaults` ship a **complete** pair
-   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used
-   unconditionally. `discoverOAuthEndpoints` never runs in this case, so
-   endpoints stored on the connection's own OAuth config and 401 challenge
-   hints are **not consulted at all**.
-2. Otherwise, for `mcp_remote` connections, the broker calls
+1. A method's `defaults.discoveryUrl` is authoritative. The broker resolves
+   that document before cached endpoints, including when a saved connection
+   resumes or reconnects. It must describe the MCP resource or its authorization
+   server, not a separate web/API OAuth service. Failure stops setup.
+2. A complete manifest pair (`authorizationEndpoint` and `tokenEndpoint`)
+   replaces discovery when the method does not support dynamic registration,
+   or when the connection uses an operator-entered client. A method that can
+   register automatically still discovers its MCP authorization server.
+3. Otherwise, for `mcp_remote` connections, the broker calls
    `discoverOAuthEndpoints`, which first checks endpoints already stored on
    the connection's own OAuth config (falling back field-by-field to the 401
    challenge hints); a complete stored/hinted pair is used as-is — no
    `.well-known` fetch.
-3. Only when neither of the above yields a complete pair does the broker run
+4. Only when none of the above yields a complete pair does the broker run
    the RFC 9728 → RFC 8414 discovery chain above.
 
-Consequence: complete manifest endpoint hints are **authoritative, not
-hints** — they override even endpoints that an earlier discovery persisted
-on the connection, and if they go stale the broker keeps using them. For
-discovery-capable vendors, ship only `serverUrl` in `defaults` (as
-`notion.json` does) so the broker discovers fresh endpoints at connect
-time; add explicit `authorizationEndpoint`/`tokenEndpoint` only for vendors
-that do not publish RFC 9728/8414 metadata, and then own keeping them
-current.
+For discovery-capable vendors, prefer `serverUrl` alone (as `notion.json`
+does), or pin the reviewed protected-resource document when the provider
+requires an exact path. Keep explicit metadata and endpoint URLs current.
+When changing discovery precedence, test each affected catalog method against
+its actual metadata shape. Cover both new setup and a saved registration.
+A metadata preflight that finds registration somewhere in its search is not
+proof that sign-in selects that issuer. Sentry's web/API and MCP hosts both
+serve valid metadata, but only its MCP issuer supports automatic registration;
+see [Sentry](./SENTRY.md).
 
 ### Dynamic client registration (RFC 7591)
 
