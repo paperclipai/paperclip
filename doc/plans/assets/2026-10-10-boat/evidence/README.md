@@ -60,3 +60,12 @@ Local38 pending admission and Pause work passed; later normal continuation remai
 [Fresh Claude diagnosis](local40-fresh-claude-diagnosis.json) confirms settled checkpoints and present inputs without identifying the stalled startup step. [CI and review receipt](core9a31-ui-b68-ci-review.json) records both previous exact heads green; it excludes the later startup-stage diagnostic patch.
 
 **Artifact-selection correction:** the requested local40/41 diagnostic paths were ignored by test-drive; see [corrected provenance](local-artifact-selection-correction.json). Those failures do not establish execution of the new diagnostics. [Staging19 live receipts](staging19-live-evidence.json) establish fresh/warm Claude, saved Codex, desktop and HMR passes on the verified deployed source.
+
+### Latest migration lineage checks
+
+- [Canonical migration 0333](canonical-migration-0333-proof.json): generated Boat schema follows unchanged upstream 0332.
+- [Staging migration 0333](staging-migration-0333-proof.json): applied staging history is preserved; only the missing upstream index is appended.
+
+Both passed numbering, safety, schema drift, and database TypeScript checks. The concurrent-index database test skipped locally because embedded PostgreSQL was unavailable. Official generation pruned the old 0322 metadata snapshot; no applied SQL or journal history was rewritten.
+
+- [Local42 corrected Claude cold/warm pass](local42-claude-cold-warm-proof.json): actual executable hash, selected pack, saved session, runner identity and unchanged file hashes. Post-idle qualification remains pending.
