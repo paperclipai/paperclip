@@ -1,4 +1,5 @@
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
+import { queryViewKind } from "./QueryView";
 import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useSidebar } from "@/context/SidebarContext";
@@ -46,11 +47,13 @@ export function AgentConversationsSidebar() {
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
     existingChatAgentIds={conversations.map(agent => agent.id)}
     activeId={active?.id} previews={previews}
-    loading={agents.isPending || chats.isPending || session.isPending}
-    error={agents.error ?? chats.error ?? session.error}
+    // Loaded chats stay listed through an outage (the banner covers it); an
+    // outage before the first load is a skeleton, and only a real failure is an error.
+    loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}
+    error={[agents, chats, session].find(query => queryViewKind(query) === "error")?.error ?? null}
     onRetry={() => { void agents.refetch(); void chats.refetch(); void session.refetch(); }}
     historyLoading={historyAgents.some(result => result.isPending)}
-    historyError={historyAgents.find(result => result.error)?.error}
+    historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
     onAddChat={openChat}
     onSelect={agent => {

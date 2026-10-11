@@ -268,6 +268,8 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError } from "@/api/errors";
 import {
   Sheet,
   SheetContent,
@@ -387,7 +389,7 @@ function createRunCancelledStatusUpdateError(
 ): StopAndFinalizeRunError {
   const message =
     err instanceof Error
-      ? `Run was stopped, but updating the task failed: ${err.message}`
+      ? `Run was stopped, but updating the task failed: ${describeError(err).body}`
       : "Run was stopped, but updating the task failed. Retry the task status update.";
   const error = new Error(message) as StopAndFinalizeRunError;
   error.runCancelledBeforeStatusUpdateFailed = true;
@@ -2680,7 +2682,6 @@ function IssueDetailActivityTab({
         throw error;
       }
     },
-    retry: false,
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<
       ReturnType<typeof issuesApi.getDocument>
     > | null>(issueId),
@@ -3107,12 +3108,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
-  const {
-    data: queriedIssue,
-    isLoading,
-    isPlaceholderData,
-    error,
-  } = useQuery({
+  const issueQuery = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
         ? {
@@ -3123,6 +3119,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }),
     enabled: !!issueId,
   });
+  const {
+    data: queriedIssue,
+    isLoading,
+    isPlaceholderData,
+    error,
+  } = issueQuery;
+  // A header seed is a placeholder, not loaded data: it must not count as
+  // content worth keeping on screen through a failure.
+  const issueView = useQueryView(isPlaceholderData ? { ...issueQuery, data: undefined } : issueQuery);
   useEffect(() => {
     if (issueId) void prefetchIssueThread(queryClient, issueId);
   }, [issueId, queryClient]);
@@ -3139,9 +3144,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   };
   // A cached header seed can paint during navigation, but must not redirect
   // or upload against the previous task while the requested task is loading.
+  // A failed refetch of an already loaded task does not unload it.
   const loadedIssue =
     !isPlaceholderData &&
-    !error &&
+    !(error && !queriedIssue) &&
     issue &&
     issueId &&
     (issue.id.toLowerCase() === issueId.toLowerCase() ||
@@ -3461,7 +3467,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: !!session?.user?.id,
-    retry: false,
   });
   const canManageTreeControl = Boolean(
     selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
@@ -3485,13 +3490,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
     enabled: !!issueId,
-    retry: false,
   });
   const { data: instanceExperimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: !!issueId,
-    retry: false,
   });
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
@@ -3544,13 +3547,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }),
     enabled: treeControlOpen && !!issueId && canManageTreeControl,
     staleTime: 0,
-    retry: false,
   });
   const { data: treeControlState, error: treeControlStateError } = useQuery({
     queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
     queryFn: () => issuesApi.getTreeControlState(issueId!),
     enabled: !!issueId,
-    retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
     queryKey: [
@@ -6905,9 +6906,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [activePauseHold, issue]);
 
-  if (isLoading)
+  // The loaded task stays on screen while a refetch fails (the connection
+  // banner explains the outage); the skeleton covers an outage before the
+  // first load; only a real failure replaces the pane.
+  if (isLoading || (issueView.kind === "reconnecting" && (!issue || isPlaceholderData)))
     return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (issueView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={error}
+        action="load this task"
+        onRetry={issueView.retry}
+        retrying={issueView.isFetching}
+      />
+    );
+  }
   if (!issue) return null;
   // Do not expose a file chooser on the outgoing UUID/company/interface
   // branch: its input can be detached before the chosen file is returned.
@@ -7531,7 +7545,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
-        checkError={checkIssueMonitorNow.error?.message}
+        checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
         onCheckNow={() => checkIssueMonitorNow.mutate()}
         checkingNow={checkIssueMonitorNow.isPending}
       />
@@ -7690,7 +7704,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 role="alert"
                 className={cn("text-sm text-destructive", shellSectionClass)}
               >
-                {executeTreeControl.error.message}
+                {describeError(executeTreeControl.error).body}
               </p>
             )}
 
@@ -8099,7 +8113,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                       <IssueMonitorComposerStrip
                         issue={issue}
                         workProducts={workProducts}
-                        checkError={checkIssueMonitorNow.error?.message}
+                        checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}
                         checkingNow={checkIssueMonitorNow.isPending}
                       />
@@ -8330,7 +8344,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             error={
               treeControlPreviewError
                 ? treeControlPreviewErrorCopy(treeControlPreviewError)
-                : executeTreeControl.error?.message
+                : executeTreeControl.error
+                  ? describeError(executeTreeControl.error).body
+                  : undefined
             }
             pending={executeTreeControl.isPending}
             valid={canApplyTreeControl}

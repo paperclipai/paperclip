@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceOverviewItem, WorkspaceOverviewResponse } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { Workspaces } from "./Workspaces";
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
@@ -227,6 +228,30 @@ describe("Workspaces", () => {
     await flushQueries();
 
     expect(container.textContent).toContain("/issues");
+    expect(mockExecutionWorkspacesApi.listOverview).not.toHaveBeenCalled();
+  });
+
+  it("shows readable copy with Retry instead of redirecting when the feature flag cannot be read", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(
+      new ApiError("Too many requests", 429, { error: "rate_limited" }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Workspaces />
+        </QueryClientProvider>,
+      );
+    });
+    await flushQueries();
+
+    expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).not.toContain("rate_limited");
+    expect(alert?.querySelector("button")?.textContent).toContain("Retry");
     expect(mockExecutionWorkspacesApi.listOverview).not.toHaveBeenCalled();
   });
 });

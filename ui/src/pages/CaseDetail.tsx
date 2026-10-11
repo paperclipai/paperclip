@@ -28,6 +28,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { CaseFieldValue } from "@/components/CaseFieldsPanel";
 import { CaseActivityFeed } from "@/components/CaseActivityFeed";
 import { CaseChildrenTree } from "@/components/CaseChildrenTree";
@@ -459,6 +460,7 @@ export function CaseDetail() {
     queryFn: () => casesApi.get(caseIdentifier!),
     enabled: !!caseIdentifier,
   });
+  const caseView = useQueryView(caseQuery);
   const caseData = caseQuery.data;
   const caseDetailQueryKey = queryKeys.cases.detail(caseIdentifier ?? "");
 
@@ -584,8 +586,12 @@ export function CaseDetail() {
   }, [panelContent, openPanel, closePanel]);
 
   if (!caseIdentifier) return <Navigate to={caseHref()} replace />;
-  if (caseQuery.isLoading) return <PageSkeleton variant="detail" />;
-  if (caseQuery.isError || !caseData) {
+  if (caseQuery.isLoading || caseView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  // "Not found" only for a real 404; an outage never looks like a missing case.
+  if (caseView.kind === "error" && caseView.errorKind !== "not_found") {
+    return <QueryErrorState size="page" error={caseQuery.error} action="load this case" onRetry={caseView.retry} retrying={caseView.isFetching} />;
+  }
+  if (caseView.kind === "error" || !caseData) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
         <p className="text-sm text-muted-foreground">Case not found.</p>

@@ -22,6 +22,7 @@ import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
@@ -353,7 +354,7 @@ export function ProjectDetail() {
   }, [location.search]);
   const activeTab = activeRouteTab ?? pluginTabFromSearch;
 
-  const { data: project, isLoading, error } = useQuery({
+  const projectQuery = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
@@ -365,6 +366,8 @@ export function ProjectDetail() {
       ? previous
       : undefined,
   });
+  const { data: project, isLoading, error } = projectQuery;
+  const projectView = useQueryView(projectQuery);
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
@@ -401,24 +404,27 @@ export function ProjectDetail() {
   const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
   const workspaceTabProjectId = project?.id ?? null;
-  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
+  const workspaceTabIssuesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
       : ["issues", "__workspace-tab__", "disabled"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
-  const {
-    data: workspaceTabExecutionWorkspaces = [],
-    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
-    error: workspaceTabExecutionWorkspacesError,
-  } = useQuery({
+  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading } = workspaceTabIssuesQuery;
+  const workspaceTabIssuesView = useQueryView(workspaceTabIssuesQuery);
+  const workspaceTabExecutionWorkspacesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
       : ["execution-workspaces", "__workspace-tab__", "disabled"],
     queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
+  const {
+    data: workspaceTabExecutionWorkspaces = [],
+    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
+  } = workspaceTabExecutionWorkspacesQuery;
+  const workspaceTabExecutionWorkspacesView = useQueryView(workspaceTabExecutionWorkspacesQuery);
   const workspaceSummaries = useMemo(() => {
     if (!project || !isolatedWorkspacesEnabled) return [];
     return buildProjectWorkspaceSummaries({
@@ -428,10 +434,18 @@ export function ProjectDetail() {
     });
   }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
   const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const workspaceTabReconnecting =
+    workspaceTabIssuesView.kind === "reconnecting" || workspaceTabExecutionWorkspacesView.kind === "reconnecting";
   const workspaceTabDecisionLoaded =
     experimentalSettingsQuery.isFetched &&
-    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
-  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
+    (!isolatedWorkspacesEnabled ||
+      (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading && !workspaceTabReconnecting));
+  // Only a real failure shows an error; loaded summaries stay through an outage.
+  const workspaceTabFailure = workspaceTabIssuesView.kind === "error"
+    ? workspaceTabIssuesView
+    : workspaceTabExecutionWorkspacesView.kind === "error"
+      ? workspaceTabExecutionWorkspacesView
+      : null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -685,8 +699,10 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (isLoading || projectView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (projectView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this project" onRetry={projectView.retry} retrying={projectView.isFetching} />;
+  }
   if (!project) return null;
   const showLeftProjectNotice =
     projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
@@ -876,8 +892,13 @@ export function ProjectDetail() {
 
       {activeTab === "workspaces" ? (
         workspaceTabDecisionLoaded ? (
-          workspaceTabError ? (
-            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+          workspaceTabFailure ? (
+            <QueryErrorState
+              error={workspaceTabFailure.error}
+              action="load workspaces"
+              onRetry={workspaceTabFailure.retry}
+              retrying={workspaceTabFailure.isFetching}
+            />
           ) : (
             <ProjectWorkspacesContent
               companyId={resolvedCompanyId!}
