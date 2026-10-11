@@ -10,6 +10,7 @@ import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "./r
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
+import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -218,6 +219,62 @@ describePostgres("heartbeat recovery module ownership", () => {
     }
   });
 
+  it("starts all owned shutdown cancellations within one settlement window", async () => {
+    const runs = await Promise.all([seedRun(), seedRun()]);
+    const controls = runs.map(run => {
+      const control = createAdapterExecutionControl(); adapterExecutionControls.set(run.id, control); return control;
+    });
+    const deps = callbacks(db);
+    deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning();
+      return { updated: true, run: updated };
+    });
+    const drain = createHeartbeatRecovery(db, deps).drainRunningRunsForShutdown("SIGTERM", new Date(), runs.map(run => run.id));
+    try {
+      await vi.waitFor(() => expect(controls.every(control => control.controller.signal.aborted)).toBe(true));
+      expect(deps.releaseEnvironmentLeasesForRun).not.toHaveBeenCalled();
+    } finally {
+      controls.forEach(control => control.finish());
+      await drain;
+      for (const run of runs) { adapterExecutionControls.delete(run.id); await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)); }
+    }
+  });
+
+  it.each(["ephemeral", "reuse_by_environment"] as const)("protects a %s export from another server and pins it after controller loss", async leasePolicy => {
+    const run = await seedRun();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: run.issueId } }).where(eq(heartbeatRuns.id, run.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
+      issueId: run.issueId, status: "active", provider: "daytona", providerLeaseId: randomUUID(), leasePolicy,
+      metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: "fixture-plugin", remoteCwd: "/home/daytona/workspace" } }).returning();
+    try {
+      const deadline = new Date(Date.now() + 30_000);
+      await beginLegacyShutdownWorkspaceSettlement(db, run, deadline);
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      const foreignDeps = callbacks(db);
+      const foreign = createHeartbeatRecovery(db, foreignDeps);
+      expect(await foreign.sweepOrphanedActiveLeases({ backoffMs: 0 })).toMatchObject({ recovered: 0 });
+      expect(await environmentRuntimeService(db).releaseRunLeases(run.id)).toEqual([]);
+      await db.update(environmentLeases).set({ status: "pending_cleanup" }).where(eq(environmentLeases.id, lease.id));
+      expect(await foreign.sweepPendingCleanupLeases({ backoffMs: 0 })).toMatchObject({ destroyed: 0 });
+      await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, lease.id));
+      let source = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0];
+      expect(source.status).toBe("active");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!))).toHaveLength(0);
+      // No local adapter map or timeout handler survives a container SIGKILL.
+      expect(await allowLegacyShutdownWorkspaceCleanup(db, source, new Date(deadline.getTime() + 1))).toBe(true);
+      source = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0];
+      expect(source).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+        metadata: { legacyShutdownWorkspaceSettlement: { state: "expired" }, sandboxStopAndRetain: { leaseId: lease.id } } });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].resultJson)
+        .toMatchObject({ workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+      expect(await foreign.sweepOrphanedActiveLeases({ backoffMs: 0 })).toMatchObject({ recovered: 0 });
+    } finally {
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
   it("pins an unjoined sandbox restore for repair before bounded shutdown cleanup", async () => {
     const run = await seedRun();
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: run.issueId } }).where(eq(heartbeatRuns.id, run.id));
@@ -226,6 +283,8 @@ describePostgres("heartbeat recovery module ownership", () => {
       metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: "fixture-plugin", remoteCwd: "/home/daytona/workspace" } }).returning();
     const deps = callbacks(db);
     deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].metadata)
+        .toMatchObject({ legacyShutdownWorkspaceSettlement: { state: "pending", runId: run.id } });
       const [updated] = await db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning();
       return { updated: true, run: updated };
     });

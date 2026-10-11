@@ -1137,7 +1137,13 @@ An interrupted conversation does not permanently block its task. For local conve
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
-control, then waits up to 30 seconds for provider stop and adapter settlement.
+control, then waits within one shared 30-second window for provider stop and
+adapter settlement across all affected runs. Before interruption becomes visible,
+it commits a settlement fence on the exact sandbox lease. Cleanup on this server
+or another server defers while that fence is pending. If the controller dies,
+cleanup records exact stop-only retention and a repair hold after the deadline,
+without claiming a successful restore. The shipped Compose services allow 90
+seconds for settlement and subsequent shutdown cleanup.
 The sandbox lease remains available during workspace export and instruction
 collection. Lease release and recovery classification follow settlement and use
 the current execution evidence. If settlement exceeds the deadline with an
