@@ -273,6 +273,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableFastResponses: {
+    title: "Experimental fast responses",
+    description:
+      "Show Connections in company settings and allow short acknowledgements while agents begin work.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableGoalsSidebarLink: {
     title: "Goals Sidebar Link",
     description: "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",

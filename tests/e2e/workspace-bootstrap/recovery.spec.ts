@@ -22,11 +22,11 @@ for (const persistent of [false, true]) {
     if (await announcement.isVisible()) await announcement.click();
     await page.getByRole("link", { name: "Tasks", exact: true }).click();
     await page.getByRole("button", { name: "New Task", exact: true }).last().click();
-    await page.getByPlaceholder("Task title (optional)", { exact: true }).fill(title);
-    await page.getByRole("button", { name: "Assignee", exact: true }).click();
-    await page.getByRole("button", { name: fixture.agentName, exact: true }).click();
+    await page.getByRole("textbox", { name: "editable markdown" }).fill(title);
+    await page.getByRole("button", { name: "Select assignee", exact: true }).click();
+    await page.getByRole("option").filter({ hasText: fixture.agentName }).click();
     // Let the closing popover unmount before clicking another popover trigger.
-    await expect(page.getByRole("textbox", { name: "Search assignees...", includeHidden: true })).toHaveCount(0);
+    await expect(page.getByRole("searchbox", { name: "Search assignees", includeHidden: true })).toHaveCount(0);
     // The preceding popover's focus restoration can consume the first click.
     await expect(async () => {
       if (!await page.getByRole("textbox", { name: "Search projects..." }).isVisible()) {
@@ -36,15 +36,21 @@ for (const persistent of [false, true]) {
     }).toPass({ timeout: 10_000, intervals: [1_000] });
     await page.getByRole("button", { name: fixture.projectName, exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Search projects...", includeHidden: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Create Task", exact: true }).click();
-    const taskLink = page.getByRole("complementary").getByRole("link", { name: title, exact: true });
+    const created = page.waitForResponse(response =>
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/companies/${fixture.companyId}/issues`,
+    );
+    await page.getByRole("button", { name: "Create task", exact: true }).click();
+    const response = await created;
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const task = await response.json();
+    expect(task.description).toBe(title);
+    const taskLink = page.getByRole("complementary").getByRole("link", { name: task.title, exact: true });
     await expect(taskLink).toBeVisible();
     // Follow the UI's actual persisted link, including across task-tab state.
     const href = await taskLink.getAttribute("href");
     expect(href).toBeTruthy();
     await page.goto(new URL(href!, base).href);
-    const tasks = await api(`/companies/${fixture.companyId}/issues`);
-    const task = tasks.find((row: { title: string }) => row.title === title);
     const runs = async () => (await api(`/companies/${fixture.companyId}/heartbeat-runs`)).filter((row: { agentId: string }) => row.agentId === fixture.agentId);
     await expect.poll(async () => (await runs()).some((row: { errorCode: string }) => row.errorCode === "workspace_git_scan_timeout"), { timeout: 30_000 }).toBe(true);
     await expect(page.getByText(/Agent resumes in/)).toBeVisible();

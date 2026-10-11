@@ -1,5 +1,7 @@
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent, fastResponseTurnQueued } from "./fast-responses.js";
+import { fastResponseRequests } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
@@ -1406,6 +1408,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             state: event.wakePending ? "active" : conversation.state,
           })
           .where(eq(chatConversations.id, conversation.id));
+        if (event.wakePending && link?.commentId) await enqueueFastResponse(tx as unknown as Db, {
+          companyId: endpoint.companyId, issueId: task.id, agentId: endpoint.assignedAgentId, responsibleUserId: null, sponsored: true,
+          sourceKey: `comment:${link.commentId}`, sourceCommentId: link.commentId, acceptedAt: new Date(), endpointId: endpoint.id, conversationId: conversation.id, deliveryId: delivery.id,
+        });
       });
     }
     if (event.wakePending && event.issueId) {
@@ -1452,6 +1458,32 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       })
       .where(eq(chatDeliveries.id, delivery.id));
   }
+  async function authorizeFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect) {
+    const [endpoint] = await tx.select().from(chatEndpoints).where(and(eq(chatEndpoints.companyId, request.companyId), eq(chatEndpoints.id, request.endpointId!)));
+    if (!endpoint || endpoint.provider !== "agentmail" || endpoint.status !== "active" || endpoint.assignedAgentId !== request.agentId || !endpoint.sponsorUserId) throw forbidden();
+    await active(endpoint);
+    await authorize(endpoint, request.issueId!, { userId: endpoint.sponsorUserId, localImplicit: endpoint.sponsorUserId === "local-board" });
+    const [link] = await tx.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.companyId, request.companyId), eq(chatMessageLinks.deliveryId, request.deliveryId!), eq(chatMessageLinks.commentId, request.sourceCommentId!), eq(chatMessageLinks.direction, "inbound")));
+    if (!link || link.endpointId !== request.endpointId || link.conversationId !== request.conversationId) throw forbidden();
+    const [message] = await tx.select().from(emailMessages).where(and(eq(emailMessages.companyId, request.companyId), eq(emailMessages.endpointId, request.endpointId!), eq(emailMessages.providerMessageId, link.providerMessageId)));
+    if (!message || message.automatic || message.direction !== "inbound") throw forbidden();
+    const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, request.companyId), eq(agents.id, request.agentId!)));
+    return { agentName: agent?.name ?? "Assistant", message: message.text, queued: await fastResponseTurnQueued(tx, request) };
+  }
+  async function publishFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect, commentId: string, text: string) {
+    await authorizeFastResponse(tx, request);
+    const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+    const [link] = await tx.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.companyId, request.companyId), eq(chatMessageLinks.deliveryId, request.deliveryId!), eq(chatMessageLinks.commentId, request.sourceCommentId!)));
+    const input: EmailSendInput = { endpointId: endpoint.id, conversationId: request.conversationId!, replyToMessageId: link.providerMessageId, replyAll: false,
+      text, attachmentIds: [], idempotencyKey: request.id };
+    const actor = { userId: endpoint.sponsorUserId!, localImplicit: endpoint.sponsorUserId === "local-board" };
+    await policy(endpoint, input, actor, true);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
+    await tx.insert(chatPublications).values({ id: request.id, companyId: request.companyId, endpointId: endpoint.id, conversationId: request.conversationId!, issueId: request.issueId!, commentId,
+      idempotencyKey: `fast-response:${request.id}`, payload: { text } });
+    await tx.insert(emailSends).values({ companyId: request.companyId, endpointId: endpoint.id, publicationId: request.id, request: input, actor, digest: hash({ input, actor }) });
+  }
+
   async function queueSend(
     companyId: string,
     input: EmailSendInput,
@@ -1648,6 +1680,22 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         .where(eq(chatPublications.id, pub.id));
       return;
     }
+    const fastResponseEligible = async () => {
+      if (!pub.idempotencyKey.startsWith("fast-response:")) return true;
+      return db.transaction(async tx => {
+        const [request] = await tx.select().from(fastResponseRequests).where(and(eq(fastResponseRequests.id, pub.id), eq(fastResponseRequests.companyId, pub.companyId)));
+        if (!request || !(await fastResponseSourceCurrent(tx as unknown as Db, request))) return false;
+        try { await fastResponseService(tx as unknown as Db).authorize(tx as unknown as Db, request); await authorizeFastResponse(tx as unknown as Db, request); return request.expiresAt.getTime() > Date.now(); } catch { return false; }
+      });
+    };
+    if (pub.idempotencyKey.startsWith("fast-response:") && send.firstAttemptAt) {
+      await db.update(chatPublications).set({ state: "delivery_unknown", redactedError: "Fast response delivery needs reconciliation" }).where(eq(chatPublications.id, pub.id));
+      return;
+    }
+    if (!(await fastResponseEligible())) {
+      await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, pub.id));
+      return;
+    }
     const input = send.request;
     let attempted = false;
     try {
@@ -1751,6 +1799,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         throw badRequest("The reply has no external recipient");
       await active(endpoint);
       await fence();
+      if (!(await fastResponseEligible())) {
+        await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, pub.id));
+        return;
+      }
       attempted = true;
       const result = await api.send(
         endpoint.botExternalId!,
@@ -2648,12 +2700,15 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     setup,
     getEndpoint,
     summary,
+    authorizeFastResponse,
+    publishFastResponse,
     queueSend,
     publication,
     thread,
     webhook,
     admit,
     tick,
+    async flushPublications() { await activeTick; await tick(); },
     control,
     reconnect,
     resolveUncertain,

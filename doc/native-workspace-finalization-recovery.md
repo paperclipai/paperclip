@@ -219,3 +219,28 @@ plugin RPC. Its intent pins the registered built-in provider and its receipt say
 `builtin.stopLease`. This provider owns no real process or filesystem; the receipt
 models its lifecycle. Missing built-in stop support or an unconfirmed receipt
 also remains pending through restart, without calling release or destroy.
+
+### Legacy copy-back after a confirmed stop
+
+A legacy adapter can report failed workspace copy-back after cancellation has
+already stopped and released its sandbox lease. The host records the exact lease
+snapshot from before adapter dispatch. For an originally ephemeral source, the
+recorder can preserve the released allocation for repair only while the current
+lease is still ephemeral and its company, run, issue, workspace, provider,
+allocation, acquisition time, plugin, and realized root still match. It requires
+both the dedicated stop-and-retain receipt and the matching stopped-execution
+receipt. A competing owner or changed source fails closed. The recorder leaves
+release status and receipts intact, excludes the allocation from reuse, and
+creates the existing board-owned file-repair obligation without replaying work
+or changing a newer run or the task's status.
+
+This late-recording path does not admit reusable leases. Provider resume can
+precede the database handoff, so an old stop receipt and a database row lock
+cannot prove that reuse has not started. Existing active-source and previously
+recorded recovery paths retain their behavior. A missing or rejected original
+snapshot does not authorize adopting another released lease.
+
+A retained source receipt records control-plane evidence; it does not prove the
+provider still holds the original bytes or that copy-back succeeded. Operators
+must verify and recover the exact source separately. Later successful runs and
+completed tasks do not certify recovery of earlier workspace files.

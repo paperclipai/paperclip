@@ -1,3 +1,4 @@
+import { FastResponseHistory } from "../components/fast-responses/FastResponseHistory";
 import { DecisionHistory } from "../components/decision-models/DecisionHistory";
 import { SubscriptionCostCard, SubscriptionTokenUsage } from "../components/SubscriptionCostCard";
 import { subscriptionsApi } from "../api/subscriptions";
@@ -44,7 +45,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
-export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance" | "decisions";
+export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance" | "decisions" | "fast-responses";
 
 export interface CostsProps {
   /** Render inside Audit without a second page-level title or breadcrumb. */
@@ -201,7 +202,7 @@ export function Costs({
 
   useEffect(() => {
     const tab = searchParams.get("tab");
-    setMainTab(!lockTab && tab && ["overview", "providers", "billers", "finance", "budgets", "decisions"].includes(tab) ? tab as CostsMainTab : initialTab);
+    setMainTab(!lockTab && tab && ["overview", "providers", "billers", "finance", "budgets", "decisions", "fast-responses"].includes(tab) ? tab as CostsMainTab : initialTab);
   }, [initialTab, lockTab, searchParams]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
@@ -738,10 +739,12 @@ export function Costs({
               <TabsTrigger value="billers">Billers</TabsTrigger>
               <TabsTrigger value="finance">Finance</TabsTrigger>
               <TabsTrigger value="decisions">Decisions</TabsTrigger>
+              <TabsTrigger value="fast-responses">Fast responses</TabsTrigger>
             </TabsList>
           </div>
         ) : null}
 
+        <TabsContent value="fast-responses" className="mt-4">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <FastResponseHistory companyId={companyId} from={from} to={to} />}</TabsContent>
         <TabsContent value="decisions" className="mt-4">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <DecisionHistory companyId={companyId} from={from} to={to} />}</TabsContent>
         <TabsContent value="overview" className="mt-4 space-y-4">
           {showCustomPrompt ? (

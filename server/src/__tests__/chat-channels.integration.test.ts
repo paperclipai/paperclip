@@ -1,3 +1,12 @@
+import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
+import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { aiConnectionService } from "../services/ai-connections.js";
+import { fastResponseService } from "../services/fast-responses.js";
+import { fastResponseReceipt } from "../services/fast-response-provider.js";
+import { fastResponseRequests } from "@paperclipai/db";
 import { chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
 import { buildSlackAppManifest } from "@paperclipai/shared";
 import { toolAccessService } from "../services/tool-access.js";
@@ -2465,6 +2474,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.responseWrites).toEqual([]);
       expect(f.responseComments.size).toBe(0);
     });
+    it.each(["published", "failed", "delivery_unknown"] as const)("coordinates GitHub working feedback with a %s fast response", async outcome => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse,
+        provider: async () => ({ ...(outcome === "failed" ? { errorCode: "invalid_output", noProviderWork: true } : { text: "I’ll check the border styling." }), receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 8 } }) }) });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()); onTestFinished(() => now.mockRestore());
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix the border styling", userId: "42", userName: "octocat", mentioned: true }) });
+      const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+      expect(job).toBeDefined();
+      expect(f.responseWrites).toEqual([]);
+      await fast.process(job);
+      if (outcome === "delivery_unknown") {
+        await db.update(chatPublications).set({ state: "delivery_unknown" }).where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+      } else await f.service.processPendingPublications();
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      if (outcome === "failed") expect(f.responseWrites).toEqual([expect.objectContaining({ body: expect.stringContaining("Working on this") })]);
+      else expect(f.responseWrites).toEqual([]);
+      if (outcome === "published") {
+        expect(f.runtime.endpoints.get(f.endpoint.id)!.posts).toContainEqual({ threadId: thread.id, text: "I’ll check the border styling." });
+        const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+          status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+            endpointId: f.endpoint.id, issueId: job.issueId, provider: "github", providerMessageId: "41801",
+          }) }).returning();
+        await githubChatReviewService(db, f.providerFetch).execute({ companyId: f.companyId, agentId: f.assignedAgentId,
+          issueId: job.issueId!, runId: run.id }, "comment", { body: "The border styling is fixed.", idempotencyKey: "fast-response-final" });
+        expect(f.responseWrites).toEqual([expect.objectContaining({ body: expect.stringContaining("The border styling is fixed.") })]);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("running");
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, job.issueId!)))[0].status).not.toBe("done");
+    });
     it("acknowledges a GitHub request after a durable scheduler retry succeeds", async () => {
       const f = await reviewBotFixture();
       f.wakeup.mockRejectedValueOnce(new Error("Temporary scheduler outage"));
@@ -4450,7 +4493,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const delivery = randomUUID();
         const send = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({ event, delivery, payload, webhookSecret: f.webhookSecret }));
         expect((await send()).status).toBeLessThan(300);
-        await expect.poll(async () => (await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id))).length).toBe(1);
+        // Webhook acknowledgement precedes the asynchronous admission transaction.
+        await expect.poll(async () => (await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id))).length, { timeout: 10_000 }).toBe(1);
         await send();
         const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id));
         expect(conversation.externalThreadId).toBe(`github:PaperclipAI/Paperclip:${event === "issues" || event === "issue_comment" ? "issue:" : ""}83${event === "pull_request_review_comment" ? ":rc:83000" : ""}`);
@@ -6511,6 +6555,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect(restarted.slackRegistration.install(f.endpoint.id, actor)).resolves.toHaveProperty("authorizationUrl");
       expect((await restarted.get(f.endpoint.id)).setup.webhookVerifiedAt).toBeFalsy();
     });
+    it("wakes verification from a signed callback with no maintenance polling", async () => {
+      const f = await fixture({ scheduleDeferredWork: () => undefined });
+      await f.create(); await f.service.slackRegistration.complete(await f.install(), "code", null, actor);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await registerChatActionWork(coordinator, f.service, () => true).ready;
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+        expect(await f.service.nextVerificationMessageAt()).toBeNull();
+        await f.service.handleWebhook(f.endpoint.publicId, "slack", signedSlackWebhookRequest({
+          url: f.endpoint.setup.webhookUrl!, contentType: "application/json", signingSecret,
+          body: JSON.stringify({ type: "url_verification", challenge: "scheduler" }),
+        }));
+        await vi.waitFor(async () => {
+          expect((await f.service.get(f.endpoint.id)).setup.slackAccount?.verificationStatus).toBe("sent");
+          expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("chat.postMessage"))).toHaveLength(2);
+        expect(onError).not.toHaveBeenCalled();
+      } finally { await coordinator.stop(); }
+    });
     it("acknowledges verification before sending one DM across concurrent callbacks and restart recovery", async () => {
       const f = await fixture({ scheduleDeferredWork: () => undefined });
       await f.create(); await f.service.slackRegistration.complete(await f.install(), "code", null, actor);
@@ -6898,10 +6963,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await request(app).patch(`/api/chat-endpoints/${github.id}`).send({ communicationInstructions: "Not enabled" }).expect(422);
   });
 
+  it.each(["slack", "github"] as const)("publishes fast responses to the accepted %s thread without completing its work", async channelProvider => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true, enableFastResponses: true });
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } = channelProvider === "github" ? await configuredGitHubEndpoint(fixture) : await configuredSlackEndpoint(fixture);
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    if (channelProvider === "github") {
+      const current = await service.get(endpoint.id);
+      const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "github", providerAccountId: current.providerAccountId!, externalId: "42", kind: "user", displayName: "Octocat", handle: "octocat", isBot: false }).returning();
+      await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+    }
+    const binding = await aiConnectionService(db).save(fixture.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast test", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+    const provider = vi.fn(async () => ({ text: "I’ll check the border styling.", receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 8 }, response: { body: { usage: { cost: 0.00001 } } } }) }));
+    const fast = fastResponseService(db, { provider, authorizeExternal: service.authorizeFastResponse });
+    await fast.configure(fixture.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()); onTestFinished(() => now.mockRestore());
+    const current = await service.get(endpoint.id);
+    const channel = makeThread(channelProvider === "github" ? { channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:903" } : { channelId: "CFAST", id: "slack:CFAST:9000.1", name: "fast response test" });
+    await deliverMessage({ callbacks, provider: channelProvider, endpointId: endpoint.id, thread: channel.thread,
+      message: makeMessage({ id: "9000.1", text: `@${current.botUsername ?? "maya"} fix the border styling`, mentioned: true, ...(channelProvider === "github" ? { userId: "42", userName: "octocat" } : {}) }), trigger: "mention" });
+    const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, fixture.companyId));
+    expect(job).toBeDefined(); expect(wakeup).toHaveBeenCalled();
+    const [queuedRun] = await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "queued", contextSnapshot: { issueId: job.issueId, wakeCommentId: job.sourceCommentId } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: queuedRun.id }).where(and(eq(agentWakeupRequests.companyId, fixture.companyId), eq(agentWakeupRequests.agentId, fixture.assignedAgentId)));
+    await fast.process(job);
+    expect(provider).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringContaining('"state":"queued"') }));
+    await service.processPendingPublications();
+    const posts = runtime.endpoints.get(endpoint.id)!.posts;
+    expect(posts).toContainEqual({ threadId: channel.thread.id, text: "I’ll check the border styling." });
+    const [receipt] = await db.select().from(issueComments).where(and(eq(issueComments.issueId, job.issueId!), eq(issueComments.origin, "fast_response")));
+    expect(receipt).toMatchObject({ authorAgentId: fixture.assignedAgentId, createdByRunId: null });
+    expect((await db.select().from(issues).where(eq(issues.id, job.issueId!)))[0].status).not.toBe("done");
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
   it("mirrors Paperclip messages with user attribution and returns only the selected Slack reply", async () => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatBoardMessages, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const channel = makeThread({ channelId: "CBOARD", id: "slack:CBOARD:8000.1", name: "board" });
     await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
       message: makeMessage({ id: "8000.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
@@ -6936,6 +7039,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "**Owner User (via Paperclip)**\n\nPlease make the plan", "The plan is ready.",
     ]);
     // The explicit Board composer uses the same mirror and a durable wakeup.
+    workWake.mockClear();
     const key = randomUUID();
     await service.publishBoardMessage(endpoint.id, conversation.id, "Now assign the follow-ups", key, "owner-user");
     await service.publishBoardMessage(endpoint.id, conversation.id, "Now assign the follow-ups", key, "owner-user");
@@ -6948,9 +7052,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     wakeup.mockRejectedValueOnce(new Error("temporary scheduler failure"));
     await service.publishBoardMessage(endpoint.id, conversation.id, "Retry this work", randomUUID(), "owner-user");
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(1);
-    await service.processPendingDeliveries();
+    const recovery = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      await registerChatActionWork(recovery, service, () => true).ready;
+      await vi.waitFor(async () => {
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(0);
+      });
+    } finally { await recovery.stop(); }
     await service.processPendingPublications();
-    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(0);
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("Retry this work"))).toHaveLength(1);
   });
 
@@ -7345,7 +7454,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const countBefore = postFetch.mock.calls.length;
     await executeConnectorTool(db, binding, "slack_post_message", uncertain);
     expect(postFetch.mock.calls).toHaveLength(countBefore);
-    await expect(executeSlackTool(db, binding, "slack_delivery", { actionId: uncertainAction.id }, postFetch as typeof fetch)).resolves.toMatchObject({ state: "delivered", receipt: { reconciled: true } });
+    const receiptSettled = vi.fn();
+    const unsubscribeReceipt = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, receiptSettled);
+    try {
+      await expect(executeSlackTool(db, binding, "slack_delivery", { actionId: uncertainAction.id }, postFetch as typeof fetch)).resolves.toMatchObject({ state: "delivered", receipt: { reconciled: true } });
+      expect(receiptSettled).toHaveBeenCalledTimes(1);
+    } finally { unsubscribeReceipt(); }
     await expect(executeConnectorTool(db, binding, "slack_create_channel", { name: "approval-required", is_private: true, idempotencyKey: randomUUID() })).rejects.toMatchObject({ reasonCode: expect.stringMatching(/approval/) });
     expect(postFetch.mock.calls.some(call => String(call[0]).endsWith("/conversations.create"))).toBe(false);
     const [approval] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, fixture.companyId));
@@ -14482,6 +14596,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .onDiscordGatewayEvent;
     if (!onGatewayEvent) throw new Error("Expected Discord Gateway callback");
 
+    const recovered = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, recovered);
     const disconnect = Promise.resolve(
       onGatewayEvent({
         endpointId: endpoint.id,
@@ -14505,7 +14621,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await Promise.resolve();
     expect(recoveryFinished).toBe(false);
     releaseDisconnect();
-    await Promise.all([disconnect, recovery]);
+    try {
+      await Promise.all([disconnect, recovery]);
+      expect(recovered).toHaveBeenCalled();
+    } finally { unsubscribe(); }
     await expect(context.service.get(endpoint.id)).resolves.toMatchObject({
       status: "active",
       healthMessage: "Connected",
@@ -17360,10 +17479,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
+    const originalTransaction = db.transaction.bind(db);
     const transaction = vi.spyOn(db, "transaction");
-    transaction.mockRejectedValueOnce(
-      new Error("injected lifecycle persistence failure"),
-    );
+    let injected = false;
+    transaction.mockImplementation(async (callback, options) => {
+      const [delivery] = await db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, "lifecycle:Ev-lifecycle-retry"),
+      ));
+      // Fail the lifecycle effect after durable admission and claim, regardless
+      // of how many transaction boundaries those writes require.
+      if (!injected && delivery?.state === "processing") {
+        injected = true;
+        throw new Error("injected lifecycle persistence failure");
+      }
+      return originalTransaction(callback, options);
+    });
     await expect(
       service.handleWebhook(
         endpoint.publicId,
@@ -18277,6 +18408,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, { cancelRun });
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatSessionStops, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const externalUserId = "USTOPPER1";
     const channelId = "CSTOPSESSION1";
     const threadTs = `${Math.floor(Date.now() / 1_000) - 5}.100000`;
@@ -18383,6 +18517,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const webhookUrl = `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`;
+    workWake.mockClear();
     const first = await service.handleWebhook(
       endpoint.publicId,
       "slack",
@@ -27565,6 +27700,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatReceiptReactions, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const endpointRuntime = runtime.endpoints.get(endpoint.id);
     if (!endpointRuntime) throw new Error("Expected Slack runtime");
     endpointRuntime.reactionErrors.push(
@@ -32753,6 +32891,253 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
     return { ...fixture, storage, runtime, service, lanes, enqueue, cleanup };
   }
+
+  it("restores action retry and stale-claim deadlines and parks paused or uncertain work", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const at = new Date();
+    const later = new Date(at.getTime() + 120_000);
+    try {
+      for (const kind of Object.keys(CHAT_ACTION_QUEUES) as (keyof typeof CHAT_ACTION_QUEUES)[]) {
+        const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+          kind, providerActionId: randomUUID(), status: "received", updatedAt: at }).returning();
+        const set = (status: string, result: Record<string, unknown> = {}) => db.update(chatActions)
+          .set({ status, result, updatedAt: at }).where(eq(chatActions.id, action!.id));
+        const due = async () => db.select({ id: chatActions.id }).from(chatActions)
+          .leftJoin(chatEndpoints, eq(chatEndpoints.id, chatActions.endpointId))
+          .where(and(eq(chatActions.id, action!.id), dueChatAction(kind))).then(rows => rows.length > 0);
+        if (kind === "slack_board_message") {
+          expect(await due()).toBe(true);
+          await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+          expect(await due()).toBe(false);
+          await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+        } else if (kind === "slash_task_start") {
+          for (const [status, delay] of [["validating", 60_000], ["resolving", 300_000], ["admitting", 60_000]] as const) {
+            await set(status);
+            expect(await f.service.nextChatActionAt(kind)).toBe(at.getTime() + delay);
+            expect(await due()).toBe(false);
+          }
+          for (const status of ["queued", "provider_confirmed"]) {
+            await set(status, { retryAt: later.toISOString() });
+            expect(await f.service.nextChatActionAt(kind)).toBe(later.getTime());
+            expect(await due()).toBe(false);
+            await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+            expect(await f.service.nextChatActionAt(kind)).toBeNull();
+            await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+          }
+          await set("delivery_unknown");
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+          expect(await due()).toBe(false);
+        } else {
+          expect(await due()).toBe(true);
+          await set("processing");
+          expect(await f.service.nextChatActionAt(kind)).toBe(at.getTime() + 60_000);
+          expect(await due()).toBe(false);
+          await set("failed", { retryable: true, retryAt: later.toISOString() });
+          expect(await f.service.nextChatActionAt(kind)).toBe(later.getTime());
+          expect(await due()).toBe(false);
+          await set("failed", { retryable: false });
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+        }
+        await set("processed");
+        expect(await f.service.nextChatActionAt(kind)).toBeNull();
+      }
+    } finally { await f.cleanup(); }
+  });
+
+  it("recovers action rows on startup, wakes after outer commit, and leaves empty queues quiet", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const action = (kind: "receipt_reaction" | "slack_session_stop") => ({ companyId: f.companyId,
+      endpointId: lane.endpoint.id, kind, providerActionId: randomUUID(), status: "processing",
+      updatedAt: new Date(Date.now() - 120_000), payload: {} });
+    try {
+      const [stale] = await db.insert(chatActions).values(action("receipt_reaction")).returning();
+      await registerChatActionWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, stale!.id)))[0]?.status).toBe("failed");
+      const scans = vi.spyOn(db, "select");
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        expect(scans).not.toHaveBeenCalled();
+      } finally { scans.mockRestore(); }
+      let release!: () => void, inserted!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const staged = new Promise<void>(resolve => { inserted = resolve; });
+      const writing = db.transaction(async tx => {
+        await tx.transaction(async nested => {
+          await notifyChatActionWork(nested, "slack_session_stop");
+          await nested.insert(chatActions).values(action("slack_session_stop"));
+        });
+        inserted(); await gate;
+      });
+      await staged;
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      release(); await writing;
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(chatActions).where(and(eq(chatActions.companyId, f.companyId), eq(chatActions.kind, "slack_session_stop")));
+        expect(rows[0]?.status).toBe("failed");
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(lane.providerRuntime.posts).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
+
+  it("restores chat queue deadlines without polling blocked followers or receipt owners", async () => {
+    const f = await publicationLaneFixture(1);
+    const { service, lanes, enqueue } = f;
+    const lane = lanes[0]!;
+    try {
+      const head = await enqueue(0, "Head");
+      const tail = await enqueue(0, "Follower", 1);
+      const retryAt = new Date(Date.now() + 120_000);
+      await db.update(chatPublications).set({ state: "retry", nextAttemptAt: retryAt }).where(eq(chatPublications.id, head.id));
+      expect(await service.nextPublicationAt()).toBe(retryAt.getTime());
+      await db.update(chatPublications).set({ state: "delivery_unknown", nextAttemptAt: null }).where(eq(chatPublications.id, head.id));
+      expect(await service.nextPublicationAt()).toBeNull();
+      const leaseUntil = new Date(Date.now() + 180_000);
+      await db.update(chatPublications).set({ state: "streaming", updatedAt: new Date() }).where(eq(chatPublications.id, head.id));
+      await db.insert(chatEndpointLeases).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        leaseKey: `publication:${head.id}:0`, token: randomUUID(), expiresAt: leaseUntil });
+      expect(await service.nextPublicationAt()).toBe(leaseUntil.getTime());
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        kind: "slack_file_upload_receipt", providerActionId: randomUUID(), status: "received",
+        payload: { publicationId: head.id, publicationAttempt: 0 } });
+      expect(await service.nextSlackReceiptAt()).toBeNull();
+      await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, lane.endpoint.id));
+      await db.update(chatPublications).set({ updatedAt: new Date(Date.now() - 70_000) }).where(eq(chatPublications.id, head.id));
+      const wake = vi.fn();
+      const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatReceipts, wake);
+      try {
+        await service.scheduleQueuedPublications();
+        expect(wake).toHaveBeenCalled();
+        expect(await service.nextSlackReceiptAt()).toBeLessThanOrEqual(Date.now());
+        await service.processPendingSlackFileUploadReceipts(); // Invalid retained payload is closed, not retried.
+        expect(await service.nextSlackReceiptAt()).toBeNull();
+      } finally { unsubscribe(); }
+      await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, tail.id));
+      expect(await service.nextPublicationAt()).toBeNull();
+    } finally { await f.cleanup(); }
+  });
+
+  it("restores inbound retry and abandoned wake deadlines and excludes paused queues", async () => {
+    const f = await publicationLaneFixture(1);
+    const { service, lanes } = f;
+    const lane = lanes[0]!;
+    try {
+      const retryAt = new Date(Date.now() + 120_000);
+      const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, providerEventId: randomUUID(), deduplicationKey: randomUUID(),
+        eventKind: "message", normalizedEvent: { conversation: { externalThreadId: lane.conversation.externalThreadId } },
+        receivedAt: new Date(Date.now() - 1000), state: "retry", nextAttemptAt: retryAt }).returning();
+      const [follower] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, providerEventId: randomUUID(), deduplicationKey: randomUUID(),
+        eventKind: "message", normalizedEvent: delivery!.normalizedEvent, state: "received" }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      const [edit] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "message_updated", state: "received",
+        receivedAt: new Date(Date.now() - 2000), normalizedEvent: { ...delivery!.normalizedEvent,
+          message: { targetProviderEventId: delivery!.providerEventId } } }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      await db.update(chatDeliveries).set({ state: "filtered" }).where(eq(chatDeliveries.id, edit!.id));
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      await db.update(chatDeliveries).set({ state: "processed" }).where(eq(chatDeliveries.id, delivery!.id));
+      const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        deliveryId: delivery!.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "issued",
+        result: { retryAt: retryAt.toISOString() } }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      const claimedAt = new Date();
+      await db.update(chatActions).set({ status: "processing", updatedAt: claimedAt }).where(eq(chatActions.id, action!.id));
+      expect(await service.nextInboundDeliveryAt()).toBe(claimedAt.getTime() + 60_000);
+      await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      expect(await service.nextInboundDeliveryAt()).toBeNull();
+      await db.update(chatActions).set({ status: "processed" }).where(eq(chatActions.id, action!.id));
+      await db.update(chatDeliveries).set({ state: "filtered" }).where(eq(chatDeliveries.id, follower!.id));
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      expect(await service.nextInboundDeliveryAt()).toBeNull();
+      await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "installation", state: "retry",
+        nextAttemptAt: retryAt, normalizedEvent: { lifecycle: { kind: "endpoint", provider: "slack",
+          providerEventId: randomUUID(), availability: "available", reason: "Recovered" } } });
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+    } finally { await f.cleanup(); }
+  });
+
+  it("sleeps behind an unresolved Slack tool send and wakes when its receipt settles", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "succeeded" }).returning();
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: lane.conversation.issueId,
+        authorAgentId: f.assignedAgentId, createdByRunId: run!.id, body: "Already sent" }).returning();
+      const publication = await f.enqueue(0, "Already sent");
+      await db.update(chatPublications).set({ commentId: comment!.id }).where(eq(chatPublications.id, publication.id));
+      const [send] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, kind: "slack_tool_write", providerActionId: randomUUID(), status: "processing",
+        payload: { name: "slack_post_message", binding: { runId: run!.id }, args: {
+          channel: lane.conversation.externalConversationId.replace(/^slack:/, ""),
+          thread_ts: lane.conversation.externalThreadId.split(":").at(-1), text: "  Already sent\n" } } }).returning();
+      await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      expect(await f.service.nextPublicationAt()).toBeNull();
+      for (const status of ["uncertain", "processed"]) {
+        await db.transaction(async tx => {
+          await notifyChatPublicationWork(tx);
+          await tx.update(chatActions).set({ status }).where(eq(chatActions.id, send!.id));
+        });
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      }
+      await vi.waitFor(async () => {
+        const [row] = await db.select().from(chatPublications).where(eq(chatPublications.id, publication.id));
+        expect(row!.state).toBe("cancelled");
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(lane.providerRuntime.posts).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
+
+  it("wakes chat dispatch after commit and refills free endpoint slots without the maintenance loop", async () => {
+    const f = await publicationLaneFixture(6);
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.lanes[0]!.providerRuntime.postHook = () => gate;
+    try {
+      await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      let settle!: () => void;
+      const commitGate = new Promise<void>(resolve => { settle = resolve; });
+      let staged!: () => void;
+      const stagedGate = new Promise<void>(resolve => { staged = resolve; });
+      const writing = db.transaction(async tx => {
+        await notifyChatPublicationWork(tx);
+        await tx.insert(chatPublications).values(f.lanes.map((lane, index) => ({ companyId: f.companyId,
+          endpointId: lane.endpoint.id, conversationId: lane.conversation.id, issueId: lane.conversation.issueId,
+          idempotencyKey: `work-test:${randomUUID()}`, payload: { text: `Queued ${index}` }, state: "pending" as const })));
+        staged(); await commitGate;
+      });
+      await stagedGate;
+      expect(f.lanes.every(lane => lane.providerRuntime.posts.length === 0)).toBe(true);
+      settle(); await writing;
+      await vi.waitFor(() => expect(f.lanes.slice(1).every(lane => lane.providerRuntime.posts.length === 1)).toBe(true), { timeout: 10_000 });
+      release();
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(chatPublications).where(eq(chatPublications.companyId, f.companyId));
+        expect(rows.every(row => row.state === "published")).toBe(true);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(onError).not.toHaveBeenCalled();
+    } finally { release(); await coordinator.stop(); await f.cleanup(); }
+  });
 
   it("refills four tracked publication endpoint lanes after a scheduled budget and joins shutdown", async () => {
     const fixture = await publicationLaneFixture(6);
@@ -52803,6 +53188,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTaskStarts, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
     if (!callbacks.onSlashCommand) {

@@ -2353,7 +2353,6 @@ export function Inbox() {
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
               />
               <Popover>
                 <PopoverTrigger asChild>
@@ -2452,7 +2451,6 @@ export function Inbox() {
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
               />
               <Popover>
                 <PopoverTrigger asChild>

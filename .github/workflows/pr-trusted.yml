@@ -502,6 +502,15 @@ jobs:
           # across three dedicated runners (~143s each), and the remaining
           # ~2755s levels across twelve duration-balanced shards at ~230s
           # each, in line with the other ~200-290s lanes.
+          #
+          # The balance only holds while the manifest is fresh. By 2026-10-10
+          # the without-chat group had grown to 871 suites and ~5031s of serial
+          # vitest time (mean of runs 38076844891 and 38076972444), 230 of
+          # them unrecorded and weighted at the median, so the twelve shards
+          # ran 313-554s of tests (server 2/12 at 618s was the slowest check
+          # in the run). Re-recorded durations level them to ~415s each; the
+          # shard count stays at twelve because Build and workspaces-b sit
+          # above that already.
           - group: general-server-without-chat
             group_label: server (1/12)
             shard_index: 0
@@ -576,8 +585,16 @@ jobs:
             group_label: workspaces-a (2/2)
             shard_index: 1
             shard_count: 2
+          # workspaces-b became the slowest check (499-593s) once the server
+          # shards were rebalanced: the db project alone was 168-250s of its
+          # 436-513s of vitest time (PR runs 38084171761, 38083084276 and
+          # 38083020834, 2026-10-10). The db project now runs as its own
+          # workspaces-c lane; the rest of workspaces-b is ~265-275s of
+          # vitest time, so both jobs land near 300-350s with setup.
           - group: general-workspaces-b
             group_label: workspaces-b
+          - group: general-workspaces-c
+            group_label: workspaces-c
 
     steps:
       - name: Checkout repository
@@ -1002,6 +1019,20 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # This verification only needs `pnpm build` output (the verifier stages
+      # the public packages' dist and reuses ui/dist itself), yet it ran at the
+      # end of Canary Dry Run, serially after the ~210-295s release.sh dry run.
+      # That made Canary Dry Run the slowest check in every green PR run:
+      # 484s, 572s and 483s in runs 37310951026, 37309272947 and 37308895471
+      # (2026-10-05), with this step alone at 210-223s of each. The Build lane
+      # finished its `pnpm build` in ~206s total in those same runs, so it
+      # absorbs the step at ~416s while Canary Dry Run drops to ~275-350s and
+      # neither remains the critical path (server 2/12 at ~437-467s is).
+      # docker-runner-check.yml runs the same verifier after `pnpm build`.
+      - name: Verify built-in Grok from a clean public npm install
+        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
+        run: node scripts/verify-grok-npm-install.mjs
+
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [gate]
@@ -1246,9 +1277,11 @@ jobs:
               commit --no-verify -m "ci(canary): stage regenerated lockfile"
           fi
           ./scripts/release.sh canary --skip-verify --dry-run
-      - name: Verify built-in Grok from a clean public npm install
-        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
-        run: node scripts/verify-grok-npm-install.mjs
+
+      # The clean public npm install verification for the built-in Grok
+      # provider used to run here, after the dry run. It only needs `pnpm
+      # build` output, which the Build lane also produces, so it moved there:
+      # see "Verify built-in Grok from a clean public npm install" in `build`.
 
 
   e2e_shards:

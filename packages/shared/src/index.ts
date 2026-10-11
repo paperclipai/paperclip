@@ -1247,6 +1247,7 @@ export type {
   DocumentFormat,
   LegacyPlanDocument,
   IssueAttachment,
+  IssueCreationSource,
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -2870,3 +2871,5 @@ export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE } from "./externa
 export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOperation } from "./types/agent-lifecycle.js";
 
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
+
+export * from "./fast-response.js";

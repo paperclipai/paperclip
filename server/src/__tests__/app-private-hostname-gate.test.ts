@@ -90,17 +90,19 @@ describe("createChatReconciliationCoordinator", () => {
     expect(ordinary).not.toContain("processFailedGitHubWebhookDeliveries()");
   });
 
-  it("wires periodic publication reconciliation to bounded scheduled refill rather than awaiting provider sends", () => {
+  it("wires bounded publication refill to commit workers and isolates periodic maintenance", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
-    const flush = source.slice(
-      source.indexOf("const flushChatPublications ="),
-      source.indexOf("const flushChatPublications =") + 600,
+    expect(source).toContain("registerChatDeliveryWork(deliveryWork, chatChannels,");
+    expect(source).toContain("registerChatActionWork(deliveryWork, chatChannels,");
+    const maintenance = source.slice(
+      source.indexOf("const reconcileChatPublicationMaintenance ="),
+      source.indexOf("const chatReconciliation ="),
     );
-    expect(flush).toContain("await chatChannels.schedulePendingPublications()");
-    expect(flush).not.toContain("chatChannels.processPendingPublications()");
-    expect(
-      flush.slice(0, flush.indexOf("const chatReconciliation")),
-    ).not.toContain("await enqueueChatRunMilestones");
+    expect(maintenance).toContain("chatChannels.processPublicationMaintenance()");
+    expect(maintenance).not.toContain("chatChannels.schedulePendingPublications()");
+    expect(maintenance).not.toContain("chatChannels.processPendingPublications()");
+    const workers = readFileSync(new URL("../services/chat-delivery-work.ts", import.meta.url), "utf8");
+    expect(workers).toContain("run: service.scheduleQueuedPublications");
     // The service integration tests hold real publication workers while this
     // scheduled method returns; app shutdown must also join those workers.
     expect(source).toContain("await chatChannels.shutdown()");

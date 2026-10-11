@@ -3668,6 +3668,7 @@ export function issueThreadInteractionService(
                     isNotNull(issueComments.authorUserId),
                     ne(issueComments.authorUserId, "board-concierge"),
                     isNull(issueComments.createdByRunId),
+              eq(issueComments.origin, "comment"),
                     isNull(issueComments.deletedAt),
                     gte(issueComments.createdAt, sourceRunCreatedAt),
                   ),
@@ -4367,9 +4368,11 @@ export function issueThreadInteractionService(
         authorUserId?: string | null;
         createdByRunId?: string | null;
         authSource?: string | null;
+        origin?: string | null;
       },
       actor: InteractionActor,
     ) => {
+      if (comment.origin === "fast_response") return [];
       if (!isGenuineInteractiveUserComment(comment)) return [];
 
       const [scope] = await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
@@ -4478,9 +4481,11 @@ export function issueThreadInteractionService(
             // Only a genuine interactive human comment supersedes. createdByRunId catches
             // agent-run-attributed comments; authSource = "session" catches everything else
             // that authenticates as the user without a live browser session (a board API key,
-            // local_implicit, cloud_tenant) — see isGenuineInteractiveUserComment.
+            // local_implicit, cloud_tenant) — see isGenuineInteractiveUserComment. origin = "comment"
+            // excludes automated fast-response acknowledgements, a separate upstream concern.
             isNull(issueComments.createdByRunId),
             eq(issueComments.authSource, "session"),
+            eq(issueComments.origin, "comment"),
           ))
           .orderBy(asc(issueComments.createdAt)),
       ]);

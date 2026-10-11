@@ -2471,7 +2471,12 @@ describe("IssueDetail", () => {
 
   it("loads ancestors, subtask membership and created work independently and refreshes on issue activity", async () => {
     const ancestors = [{ id: "parent-task", identifier: "PAP-0", title: "Parent task", status: "in_progress" }] as Issue["ancestors"];
-    const source = createIssue({ ancestors });
+    const createdFrom: Issue["createdFrom"] = {
+      issue: { id: "origin-task", identifier: "PAP-168", title: "Origin task", status: "in_progress" },
+      run: { id: "run-1", agentId: "qa-agent" },
+      agent: { id: "qa-agent", name: "Paperclip QA" },
+    };
+    const source = createIssue({ ancestors, createdFrom });
     const child = createIssue({ id: "manual-child", parentId: source.id, title: "Manual child" });
     const created = createIssue({ id: "created-task", parentId: null, title: "Created elsewhere" });
     mockIssuesApi.get.mockResolvedValue(source);
@@ -2485,7 +2490,8 @@ describe("IssueDetail", () => {
     expect(taskProjection()?.content.props.subtasks.map((row: Issue) => row.id)).toEqual([child.id]);
     expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toEqual([created.id]);
     expect(taskProjection()?.content.props.ancestors).toEqual(ancestors);
-    expect(taskProjection()?.count).toBe(3);
+    expect(taskProjection()?.content.props.createdFrom).toEqual(createdFrom);
+    expect(taskProjection()?.count).toBe(4);
 
     const next = createIssue({ id: "new-created-task", parentId: source.id });
     mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; createdFromIssueId?: string }) =>
@@ -2493,7 +2499,7 @@ describe("IssueDetail", () => {
     );
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(source.companyId) }); });
     await flushReact();
-    expect(taskProjection()?.count).toBe(4);
+    expect(taskProjection()?.count).toBe(5);
     expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toContain(next.id);
   });
 

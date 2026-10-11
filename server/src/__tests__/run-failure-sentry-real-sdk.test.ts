@@ -1,5 +1,9 @@
 import { captureEnvironmentAcquisitionDiagnostic } from "../services/environment-acquisition-diagnostics.js";
 import { createRequire } from "node:module";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { buildHeartbeatRunStopMetadata, mergeHeartbeatRunStopMetadata } from "../services/heartbeat-stop-metadata.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectRunFailureDiagnostics, sanitizeRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import type { heartbeatRuns } from "@paperclipai/db";
@@ -39,10 +43,90 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.doUnmock("@sentry/node");
   vi.doUnmock("../peer-version-check.js");
+  vi.doUnmock("@paperclipai/adapter-utils/execution-target");
   vi.resetModules();
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("captures an early OpenCode timeout without inventing a deadline or exporting provider output", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-sentry-"));
+    const restore = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    const processResult = {
+      exitCode: null, signal: null, timedOut: true, pid: null,
+      startedAt: "2020-01-01T00:00:00.000Z", durationMs: 100,
+      stdout: "private-timeout-output-canary",
+      stderr: "<html>504 Gateway Time-out private-timeout-credential-canary</html>",
+    };
+    const runProcess = vi.fn(async () => processResult);
+    vi.stubEnv("XDG_CONFIG_HOME", root);
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({ ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({ ...options,
+        transport: () => ({ send: async (envelope: [unknown, Array<[{ type: string }, Record<string, unknown>]>]) => {
+          for (const [header, payload] of envelope[1]) if (header.type === "event") events.push(payload);
+          return {};
+        }, flush: async () => true }),
+      }),
+    }));
+    // Only external execution/setup seams are replaced. The real adapter owns
+    // the message/policy, and the real finalization/collector/SDK send the event.
+    vi.doMock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => ({
+      ...await importOriginal<typeof import("@paperclipai/adapter-utils/execution-target")>(),
+      ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(),
+      ensureAdapterExecutionTargetCommandResolvable: vi.fn(),
+      prepareAdapterExecutionTargetRuntime: vi.fn(async () => ({
+        runtimeRootDir: "/workspace/runtime", workspaceRemoteDir: "/workspace",
+        assetDirs: {}, restoreWorkspace: restore,
+      })),
+      readAdapterExecutionTargetHomeDir: vi.fn(async () => "/home/fixture"),
+      startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({ env: {}, stop })),
+      runAdapterExecutionTargetProcess: runProcess,
+    }));
+    vi.resetModules();
+    try {
+      const { execute } = await import("@paperclipai/adapter-opencode-local/server");
+      const { sentryReady, captureRunFailure, captureException } = await import("../sentry.js");
+      await sentryReady;
+      const result = await execute({
+        runId: "22222222-2222-4222-8222-222222222222",
+        agent: { id: "agent-fixture", companyId: "company-fixture", name: "Fixture", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "opencode", model: "openai/fixture", cwd: root, timeoutSec: 0,
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+        context: {}, onLog: async () => {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" },
+      });
+      expect(result).toMatchObject({ timedOut: true, exitCode: null, signal: null });
+      expect(runProcess).toHaveBeenCalledTimes(1);
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(stop).toHaveBeenCalledTimes(1);
+      const resultJson = mergeHeartbeatRunStopMetadata(result.resultJson,
+        buildHeartbeatRunStopMetadata({ adapterType: "opencode_local", adapterConfig: { timeoutSec: 0 }, outcome: "timed_out" }));
+      const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({
+        errorCode: "timeout", resultJson,
+        startedAt: new Date("2020-01-01T00:00:00.000Z"), finishedAt: new Date("2020-01-01T00:00:00.100Z"),
+      } as typeof heartbeatRuns.$inferSelect, { phase: "execute" }));
+      captureRunFailure({ taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
+        errorMessage: result.errorMessage!, errorCode: "timeout", agentAdapter: "opencode_local",
+        runStatus: "timed_out", exitCode: result.exitCode, signal: result.signal, diagnostics });
+      captureException(new Error("Unrelated timeout fixture"));
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(2);
+      const event = events.find(entry => (entry.tags as Record<string, unknown>)?.error_code === "timeout");
+      expect(event).toMatchObject({ exception: { values: [{ value: "OpenCode execution timed out" }] },
+        contexts: { run_execution: { durationMs: 100, effectiveTimeoutSec: 14400,
+          timeoutSource: "sandbox_default", timeoutConfigured: false, timeoutFired: true, stopReason: "timeout" } } });
+      expect(JSON.stringify(events)).not.toMatch(/private-timeout-|<html>|504|Timed out after/);
+      expect(events.find(entry => entry !== event)).not.toHaveProperty("contexts.run_execution");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("sends only owned acquisition observations and isolates unrelated captures", async () => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];

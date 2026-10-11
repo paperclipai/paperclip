@@ -461,7 +461,7 @@ describe("capability-gated connection tool refresh", () => {
 
 it("wires exact-session recovery and guarded selected identity into heartbeat persistence", () => {
   const source = readFileSync(
-    new URL("../heartbeat.ts", import.meta.url),
+    new URL("../heartbeat/runtime-selection.ts", import.meta.url),
     "utf8",
   );
   expect(source).toContain("await findNativeSessionResumeRun(db,");

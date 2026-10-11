@@ -1351,6 +1351,32 @@ trace finalization immediately so a later error cannot lose cleanup state.
 Existing public failure helpers remain re-exported by `heartbeat.ts`.
 Keep completion policy changes separate from this extraction and dispatch.
 
+Runtime selection is in `server/src/services/heartbeat/runtime-selection.ts`.
+`selectHeartbeatRuntime` constructs or restores native execution inputs, selects
+completion contracts and sessions, and persists native or legacy runtime choices.
+Native selection retains the row lock that serializes it with cancellation and
+controller lease renewal. The executor receives an explicit selection result;
+lifecycle and ownership callbacks update its teardown state immediately, including
+when preparation later throws. Public sandbox lifecycle and model fallback helpers
+remain re-exported by `heartbeat.ts`.
+
+Workspace preparation is in `server/src/services/heartbeat/workspace-preparation.ts`.
+`prepareHeartbeatWorkspace` resolves and provisions the workspace, persists its
+metadata and issue binding, then acquires and realizes the execution environment.
+It preserves the immutable workspace binding used by native recovery and records
+preparation spans even when acquisition or realization fails. The executor retains
+environment selection, dispatch gates, and terminal lease cleanup. Persistence
+failures still clean newly created workspace artifacts before propagating.
+
+Runtime execution is in `server/src/services/heartbeat/runtime-execution.ts`.
+`executeHeartbeatRuntime` dispatches a prepared native session or legacy adapter,
+captures usage, finalizes workspace operations, and releases gateway tokens and
+instruction copies. The executor supplies the atomic dispatch gate and retains
+admission, terminal run status, retry handling, and outer lease cleanup. An explicit
+dispatch result preserves early cancellation returns; ownership callbacks update
+teardown state before errors propagate. Instruction getters retain updates made
+during provider execution. Keep policy changes separate from this extraction.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured

@@ -1,4 +1,8 @@
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
+import { eq } from "drizzle-orm";
+import { chatEndpoints } from "@paperclipai/db";
+import { fastResponseRoutes } from "./routes/fast-responses.js";
+import { fastResponseService } from "./services/fast-responses.js";
 import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
@@ -9,6 +13,9 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { registerChatActionWork } from "./services/chat-action-work.js";
+import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
+import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
@@ -318,7 +325,7 @@ export function createChatReconciliationCoordinator(input: {
   processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
   projectRunMilestones: () => Promise<number>;
   flushPublications: () => Promise<unknown>;
-  processPendingSlackFileUploadReceipts: () => Promise<unknown>;
+  processPendingSlackFileUploadReceipts?: () => Promise<unknown>;
   processPendingSlackSessionSyncs: () => Promise<unknown>;
   onError: (lane: ChatReconciliationLane, error: unknown) => void;
 }) {
@@ -365,7 +372,7 @@ export function createChatReconciliationCoordinator(input: {
       }
       milestoneReconciliation.poll();
       publicationReconciliation.poll();
-      start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
+      if (input.processPendingSlackFileUploadReceipts) start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
       start("Slack session status", input.processPendingSlackSessionSyncs);
     },
     notifyPublications() {
@@ -659,6 +666,19 @@ export async function createApp(
     publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl,
   });
   app.use(emailWebhookRoutes(emailChannels));
+  app.locals.fastResponses = fastResponseService(db, {
+    authorizeExternal: async (tx, request) => {
+      const [endpoint] = await tx.select({ provider: chatEndpoints.provider }).from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+      return endpoint?.provider === "agentmail" ? emailChannels.authorizeFastResponse(tx, request) : chatChannels.authorizeFastResponse(tx, request);
+    },
+    publishExternal: async (tx, request, commentId, text) => {
+      const [endpoint] = await tx.select({ provider: chatEndpoints.provider }).from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+      if (endpoint?.provider !== "agentmail") return false;
+      await emailChannels.publishFastResponse(tx, request, commentId, text);
+      return true;
+    },
+    budgetHooks: { cancelWorkForScope: connectionIntentHeartbeat.cancelBudgetScopeWork },
+  });
   app.use(chatWebhookRoutes(chatChannels));
   // The instance validates single-use registration state and its trusted
   // current origin. These exact callback routes are the public setup returns.
@@ -915,6 +935,7 @@ export async function createApp(
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
   api.use(decisionModelRoutes(db));
+  api.use(fastResponseRoutes(db));
   api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));
   api.use(
     toolAccessRoutes(db, {
@@ -1231,25 +1252,25 @@ export async function createApp(
       hasPending: () => opts.feedbackExportService!.hasPendingFeedbackTraces(),
     });
   }
+  registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
+  registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   emailChannels.start();
-  const flushChatPublications = async () => {
-    await chatChannels.schedulePendingPublications();
+  const reconcileChatPublicationMaintenance = async () => {
+    await chatChannels.processPublicationMaintenance();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
     reconcileProviderRuntimes: async () => {
       await chatChannels.reconcileProviderRuntimes();
       await chatChannels.voice.reconcile();
     },
-    processPendingDeliveries: () => chatChannels.processPendingDeliveries(),
+    processPendingDeliveries: () => chatChannels.processPendingChatMaintenance(),
     processFailedGitHubWebhookDeliveries: () =>
       chatChannels.processFailedGitHubWebhookDeliveries(),
     projectRunMilestones: () =>
       enqueueChatRunMilestones(db, {
         publicBaseUrl: opts.authPublicBaseUrl,
       }),
-    flushPublications: () => flushChatPublications(),
-    processPendingSlackFileUploadReceipts: () =>
-      chatChannels.processPendingSlackFileUploadReceipts(),
+    flushPublications: () => reconcileChatPublicationMaintenance(),
     processPendingSlackSessionSyncs: () =>
       chatChannels.processPendingSlackSessionSyncs(),
     onError: (lane, err) => {
@@ -1262,6 +1283,8 @@ export async function createApp(
         chatReconciliation.notifyPublications();
     },
   );
+  // Provider/action maintenance and milestone projection still use this cadence.
+  // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
       if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
@@ -1290,12 +1313,7 @@ export async function createApp(
         );
       });
   };
-  const browserUseTimer = setInterval(() => {
-    if (isWarmStandby() || isIdleTaskDrainActive()) return;
-    void browserUse.sweep().catch(() => logger.warn("Browser Use reconciliation failed; retrying."));
-  }, 3000);
-  browserUseTimer.unref?.();
-  if (!isWarmStandby() && !isIdleTaskDrainActive()) void browserUse.sweep().catch(() => logger.warn("Browser Use startup reconciliation failed; retrying."));
+  registerBrowserUseCleanup(deliveryWork, browserUse, () => !isIdleTaskDrainActive());
   let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
     setInterval(
       sweepImportTransferSpools,
@@ -1408,7 +1426,6 @@ export async function createApp(
         chatPublicationTimer = null;
       }
       await chatReconciliation.drain();
-      clearInterval(browserUseTimer);
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;

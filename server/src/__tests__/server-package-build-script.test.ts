@@ -103,6 +103,36 @@ describe("server package build script", () => {
     );
   });
 
+  it("compiles the vendored Runner's TypeScript surface once per build", () => {
+    // prepare:runner-vendor runs the Runner's full build, and `pnpm -r build`
+    // has already run it once by the time the server builds. Each extra
+    // build:typescript inside that chain (two tsc projects plus the eval-kernel
+    // rebuild) costs about 7s on the CI Build job's critical path, twice.
+    // Checks that read dist/ must call their script directly, the way
+    // generate-replay-goldens.mjs already does, not through a `check:*`
+    // wrapper that rebuilds first for standalone use.
+    const runner = JSON.parse(readFileSync(new URL(
+      "../../../packages/paperclip-runner/package.json", import.meta.url,
+    ), "utf8")) as { scripts: Record<string, string> };
+    const steps = runner.scripts.build.split(" && ");
+    const wrapped = steps
+      .filter((step) => step.startsWith("pnpm run "))
+      .map((step) => step.slice("pnpm run ".length));
+    for (const name of wrapped) {
+      expect(runner.scripts[name], `build step ${name}`).toBeDefined();
+    }
+    const compiles = (step: string) =>
+      step === "build:typescript" || (runner.scripts[step] ?? "").includes("build:typescript");
+
+    expect(wrapped.filter(compiles)).toEqual(["build:typescript"]);
+    expect(steps).toContain("node scripts/generate-semantic-contracts.mjs --check");
+    expect(steps).toContain("node scripts/check-runner-workflow-traceability.mjs");
+    expect(steps.indexOf("node scripts/generate-semantic-contracts.mjs --check"))
+      .toBeGreaterThan(steps.indexOf("pnpm run build:typescript"));
+    expect(steps.indexOf("node scripts/check-runner-workflow-traceability.mjs"))
+      .toBeGreaterThan(steps.indexOf("pnpm run build:typescript"));
+  });
+
   it("ships the pinned OpenCode dependency resolved by the vendored Runner", () => {
     const server = JSON.parse(readFileSync(packageJsonPath, "utf8"));
     const runner = JSON.parse(readFileSync(new URL(

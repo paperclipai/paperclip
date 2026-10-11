@@ -57,6 +57,7 @@ const support = await getEmbeddedPostgresTestSupport();
       { companyId, issueId, body: "UNTRUSTED BODY", authorAgentId: agentId, createdAt: new Date(5_000),
         sourceTrust: { preset: "low_trust_review", disposition: "quarantined", sourceIssueId: issueId } },
       { companyId, issueId, body: "FUTURE MESSAGE", authorUserId: "user", createdAt: new Date(30_000) },
+      { companyId, issueId, body: "I’ll check the review request.", authorAgentId: agentId, origin: "fast_response", createdAt: new Date(4_500) },
     ]);
     const { eq } = await import("drizzle-orm");
     await db.update(issues).set({ conversationBoundaryCommentId: boundaryId }).where(eq(issues.id, issueId));
@@ -95,6 +96,8 @@ const support = await getEmbeddedPostgresTestSupport();
   it("preserves the original goal and prior answer while excluding reset, deleted and future history", async () => {
     const result = await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000) });
     expect(result).toContain("Build a GitHub PR review bot");
+    expect(result).toContain('"author":"paperclip_receipt"');
+    expect(result).toContain("[Paperclip acknowledgement; not agent work] I’ll check the review request.");
     expect(result).toContain("Final constraint: require a team review");
     expect(result).toContain('"truncated":true');
     expect(Buffer.byteLength(result!)).toBeLessThanOrEqual(NATIVE_HANDOFF_MAX_BYTES);

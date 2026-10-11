@@ -3120,11 +3120,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   inset-inline: 0;
 }
 
-/* Task recovery panel uses the shared spacing, radius, and type scales. */
-.execution-blocker-notice {
-  gap: calc(var(--spacing) * 2);
-  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
-  border-radius: var(--radius-md);
+/* Connection and recovery cards share one surface and spacing scale. */
+.task-context-notice {
+  padding: calc(var(--spacing) * 3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background-color: var(--muted);
+  color: var(--foreground);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }

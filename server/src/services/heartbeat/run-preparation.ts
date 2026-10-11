@@ -2290,6 +2290,7 @@ export async function buildPaperclipWakePayload(input: {
             id: issueComments.id,
             issueId: issueComments.issueId,
             body: issueComments.body,
+            origin: issueComments.origin,
             authorType: issueComments.authorType,
             authorAgentId: issueComments.authorAgentId,
             authorUserId: issueComments.authorUserId,
@@ -2348,7 +2349,7 @@ export async function buildPaperclipWakePayload(input: {
       deletedAt || input.exposeLowTrustRaw
         ? row
         : sanitizeQuarantinedCommentForHigherTrust(row);
-    const fullBody = deletedAt ? "" : safeRow.body;
+    const fullBody = deletedAt ? "" : row.origin === "fast_response" ? `[Paperclip acknowledgement; not agent work] ${safeRow.body}` : safeRow.body;
     const allowedBodyChars = Math.min(
       MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
       remainingBodyChars,

@@ -129,6 +129,22 @@ export interface IssueLabel {
   updatedAt: Date;
 }
 
+/**
+ * The task a run was executing when it created this issue, from recorded run
+ * provenance. Independent of the structural parent and of blockers. Only
+ * present when the viewer may read the source task and its run.
+ */
+export interface IssueCreationSource {
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  };
+  run: { id: string; agentId: string };
+  agent: { id: string; name: string } | null;
+}
+
 export interface IssueAssigneeAdapterOverrides {
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
@@ -840,6 +856,8 @@ export interface Issue {
   /** Immediate task from which private access flows downward, including chat handoffs. */
   privacyParentIssueId?: string | null;
   ancestors?: IssueAncestor[];
+  /** Detail responses only: access-checked creation provenance, or null. */
+  createdFrom?: IssueCreationSource | null;
   title: string;
   description: string | null;
   descriptionTruncated?: boolean;
@@ -1004,6 +1022,9 @@ export interface IssueComment {
   companyId: string;
   issueId: string;
   authorType: IssueCommentAuthorType;
+  /** Server-generated receipt provenance; not writable by comment callers. */
+  origin?: "comment" | "fast_response";
+  fastResponseRequestId?: string | null;
   authorAgentId: string | null;
   authorUserId: string | null;
   /** Responsible user attribution. Legacy and plugin-provided comment values may omit it. */
