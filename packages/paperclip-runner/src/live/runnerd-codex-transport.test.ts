@@ -2285,6 +2285,16 @@ it.each(["missing", "changed"] as const)("reuses the recorded Codex command when
     expect(JSON.stringify(template)).not.toContain(replacement);
     expect(resolver).not.toHaveBeenCalled();
     expect(launch).not.toHaveBeenCalled();
+    const persisted = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
+    expect(persisted.identity).toMatchObject(nextIdentity);
+    expect(persisted.runAttachTemplate).toEqual(template);
+    // Later command compaction must not erase the resumed epoch's launch authority.
+    expect(runnerdRecoveryInternals.rotatedRunAttachPayload(
+      { ...persisted, commands: [] },
+      { ...nextIdentity, runId: "run-after-compaction" },
+      null,
+      undefined,
+    )).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
   } finally {
     resolver.mockRestore();
     await transport.close();

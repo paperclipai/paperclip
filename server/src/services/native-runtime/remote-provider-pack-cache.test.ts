@@ -56,6 +56,25 @@ describe("controller-pinned computer provider pack", () => {
     expect(selected.digest).toBe(digest);
     expect(selected.root).not.toBe(computerProviderPackCachePath("/agents/a", `sha256:${"b".repeat(64)}`));
   });
+  it.each(["pending", "completed", "failed"])("pins the controller-owned %s attachment after a cold epoch rotation", (status) => {
+    const input = pinned();
+    const provider = { ...input.control.runAttachTemplate.provider, runId: input.identity.runId };
+    const control = { ...input.control, runAttachTemplate: null,
+      commands: [{ type: "run.attach", controllerSeq: 1, status, payload: { provider } }] };
+    expect(pinnedComputerProviderPack({ ...input, control }).digest).toBe(digest);
+  });
+  it.each(["foreign-run", "foreign-session", "ambiguous", "malformed-template"])("rejects %s command provenance", (kind) => {
+    const input = pinned();
+    const provider = { ...input.control.runAttachTemplate.provider, runId: input.identity.runId };
+    const commands = [{ type: "run.attach", controllerSeq: 1, status: "completed", payload: { provider } }];
+    if (kind === "foreign-run") provider.runId = "foreign";
+    if (kind === "foreign-session") provider.normalizedSessionId = "foreign";
+    if (kind === "ambiguous") commands.push({ ...commands[0]!, controllerSeq: 2,
+      payload: { provider: { ...provider, sidecarCommand: provider.sidecarCommand.replace("a".repeat(64), "b".repeat(64)),
+        sidecarArgs: provider.sidecarArgs.map(path => path.replace("a".repeat(64), "b".repeat(64))) } } });
+    const control = { ...input.control, runAttachTemplate: kind === "malformed-template" ? {} : null, commands };
+    expect(() => pinnedComputerProviderPack({ ...input, control })).toThrow("provenance_unavailable");
+  });
   it.each(["missing", "identity", "foreign-home", "sidecar", "arguments", "provider"])("rejects %s provenance", (kind) => {
     const input = pinned();
     if (kind === "missing") delete (input.control as { runAttachTemplate?: unknown }).runAttachTemplate;
