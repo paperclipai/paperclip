@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.boat.validation-retry-summary.v1",
-  "recordedAt": "2026-10-11T01:45:57.847565+00:00",
+  "recordedAt": "2026-10-11T01:47:47.596826+00:00",
   "scope": "Source-specific retry observations; not complete acceptance.",
   "source": {
     "canonical": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
@@ -283,7 +283,7 @@
       "manualStopOrWakePerformed": false,
       "furtherGuestReadAttempted": false,
       "limit": "Latest read-only provider state; no post-archive guest checkpoint read was attempted.",
-      "scopeAfterLaterWork": "Historical01:33:52 archived observation. Normal task Computer Connect resumed the fixture around01:35; both viewers closed around01:43, with no later archive observation included here."
+      "scopeAfterLaterWork": "Historical01:33:52 archived observation. Normal task Computer Connect later resumed the fixture. Both viewers closed normally before the01:47:06 provider read; exact close time was not captured."
     },
     "desktopComparison": {
       "servingSource": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
@@ -293,11 +293,11 @@
       "method": "Normal task Computer Connect; then the same provider viewer was opened directly in a browser tab for comparison. Private viewer URL omitted.",
       "streamVisibleAtApproximate": "2026-10-11T01:38:00Z",
       "directBrowserInput": {
-        "observedAtApproximate": "2026-10-11T01:41:00Z",
         "mouse": "passed: native click opened Chrome",
         "keyboard": "passed: native key events visibly entered the complete marker",
         "visibleMarker": "boatlive0141",
-        "evidenceFile": "staging-13-direct-desktop-input.png"
+        "evidenceFile": "staging-13-direct-desktop-input.png",
+        "timestampInferredFromMarker": false
       },
       "embeddedViewer": {
         "streamVisible": true,
@@ -307,9 +307,34 @@
         "mouseInputVerified": false,
         "automationTargetingLimit": "The embedded Ctrl+A attempt selected the outer Paperclip page; this does not establish an embedded product input failure."
       },
-      "bothViewersClosedNormallyAtApproximate": "2026-10-11T01:43:00Z",
       "archiveAfterThisCloseVerified": false,
-      "scope": "Direct browser desktop keyboard and mouse passed. Embedded input remains unverified; the comparison revealed one-stream interference."
+      "scope": "Direct browser desktop keyboard and mouse passed. Embedded input remains unverified; the comparison revealed one-stream interference.",
+      "bothViewersClosedNormally": true,
+      "exactCloseTimeCaptured": false,
+      "closedBeforeProviderReadAt": "2026-10-11T01:47:06.987010+00:00",
+      "closeArchiveCausalityVerified": false,
+      "markerEncodesTimestamp": false
+    },
+    "latestProviderObservation": {
+      "at": "2026-10-11T01:47:06.987010+00:00",
+      "state": "archived",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "snapshots": true,
+      "stop": {
+        "id": "stop_6f2a2286a84c0d41",
+        "status": "completed",
+        "requestedAt": null,
+        "lastAttemptAt": "2026-10-11T01:42:11.287Z",
+        "error": null,
+        "endedAt": "2026-10-11T01:42:11.287Z"
+      },
+      "guestReadAfterArchive": false,
+      "manualStopOrWakePerformed": false,
+      "exactViewerCloseTimeCaptured": false,
+      "closeArchiveCausalityVerified": false,
+      "scope": "Confirmed archived provider state at the timestamp shown, with snapshots retained and latest stop complete. Exact viewer-close time was not captured, so stop ordering relative to the close is not established."
     }
   },
   "localRestart": {
@@ -636,6 +661,10 @@
     {
       "file": "staging-13-direct-desktop-input.png",
       "sha256": "02ab563a51e6597b41c0faca3468be0e925901bd46890e37facdaac51ddc67c7"
+    },
+    {
+      "file": "retry-staging-13-post-viewer-close-provider.json",
+      "sha256": "398825c89d9300c4d48a9bb46408c1f75016d1764c847cbbf830dfc36dc73a08"
     }
   ],
   "deployment13": {
@@ -698,5 +727,63 @@
       "file": "native-cancellation-diagnostic-tests.log",
       "sha256": "b86a444e63cbae19ebe709c79919cc405f7cfbef68aeccbf861e7afdd3c3feea"
     }
-  ]
+  ],
+  "followUp14": {
+    "recordedAt": "2026-10-11T02:23:00Z",
+    "servingSha": "5cf388845902c88d0406116ed9b2c44f335d8bb2",
+    "hmr": {
+      "result": "passed_after_rebaseline",
+      "runId": "9c13e199-845c-4bb1-a5a8-2118b1edfb93",
+      "beforeHeading": "Boat staging hot reload verified 0213",
+      "afterHeading": "Boat staging warm HMR confirmed 0216",
+      "preservedInput": "keep-this-unsaved-draft-boat-0213",
+      "preservedPageSession": "1791684735337",
+      "unchangedProcesses": [
+        {
+          "kind": "runner",
+          "pid": 35567,
+          "startTicks": 52230
+        },
+        {
+          "kind": "codex",
+          "pid": 35991,
+          "startTicks": 52541
+        },
+        {
+          "kind": "vite",
+          "pid": 37325,
+          "startTicks": 54717
+        }
+      ],
+      "session": "06496696-b312-4268-ac40-66770aaa6f1a",
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "checkpointReadyEmptyOutboxNoPendingTerminal": true,
+      "limit": "Initial 02:12 browser reconnect lost the first baseline before heading change; later rebaseline and complete second warm turn passed."
+    },
+    "localDetachRetention": {
+      "result": "passed",
+      "environmentId": "c528a21f-b893-4dd0-8be9-5f6e5e02e2b2",
+      "detachAt": "2026-10-11T01:56:32Z",
+      "priorStopCompletedAt": "2026-10-11T02:05:09.243Z",
+      "reconnectAt": "2026-10-11T02:05:35.745Z",
+      "retainedMarkerObservedBy": "2026-10-11T02:14:00Z",
+      "cleanup": "Original instruction text restored through UI and reread after full reload; both fixture agents reassigned to same Boat.",
+      "experience": "Slow provider stop and file read; transient settling error. Retention success does not imply smooth UX."
+    },
+    "claudeSavedResume": {
+      "result": "failed",
+      "runId": "d529d365-e999-4a38-a4d0-562812df83c8",
+      "error": "runner_remote_provider_pack_provenance_unavailable",
+      "fix": "29e2aa95d1",
+      "validation": "28 cache tests, 5 transport tests, both TypeScript checks, independent review passed; live validation pending."
+    },
+    "siblingStop": {
+      "result": "inconclusive_for_live_child_cancellation",
+      "reportedPid": 72165,
+      "pidAbsentBeforeStopAt": "2026-10-11T02:21:48Z",
+      "uiStopApproxAt": "2026-10-11T02:21:50Z",
+      "postStopAt": "2026-10-11T02:22:05Z",
+      "nativeProcessesUnchanged": true
+    }
+  }
 }
