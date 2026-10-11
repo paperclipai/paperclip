@@ -1,0 +1,702 @@
+{
+  "schema": "paperclip.boat.validation-retry-summary.v1",
+  "recordedAt": "2026-10-11T01:45:57.847565+00:00",
+  "scope": "Source-specific retry observations; not complete acceptance.",
+  "source": {
+    "canonical": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+    "core": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+    "servingStaging": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "diagnosticCandidate": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "candidateRuntimeEquivalentTo": "d50268c932",
+    "candidateBuildId": 38099244581,
+    "candidateBuildState": "succeeded; deployment13 verified"
+  },
+  "deployment12": {
+    "checkedAt": "2026-10-10T22:14:02.236Z",
+    "requestedSha": "1830beb0c26a7ba9d5e21460426936936ffc8db4",
+    "servingSha": "1830beb0c26a7ba9d5e21460426936936ffc8db4",
+    "status": "succeeded",
+    "verification": "verified"
+  },
+  "stagingRetries": {
+    "codex": {
+      "runIdPrefix": "20c69872",
+      "result": "failed",
+      "errorCode": "native_session_recovery_failed",
+      "causeCode": "runner_remote_retirement_checkpoint_unsettled",
+      "sameRunAttempts": 3,
+      "newRunnerLaunchObserved": false,
+      "remoteCheckpoint": {
+        "lifecycle": "ready",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true,
+        "completedTurnAuthoritative": true,
+        "activeProviderTurnId": null
+      },
+      "conclusion": "Remote lifecycle was ready, runner outbox was empty, and pending terminal delivery was null; the exact old controller settlement/authority rejection remains unknown. Deployment 13 UI Retry created a fresh session, so it did not exercise the old recovery path."
+    },
+    "claude": {
+      "runIdPrefix": "3a34",
+      "result": "setup_failed",
+      "timing": "Failed before the planned idle/sibling experiment.",
+      "rootCause": "not established",
+      "siblingIsolationProved": false
+    },
+    "desktop": {
+      "observedUtc": [
+        "2026-10-11T00:43Z",
+        "2026-10-11T00:50Z"
+      ],
+      "streamVisible": true,
+      "inputVerified": false,
+      "inputLimit": "Iframe key/native click attempts produced no observable change; a frame-body input attempt timed out before sending input.",
+      "closedThroughProductUi": true
+    },
+    "viewerCleanup": {
+      "observedAt": "2026-10-11T00:51:49.916111+00:00",
+      "state": "archived",
+      "snapshots": true,
+      "stop": {
+        "id": "stop_74ba7b3408c7739e",
+        "status": "completed",
+        "endedAt": "2026-10-11T00:50:43.150Z",
+        "error": null
+      },
+      "manualProviderLifecycleActions": false
+    },
+    "diagnosticCodex": {
+      "runId": "5957cc86-4533-49e5-a2af-0edbc79a472f",
+      "submittedAt": "2026-10-11T01:06:33Z",
+      "method": "One ordinary Retry through the product UI",
+      "retriesRunIdPrefix": "20c69872",
+      "lastObservedStatus": "succeeded",
+      "outcome": "fresh session passed; old failed session recovery not tested",
+      "forceFreshSession": true,
+      "resumeSkipped": true,
+      "scope": "Normal UI Retry requests a fresh session. This run cannot diagnose saved-session recovery.",
+      "uiLogObservedAt": "2026-10-11T01:07:39Z",
+      "plannedQualification": "Fresh and ordinary warm same-task turns passed. Later configuration turn 2ac97bd2 was cancelled unexpectedly; subsequent repair attempts failed before provider work. Saved-session continuation after natural idle remains unverified.",
+      "finishedAt": "2026-10-11T01:09:46Z",
+      "reportedDurationSeconds": 193,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46"
+    },
+    "warmCodex": {
+      "runId": "1b882646-db75-4009-9915-6175e22c1724",
+      "status": "succeeded",
+      "reportedFinishedAtApproximate": "2026-10-11T01:12:14Z",
+      "freshObservedAt": "2026-10-11T01:10:10.278830+00:00",
+      "warmObservedAt": "2026-10-11T01:13:28.977661+00:00",
+      "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+      "providerSessionId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1",
+      "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+      "sameNormalizedSession": true,
+      "sameProviderSession": true,
+      "sameRunnerInstance": true,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "proofHashUnchanged": true,
+      "preservedProcesses": [
+        {
+          "role": "runner",
+          "pid": 30466,
+          "startTicks": 30188,
+          "sameIdentity": true
+        },
+        {
+          "role": "codex",
+          "pid": 30570,
+          "startTicks": 30308,
+          "sameIdentity": true
+        },
+        {
+          "role": "vite",
+          "pid": 31093,
+          "startTicks": 31238,
+          "sameIdentity": true
+        }
+      ]
+    },
+    "preview": {
+      "rendered": true,
+      "method": "Normal product-generated preview link in the in-app browser; no blocked-URL workaround",
+      "pageSessionValue": "1791680976579",
+      "draftValue": "keep-this-unsaved-draft-boat-0110",
+      "hotReloadVerified": false,
+      "observation": "The normal generated link rendered. A reported heading edit did not appear in the browser despite Vite reporting connected. The preview later became upstream-unavailable after the runner owner retired.",
+      "pollingConfig": {
+        "observedAt": "2026-10-11T01:18:35.720747+00:00",
+        "presentOnDisk": true,
+        "pollIntervalMs": 1000,
+        "loadedByRunningViteProved": false
+      },
+      "reactFixture": {
+        "reactPluginInstalled": false,
+        "reactPluginImported": false,
+        "statePreservingHmrContractProved": false,
+        "repairExecuted": false
+      },
+      "fileViews": {
+        "observedAt": "2026-10-11T01:16:21.230982+00:00",
+        "sameBytes": true,
+        "sameMountNamespace": true,
+        "publishedDeviceAndInodeDifferFromViteCwd": true,
+        "rootCauseEstablished": false
+      },
+      "limitation": "On-disk polling configuration does not prove that the running Vite process loaded it. The proposed React fixture repair never executed because both follow-ups failed before provider work."
+    },
+    "siblingCancellation": {
+      "stopClickedAtApproximate": "2026-10-11T01:14:44Z",
+      "uiStatus": "Stopped",
+      "scope": "Active automatic continuation cancelled through normal Stop; task blocked.",
+      "foregroundSleeperVerifiedBeforeStop": false,
+      "independentReadAt": "2026-10-11T01:13:58.401450+00:00",
+      "liveChildSleepCancellationProved": false,
+      "siblingIsolationProved": false
+    },
+    "codexConfigurationTurn": {
+      "runId": "2ac97bd2-9f7c-4d9b-bca5-78637e354422",
+      "status": "cancelled",
+      "exitCode": 0,
+      "lifecycleEventSequence": 340,
+      "terminalAt": "2026-10-11T01:19:01.499Z",
+      "cancellation": {
+        "reason": "Execution stopped without a recorded cancellation request",
+        "source": "unknown",
+        "expected": false
+      },
+      "isSuccessfulWarmTurn": false,
+      "limit": "A ready remote checkpoint and authoritative completed provider turn do not override the controller run outcome of cancelled."
+    },
+    "codexRepairAttempts": {
+      "runs": [
+        {
+          "runId": "139092c0-64d2-46e1-8906-9e69c00c081b",
+          "status": "failed"
+        },
+        {
+          "runId": "d33c8290-8e16-44a6-8bb1-58164ea5c754",
+          "status": "failed"
+        }
+      ],
+      "errorCode": "native_session_cleanup_quarantined",
+      "providerWorkStarted": false,
+      "fixtureRepairExecuted": false,
+      "quarantinePreserved": true
+    },
+    "postCancellationSettlement": {
+      "observedAt": "2026-10-11T01:28:58.739454+00:00",
+      "ownerId": "f298be2e-3cc1-4e9c-957e-4931aad9a503",
+      "retired": true,
+      "retiredAt": "2026-10-11T01:19:05.647102+00:00",
+      "ownerGeneration": 3,
+      "ownedProcessCount": 0,
+      "ownedListenerCount": 0,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "proofHashUnchanged": true,
+      "proofBytes": 24,
+      "sameBootAsWarmRun": true,
+      "checkpoint": {
+        "observedAt": "2026-10-11T01:28:31.217794+00:00",
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "2ac97bd2-9f7c-4d9b-bca5-78637e354422",
+        "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+        "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+        "environmentLeaseId": "5957cc86-4533-49e5-a2af-0edbc79a472f",
+        "turnId": "turn_attachment_dc251dc322254e15b62b1af28d7e9819",
+        "itemId": "item_attachment_625fc1793a804d6e914dc74f0741d39f",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true,
+        "provider": {
+          "schema": "paperclip.runner.codex-provider-state.v1",
+          "lifecycle": "session_open",
+          "completedTurnAuthoritative": true,
+          "activeProviderTurnId": null,
+          "threadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1"
+        }
+      },
+      "provider": {
+        "at": "2026-10-11T01:27:43.251027+00:00",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "error": null,
+        "snapshots": true,
+        "stop": {
+          "id": "stop_74ba7b3408c7739e",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T00:50:43.150Z",
+          "error": null,
+          "endedAt": "2026-10-11T00:50:43.150Z"
+        }
+      },
+      "systemdLimit": "Unit was collected. Manager messages reported missing paths during collection; these do not establish a process crash.",
+      "manualLifecycleOrGuestFileMutations": false,
+      "scope": "Snapshot after an unexpected cancellation, not a successful natural warm-timeout or post-idle continuation test."
+    },
+    "diagnosticClaude": {
+      "runId": "a38070b3-6c87-435c-8d60-f01ac9fac4b7",
+      "status": "failed",
+      "errorCode": "setup_failed",
+      "startedAt": "2026-10-11T01:18:44Z",
+      "finishedAt": "2026-10-11T01:31:25Z",
+      "reportedDurationSeconds": 762,
+      "acquireLeaseError": "Computer is connecting or settling a previous stop",
+      "executionRecoveryStage": "bootstrap",
+      "providerWorkStarted": false,
+      "stageSyncDurationMs": 473763,
+      "runnerTransportConnectedAt": "2026-10-11T01:27:47Z",
+      "remoteCheckpoint": {
+        "observedAt": "2026-10-11T01:29:48.453917+00:00",
+        "lifecycle": "suspended",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": false,
+        "modifiedAt": "2026-10-11T01:28:06.792491+00:00"
+      },
+      "scope": "This latest retry failed; earlier source-specific Claude successes remain valid but do not establish success here.",
+      "firstFailure": {
+        "kind": "acpx_durable_launch_profile_digest_mismatch",
+        "observation": "Expanded run log identifies a durable ACPX launch-profile digest mismatch after approximately990MiB provider-pack upload.",
+        "providerPackUploadApproximateMiB": 990,
+        "leaseDeadlineCauseProved": false
+      },
+      "acquireLeaseErrorScope": "Later recovery-stage error; not the first failure or a proved root cause.",
+      "candidateCorrection": {
+        "status": "under review; not a deployed pass",
+        "behavior": "Reuse the provider pack pinned by bound controller state for durable ACPX resume."
+      }
+    },
+    "finalProviderObservation": {
+      "at": "2026-10-11T01:33:52.216884+00:00",
+      "state": "archived",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "stop": {
+        "id": "stop_18563d80fd0ee488",
+        "status": "completed",
+        "requestedAt": null,
+        "lastAttemptAt": "2026-10-11T01:32:48.421Z",
+        "error": null,
+        "endedAt": "2026-10-11T01:32:48.421Z"
+      },
+      "manualStopOrWakePerformed": false,
+      "furtherGuestReadAttempted": false,
+      "limit": "Latest read-only provider state; no post-archive guest checkpoint read was attempted.",
+      "scopeAfterLaterWork": "Historical01:33:52 archived observation. Normal task Computer Connect resumed the fixture around01:35; both viewers closed around01:43, with no later archive observation included here."
+    },
+    "desktopComparison": {
+      "servingSource": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+      "deployment": 13,
+      "connectAtApproximate": "2026-10-11T01:35:00Z",
+      "connectedFromArchived": true,
+      "method": "Normal task Computer Connect; then the same provider viewer was opened directly in a browser tab for comparison. Private viewer URL omitted.",
+      "streamVisibleAtApproximate": "2026-10-11T01:38:00Z",
+      "directBrowserInput": {
+        "observedAtApproximate": "2026-10-11T01:41:00Z",
+        "mouse": "passed: native click opened Chrome",
+        "keyboard": "passed: native key events visibly entered the complete marker",
+        "visibleMarker": "boatlive0141",
+        "evidenceFile": "staging-13-direct-desktop-input.png"
+      },
+      "embeddedViewer": {
+        "streamVisible": true,
+        "secondStreamFrozeOriginalFrame": true,
+        "updatedDesktopVisibleAfterCloseAndReconnect": true,
+        "keyboardInputVerified": false,
+        "mouseInputVerified": false,
+        "automationTargetingLimit": "The embedded Ctrl+A attempt selected the outer Paperclip page; this does not establish an embedded product input failure."
+      },
+      "bothViewersClosedNormallyAtApproximate": "2026-10-11T01:43:00Z",
+      "archiveAfterThisCloseVerified": false,
+      "scope": "Direct browser desktop keyboard and mouse passed. Embedded input remains unverified; the comparison revealed one-stream interference."
+    }
+  },
+  "localRestart": {
+    "source": "817d6a8ebb4a04552639d923ec965a9ab8716d84",
+    "result": "inconclusive_host_sleep",
+    "firstRun": {
+      "id": "3681473c-b5a5-48c3-b96d-0a24e9306a07",
+      "status": "succeeded",
+      "started_at": "2026-10-10T22:21:28.283Z",
+      "finished_at": "2026-10-10T22:25:04.557Z"
+    },
+    "continuation": {
+      "id": "f5f361a7-ea1e-46fe-90d6-46bdd5674f0a",
+      "status": "failed",
+      "started_at": "2026-10-10T22:26:50.928Z",
+      "finished_at": "2026-10-10T22:48:12.932Z",
+      "error_code": "native_session_cleanup_quarantined"
+    },
+    "originalOwnerRetired": true,
+    "continuationOwnerRetired": true,
+    "newOwnerProcessClaim": null,
+    "priorCheckpointLifecycle": "suspended",
+    "priorOwnerDescendants": 0,
+    "retainedMarker": {
+      "exists": true,
+      "lineCount": 1,
+      "sha256": "584372be7d247a859749d79e9979f9c775a2cc17e54a4ac6b762f0d48ecfb714"
+    },
+    "hostSleepUtc": [
+      {
+        "at": "2026-10-10T22:30:26Z",
+        "event": "Idle Sleep"
+      },
+      {
+        "at": "2026-10-10T22:31:15Z",
+        "event": "Maintenance Sleep",
+        "durationSeconds": 1017
+      },
+      {
+        "at": "2026-10-10T22:48:12Z",
+        "event": "DarkWake; simultaneous run timeout and onboarding provider error"
+      },
+      {
+        "at": "2026-10-10T22:49:16Z",
+        "event": "Dark Wake Thermal Emergency Sleep"
+      }
+    ],
+    "quarantinePreserved": true,
+    "notProved": [
+      "successful post-restart provider turn",
+      "active-crash recovery"
+    ]
+  },
+  "localFreshTask": {
+    "firstAttempt": {
+      "runId": "de63e6ba-43b6-43d6-ad6e-4167eb2f4712",
+      "status": "setup_failed",
+      "confoundedByHostSleep": true
+    },
+    "ordinaryRetry": {
+      "id": "e8c52459-2dc1-428c-b5d7-30d33141ff0b",
+      "status": "succeeded",
+      "started_at": "2026-10-11T00:42:00.094Z",
+      "finished_at": "2026-10-11T00:45:27.883Z",
+      "marker": {
+        "exists": true,
+        "lineCount": 1,
+        "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+      },
+      "markerIndependentlyRead": true
+    },
+    "controllerRestartPerformed": false,
+    "source": "817d6a8ebb4a04552639d923ec965a9ab8716d84",
+    "cleanup": {
+      "checkedAt": "2026-10-11T00:53:46.805859+00:00",
+      "owner": {
+        "id": "e3426be1-0d0b-4a48-a5f7-21d4d0f3ffa6",
+        "generation": 1,
+        "phase": "retired"
+      },
+      "provider": {
+        "checkedAt": "2026-10-11T00:53:24.446Z",
+        "state": "archived",
+        "snapshots": true,
+        "stop": {
+          "id": "stop_60bcbe837fe4681c",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T00:52:14.179Z",
+          "error": null,
+          "endedAt": "2026-10-11T00:52:14.179Z"
+        }
+      },
+      "processStopEvidence": "Exact owner retired in controller ledger and physical provider archive completed; no post-archive SSH process inventory attempted",
+      "postIdleCheckpointRead": "not_observed_archived",
+      "controllerRestartPerformedForThisTask": false,
+      "followupSubmitted": false,
+      "quarantinedBOA15Unchanged": true
+    }
+  },
+  "localInstructionsSave": {
+    "checkedAt": "2026-10-11T00:12:50.440541+00:00",
+    "uiReportedSaveError": "Failed to fetch; unsaved edits retained",
+    "serverSaveHttp200At": [
+      "2026-10-10T22:28:59Z",
+      "2026-10-10T22:29:56Z"
+    ],
+    "subsequentCandidatesReadError": {
+      "at": "2026-10-10T22:48:12Z",
+      "status": 502,
+      "code": "provider_error",
+      "message": "Computer operation failed"
+    },
+    "persistentBytesIndependentlyVerified": false,
+    "manualProviderLifecycleActions": false,
+    "controllerRestartedDuringSave": false,
+    "hostSleepConfoundedObservation": true,
+    "conclusion": "Save requests returned HTTP200, but a fresh read failed with502 provider_error; durable bytes were not independently verified. This is not evidence of a missing file.",
+    "detachPerformed": false
+  },
+  "localBoundaryChecks": {
+    "checkedAt": "2026-10-10T22:22:17.844Z",
+    "agentForeignIssueReadStatus": 404,
+    "boardForeignTaskComputerConnectStatus": 404,
+    "computerOwnerLedgerUnchanged": true,
+    "foreignCompanyComputerRows": 0,
+    "temporaryCredentialsRevoked": true,
+    "scope": "Live local authorization denial; no staging company-denial journey claimed."
+  },
+  "diagnosticChecks": {
+    "source": "d50268c932",
+    "focusedTestsPassed": 54,
+    "serverTypecheck": "passed",
+    "semantics": "Fixed reason-code diagnostics only; all fail-closed gates retained.",
+    "earlierCiSnapshot": {
+      "observedAt": "2026-10-11T00:49:20.473390+00:00",
+      "heads": [
+        {
+          "head": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+          "checks": {
+            "SUCCESS": 26,
+            "IN_PROGRESS": 25
+          }
+        },
+        {
+          "head": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+          "checks": {
+            "SKIPPED": 2,
+            "SUCCESS": 47,
+            "IN_PROGRESS": 4
+          }
+        }
+      ]
+    },
+    "ci": [
+      {
+        "observedAt": "2026-10-11T00:52:12.095009+00:00",
+        "head": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+        "checks": {
+          "SKIPPED": 2,
+          "SUCCESS": 52
+        },
+        "freshReview": true
+      },
+      {
+        "observedAt": "2026-10-11T00:58:18.658125+00:00",
+        "head": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+        "checks": {
+          "SUCCESS": 52
+        },
+        "reviewScore": 5,
+        "unresolvedThreads": 0,
+        "matchesExpected": true,
+        "mergeable": "MERGEABLE",
+        "freshReview": true
+      }
+    ]
+  },
+  "remaining": [
+    "Explain and resolve unexpected Codex cancellation and subsequent cleanup quarantine",
+    "Successful saved-session continuation on current staging source",
+    "Successful current-source native Claude retry",
+    "Staging state-preserving HMR after verifying loaded fixture configuration",
+    "Embedded desktop input verification; direct browser keyboard and mouse passed",
+    "Live sibling cancellation isolation",
+    "Detach with retained file verification",
+    "Live feature-off cleanup",
+    "Staging company denial",
+    "Successful controller restart continuation without duplicate execution"
+  ],
+  "provenance": [
+    {
+      "file": "staging-deploy-12-verified.json",
+      "sha256": "664d6a46b3259846fae329d38ba572311eb2129b4c6789dda67f9f9b2060ca3a"
+    },
+    {
+      "file": "retry-controller-restart-result.json",
+      "sha256": "734f73afa4990b26e538de717642ca631127f48e0f777d97b3f078dabfd65a6c"
+    },
+    {
+      "file": "retry-onboarding-save-failure.json",
+      "sha256": "ac57f59e1ef6cda246dc2ab8d042997e3c29e54674f12871c7692921a186d5a4"
+    },
+    {
+      "file": "retry-cross-company-denial.json",
+      "sha256": "c4e795bcd1f424202347cc912083d5b52341e3dc3a52ba64857bcbcba68f19b8"
+    },
+    {
+      "file": "retry-staging-viewer-natural-cleanup.json",
+      "sha256": "f6a5006d95126c726a7f089833e0dff71bb285c5043c3a93fb399997c27a0f12"
+    },
+    {
+      "file": "diagnostic-head-ci-fresh.json",
+      "sha256": "5b6c28b6d3421450112e22d61cc01b766bf197572e99a9456a04d775bfcfce57"
+    },
+    {
+      "file": "retry-diagnostic-source-proof.json",
+      "sha256": "91e3264c453a8fed34e9ed058303121903aaa3b91b2926d2e38ac7b17cfe5a67"
+    },
+    {
+      "file": "retry-staging-codex-failed-checkpoint.json",
+      "sha256": "8baf4299f94e0df9800be3ee04d1be519737713accd810d3fc21554cbccefd3a"
+    },
+    {
+      "file": "retry-staging-codex-failure-dom.txt",
+      "sha256": "445a8f27444c50ea19227d562b1f50659e4ab40282d247208c94a111681b1829"
+    },
+    {
+      "file": "retry-staging-claude-final-provider.json",
+      "sha256": "9d9a2b4e44ca91de03132c59bcb81b6025f71c2f3895a28caeaa3adbbd0fec63"
+    },
+    {
+      "file": "retry-awake-normal-retry.json",
+      "sha256": "9821029e3fd05f405f8157e2249ce98b55dfd1f8c60390fbe04b0d144d86ed89"
+    },
+    {
+      "file": "retry-awake-first-settlement.json",
+      "sha256": "30f2b722f9015fb3095572f2999aad4f568d8db5a2feaa2fef484174401e3b62"
+    },
+    {
+      "file": "retry-awake-process-baseline.json",
+      "sha256": "21fb1715ed5591691fa384f24a3a4ae7dadb70b5ae6796f376426b2244395acc"
+    },
+    {
+      "file": "retry-awake-final-cleanup.json",
+      "sha256": "98f4da9a511a1f920ccad6a0754c98e297eade1f6f00e907a7f140243942471a"
+    },
+    {
+      "file": "core-retry-current-gates.json",
+      "sha256": "91c8bc99017a1da024c89650a57a7aadb7d6a984b62582b825c5e9104a1cfab4"
+    },
+    {
+      "file": "parent-diagnostics-current-gates.json",
+      "sha256": "878b86aa6c6a86c4533dfcbd7b44b4de2b219f06e3d7b1ffe4236224a6af21bd"
+    },
+    {
+      "file": "staging-deploy-13-verified.json",
+      "sha256": "b3cea12a1d93e6e2edf6f45f6b1ba61c2a519bd21117abc48c5d180ea49a3a1c"
+    },
+    {
+      "file": "retry-staging-13-fresh-proof-processes.json",
+      "sha256": "f6f34afd19c0f38960050412279ae22bbf0742e6b7596b7215b2b2f17b2526a0"
+    },
+    {
+      "file": "retry-staging-13-warm-proof-processes.json",
+      "sha256": "79f5c5b5a888c43477d1765be28aa8f5b62a96248d6dea29b3ec2ad96986c3ec"
+    },
+    {
+      "file": "retry-staging-13-fresh-checkpoint.json",
+      "sha256": "4212bef4e1116c533b88bc2706aab832342c7c1c2add0df9ddb1e8f96aa11b0f"
+    },
+    {
+      "file": "retry-staging-13-warm-checkpoint.json",
+      "sha256": "79117a28838624b5e722e9a57f38bea8426ffad2fdeb4b10eacb5ac44791eed1"
+    },
+    {
+      "file": "retry-staging-13-before-cancel.json",
+      "sha256": "c6374912eeb93ece8747c90ba0e170a99d2f551acc9e1aa789ba9aa15d4624fb"
+    },
+    {
+      "file": "retry-staging-13-final-provider.json",
+      "sha256": "00192becac27fb4a7d9b6509da22e9db68e5c4f052b3a01ebaf74eccf8de7d1d"
+    },
+    {
+      "file": "retry-staging-13-final-processes.json",
+      "sha256": "2d2af6b458b504ee3c4d03a16d7a35422a50895d701f6040b029f0e53a0ee625"
+    },
+    {
+      "file": "retry-staging-13-final-checkpoint.json",
+      "sha256": "d0aab1946dc34af67e92c839b1b5836662037c2de90e84d694d6cf3ccf4375ef"
+    },
+    {
+      "file": "retry-staging-13-owner-settlement.json",
+      "sha256": "4fd54c2340706f1d6c6f9da1c28921d2262bfc4bf4ca5eed4b47d841cdc975af"
+    },
+    {
+      "file": "retry-staging-13-systemd-failure-details.json",
+      "sha256": "ca4370d62068e5a0b7026959658a466e054539d15a03e9d80e0ddd72aab3ca56"
+    },
+    {
+      "file": "retry-staging-13-hmr-file-views.json",
+      "sha256": "3dcefc238dd72d26019fb4be993f7c5cbaa0c6327bb7bf4c22bfa837b4e850e9"
+    },
+    {
+      "file": "retry-staging-13-hmr-mount-namespaces.json",
+      "sha256": "2eee6f2f0e4c45d260c6bc5ab3ba1bb494136aa58dd029d50517ce8e126ab14c"
+    },
+    {
+      "file": "retry-staging-13-test-config.json",
+      "sha256": "cecf3bd5f7b4a280da8adb1fa8fcd1f855e2b61e9734918768a3f9923128b98c"
+    },
+    {
+      "file": "staging-13-cancel-expanded-dom.txt",
+      "sha256": "4861ab723ded35336f5533d646a8f607110b3eaf5fe6cf8aff5bcd7785b66729"
+    },
+    {
+      "file": "staging-13-claude-retry-dom.txt",
+      "sha256": "8f4d8d57ba2842e70d5f49667513aa94fce4e6a6037b0ad7c2977fc5a1eb498c"
+    },
+    {
+      "file": "retry-staging-13-claude-terminal-provider-check.json",
+      "sha256": "8067d6bf0d8bee7da20526ab941ab79e23eb0becbc0e066fd0afea785e81fe09"
+    },
+    {
+      "file": "staging-13-direct-desktop-input.png",
+      "sha256": "02ab563a51e6597b41c0faca3468be0e925901bd46890e37facdaac51ddc67c7"
+    }
+  ],
+  "deployment13": {
+    "checkedAt": "2026-10-11T01:05:58.740756+00:00",
+    "requestedSha": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "servingSha": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "status": "succeeded",
+    "verification": "verified",
+    "runId": 38100487034,
+    "verifiedAt": "2026-10-11T01:05:49Z"
+  },
+  "candidate14": {
+    "canonicalRuntime": "21deac0abfd2919525114f8cdc4a0d49f139665a",
+    "core": "66ac692e446bd2ce0175613787f82eeb048f2749",
+    "staging": "5cf388845902c88d0406116ed9b2c44f335d8bb2",
+    "deploymentRequestId": "f4e5af86-8ad0-4ebd-ad97-f2a9173015af",
+    "status": "dispatched; not verified serving",
+    "fixes": [
+      "exact remote owner cleanup scope",
+      "retain controller-pinned verified ACPX provider package",
+      "fixed-field cancellation source diagnostics"
+    ],
+    "targetedTests": {
+      "cleanup": 8,
+      "quarantineFences": 2,
+      "providerPack": 26,
+      "manifestBootstrap": 7,
+      "cancellationDiagnostics": 7
+    },
+    "serverTypecheck": "passed",
+    "independentProviderPackReview": "no remaining actionable findings",
+    "liveRecoveryRetest": "pending"
+  },
+  "candidate14VerificationFiles": [
+    {
+      "file": "boat-cleanup-scope-focused-tests.log",
+      "sha256": "9058d658e9605762a5a16e40ef2a4c2385a004546db111c337c6795545fd6dcb"
+    },
+    {
+      "file": "boat-cleanup-scope-runtime-tests.log",
+      "sha256": "89bccf74fe69f8cc6accbaff060a8aa6560d8dc935497e6d239f277acc031933"
+    },
+    {
+      "file": "boat-cleanup-scope-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "claude-pack-pin-green.log",
+      "sha256": "002a36696417b8f6f98546fa13e8d972f3b33b8d61fed0044b19a977cd9c3634"
+    },
+    {
+      "file": "claude-pack-pin-manifest-tests.log",
+      "sha256": "b21b2315081d5f8c2c1e615b1ed6cc55a4e91db41d10036c63092dfabdfca16c"
+    },
+    {
+      "file": "claude-pack-pin-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "native-cancellation-diagnostic-tests.log",
+      "sha256": "b86a444e63cbae19ebe709c79919cc405f7cfbef68aeccbf861e7afdd3c3feea"
+    }
+  ]
+}
