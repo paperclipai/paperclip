@@ -10233,14 +10233,34 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
   return validateRemoteProviderPackIdentity(manifest, packRoot, verifyControllerFiles);
 }
 
-export function validateRemoteProviderPackIdentity(manifest: RemoteProviderPackManifest, packRoot = "", verifyControllerFiles = false): RemoteProviderPackManifest {
+export function validateRemoteProviderPackIdentity(
+  manifest: RemoteProviderPackManifest,
+  packRoot = "",
+  verifyControllerFiles = false,
+  retainedAuthority?: { digest: string; agent: string },
+): RemoteProviderPackManifest {
   const payload = manifest?.payload;
+  // A retained session may outlive unrelated bundled-provider upgrades. Its
+  // active provider must still satisfy this release's qualified ACPX contract.
+  const retainedAgent = retainedAuthority?.agent;
+  const retainedProfile = retainedAgent === "claude" || retainedAgent === "codex" || retainedAgent === "grok"
+    ? retainedAgent : null;
+  const activePins = retainedProfile === "claude" ? ["acpx", "claudeAcp"] as const
+    : retainedProfile === "codex" ? ["acpx", "codex", "codexAcp"] as const
+    : ["acpx", "grok"] as const;
+  const pinsMatch = retainedProfile
+    ? canonicalJson(Object.keys(payload?.pins ?? {}).sort()) === canonicalJson(Object.keys(REMOTE_PROVIDER_PACK_PINS).sort())
+      && Object.values(payload?.pins ?? {}).every(value => typeof value === "string" && value.length > 0 && value.length <= 120)
+      && activePins.every(key => payload?.pins?.[key] === REMOTE_PROVIDER_PACK_PINS[key])
+      && canonicalJson(Object.keys(payload?.acpxProfileDigests ?? {}).sort()) === canonicalJson(Object.keys(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS).sort())
+      && Object.values(payload?.acpxProfileDigests ?? {}).every(value => /^sha256:[0-9a-f]{64}$/.test(value))
+      && payload?.acpxProfileDigests?.[retainedProfile] === REMOTE_PROVIDER_PACK_PROFILE_DIGESTS[retainedProfile]
+    : canonicalJson(payload?.pins) === canonicalJson(REMOTE_PROVIDER_PACK_PINS)
+      && canonicalJson(payload?.acpxProfileDigests) === canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS);
   if (
     manifest?.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
     !payload ||
-    canonicalJson(payload.pins) !== canonicalJson(REMOTE_PROVIDER_PACK_PINS) ||
-    canonicalJson(payload.acpxProfileDigests) !==
-      canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS) ||
+    !pinsMatch ||
     typeof payload.target?.platform !== "string" ||
     typeof payload.target?.architecture !== "string" ||
     !/^[0-9a-f]{40}(?:-dirty)?$/.test(payload.runnerSourceRevision) ||
@@ -10253,7 +10273,7 @@ export function validateRemoteProviderPackIdentity(manifest: RemoteProviderPackM
   const digest = `sha256:${createHash("sha256")
     .update(canonicalJson(payload))
     .digest("hex")}`;
-  if (manifest.digest !== digest) {
+  if (manifest.digest !== digest || (retainedAuthority && digest !== retainedAuthority.digest)) {
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider pack manifest digest mismatch",
     );
@@ -10333,7 +10353,7 @@ export function validateRemoteProviderPackIdentity(manifest: RemoteProviderPackM
         throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
       }
       const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
-      if (provider === "cursor") {
+      if (provider === "cursor" && !retainedProfile) {
         const target = `${payload.target.platform}-${payload.target.architecture}`;
         const distribution = Object.hasOwn(CURSOR_DISTRIBUTION_PINS, target)
           ? CURSOR_DISTRIBUTION_PINS[target as keyof typeof CURSOR_DISTRIBUTION_PINS] : undefined;
@@ -12044,12 +12064,13 @@ async function createRunnerdBackendWithinSessionClaim(
         control: JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
           NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")),
       }) : null;
-  if (retainedComputerPack && remoteCommandRunner && remoteStorage) {
+  if (retainedComputerPack && remoteCommandRunner && remoteStorage && input.execution.provider.kind === "acpx") {
     // The local attachment template chooses the digest. Remote content cannot
     // authorize a newer pack or rewrite the existing provider's launch identity.
     const [manifest, state] = await readPinnedComputerProviderMetadata({ runner: remoteCommandRunner,
       packRoot: retainedComputerPack.root, stateDirectory: posix.join(remoteStorage.sessionRoot, "runner") });
-    expectedProviderPackManifest = validateRemoteProviderPackIdentity(manifest as RemoteProviderPackManifest);
+    expectedProviderPackManifest = validateRemoteProviderPackIdentity(manifest as RemoteProviderPackManifest, "", false,
+      { digest: retainedComputerPack.digest, agent: input.execution.provider.agent });
     if (expectedProviderPackManifest.digest !== retainedComputerPack.digest ||
         expectedProviderPackManifest.payload.target.platform !== "linux" ||
         expectedProviderPackManifest.payload.target.architecture !== "x64")
@@ -12282,8 +12303,8 @@ async function createRunnerdBackendWithinSessionClaim(
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
       "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
-      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
-      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
+      `const minimums=[manifest.payload.pins.nodeMinimum,${JSON.stringify(REMOTE_PROVIDER_PACK_PINS.nodeMinimum)}]`,
+      "for(const value of minimums){const minimum=value.split('.').map(Number);if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')}",
       "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
       "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
       "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
@@ -12315,7 +12336,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (
       opencodeVersion.exitCode !== 0 ||
       opencodeVersion.timedOut ||
-      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
+      opencodeVersion.stdout.trim() !== expectedProviderPackManifest.payload.pins.opencode
     ) {
       throw new Error(
         "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",

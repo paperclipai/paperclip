@@ -1476,6 +1476,40 @@ describe("remote provider pack manifest", () => {
     const changedPins = structuredClone(retainedManifest);
     changedPins.payload.pins = { ...changedPins.payload.pins, nodeMinimum: "0.0.0" as typeof changedPins.payload.pins.nodeMinimum };
     expect(() => validateRemoteProviderPackIdentity(changedPins)).toThrow("pins or source revision");
+    const rehash = (manifest: typeof retainedManifest) => {
+      manifest.digest = digest(canonical(manifest.payload));
+      return manifest;
+    };
+    const oldPack = structuredClone(retainedManifest);
+    Object.assign(oldPack.payload.pins, { opencode: "1.18.33", nodeMinimum: "24.10.0", codex: "0.159.0" });
+    Object.assign(oldPack.payload.acpxProfileDigests, { codex: digest("old-codex-profile") });
+    rehash(oldPack);
+    const retainedAuthority = { digest: oldPack.digest, agent: "claude" };
+    // A controller-bound Claude session survives unrelated bundled-provider
+    // drift, while fresh admissions continue to require the current release.
+    expect(() => validateRemoteProviderPackIdentity(oldPack)).toThrow("pins or source revision");
+    expect(validateRemoteProviderPackIdentity(oldPack, root, true, retainedAuthority).digest).toBe(oldPack.digest);
+    expect(() => validateRemoteProviderPackIdentity(oldPack, root, true,
+      { ...retainedAuthority, digest: retainedManifest.digest })).toThrow("manifest digest mismatch");
+    for (const key of ["acpx", "claudeAcp"] as const) {
+      const incompatible = structuredClone(oldPack);
+      Object.assign(incompatible.payload.pins, { [key]: "0.0.1" });
+      rehash(incompatible);
+      expect(() => validateRemoteProviderPackIdentity(incompatible, root, true,
+        { ...retainedAuthority, digest: incompatible.digest })).toThrow("pins or source revision");
+    }
+    const incompatibleProfile = structuredClone(oldPack);
+    Object.assign(incompatibleProfile.payload.acpxProfileDigests, { claude: digest("old-claude-profile") });
+    rehash(incompatibleProfile);
+    expect(() => validateRemoteProviderPackIdentity(incompatibleProfile, root, true,
+      { ...retainedAuthority, digest: incompatibleProfile.digest })).toThrow("pins or source revision");
+    const tamperedManifest = structuredClone(oldPack);
+    tamperedManifest.payload.artifacts.nodeCommand.sha256 = digest("substitute-node");
+    rehash(tamperedManifest);
+    expect(() => validateRemoteProviderPackIdentity(tamperedManifest, root, true, retainedAuthority)).toThrow("manifest digest mismatch");
+    await writeFile(join(root, "node_modules", "node", "bin", "node"), "substitute-node");
+    expect(() => validateRemoteProviderPackIdentity(oldPack, root, true, retainedAuthority)).toThrow("provider Node digest mismatch");
+    await writeFile(join(root, "node_modules", "node", "bin", "node"), node);
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.34",
     );
@@ -1499,6 +1533,11 @@ describe("remote provider pack manifest", () => {
       await writeManifest(); await cp(join(root, "provider-pack.json"), manifestPath);
       expect(() => readRemoteProviderPackManifest(root)).toThrow("Cursor profile or closure");
       expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Cursor profile or closure");
+      const oldCursorPack = JSON.parse(await readFile(manifestPath, "utf8")) as typeof retainedManifest;
+      expect(validateRemoteProviderPackIdentity(oldCursorPack, root, true,
+        { digest: oldCursorPack.digest, agent: "claude" }).digest).toBe(oldCursorPack.digest);
+      expect(() => validateRemoteProviderPackIdentity(oldCursorPack, root, true,
+        { digest: oldCursorPack.digest, agent: "cursor" })).toThrow("Cursor profile or closure");
       Object.assign(cursor, { [field]: previous });
     }
     await writeManifest(); await cp(join(root, "provider-pack.json"), manifestPath);
