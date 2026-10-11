@@ -1631,6 +1631,13 @@ export function heartbeatService(
             reopenedFrom: effect.reopenedFrom,
             source: "deferred_comment_wake",
             identifier: effect.identifier,
+            // `runId` above is the run whose release drained the queue; these
+            // name the deferred wake and comments that asked for the reopen.
+            releasingRunId: effect.runId,
+            wakeupRequestId: effect.wakeupRequestId,
+            requestedByActorType: effect.requestedByActorType,
+            requestedByActorId: effect.requestedByActorId,
+            commentIds: effect.commentIds,
           },
         });
       }

@@ -188,6 +188,14 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       actorId: event.actorId,
       runId: event.runId ?? null,
     };
+    // A deferred comment reopen is logged by the system actor for the run that
+    // released the queue. Show the user or agent who asked for the reopen.
+    const requestedByActorType = details.source === "deferred_comment_wake" ? details.requestedByActorType : null;
+    const requestedByActorId = nullableString(details.requestedByActorId);
+    if ((requestedByActorType === "user" || requestedByActorType === "agent") && requestedByActorId) {
+      timelineEvent.actorType = requestedByActorType;
+      timelineEvent.actorId = requestedByActorId;
+    }
     if (details.followUpRequested === true || details.resumeIntent === true) {
       timelineEvent.followUpRequested = true;
       timelineEvent.commentId = nullableString(details.commentId);

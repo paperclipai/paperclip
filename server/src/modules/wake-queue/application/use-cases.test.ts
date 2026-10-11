@@ -570,6 +570,53 @@ describe("releaseIssueExecution", () => {
     expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
     expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
     expect(result.outcome.kind).toBe("promoted");
+    expect(result.postCommitEffects).toContainEqual({
+      kind: "issue_reopened",
+      companyId: ISSUE.companyId,
+      agentId: AGENT.id,
+      runId: RUN.id,
+      issueId: ISSUE.id,
+      identifier: ISSUE.identifier,
+      reopenedFrom: "done",
+      wakeupRequestId: "wake-1",
+      requestedByActorType: "user",
+      requestedByActorId: "actor-1",
+      commentIds: ["human-follow-up"],
+    });
+  });
+
+  it("names the requesting agent and comments, not the releasing run, on an agent-requested reopen", async () => {
+    const commentIds = ["delegated-feedback"];
+    const queue = [wakeCandidate({
+      id: "wake-agent-feedback",
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "agent",
+      requestedByActorId: "delegating-agent",
+      queuedCommentIds: commentIds,
+      deferredCommentIds: commentIds,
+      deferredContextSeed: { resumeIntent: true, wakeCommentIds: commentIds },
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: commentIds, containedSelfAuthoredComment: false })),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done" }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    const reopenEffect = result.postCommitEffects.find((effect) => effect.kind === "issue_reopened");
+    expect(reopenEffect).toMatchObject({
+      runId: RUN.id,
+      wakeupRequestId: "wake-agent-feedback",
+      requestedByActorType: "agent",
+      requestedByActorId: "delegating-agent",
+      commentIds,
+    });
+    expect(reopenEffect).not.toMatchObject({ requestedByActorId: RUN.agentId });
   });
 
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
