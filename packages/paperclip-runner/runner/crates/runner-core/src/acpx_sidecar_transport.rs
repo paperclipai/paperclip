@@ -458,10 +458,11 @@ impl AcpxSidecarTransport {
                     let error = response.error.expect("failed response has validated error");
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
-                            "ACPX sidecar command {} was rejected (retryable={}, classification={})",
+                            "ACPX sidecar command {} was rejected (retryable={}, classification={}){}",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
+                            self.diagnostic_suffix(),
                         ),
                     )));
                 }
@@ -531,6 +532,20 @@ impl AcpxSidecarTransport {
             ));
         }
         self.validate_event_sequence(event.sequence)?;
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeDiagnostic {
+            if let (Some(code), Some(message)) = (
+                event.payload.get("code").and_then(Value::as_str),
+                event.payload.get("message").and_then(Value::as_str),
+            ) {
+                // These frames precede the response on stdout, unlike stderr
+                // whose reader may deliver a matching diagnostic later.
+                if let Some(progress) = parse_admission_diagnostic(&format!(
+                    "[paperclip-acpx-sidecar] {code}: {message}"
+                )) {
+                    self.record_admission_diagnostic(progress);
+                }
+            }
+        }
         self.buffered_events.push_back(event);
         Ok(())
     }
@@ -627,15 +642,22 @@ impl AcpxSidecarTransport {
         // Only fixed categories cross this boundary. Raw errors, stack paths,
         // identifiers, and credential-bearing strings remain fully redacted.
         if let Some(progress) = parse_admission_diagnostic(line) {
-            // Cleanup can race the outer deadline; preserve the admission step
-            // that failed rather than replacing it with generic teardown.
-            if progress.0 != "cleanup" || self.admission_diagnostic.is_none() {
-                self.admission_diagnostic = Some(progress);
-            }
+            self.record_admission_diagnostic(progress);
         }
         self.stderr_categories
             .extend(stderr_diagnostic_categories(line));
         self.stderr_tail.push(redact_diagnostic(line));
+    }
+
+    fn record_admission_diagnostic(&mut self, progress: (&'static str, u64)) {
+        // Preserve the failed step through cleanup and delayed duplicate stderr.
+        // Neither channel may move the observed admission clock backwards.
+        if self.admission_diagnostic.is_some_and(|current| {
+            progress.0 == "cleanup" || progress.1 < current.1
+        }) {
+            return;
+        }
+        self.admission_diagnostic = Some(progress);
     }
 
     fn poison(&mut self) {
@@ -1087,6 +1109,72 @@ mod tests {
         assert!(transport
             .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admission_rejection_retains_sequenced_stage_and_preserves_buffered_frames() {
+        let diagnostics = [
+            ("admission_handshake", "elapsedMs=24"),
+            ("admission_sandbox", "elapsedMs=1"),
+            ("admission_handshake", "elapsedMs=25 /private/token-canary"),
+            ("admission_cleanup", "elapsedMs=26"),
+        ];
+        let frames: Vec<Value> = diagnostics.iter().enumerate().map(|(index, (code, message))| json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sequence": index + 1, "eventType": "runtime.diagnostic", "runId": null,
+            "turnId": null, "payload": { "code": code, "message": message },
+        })).collect();
+        let response = json!({ "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "id": 1, "ok": false, "error": { "code": "UNKNOWN_PRIVATE_CODE",
+            "message": "/private/token-canary", "retryable": false } });
+        let lines = frames.iter().chain(std::iter::once(&response))
+            .map(|frame| format!("'{}'", frame)).collect::<Vec<_>>().join(" ");
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), format!("read request; printf '%s\\n' {lines}; sleep 2")],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport.request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .unwrap_err().to_string();
+        assert!(error.contains("was rejected (retryable=false, classification=unclassified)"), "{error}");
+        assert!(error.contains("admissionStage=handshake admissionElapsedMs=24"), "{error}");
+        assert!(!error.contains("private") && !error.contains("canary") && !error.contains("UNKNOWN_PRIVATE_CODE"), "{error}");
+        assert!(!transport.poisoned);
+        for frame in frames {
+            let event = transport.poll_event(Duration::from_millis(1)).unwrap().unwrap();
+            assert_eq!(event.sequence, frame["sequence"].as_u64().unwrap());
+            assert_eq!(event.payload, frame["payload"]);
+        }
+        assert!(transport.buffered_events.is_empty());
+        // Delayed stderr must not regress the stage learned from sequenced stdout.
+        transport.record_stderr("[paperclip-acpx-sidecar] admission_binding: elapsedMs=0");
+        assert_eq!(transport.admission_diagnostic, Some(("handshake", 24)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_diagnostic_sequence_cannot_update_admission_progress() {
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 2".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport.buffer_event(AcpxSidecarEvent {
+            sequence: 2,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
+            run_id: None, turn_id: None,
+            payload: json!({"code":"admission_ready", "message":"elapsedMs=25"}),
+        }).unwrap_err();
+        assert!(error.to_string().contains("sequence has a gap"));
+        assert_eq!(transport.admission_diagnostic, None);
+        assert!(transport.buffered_events.is_empty());
     }
 
     #[test]
