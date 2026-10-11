@@ -531,6 +531,23 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+#### Embedded Postgres template cache
+
+Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
+get their own embedded Postgres cluster. The first such suite on a host builds
+one fully migrated cluster and publishes its data directory under
+`$TMPDIR/paperclip-embedded-postgres-templates/<key>`. Every later suite copies
+that template and starts Postgres on the copy instead of running `initdb` and
+all migrations again, and the `getEmbeddedPostgresTestSupport` probe reuses it
+instead of starting a throwaway cluster. The key hashes the embedded-postgres
+version, the initdb flags, and every migration file, so a changed migration
+builds a new template. Each suite still runs `applyPendingMigrations` on its
+copy, which is a no-op when the template is current.
+
+Set `PAPERCLIP_TEST_POSTGRES_TEMPLATE=0` to bypass the cache and give every
+suite a fresh `initdb`, for example when debugging cluster startup itself. A
+failure on the template path falls back to the fresh path automatically.
+
 ### Task search evaluation
 
 The task search relevance rubric and regression corpus are documented in
