@@ -1,5 +1,6 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { mergeAccountingCost, mergeAccountingUsage } from "@paperclipai/adapter-utils/accounting-merge";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +56,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser } from "./parse.js";
+import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser, parsePiProcessOutput, piCostUsage } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -743,7 +744,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
-      });
+      }, event => piCostUsage(event) !== null);
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -765,11 +766,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parsePiJsonl(proc.stdout);
+      // Parse the redaction-aware control output when present.
+      const parsed = parsePiProcessOutput(proc);
       if (hasAccounting) {
         const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.sawAgentEnd = retained.sawAgentEnd;
+        // Merge, never overwrite: a usage counter matching a secret value is
+        // unparseable in the redacted display stream (checkpoint totals stay
+        // zero) while the sanitized control record stays parseable. Either
+        // stream may also be the fuller one when capture is capped.
+        parsed.usage = {
+          ...mergeAccountingUsage(parsed.usage, retained.usage),
+          costUsd: mergeAccountingCost(
+            { costUsd: parsed.usage.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
+            { costUsd: retained.usage.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
+            accountingLog.unreadRecords(),
+          ),
+        };
+        parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;
       }
       return { proc, rawStderr: proc.stderr, parsed };
     };
@@ -778,7 +791,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parsePiJsonl>;
+        parsed: ReturnType<typeof parsePiProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {

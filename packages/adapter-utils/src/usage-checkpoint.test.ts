@@ -100,6 +100,19 @@ describe("usage checkpoint stream", () => {
     await expect(log.flush()).rejects.toBe(failure);
   });
 
+  it("clears every price representation when the display lost a cost record", async () => {
+    const saved = vi.fn();
+    const log = createUsageCheckpointLog(vi.fn(), saved, () => ({
+      usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25, costUsdExact: "0.25",
+      cacheAdjustedCostUsd: 0.25, usageByModel: [{ model: "example", usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25 }], complete: false,
+    }));
+    await log("stdout", '{"type":"step_finish","part":{"cost":***REDACTED***}}\n');
+    await log("stdout", event + "\n");
+    await log.flush({ complete: true });
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced", complete: true }));
+    expect(saved.mock.calls.at(-1)![0].usageByModel).toBeUndefined();
+  });
+
   it("does not promote partial usage to complete merely because the stream was flushed", async () => {
     const saved = vi.fn(); const log = createUsageCheckpointLog(vi.fn(), saved, createParser());
     await log("stdout", event); await log.flush();
@@ -128,5 +141,59 @@ describe("usage checkpoint stream", () => {
     expect(saved).toHaveBeenCalledTimes(1025); // all updates plus completion
     expect(parser).toHaveBeenCalledTimes(1024);
     expect(parser.mock.calls.reduce((sum, [input]) => sum + input.length, 0)).toBeLessThanOrEqual(1024 * (event.length + 1));
+  });
+
+  describe("records the display stream lost to redaction", () => {
+    const marker = "***REDACTED***";
+    const damagedStep = `{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":${marker},"output":7}}}`;
+    const run = async (...lines: string[]) => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      for (const line of lines) await log("stdout", line + "\n");
+      await log.flush();
+      return log.unreadRecords();
+    };
+
+    it("counts an accounting line whose numeric counter was replaced by the marker", async () => {
+      expect(await run(damagedStep, damagedStep)).toBe(2);
+    });
+
+    it("recognizes partial and repeated secret matches within one numeric token", async () => {
+      expect(await run(
+        damagedStep.replace(`:${marker},`, `:91${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}7${marker}78,`),
+      )).toBe(3);
+    });
+
+    it("does not count accounting words, nested envelopes, or Pi message duplicates as costs", async () => {
+      expect(await run(
+        `{"type":"text","part":{"text":"cost usage tokens step_finish turn_end","cost":${marker}}}`,
+        `{"type":"text","part":{"type":"step_finish","tokens":{"input":${marker}}}}`,
+        `{"type":"message_end","message":{"role":"assistant","usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+      )).toBe(0);
+    });
+
+    it("counts Pi turns and standalone usage, not words in their content", async () => {
+      expect(await run(
+        `{"type":"turn_end","message":{"usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+        `{"type":"usage","usage":{"costUsd":${marker}}}`,
+      )).toBe(2);
+    });
+
+    it("counts a marker-damaged line that is still unterminated at flush", async () => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      await log("stdout", damagedStep);
+      await log.flush();
+      expect(log.unreadRecords()).toBe(1);
+    });
+
+    it("does not count a line that parses, a non-record line, or an unrelated damaged line", async () => {
+      expect(await run(
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":' + JSON.stringify(marker) + ',"output":7}}}',
+        `not json ${marker} tokens cost`,
+        `{"type":"text","part":{"text":"hello ${marker.slice(0, 4)}","n":${marker}}}`,
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":',
+      )).toBe(0);
+    });
   });
 });

@@ -75,11 +75,16 @@ import {
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
+  MAX_CAPTURE_BYTES,
   resolveCommandForLogs,
   runChildProcess,
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import {
+  collectKnownSecretEnvValues,
+  createSecretEnvRedactionControlStream,
+} from "./secret-env-redaction.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
@@ -279,6 +284,15 @@ export interface AdapterExecutionTargetProcessOptions {
   timeoutSec: number;
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /**
+   * Ordered sanitized control records, never literal log chunks. Forwarded to
+   * `runChildProcess` for local/SSH targets. The sandbox runner has no control
+   * channel, so the sandbox branch reconstructs these from the RAW streamed
+   * run-log bytes (tail chunks plus the EOF suffix) through the same per-pipe
+   * sanitized control-stream machinery — never from opaque display logs, whose
+   * literal replacement can corrupt record boundaries.
+   */
+  onControlOutput?: (stream: "stdout" | "stderr", records: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   /** Trusted invocation observation, not a turn completion callback. Called only
@@ -862,6 +876,51 @@ export async function runAdapterExecutionTargetProcess(
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
+    // Sandbox live control records restore the assistant/tool event stream
+    // for sandbox-backed CLIs. The sandbox runner has no control channel, so
+    // the raw streamed bytes (tail chunks plus the EOF suffix) feed the same
+    // per-pipe sanitized control-stream machinery the local path uses. The
+    // final batched fallback only fires for a pipe that streamed nothing, so
+    // records are never reconstructed twice from overlapping sources. Live
+    // events are observational: a failing event sink warns but never fails
+    // the run, mirroring the local path's onLogError handling.
+    const knownSecretEnvValues = options.onControlOutput
+      ? collectKnownSecretEnvValues(env)
+      : [];
+    const liveControl = options.onControlOutput
+      ? {
+          stdout: createSecretEnvRedactionControlStream(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+          stderr: createSecretEnvRedactionControlStream(knownSecretEnvValues, MAX_CAPTURE_BYTES),
+        }
+      : null;
+    const streamedControlChars = { stdout: 0, stderr: 0 };
+    const forwardSandboxControls = async (
+      stream: "stdout" | "stderr",
+      records: string,
+    ): Promise<void> => {
+      if (!records) return;
+      try {
+        await options.onControlOutput?.(stream, records);
+      } catch (err) {
+        console.warn(
+          `[${runId}] failed to forward sandbox control chunk (${stream}): ${(err as Error)?.message ?? err}`,
+        );
+      }
+    };
+    // Arrival-order delivery: runners may call onLog without awaiting it, and
+    // display sinks have uneven latency, so push synchronously and deliver
+    // through one chain instead of ordering by onLog resolution.
+    let controlDelivery: Promise<void> = Promise.resolve();
+    const forwardSandboxChunk = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
+      const records = liveControl?.[stream].push(chunk) ?? "";
+      if (records) {
+        controlDelivery = controlDelivery.then(() => forwardSandboxControls(stream, records));
+      }
+      if (chunk) {
+        streamedControlChars[stream] += chunk.length;
+        await options.onLog(stream, chunk);
+      }
+    };
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
       message: "Starting adapter in environment",
@@ -871,7 +930,7 @@ export async function runAdapterExecutionTargetProcess(
     let execArgs = args;
     if (runLogTail) {
       ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(command, args));
-      runLogTail.start(options.onLog);
+      runLogTail.start(forwardSandboxChunk);
     }
     try {
       const result = await runner.execute({
@@ -883,7 +942,7 @@ export async function runAdapterExecutionTargetProcess(
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
         // The tail loop already streams incremental chunks; suppress the
         // runner's end-of-run batched onLog to avoid duplicate log bytes.
-        onLog: runLogTail ? undefined : options.onLog,
+        onLog: runLogTail ? undefined : forwardSandboxChunk,
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
@@ -898,6 +957,26 @@ export async function runAdapterExecutionTargetProcess(
       const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
+      } else if (liveControl) {
+        // Batched fallback: provider-backed runners usually complete the RPC
+        // before returning, so a pipe that never streamed still gets its
+        // sanitized records before exit. Pipes that already streamed skip
+        // this so records are never emitted twice.
+        const finals = { stdout: result.stdout, stderr: result.stderr } as const;
+        for (const stream of ["stdout", "stderr"] as const) {
+          if (streamedControlChars[stream] === 0 && finals[stream]) {
+            await forwardSandboxControls(
+              stream,
+              liveControl[stream].push(finals[stream]) + liveControl[stream].flush(),
+            );
+          }
+        }
+      }
+      if (liveControl) {
+        await controlDelivery;
+        for (const stream of ["stdout", "stderr"] as const) {
+          await forwardSandboxControls(stream, liveControl[stream].flush());
+        }
       }
       return settled;
     } catch (error) {
@@ -920,6 +999,7 @@ export async function runAdapterExecutionTargetProcess(
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
     onLog: options.onLog,
+    onControlOutput: options.onControlOutput,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,

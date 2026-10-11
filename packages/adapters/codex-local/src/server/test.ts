@@ -20,7 +20,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { parseCodexJsonl } from "./parse.js";
+import { parseCodexProcessOutput } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -491,7 +491,7 @@ export async function testEnvironment(
             onLog: async () => {},
           },
         );
-        const parsed = parseCodexJsonl(probe.stdout);
+        const parsed = parseCodexProcessOutput(probe);
         // Plugin-catalog login is separate from model authentication. Its
         // warnings must not explain an unrelated provider/process failure.
         const providerStderr = probe.stderr.split(/\r?\n/)

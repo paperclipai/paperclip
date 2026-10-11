@@ -65,6 +65,7 @@ import {
 import {
   claudeModelUsageTotals,
   claudeModelReceipts,
+  parseClaudeProcessOutput,
   parseClaudeStreamJson, createClaudeStreamParser,
   describeClaudeFailure,
   detectClaudeLoginRequired,
@@ -993,8 +994,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     await accountingLog.flush();
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
-    const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+    const { parsedStream, parsed } = parseClaudeProcessOutput(proc);
     return { proc, parsedStream, parsed };
   };
 

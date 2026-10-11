@@ -9,7 +9,13 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 // sandbox runner returns.
 const { runAdapterExecutionTargetProcess, probeResult } = vi.hoisted(() => {
   const probeResult: {
-    value: { exitCode: number; stdout: string; stderr: string; timedOut: boolean };
+    value: {
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      timedOut: boolean;
+      controlOutput?: { stdout: string; stderr: string } | null;
+    };
     throwError: Error | null;
   } = {
     value: { exitCode: 1, stdout: "", stderr: "", timedOut: false },
@@ -25,6 +31,7 @@ const { runAdapterExecutionTargetProcess, probeResult } = vi.hoisted(() => {
         timedOut: probeResult.value.timedOut,
         stdout: probeResult.value.stdout,
         stderr: probeResult.value.stderr,
+        controlOutput: probeResult.value.controlOutput,
         pid: 321,
         startedAt: new Date().toISOString(),
       };
@@ -390,6 +397,122 @@ describe("probeClaudeAcpSandboxLogin", () => {
       exitCode: 2,
     });
     warnSpy.mockRestore();
+  });
+});
+
+describe("Claude ACP login probe control output", () => {
+  const hello = '{"type":"result","subtype":"success","is_error":false,"result":"hello","num_turns":7}';
+  const runProbe = () => probeClaudeAcpSandboxLogin({
+    config: { engine: "acp" },
+    target: sandboxTarget,
+  });
+
+  it("keeps a control-valid hello healthy despite numeric-corrupted display JSON and display auth text", async () => {
+    const display = hello.replace('"num_turns":7', '"num_turns":[REDACTED]');
+    expect(() => JSON.parse(display)).toThrow();
+    probeResult.value = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: `${display}\nPlease run claude login`,
+      stderr: "Please run claude login",
+      controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
+  });
+
+  it("parses auth failure terminal fields from controls when numeric redaction corrupts display JSON", async () => {
+    const auth = '{"type":"result","subtype":"success","is_error":true,"error":"authentication_failed","result":"Invalid bearer token","num_turns":7}';
+    const display = auth.replace('"num_turns":7', '"num_turns":[REDACTED]');
+    expect(() => JSON.parse(display)).toThrow();
+    probeResult.value = {
+      exitCode: 1, timedOut: false, stdout: display, stderr: "",
+      controlOutput: { stdout: auth, stderr: "" },
+    };
+
+    const checks = await runProbe();
+
+    expect(checks.map(check => check.code)).toEqual(["claude_hello_probe_auth_required", ADAPTER_AUTH_MISSING_CHECK_CODE]);
+  });
+
+  it.each(["stdout", "stderr"] as const)("prefers control %s for auth classification", async stream => {
+    probeResult.value = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: hello,
+      stderr: "fatal: unknown failure",
+      controlOutput: { stdout: "", stderr: "", [stream]: "Please run claude login" },
+    };
+
+    const checks = await runProbe();
+
+    expect(checks.map(check => check.code)).toEqual(["claude_hello_probe_auth_required", ADAPTER_AUTH_MISSING_CHECK_CODE]);
+  });
+
+  it.each(["stdout", "stderr"] as const)("ignores conflicting display %s auth text when controls report a non-auth failure", async stream => {
+    probeResult.value = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      [stream]: "Please run claude login",
+      controlOutput: { stdout: "", stderr: "fatal: unknown failure" },
+    };
+
+    const checks = await runProbe();
+
+    expect(checks.map(check => check.code)).toEqual(["claude_acp_login_probe_unavailable"]);
+  });
+
+  it("does not promote display hello or auth into a classification when controls are empty", async () => {
+    // ACP's existing exit-0 success contract is unchanged. On a failed process,
+    // empty controls must not turn display output into either success or auth.
+    probeResult.value = {
+      exitCode: 1,
+      timedOut: false,
+      stdout: `${hello}\nPlease run claude login`,
+      stderr: "Please run claude login",
+      controlOutput: { stdout: "", stderr: "" },
+    };
+
+    const checks = await runProbe();
+
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", level: "warn" })]);
+  });
+
+  it.each([undefined, null])("keeps legacy classification without control output (%s)", async controlOutput => {
+    probeResult.value = { exitCode: 1, timedOut: false, stdout: loginRequiredStdout, stderr: "", controlOutput };
+    expect((await runProbe()).map(check => check.code)).toEqual(["claude_hello_probe_auth_required", ADAPTER_AUTH_MISSING_CHECK_CODE]);
+
+    probeResult.value = { exitCode: 0, timedOut: false, stdout: hello, stderr: "", controlOutput };
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
+  });
+
+  it("leaves an unchanged positive control healthy", async () => {
+    probeResult.value = {
+      exitCode: 0, timedOut: false, stdout: hello, stderr: "", controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
+  });
+
+  it("reports unavailable when empty controls cannot prove hello even on exit 0", async () => {
+    probeResult.value = {
+      exitCode: 0, timedOut: false, stdout: "", stderr: "", controlOutput: { stdout: "", stderr: "" },
+    };
+
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", level: "warn" })]);
+  });
+
+  it.each([
+    [1, false, "The Claude login probe did not complete."],
+    [0, true, "The Claude login probe timed out."],
+  ])("retains original process exit/timeout metadata (%s, %s)", async (exitCode, timedOut, message) => {
+    probeResult.value = {
+      exitCode, timedOut, stdout: "", stderr: "", controlOutput: { stdout: hello, stderr: "" },
+    };
+
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", message })]);
   });
 });
 

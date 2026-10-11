@@ -95,3 +95,12 @@ describe("OpenCode reported usage completeness", () => {
     expect(parseOpenCodeJsonl(line + '\n' + JSON.stringify({ type: "step_finish" }))).toMatchObject({ usageReported: true, usageComplete: false });
   });
 });
+
+describe("OpenCode cost-bearing record count", () => {
+  it("counts every step_finish, priced or not, so views can be reconciled", () => {
+    const step = (cost?: number) => JSON.stringify({ type: "step_finish", part: { tokens: { input: 1, output: 1 }, ...(cost === undefined ? {} : { cost }) } });
+    expect(parseOpenCodeJsonl("").costRecords).toBe(0);
+    expect(parseOpenCodeJsonl([step(0.5), step(0.25)].join("\n"))).toMatchObject({ costRecords: 2, costUsd: 0.75, costComplete: true });
+    expect(parseOpenCodeJsonl([step(0.5), step()].join("\n"))).toMatchObject({ costRecords: 2, costUsd: null, costComplete: false });
+  });
+});

@@ -1,5 +1,6 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { mergeAccountingCost, mergeAccountingUsage } from "@paperclipai/adapter-utils/accounting-merge";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser, parseOpenCodeProcessOutput } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -663,7 +664,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
           costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
           usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(runtimeEnv, provider), billingType: "unknown", model, complete: false };
-      });
+      }, event => event.type === "step_finish");
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -685,13 +686,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parseOpenCodeJsonl(proc.stdout);
+      // Parse the redaction-aware control output when present.
+      const parsed = parseOpenCodeProcessOutput(proc);
       if (hasAccounting) {
         const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.usageReported = retained.usageReported;
-        parsed.usageComplete = retained.usageComplete;
-        parsed.costUsd = retained.costUsd;
+        // Merge, never overwrite: a usage counter matching a secret value is
+        // unparseable in the redacted display stream (checkpoint totals stay
+        // zero) while the sanitized control record stays parseable. Either
+        // stream may also be the fuller one when capture is capped.
+        parsed.usage = mergeAccountingUsage(parsed.usage, retained.usage);
+        parsed.usageReported = parsed.usageReported || retained.usageReported;
+        // A valid captured suffix cannot erase invalid counters seen earlier.
+        // Include unread display records when comparing stream coverage.
+        parsed.usageComplete = retained.costRecords + accountingLog.unreadRecords() > parsed.costRecords
+          ? retained.usageComplete
+          : parsed.usageComplete || retained.usageComplete;
+        parsed.costUsd = mergeAccountingCost(
+          { costUsd: parsed.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
+          { costUsd: retained.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
+          accountingLog.unreadRecords(),
+        );
       }
       return { proc, rawStderr: proc.stderr, parsed };
     };
@@ -700,7 +714,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        parsed: ReturnType<typeof parseOpenCodeProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {

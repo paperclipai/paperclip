@@ -26,7 +26,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
-import { parseOpenCodeJsonl } from "./parse.js";
+import { parseOpenCodeProcessOutput } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 
@@ -392,7 +392,7 @@ export async function testEnvironment(
           },
         );
 
-        const parsed = parseOpenCodeJsonl(probe.stdout);
+        const parsed = parseOpenCodeProcessOutput(probe);
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
 
