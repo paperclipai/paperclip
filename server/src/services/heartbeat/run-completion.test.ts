@@ -10,7 +10,7 @@ import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from ".
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatRunCompletion, nativeCompletionCancellationDiagnostic, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -70,6 +70,45 @@ it("constructs completion handlers without querying or starting work", () => {
   createHeartbeatRunCompletion(db, deps);
   expect(access).not.toHaveBeenCalled();
   for (const callback of Object.values(deps)) if (vi.isMockFunction(callback)) expect(callback).not.toHaveBeenCalled();
+});
+
+describe("native completion cancellation diagnostics", () => {
+  it.each([
+    ["Legacy controller lease lost", "legacy_controller_lease_lost"],
+    ["Run stopped before provider startup", "stopped_before_provider_startup"],
+    ["private-token-do-not-log", "other"],
+  ])("classifies an aborted controller without exposing its message: %s", (message, abortReason) => {
+    const controller = new AbortController();
+    controller.abort(new Error(message));
+    const diagnostic = nativeCompletionCancellationDiagnostic({ outcome: "cancelled", nativeTerminal: "succeeded",
+      persistedRunStatus: "running", signal: controller.signal });
+    expect(diagnostic).toEqual({ nativeTerminal: "succeeded", outcomeSource: "execution_signal",
+      persistedRunStatus: "running", signalAborted: true, abortReason });
+    expect(JSON.stringify(diagnostic)).not.toContain(message);
+  });
+
+  it("reports a persisted cancellation ahead of an aborted controller", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Legacy controller lease lost"));
+    expect(nativeCompletionCancellationDiagnostic({ outcome: "cancelled", nativeTerminal: "succeeded",
+      persistedRunStatus: "cancelled", signal: controller.signal })).toMatchObject({
+      outcomeSource: "persisted_terminal", persistedRunStatus: "cancelled", abortReason: "legacy_controller_lease_lost",
+    });
+  });
+
+  it("reports persisted cancellation without inferring a signal cause", () => {
+    expect(nativeCompletionCancellationDiagnostic({ outcome: "cancelled", nativeTerminal: "succeeded",
+      persistedRunStatus: "cancelled", signal: new AbortController().signal })).toMatchObject({
+      outcomeSource: "persisted_terminal", signalAborted: false, abortReason: "not_aborted",
+    });
+  });
+
+  it("omits diagnostics for successful completion and provider cancellation", () => {
+    const signal = new AbortController().signal;
+    expect(nativeCompletionCancellationDiagnostic({ outcome: "succeeded", nativeTerminal: "succeeded", persistedRunStatus: "running", signal })).toBeNull();
+    expect(nativeCompletionCancellationDiagnostic({ outcome: "cancelled", nativeTerminal: "cancelled", persistedRunStatus: "running", signal })).toBeNull();
+    expect(nativeCompletionCancellationDiagnostic({ outcome: "cancelled", nativeTerminal: undefined, persistedRunStatus: "cancelled", signal })).toBeNull();
+  });
 });
 
 const support = await getEmbeddedPostgresTestSupport();
