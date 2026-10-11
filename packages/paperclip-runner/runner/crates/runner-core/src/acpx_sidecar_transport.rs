@@ -652,9 +652,10 @@ impl AcpxSidecarTransport {
     fn record_admission_diagnostic(&mut self, progress: (&'static str, u64)) {
         // Preserve the failed step through cleanup and delayed duplicate stderr.
         // Neither channel may move the observed admission clock backwards.
-        if self.admission_diagnostic.is_some_and(|current| {
-            progress.0 == "cleanup" || progress.1 < current.1
-        }) {
+        if self
+            .admission_diagnostic
+            .is_some_and(|current| progress.0 == "cleanup" || progress.1 < current.1)
+        {
             return;
         }
         self.admission_diagnostic = Some(progress);
@@ -1120,32 +1121,61 @@ mod tests {
             ("admission_handshake", "elapsedMs=25 /private/token-canary"),
             ("admission_cleanup", "elapsedMs=26"),
         ];
-        let frames: Vec<Value> = diagnostics.iter().enumerate().map(|(index, (code, message))| json!({
-            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
-            "sequence": index + 1, "eventType": "runtime.diagnostic", "runId": null,
-            "turnId": null, "payload": { "code": code, "message": message },
-        })).collect();
+        let frames: Vec<Value> = diagnostics
+            .iter()
+            .enumerate()
+            .map(|(index, (code, message))| {
+                json!({
+                    "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence": index + 1, "eventType": "runtime.diagnostic", "runId": null,
+                    "turnId": null, "payload": { "code": code, "message": message },
+                })
+            })
+            .collect();
         let response = json!({ "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
             "id": 1, "ok": false, "error": { "code": "UNKNOWN_PRIVATE_CODE",
             "message": "/private/token-canary", "retryable": false } });
-        let lines = frames.iter().chain(std::iter::once(&response))
-            .map(|frame| format!("'{}'", frame)).collect::<Vec<_>>().join(" ");
+        let lines = frames
+            .iter()
+            .chain(std::iter::once(&response))
+            .map(|frame| format!("'{}'", frame))
+            .collect::<Vec<_>>()
+            .join(" ");
         let config = AcpxSidecarTransportConfig {
             command: PathBuf::from("/bin/sh"),
-            args: vec!["-c".into(), format!("read request; printf '%s\\n' {lines}; sleep 2")],
+            args: vec![
+                "-c".into(),
+                format!("read request; printf '%s\\n' {lines}; sleep 2"),
+            ],
             verified_launch: None,
             request_timeout: Duration::from_secs(2),
             shutdown_grace: Duration::from_millis(10),
         };
         let mut transport = AcpxSidecarTransport::start(&config).unwrap();
-        let error = transport.request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
-            .unwrap_err().to_string();
-        assert!(error.contains("was rejected (retryable=false, classification=unclassified)"), "{error}");
-        assert!(error.contains("admissionStage=handshake admissionElapsedMs=24"), "{error}");
-        assert!(!error.contains("private") && !error.contains("canary") && !error.contains("UNKNOWN_PRIVATE_CODE"), "{error}");
+        let error = transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("was rejected (retryable=false, classification=unclassified)"),
+            "{error}"
+        );
+        assert!(
+            error.contains("admissionStage=handshake admissionElapsedMs=24"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("private")
+                && !error.contains("canary")
+                && !error.contains("UNKNOWN_PRIVATE_CODE"),
+            "{error}"
+        );
         assert!(!transport.poisoned);
         for frame in frames {
-            let event = transport.poll_event(Duration::from_millis(1)).unwrap().unwrap();
+            let event = transport
+                .poll_event(Duration::from_millis(1))
+                .unwrap()
+                .unwrap();
             assert_eq!(event.sequence, frame["sequence"].as_u64().unwrap());
             assert_eq!(event.payload, frame["payload"]);
         }
@@ -1166,12 +1196,15 @@ mod tests {
             shutdown_grace: Duration::from_millis(10),
         };
         let mut transport = AcpxSidecarTransport::start(&config).unwrap();
-        let error = transport.buffer_event(AcpxSidecarEvent {
-            sequence: 2,
-            event_type: GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
-            run_id: None, turn_id: None,
-            payload: json!({"code":"admission_ready", "message":"elapsedMs=25"}),
-        }).unwrap_err();
+        let error = transport
+            .buffer_event(AcpxSidecarEvent {
+                sequence: 2,
+                event_type: GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
+                run_id: None,
+                turn_id: None,
+                payload: json!({"code":"admission_ready", "message":"elapsedMs=25"}),
+            })
+            .unwrap_err();
         assert!(error.to_string().contains("sequence has a gap"));
         assert_eq!(transport.admission_diagnostic, None);
         assert!(transport.buffered_events.is_empty());
