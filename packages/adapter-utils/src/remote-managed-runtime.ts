@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolveNestedWorktreeExcludes } from "./exclude-patterns.js";
 import { GIT_ARCHIVE_EXCLUDES, PROJECT_REPOSITORIES_DIR } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
@@ -115,6 +116,12 @@ export async function prepareRemoteManagedRuntime(input: {
   syncWorkspace?: boolean;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
+  /**
+   * Nested git worktree directories (relative to the workspace and every
+   * project repository) that are neither uploaded nor restored. Defaults to
+   * `.paperclip/worktrees` and `.claude/worktrees`; `[]` syncs them.
+   */
+  nestedWorktreeDirs?: readonly string[];
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
@@ -134,6 +141,7 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const nestedWorktreeExcludes = resolveNestedWorktreeExcludes(input);
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -143,6 +151,7 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
         workspaceFileMode: input.workspaceFileMode,
         workspaceExclude: input.workspaceExclude,
+        nestedWorktreeDirs: input.nestedWorktreeDirs,
       })
     : null;
   const projectRepositories = preparedWorkspace?.repositories ?? [];
@@ -153,8 +162,13 @@ export async function prepareRemoteManagedRuntime(input: {
               ...GIT_ARCHIVE_EXCLUDES,
               ".paperclip-runtime",
               ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : []),
+              ...nestedWorktreeExcludes,
             ]
-          : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+          : [
+              ".paperclip-runtime",
+              ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : []),
+              ...nestedWorktreeExcludes,
+            ],
       })
     : null;
   const repositoryBaselines: Array<{ path: string; baselineSnapshot: DirectorySnapshot }> = [];
@@ -162,7 +176,7 @@ export async function prepareRemoteManagedRuntime(input: {
     repositoryBaselines.push({
       path: repository,
       baselineSnapshot: await captureDirectorySnapshot(path.join(input.workspaceLocalDir, repository), {
-        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"],
+        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime", ...nestedWorktreeExcludes],
       }),
     });
   }
@@ -190,6 +204,7 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir: workspaceRemoteDir,
         baselineSnapshot,
         restoreGitHistory: preparedWorkspace.gitBacked,
+        nestedWorktreeDirs: input.nestedWorktreeDirs,
         onProgress: input.onProgress,
         repositories: repositoryBaselines,
       });
@@ -225,6 +240,7 @@ export async function prepareRemoteManagedRuntime(input: {
       const remoteDir = path.posix.join(runtimeRootDir, `project-${projectId}`);
       const exclude = mergeExcludes(
         REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES,
+        nestedWorktreeExcludes,
         referencedSourceIgnoreExcludeEntries(ignoreResolution),
       );
       await syncDirectoryToSsh({
@@ -258,6 +274,7 @@ export async function prepareRemoteManagedRuntime(input: {
           remoteDir: workspaceRemoteDir,
           baselineSnapshot,
           restoreGitHistory: preparedWorkspace.gitBacked,
+          nestedWorktreeDirs: input.nestedWorktreeDirs,
           onProgress,
           repositories: repositoryBaselines,
         });
