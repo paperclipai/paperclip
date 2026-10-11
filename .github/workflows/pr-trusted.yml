@@ -576,8 +576,16 @@ jobs:
             group_label: workspaces-a (2/2)
             shard_index: 1
             shard_count: 2
+          # workspaces-b became the slowest check (499-593s) once the server
+          # shards were rebalanced: the db project alone was 168-250s of its
+          # 436-513s of vitest time (PR runs 38084171761, 38083084276 and
+          # 38083020834, 2026-10-10). The db project now runs as its own
+          # workspaces-c lane; the rest of workspaces-b is ~265-275s of
+          # vitest time, so both jobs land near 300-350s with setup.
           - group: general-workspaces-b
             group_label: workspaces-b
+          - group: general-workspaces-c
+            group_label: workspaces-c
 
     steps:
       - name: Checkout repository
