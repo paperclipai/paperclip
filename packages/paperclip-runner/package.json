@@ -181,7 +181,7 @@
     "opencode-ai": "1.18.34",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "smol-toml": "^1.4.2"
+    "smol-toml": "^1.9.0"
   },
   "peerDependencies": {
     "react": ">=18",
