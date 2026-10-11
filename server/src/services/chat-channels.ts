@@ -10006,7 +10006,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 eq(chatDeliveries.endpointId, endpoint.id),
                 eq(chatDeliveries.state, "processed"),
                 gte(chatDeliveries.processedAt, testStartedAt),
-                sql`${chatDeliveries.normalizedEvent}->>'trigger' = ${requiredTrigger}`,
+                or(
+                  sql`${chatDeliveries.normalizedEvent}->>'trigger' = ${requiredTrigger}`,
+                  endpoint.provider === "microsoft-teams"
+                    ? and(
+                        sql`${chatDeliveries.normalizedEvent}->>'trigger' = 'direct_message'`,
+                        sql`exists (
+                          select 1 from ${chatConversations}
+                          where ${chatConversations.id} = ${chatDeliveries.conversationId}
+                            and ${chatConversations.companyId} = ${chatDeliveries.companyId}
+                            and ${chatConversations.endpointId} = ${chatDeliveries.endpointId}
+                            and ${chatConversations.isDirectMessage} = true
+                        )`,
+                      )
+                    : undefined,
+                ),
               ),
             )
             .orderBy(desc(chatDeliveries.processedAt))

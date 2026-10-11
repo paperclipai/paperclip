@@ -1580,6 +1580,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     service: ChatChannelService,
     endpointId: string,
     userId = "U-EXTERNAL",
+    trigger?: "direct_message" | "subscribed_message",
   ) {
     const endpoint = await service.get(endpointId);
     let conversation: typeof chatConversations.$inferSelect | undefined;
@@ -1612,10 +1613,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         mentioned: endpoint.provider === "slack",
         userId,
       }),
-      trigger:
+      trigger: trigger ?? (
         endpoint.provider === "telegram"
           ? "direct_message"
-          : "subscribed_message",
+          : "subscribed_message"),
     });
     const contextSnapshot = await chatWakeContext({
       endpointId,
@@ -18180,6 +18181,51 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(response.status).toBe(401);
     expect((await service.get(endpoint.id)).setup.webhookVerifiedAt).toBeNull();
   });
+
+  it.each(["personal", "group", "stale", "unprocessed", "other-endpoint", "other-company"] as const)(
+    "qualifies Teams personal setup only with a current processed personal round trip: %s",
+    async (mode) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, service } = await configuredTeamsEndpoint(fixture);
+      const threadId = `teams:${Buffer.from("a:personal-setup-proof").toString("base64url")}`;
+      const { thread } = makeThread({ id: threadId, channelId: threadId, isDM: true, name: "Personal setup proof" });
+      await deliverMessage({
+        callbacks, endpointId: endpoint.id, provider: "microsoft-teams", thread,
+        message: makeMessage({ id: "teams-personal-setup-root", text: "Verify personal setup", userId: "teams-personal-user" }),
+        trigger: "direct_message",
+      });
+      // Intake alone is not a completed round trip.
+      await expect(service.test(endpoint.id)).rejects.toMatchObject({ status: 409 });
+      await qualifySetupRoundTrip(service, endpoint.id, "teams-personal-user", "direct_message");
+
+      if (mode === "group") {
+        await db.update(chatConversations).set({ isDirectMessage: false }).where(eq(chatConversations.endpointId, endpoint.id));
+      } else if (mode === "stale") {
+        await db.update(chatDeliveries).set({ processedAt: new Date(0) }).where(eq(chatDeliveries.endpointId, endpoint.id));
+      } else if (mode === "unprocessed") {
+        await db.update(chatDeliveries).set({ state: "received" }).where(eq(chatDeliveries.endpointId, endpoint.id));
+      } else if (mode === "other-endpoint") {
+        const other = await configuredTeamsEndpoint(fixture);
+        await db.update(chatConversations).set({ endpointId: other.endpoint.id }).where(eq(chatConversations.endpointId, endpoint.id));
+      } else if (mode === "other-company") {
+        const other = await seedCompany();
+        const foreign = await configuredTeamsEndpoint(other);
+        await deliverMessage({
+          callbacks: foreign.callbacks, endpointId: foreign.endpoint.id, provider: "microsoft-teams", thread,
+          message: makeMessage({ id: "teams-personal-setup-root", text: "Verify personal setup", userId: "teams-personal-user" }),
+          trigger: "direct_message",
+        });
+        await qualifySetupRoundTrip(foreign.service, foreign.endpoint.id, "teams-personal-user", "direct_message");
+        await db.update(chatDeliveries).set({ state: "received" }).where(eq(chatDeliveries.endpointId, endpoint.id));
+      }
+
+      if (mode === "personal") {
+        await expect(service.test(endpoint.id)).resolves.toMatchObject({ status: "active", setup: { step: "complete" } });
+      } else {
+        await expect(service.test(endpoint.id)).rejects.toMatchObject({ status: 409, details: { code: "chat_test_follow_up_missing" } });
+      }
+    },
+  );
 
   it("requires a successful final response for setup qualification", async () => {
     const fixture = await seedCompany();
