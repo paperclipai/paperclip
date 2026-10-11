@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import { RemoteProviderPackVerificationError, assertRemoteProviderPackVerificationResult, computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
+import { verifyRemoteProviderPackArtifacts, RemoteProviderPackVerificationError, assertRemoteProviderPackVerificationResult, computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 
 const roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
@@ -265,5 +265,47 @@ describe("remote provider verification result classification", () => {
   it.each(["node_version_incompatible", "target_mismatch"])("keeps %s distinct from cache corruption", reason => {
     expect(() => assertRemoteProviderPackVerificationResult({ ...result, exitCode: 42, stderr: `paperclip-provider-pack-verification:${reason}` }))
       .toThrow(expect.objectContaining({ kind: "incompatible", reason }));
+  });
+});
+
+describe("provider pack full-tree verification deadline", () => {
+  afterEach(() => vi.useRealTimers());
+  it.each([true, false])("a 45-second cold hash walk respects the transport budget (computer=%s)", async persistentComputer => {
+    vi.useFakeTimers();
+    const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(input => new Promise(resolve => {
+      const timedOut = input.timeoutMs! < 45_000;
+      setTimeout(() => resolve({ exitCode: timedOut ? null : 0, timedOut, signal: null,
+        stdout: "", stderr: "", pid: null, startedAt: null }), Math.min(input.timeoutMs!, 45_000));
+    }));
+    const verification = verifyRemoteProviderPackArtifacts({ runner: { execute }, command: "/pack/node",
+      args: ["-e", "hash all artifacts"], cwd: "/agent", persistentComputer });
+    const assertion = persistentComputer ? expect(verification).resolves.toBeUndefined()
+      : expect(verification).rejects.toMatchObject({ kind: "unavailable", reason: "timeout" });
+    await vi.advanceTimersByTimeAsync(45_000);
+    await assertion;
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it.each(["deadline", "owner-retired"])("fails closed without retrying when %s interrupts a computer hash walk", async cause => {
+    vi.useFakeTimers();
+    const retired = new Error("owner retired during verification");
+    let rejectCommand!: (error: Error) => void;
+    let commandTimer!: ReturnType<typeof setTimeout>;
+    const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(input => new Promise((resolve, reject) => {
+      rejectCommand = reject;
+      commandTimer = setTimeout(() => resolve({ exitCode: null, timedOut: true, signal: null,
+        stdout: "", stderr: "", pid: null, startedAt: null }), input.timeoutMs);
+    }));
+    const verification = verifyRemoteProviderPackArtifacts({ runner: { execute }, command: "/pack/node",
+      args: ["-e", "hash all artifacts"], cwd: "/agent", persistentComputer: true });
+    const assertion = expect(verification).rejects.toMatchObject({ kind: "unavailable",
+      reason: cause === "deadline" ? "timeout" : "transport_error", ...(cause === "owner-retired" ? { cause: retired } : {}) });
+    if (cause === "owner-retired") {
+      await vi.advanceTimersByTimeAsync(1_000);
+      clearTimeout(commandTimer);
+      rejectCommand(retired);
+    } else await vi.advanceTimersByTimeAsync(120_000);
+    await assertion;
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
