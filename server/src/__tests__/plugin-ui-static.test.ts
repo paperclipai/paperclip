@@ -162,3 +162,93 @@ describe("plugin UI static route", () => {
     );
   });
 });
+
+describe("resolvePluginUiDir", () => {
+  async function loadResolver() {
+    const { resolvePluginUiDir } = await import("../routes/plugin-ui-static.js");
+    return resolvePluginUiDir;
+  }
+
+  function createNodeModulesPackage(packageName: string) {
+    const localPluginDir = path.join(
+      tmpdir(),
+      `paperclip-plugin-ui-resolve-${randomUUID()}`,
+    );
+    const packageRoot = path.join(
+      localPluginDir,
+      "node_modules",
+      ...packageName.split("/"),
+    );
+    const uiDir = path.join(packageRoot, "dist", "ui");
+    mkdirSync(uiDir, { recursive: true });
+    writeFileSync(path.join(uiDir, "index.js"), "export default {};\n");
+    tempDirs.push(localPluginDir);
+    return { localPluginDir, packageRoot, uiDir };
+  }
+
+  function createOutsideDir() {
+    const outsideDir = path.join(
+      tmpdir(),
+      `paperclip-plugin-ui-outside-${randomUUID()}`,
+    );
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(path.join(outsideDir, "secret.txt"), "top-secret\n");
+    tempDirs.push(outsideDir);
+    return outsideDir;
+  }
+
+  it("resolves a normal ui entrypoint inside the package root", async () => {
+    const resolvePluginUiDir = await loadResolver();
+    const { localPluginDir, uiDir } = createNodeModulesPackage(
+      "paperclip-plugin-example",
+    );
+
+    expect(
+      resolvePluginUiDir(localPluginDir, "paperclip-plugin-example", "./dist/ui"),
+    ).toBe(uiDir);
+  });
+
+  it("resolves a scoped package ui entrypoint inside the package root", async () => {
+    const resolvePluginUiDir = await loadResolver();
+    const { localPluginDir, uiDir } = createNodeModulesPackage("@scope/example");
+
+    expect(
+      resolvePluginUiDir(localPluginDir, "@scope/example", "./dist/ui"),
+    ).toBe(uiDir);
+  });
+
+  it("rejects an absolute ui entrypoint outside the package root", async () => {
+    const resolvePluginUiDir = await loadResolver();
+    const { localPluginDir } = createNodeModulesPackage("paperclip-plugin-example");
+    const outsideDir = createOutsideDir();
+
+    expect(
+      resolvePluginUiDir(localPluginDir, "paperclip-plugin-example", outsideDir),
+    ).toBeNull();
+  });
+
+  it("rejects a relative ui entrypoint that traverses outside the package root", async () => {
+    const resolvePluginUiDir = await loadResolver();
+    const { localPluginDir, packageRoot } = createNodeModulesPackage(
+      "paperclip-plugin-example",
+    );
+    const outsideDir = createOutsideDir();
+    const traversal = path.relative(packageRoot, outsideDir);
+    expect(traversal.startsWith("..")).toBe(true);
+
+    expect(
+      resolvePluginUiDir(localPluginDir, "paperclip-plugin-example", traversal),
+    ).toBeNull();
+  });
+
+  it("rejects a sibling-prefix bypass of the package root", async () => {
+    const resolvePluginUiDir = await loadResolver();
+    const { localPluginDir } = createNodeModulesPackage("pkg");
+    const siblingRoot = path.join(localPluginDir, "node_modules", "pkg-evil");
+    mkdirSync(siblingRoot, { recursive: true });
+
+    expect(
+      resolvePluginUiDir(localPluginDir, "pkg", "../pkg-evil"),
+    ).toBeNull();
+  });
+});
