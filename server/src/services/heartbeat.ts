@@ -5361,11 +5361,13 @@ export function heartbeatService(
         });
       }
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
+        // Other agents' wakes can be parked behind this owner too, such as the
+        // new assignee after this run reassigned its own issue. Own wakes first.
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-          eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+          eq(agentWakeupRequests.companyId, run.companyId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${String(latestRun.contextSnapshot?.issueId)}`,
-        )).limit(1);
+        )).orderBy(desc(sql`${agentWakeupRequests.agentId} = ${run.agentId}`)).limit(1);
         if (pending) await (pending.payload?.queuedCommentInterrupt
           ? resumeQueuedCommentInterrupt(run.companyId, pending.id)
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {

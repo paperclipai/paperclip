@@ -89,9 +89,9 @@ describe("decidePreDrain", () => {
       expected: { kind: "released" },
     },
     {
-      name: "released: an acknowledged execution cancellation",
+      name: "drain_other_agents: an acknowledged execution cancellation",
       facts: { ...basePreDrainFacts, executionCancellationAcknowledged: true },
-      expected: { kind: "released" },
+      expected: { kind: "drain_other_agents" },
     },
     {
       name: "proceed: none of the pre-drain conditions apply",

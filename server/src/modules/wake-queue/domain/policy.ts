@@ -79,6 +79,7 @@ export type PreDrainFacts = {
 export type PreDrainDecision =
   | { kind: "released" }
   | { kind: "blocked"; noticeKind: ReleaseRecoveryBlockedNoticeKind }
+  | { kind: "drain_other_agents" }
   | { kind: "proceed" };
 
 /**
@@ -89,7 +90,8 @@ export type PreDrainDecision =
  * returns as soon as it applies, so an earlier true condition can hide a
  * later one when both hold at the same time. "proceed" means none of the
  * four checks applied; the caller then runs its own write-carrying check
- * and, if that also clears, calls its lock function.
+ * and, if that also clears, calls its lock function. "drain_other_agents"
+ * proceeds the same way but leaves the stopped agent's own wakes parked.
  */
 export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
   if (!facts.issueRowPresent || !facts.executionRunIdMatchesRun) {
@@ -112,8 +114,11 @@ export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
     return { kind: "released" };
   }
 
+  // A Stop never promotes the stopped agent's queued work, but wakes other
+  // agents parked behind this execution (a reassignment's new assignee) must
+  // not be stranded once it ends.
   if (facts.executionCancellationAcknowledged) {
-    return { kind: "released" };
+    return { kind: "drain_other_agents" };
   }
 
   return { kind: "proceed" };
