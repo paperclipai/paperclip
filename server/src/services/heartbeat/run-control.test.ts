@@ -1,7 +1,9 @@
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
-import { createHeartbeatRetries } from "./retries.js";
+import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
 import { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import { ComputerStopPendingError } from "../../modules/computers/index.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -302,7 +304,7 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
 
   const operatorStop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "board" } };
 
-  function lifecycleRetries(deps = callbacks(db)) {
+  function lifecycleRetries(deps = callbacks(db), overrides: Partial<HeartbeatRetryDependencies> = {}) {
     const runControl = createHeartbeatRunControl(db, deps);
     return createHeartbeatRetries(db, { ...deps,
       resolveResponsibleUserIdForRunContext: async () => "board",
@@ -313,6 +315,7 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
       getWorktreeExecutionCutoff: async () => null,
       applyRunDispatchPostCommitEffects: () => undefined,
       runDispatch: createRunDispatch(db),
+      ...overrides,
     });
   }
 
@@ -377,6 +380,74 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
       expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
     } finally { adapterExecutionControls.delete(f.run.id); control.finish(); }
+  });
+
+  it.each(["stop-first", "suppression-first"])("the full retry wrapper preserves Stop and old queued input (%s)", async ordering => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    deps.wakeQueue.releaseIssueExecution.mockImplementation(createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, { resolveResponsibleUserId: async () => "board",
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: "board" }),
+        resolveSessionBeforeForWakeup: async () => null }),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    }));
+    const control = createHeartbeatRunControl(db, deps);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "Input queued before Stop" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issue.id, commentId: comment.id,
+        _paperclipWakeContext: { issueId: f.issue.id, wakeCommentId: comment.id, wakeCommentIds: [comment.id] } },
+    }).returning();
+    let finishStop!: () => void, stopRecorded!: () => void;
+    const stopGate = new Promise<void>(resolve => { finishStop = resolve; });
+    const recorded = new Promise<void>(resolve => { stopRecorded = resolve; });
+    let stopping: ReturnType<typeof control.cancelRunInternal> | undefined;
+    const append = deps.appendRunEvent.getMockImplementation()!;
+    deps.appendRunEvent.mockImplementation(async (run, event) => {
+      await append(run, event);
+      if (event.message === "computer admission retry cancelled") {
+        stopRecorded(); await stopGate;
+      }
+      if (ordering === "suppression-first" && event.message?.startsWith("Computer admission retry was not scheduled:")) {
+        stopping = control.cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+        await recorded;
+      }
+    });
+    if (ordering === "stop-first") deps.getAgent.mockImplementation(async () => {
+      stopping = control.cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+      await recorded;
+      return f.agent;
+    });
+    try {
+      await lifecycleRetries(deps, { getAgentInvokability: async () => ordering === "stop-first" ? { invokable: true }
+        : { invokable: false, reason: "paused", message: "Paused", details: {}, invalidOrgChain: false } })
+        .scheduleComputerAdmissionRetry(f.run);
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      expect(current.resultJson?.computerAdmissionRetryOutcome).toBe("aborted");
+      if (ordering === "stop-first") {
+        expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe("deferred_issue_execution");
+    } finally { finishStop(); await stopping; }
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].resultJson?.executionCancellation)
+      .toMatchObject({ state: "acknowledged" });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
+  });
+
+  it("does not release a Stop whose acknowledgement CAS loses terminal ownership", async () => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    const append = deps.appendRunEvent.getMockImplementation()!;
+    deps.appendRunEvent.mockImplementation(async (run, event) => {
+      await append(run, event);
+      if (event.message === "computer admission retry cancelled") await db.update(heartbeatRuns)
+        .set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+    });
+    await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+    expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+    expect(deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
   it("Stop persists suppression but leaves a remote controller's live cleanup unacknowledged", async () => {

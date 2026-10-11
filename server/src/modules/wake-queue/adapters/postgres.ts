@@ -1019,7 +1019,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
     async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
       return db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Db;
-        const run = await tx
+        let run = await tx
           .select()
           .from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
@@ -1027,7 +1027,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         if (!run) {
           throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
         }
-        const runSnapshot = toRunSnapshot(run);
+        let runSnapshot = toRunSnapshot(run);
         const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
 
         // Lock the context issue (if any) and every issue that still references this
@@ -1054,6 +1054,22 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
                 for update
               `,
         );
+
+        // Stop and retry scheduling serialize on task then run. A computer
+        // wait may have been stopped while this release waited for the task.
+        // Never drain old input from the stale pre-lock suppression snapshot.
+        if (run.errorCode === "computer_admission_wait") {
+          const [current] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId),
+          )).for("update");
+          if (!current) throw new Error("wake-queue: computer admission source disappeared");
+          run = current;
+          runSnapshot = toRunSnapshot(run);
+          if (run.resultJson?.computerAdmissionRetryOutcome === "aborted" &&
+              parseObject(run.resultJson?.executionCancellation).state !== "acknowledged") {
+            return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          }
+        }
 
         const candidateIssues = await tx
           .select()
