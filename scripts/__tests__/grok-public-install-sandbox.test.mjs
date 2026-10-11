@@ -103,9 +103,11 @@ test('the image and Grok downloads start before staging and join without weakeni
   const move = position('renameSync(stagedGrok, prerequisite)');
   const positiveProbe = position("isolated(['node', '/packages/probe.mjs', 'present'], { prerequisite })");
   assert.ok(npmCheck < negativeProbe && negativeProbe < grokJoin && grokJoin < move && move < positiveProbe);
-  // The prefetch children never inherit a terminal and are stopped on failure.
-  assert.ok(source.includes("stdio: ['ignore', log, log]"));
-  assert.ok(source.includes("child.kill('SIGTERM')"));
+  // The children run through the helper covered by prefetch-child.test.mjs, and
+  // cleanup waits for them before removing the directory they write into.
+  assert.ok(source.includes("import { startPrefetch, stopPrefetches } from './prefetch-child.mjs'"));
+  assert.ok(position('await stopPrefetches(prefetches)') < position('rmSync(root, { recursive: true, force: true })'));
+  assert.equal(source.match(/rmSync\(root/g).length, 1);
 });
 
 test('the installed Codex probe exercises the public export and rejects incomplete or mismatched packages', () => {

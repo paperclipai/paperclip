@@ -3,13 +3,14 @@
 // credentials, inference, or changes to release versions. Native provisioning is
 // explicit and separate from npm installation, and is removed in finally.
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { materializePublishManifest, prepareBundledPackage } from './prepare-bundled-package.mjs';
 import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource } from './grok-public-install-sandbox.mjs';
+import { startPrefetch, stopPrefetches } from './prefetch-child.mjs';
 import { retainRunnerQualificationPackages } from './retain-runner-qualification-packages.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 assert.equal(process.platform, 'linux', 'Run this verification on disposable EC2 Linux, not a developer host');
@@ -27,40 +28,23 @@ const releaseVersion = `0.0.0-grok-verify.${sourceRevision.slice(0, 12)}`;
 // `native/grok` path that the post-install assertion inspects.
 const prefetched = join(root, 'prefetch'); mkdirSync(prefetched);
 const stagedGrok = join(prefetched, 'grok');
-const children = [];
+const prefetches = [];
 const timing = {};
+// A prefetch failure surfaces where its result is awaited, never as an
+// unhandled rejection that would mask an earlier staging error.
 const prefetch = (name, cmd, args) => {
-  const started = performance.now();
-  const logPath = join(prefetched, `${name}.log`);
-  const log = openSync(logPath, 'w');
-  const promise = new Promise((settle, reject) => {
-    const child = spawn(cmd, args, { cwd: root, env, stdio: ['ignore', log, log] });
-    children.push(child);
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      closeSync(log);
-      timing[`${name}_prefetch_ms`] = Math.round(performance.now() - started);
-      if (code === 0) return settle();
-      // After a failure elsewhere, cleanup has already stopped this child and
-      // removed its log; the earlier error is the one that must surface.
-      let output = '';
-      try { output = readFileSync(logPath, 'utf8').trim().slice(-2000); } catch {}
-      reject(new Error(`${name} prefetch failed (${signal ?? `exit ${code}`}): ${output}`));
-    });
-  });
-  // A failure surfaces where the result is awaited, not as an unhandled rejection
-  // that would mask an earlier staging error.
-  promise.catch(() => {});
-  return promise;
+  const handle = startPrefetch({ name, cmd, args, cwd: root, env, logPath: join(prefetched, `${name}.log`) });
+  prefetches.push(handle);
+  return handle.done;
 };
-const imageReady = prefetch('image', 'docker', ['pull', '--platform', 'linux/amd64', GROK_PUBLIC_INSTALL_IMAGE]);
-// Provision as the unprivileged verification user, never into the host's /opt.
-// Only the positive probe sees this file at the canonical sandbox path.
-const grokReady = prefetch('grok', process.execPath, [join(repo, 'packages/paperclip-runner/scripts/provision-grok.mjs'), stagedGrok]);
 let phaseStarted = performance.now();
 const phase = name => { const now = performance.now(); timing[`${name}_ms`] = Math.round(now - phaseStarted); phaseStarted = now; };
 const awaited = async (name, promise) => { const started = performance.now(); await promise; timing[`${name}_wait_ms`] = Math.round(performance.now() - started); };
 try {
+  const imageReady = prefetch('image', 'docker', ['pull', '--platform', 'linux/amd64', GROK_PUBLIC_INSTALL_IMAGE]);
+  // Provision as the unprivileged verification user, never into the host's /opt.
+  // Only the positive probe sees this file at the canonical sandbox path.
+  const grokReady = prefetch('grok', process.execPath, [join(repo, 'packages/paperclip-runner/scripts/provision-grok.mjs'), stagedGrok]);
   const listing = run(process.execPath, [join(repo, 'scripts/release-package-map.mjs'), 'list'], repo).toString().trim().split('\n').map(line => line.split('\t'));
   const packages = new Map(listing.map(([dir, name]) => [name, { dir, manifest: JSON.parse(readFileSync(join(repo, dir, 'package.json'), 'utf8')) }]));
   const needed = new Set();
@@ -197,9 +181,11 @@ try {
   console.log(isolated(['node', '/packages/pi-public-install-probe.mjs', '/consumer/node_modules/@paperclipai/server'], { temporarySizeMiB: 2048, temporaryExecutable: true }).toString().trim());
   phase('pi_probe');
   // Wall time per phase, so the slow part of this step is visible in the CI log
-  // without re-running it. `*_wait_ms` is how long the main flow waited for a
+  // without re-running it. `*_prefetch_ms` runs from a download's start to its
+  // last output, and `*_wait_ms` is how long the main flow waited for a
   // prefetch that had not finished yet; zero means the overlap hid it entirely.
-  console.log(JSON.stringify({ schema: 'paperclip.public-npm-install.timing.v1', ...timing }));
+  const downloads = Object.fromEntries(prefetches.map(({ name, durationMs }) => [`${name}_prefetch_ms`, durationMs]));
+  console.log(JSON.stringify({ schema: 'paperclip.public-npm-install.timing.v1', ...timing, ...downloads }));
   if (process.env.PAPERCLIP_RUNNER_QUALIFICATION_PACKAGES_DIR) {
     const retained = retainRunnerQualificationPackages({ repo, output: process.env.PAPERCLIP_RUNNER_QUALIFICATION_PACKAGES_DIR, sourceRevision, releaseVersion, env,
       publicArchives: [...needed].map((name, index) => ({ name, file: tarballs[index] })),
@@ -207,7 +193,8 @@ try {
     console.log(JSON.stringify(retained));
   }
 } finally {
-  // An earlier failure must not leave a prefetch running after cleanup.
-  for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+  // An earlier failure must not leave a prefetch running, and scratch is
+  // removed only once both children have stopped writing into it.
+  await stopPrefetches(prefetches);
   rmSync(root, { recursive: true, force: true });
 }
