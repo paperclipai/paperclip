@@ -1602,6 +1602,29 @@ question does not start setup. The real connection card keeps user identity,
 access grants, the decision, and continuation together. This guidance does not
 approve a connection or bypass its normal user decision.
 
+An ordinary tool connection request becomes obsolete when an already authorized
+connection is usable by its requesting agent with the addressed user's identity.
+Startup and periodic connection delivery reconcile that condition, retire the
+card as expired, and record a system decision without a fabricated human approval.
+The saved continuation is delivered once after rechecking the same access. The
+scheduled retry gate also verifies this condition before the next sweep, so the
+obsolete card cannot cancel a valid retry. Missing, unhealthy, disabled, ambiguous,
+or unauthorized identities remain blocked. Requests for additional tool access,
+AI authentication, inbox setup, or an upstream aggregator service keep their normal
+approval paths. Task ownership, real questions, approvals, budgets, pauses, and
+workspace recovery checks still govern admission.
+
+New requests notify the connection worker so this reconciliation also starts after an idle startup scan. Readiness uses the gateway's runtime tool
+listing policy with issue, project, and run context. System-retired requests are
+rechecked against the next run's responsible user and current access, and saved
+continuations defer while another question or linked approval remains pending.
+Those checks run again during queued and final dispatch admission. An unstarted
+system continuation cancelled for a new response wait rearms its delivery in the
+same transaction. Verified absence of execution keeps that wait out of workspace
+repair incidents. Historical retirements do not bind all future retries to an
+old account; an already authorized replacement can refresh the system observation
+with its own audit record before delivery. Human decisions remain unchanged.
+
 ## Responses submitted during an active run
 
 A confirmation, checkbox confirmation, or question answer is new conversation

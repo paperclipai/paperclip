@@ -2739,6 +2739,7 @@ export function issueThreadInteractionService(
         }
         await touchIssue(tx, issue.id);
         inserted = true;
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
         return row;
       });
 

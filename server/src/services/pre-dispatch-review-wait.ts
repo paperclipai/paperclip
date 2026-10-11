@@ -6,23 +6,33 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 type Run = typeof heartbeatRuns.$inferSelect;
 type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "processGroupId" |
   "processStartedAt" | "nativeIssueId" | "nativeSessionId" | "sessionIdAfter" |
-  "controllerBootId" | "controllerLeaseExpiresAt" | "executionStage";
+  "controllerBootId" | "controllerLeaseExpiresAt" | "executionStage" | "contextSnapshot";
 
 /** The queued-run gate owns this receipt before execution authority is claimed.
- * A deliberate review wait has no provider actions to reconcile. The error code
+ * A deliberate review or connection response wait has no provider actions to reconcile. The error code
  * alone is not proof; missing or conflicting dispatch evidence retains the hold. */
 export function isPreDispatchReviewWait(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, DispatchFields>>,
 ): boolean {
+  const finalResponseWait = run.errorCode === "issue_waiting_for_response" &&
+    (run.resultJson?.preDispatchResponseWait as { version?: number; providerWorkStarted?: boolean } | undefined)?.version === 1 &&
+    (run.resultJson?.preDispatchResponseWait as { providerWorkStarted?: boolean } | undefined)?.providerWorkStarted === false;
   return run.runtimeMode === "legacy" && run.status === "cancelled" &&
-    run.errorCode === "issue_continuation_waiting_on_review" &&
+    (run.errorCode === "issue_continuation_waiting_on_review" ||
+      (run.errorCode === "issue_waiting_for_response" &&
+        run.contextSnapshot?.connectionIntentResolution === "existing_connection" &&
+        run.contextSnapshot?.source === "connection_intent.resolved" &&
+        run.contextSnapshot?.interactionKind === "connection_intent" &&
+        run.contextSnapshot?.interactionStatus === "expired" &&
+        run.contextSnapshot?.mutation === "interaction" &&
+        typeof run.contextSnapshot?.interactionId === "string")) &&
     run.resultJson?.stopReason === run.errorCode &&
     run.resultJson?.timeoutSource === "stale_queued_run_gate" &&
     run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive" &&
-    run.startedAt === null && run.runtimeModeResolvedAt === null &&
+    (finalResponseWait || (run.startedAt === null && run.runtimeModeResolvedAt === null)) &&
     run.processPid === null && run.processGroupId === null && run.processStartedAt === null &&
     run.nativeIssueId === null && run.nativeSessionId === null && run.sessionIdAfter === null &&
-    run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null;
+    (finalResponseWait || (run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null));
 }
 
 /** The row receipt is a candidate, not permission to discard conflicting
