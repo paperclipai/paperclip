@@ -229,7 +229,8 @@ describeEmbeddedPostgres("heartbeat run issue privacy migration", () => {
       contender = applyPendingMigrations(database.connectionString).then(() => null, error => error);
       await expect.poll(async () => {
         const [row] = await sql`SELECT count(*)::int AS n FROM pg_stat_activity
-          WHERE datname = current_database() AND wait_event = 'advisory'
+          WHERE datname = current_database() AND query LIKE '%SELECT pg_try_advisory_lock%'
+            AND query NOT LIKE '%FROM pg_stat_activity%'
             AND strpos(query, 'paperclip:migrations') > 0`;
         return row.n;
       }, { timeout: 10_000 }).toBe(1);

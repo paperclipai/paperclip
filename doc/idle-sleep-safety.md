@@ -129,6 +129,16 @@ company/agent's linked run has finished without retry or accounting debt.
 Image-setup history still blocks: promotion can succeed before teardown is
 confirmed, so a terminal label does not prove that its provider resource is gone.
 
+Completed question-answer deliveries permit sleep only after acknowledgement
+and completion of their exact target run in the same company, without retry or
+accounting debt. A fallback without a target run requires its exact question's
+finished durable wake receipt in the same company. A coalesced fallback also
+requires its exact company/agent's linked run to finish without retry or
+accounting debt. The question-history index covers every wake status.
+Pending deliveries, missing
+completion evidence, and unfinished handoffs still block. Failed deliveries
+without a pending target are history; other work checks still apply.
+
 Every enabled plugin blocks sleep. A version label does not prove that arbitrary
 worker code has no background activity. No plugin approval or configuration
 bypass is supported. Scheduled and externally triggered work needs a durable
