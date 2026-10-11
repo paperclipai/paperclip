@@ -2,6 +2,41 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 
+const providerPackMismatchReasons = ["manifest_mismatch", "artifact_digest_mismatch", "dist_digest_mismatch", "candidate_digest_mismatch", "package_version_mismatch", "opencode_version_mismatch"] as const;
+const providerPackCompatibilityReasons = ["node_version_incompatible", "target_mismatch"] as const;
+type ProviderPackVerificationReason = typeof providerPackMismatchReasons[number] | typeof providerPackCompatibilityReasons[number] | "timeout" | "command_failed" | "transport_error";
+
+export class RemoteProviderPackVerificationError extends Error {
+  constructor(readonly kind: "mismatch" | "incompatible" | "unavailable", readonly reason: ProviderPackVerificationReason, cause?: unknown) {
+    super(`runner_remote_provider_${kind === "unavailable" ? "verification_unavailable" : "artifact_incompatible"}: ${reason}`, { cause });
+  }
+}
+
+/** Only an explicit bounded verifier result proves a mismatch. SSH failures,
+ * timeouts and unexpected stderr do not establish anything about cached bytes. */
+export function assertRemoteProviderPackVerificationResult(
+  result: Pick<Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>>, "exitCode" | "timedOut" | "stdout" | "stderr">,
+  expectedOpenCodeVersion?: string,
+): void {
+  if (result.timedOut) throw new RemoteProviderPackVerificationError("unavailable", "timeout", result);
+  if (result.exitCode === 0) {
+    if (expectedOpenCodeVersion !== undefined && result.stdout.trim() !== expectedOpenCodeVersion)
+      throw new RemoteProviderPackVerificationError("mismatch", "opencode_version_mismatch", result);
+    return;
+  }
+  if (result.exitCode === 42 && expectedOpenCodeVersion === undefined) {
+    for (const reason of providerPackMismatchReasons) {
+      if (result.stderr.trim() === `paperclip-provider-pack-verification:${reason}`)
+        throw new RemoteProviderPackVerificationError("mismatch", reason, result);
+    }
+    for (const reason of providerPackCompatibilityReasons) {
+      if (result.stderr.trim() === `paperclip-provider-pack-verification:${reason}`)
+        throw new RemoteProviderPackVerificationError("incompatible", reason, result);
+    }
+  }
+  throw new RemoteProviderPackVerificationError("unavailable", "command_failed", result);
+}
+
 /** The controller's retained attachment template pins content-addressed paths.
  * Remote manifests may supply bytes, but cannot choose a new code authority. */
 export function pinnedComputerProviderPack(input: {
@@ -232,7 +267,12 @@ export async function prepareComputerProviderPackCache(input: {
   };
   const verifyShared = async () => {
     try { await input.verify(input.cacheRoot); }
-    catch (cause) { throw new Error(`runner_remote_provider_cache_corrupt: ${input.cacheRoot}; stop tasks using this pack and have an operator remove or quarantine this exact cache directory before retrying`, { cause }); }
+    catch (cause) {
+      if (cause instanceof RemoteProviderPackVerificationError && cause.kind === "mismatch")
+        throw new Error(`runner_remote_provider_cache_corrupt: ${cause.reason}; ${input.cacheRoot}; stop tasks using this pack and have an operator remove or quarantine this exact cache directory before retrying`, { cause });
+      if (cause instanceof RemoteProviderPackVerificationError) throw cause;
+      throw new RemoteProviderPackVerificationError("unavailable", "transport_error", cause);
+    }
   };
   if (await operation("exists") === "true") {
     await verifyShared();

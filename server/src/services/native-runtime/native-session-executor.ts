@@ -42,7 +42,7 @@ import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
-import { computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
+import { assertRemoteProviderPackVerificationResult, computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -12295,20 +12295,21 @@ async function createRunnerdBackendWithinSessionClaim(
       "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
       "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
       "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+      "const fail=(reason)=>{fs.writeSync(2,'paperclip-provider-pack-verification:'+reason);process.exit(42)}",
       "const manifest=JSON.parse(actual)",
-      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
+      "if(canonical(manifest)!==expected)fail('manifest_mismatch')",
       "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
-      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
-      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
+      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)fail('artifact_digest_mismatch')}",
+      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)fail('dist_digest_mismatch')",
+      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest_mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
       `const minimums=[manifest.payload.pins.nodeMinimum,${JSON.stringify(REMOTE_PROVIDER_PACK_PINS.nodeMinimum)}]`,
-      "for(const value of minimums){const minimum=value.split('.').map(Number);if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')}",
-      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+      "for(const value of minimums){const minimum=value.split('.').map(Number);if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))fail('node_version_incompatible')}",
+      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)fail('target_mismatch')",
       "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
       "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
-      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)fail('package_version_mismatch')",
     ].join(";");
     const verified = await remoteCommandRunner.execute({
       command: providerNodeCommand,
@@ -12317,11 +12318,7 @@ async function createRunnerdBackendWithinSessionClaim(
       bypassSession: true,
       timeoutMs: 30_000,
     });
-    if (verified.exitCode !== 0 || verified.timedOut) {
-      throw new Error(
-        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
-      );
-    }
+    assertRemoteProviderPackVerificationResult(verified);
     const opencodeCommand = posix.join(
       packRoot,
       expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
@@ -12333,15 +12330,7 @@ async function createRunnerdBackendWithinSessionClaim(
       bypassSession: true,
       timeoutMs: 30_000,
     });
-    if (
-      opencodeVersion.exitCode !== 0 ||
-      opencodeVersion.timedOut ||
-      opencodeVersion.stdout.trim() !== expectedProviderPackManifest.payload.pins.opencode
-    ) {
-      throw new Error(
-        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
-      );
-    }
+    assertRemoteProviderPackVerificationResult(opencodeVersion, expectedProviderPackManifest.payload.pins.opencode);
   };
 
   const discoverPreinstalledProviderPack = async () => {
