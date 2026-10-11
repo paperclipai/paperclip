@@ -8847,7 +8847,8 @@ async function executePaperclipNativeSessionWithinScope(
           })
         : null;
     const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
-        input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
+        (input.runnerExecutionTarget.transport === "sandbox" || input.runnerExecutionTarget.transport === "computer") &&
+        input.runnerExecutionTarget.leaseId
       ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
           .from(environmentLeases).where(and(
             eq(environmentLeases.companyId, input.execution.binding.companyId),
