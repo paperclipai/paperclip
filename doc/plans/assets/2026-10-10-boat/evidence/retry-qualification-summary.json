@@ -784,6 +784,171 @@
       "uiStopApproxAt": "2026-10-11T02:21:50Z",
       "postStopAt": "2026-10-11T02:22:05Z",
       "nativeProcessesUnchanged": true
+    },
+    "computerUse": {
+      "result": "passed_after_navigation_correction",
+      "correctedArtifactId": "6b8961f8-8c62-44aa-8232-8cf1ed0056f7",
+      "artifactViewedAfterDeployment15": true,
+      "visibleAddressBar": "example.com",
+      "tools": [
+        "launch_app",
+        "list_windows",
+        "bring_to_front",
+        "click",
+        "hotkey",
+        "type_text",
+        "press_key",
+        "get_window_state"
+      ],
+      "limits": [
+        "AT-SPI browser binding failed; desktop input tools succeeded.",
+        "Initial artifact had an appended path. Corrected screenshot and live desktop both showed the root domain.",
+        "Artifact registration required corrected final hash and size before succeeding.",
+        "Embedded human-input automation targeted the outer container; no new embedded human-input pass claimed."
+      ]
+    },
+    "claudeSiblingAttempt": {
+      "result": "inconclusive_isolation",
+      "marker": "BOAT_CLAUDE_SIBLING_0228",
+      "beforeAt": "2026-10-11T02:29:52.295Z",
+      "childPid": 114616,
+      "childStartTicks": 165984,
+      "claudeRetirementAt": "2026-10-11T02:30:20.494Z",
+      "nativeRetirementAt": "2026-10-11T02:30:32.551Z",
+      "afterAt": "2026-10-11T02:30:42.813Z",
+      "childAndNativeProcessesAbsent": true,
+      "limit": "Native retirement began 123 seconds after its checkpoint settlement, compatible with normal 120-second warm expiry. Rollout also overlapped. No causal attribution to sibling Stop or deployment."
     }
+  },
+  "deployment15": {
+    "sha": "5575b36a8d826d0092466257a7b468af8e5330d5",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "requestId": "74e2d030-f3e8-457b-a228-1c049f60c27e",
+    "checkedAt": "2026-10-11T02:33:12.796Z",
+    "admissionFailures": {
+      "recordedAt": "2026-10-11T02:41:49.372691+00:00",
+      "servingSource": "5575b36",
+      "deployment": 15,
+      "source": "Parent captured expanded normal product UI recovery details",
+      "runs": [
+        {
+          "runId": "5913803a-1dd0-494c-8198-e2c6cac77231",
+          "runtime": "native Codex",
+          "status": "failed",
+          "errorCode": "setup_failed",
+          "error": "Failed to acquire lease for environment \"Boat staging qualification\" (computer): Computer is connecting or settling a previous stop"
+        },
+        {
+          "runId": "633e2852-aaf5-49ad-879f-9615a42d572d",
+          "runtime": "legacy Claude",
+          "status": "failed",
+          "errorCode": "setup_failed",
+          "error": "Failed to acquire lease for environment \"Boat staging qualification\" (computer): Computer is connecting or settling a previous stop"
+        }
+      ],
+      "exactRunStartFinishTimestampsCaptured": false,
+      "uiFailureObservedApproximate": "2026-10-11T02:38:00Z",
+      "providerObservation": {
+        "at": "2026-10-11T02:41:08.509628+00:00",
+        "sandboxId": "bx_b8sawfyp",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "error": null,
+        "snapshots": true,
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "pending",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": null,
+          "error": null,
+          "endedAt": null
+        },
+        "lastSnapshotAttemptAt": "2026-10-11T02:38:34.995Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z"
+      },
+      "conclusion": "Both run failures report lease admission waiting for provider stop settlement. Provider status independently remained archiving with pending stop and snapshot in progress; no guest execution or alternate failure cause is claimed.",
+      "manualLifecycleActions": false,
+      "retryIssuedByObserver": false
+    }
+  },
+  "local36Restart": {
+    "recordedAt": "2026-10-11T02:44:57.442431+00:00",
+    "result": "passed",
+    "scope": "Ordinary saved-session continuation after local controller restart and prior natural provider archive; no active-crash recovery claim.",
+    "controller": "local36",
+    "runtimeSourcePrefix": "193c2",
+    "originalRun": {
+      "id": "e8c52459-2dc1-428c-b5d7-30d33141ff0b",
+      "status": "succeeded",
+      "started_at": "2026-10-11T00:42:00.094Z",
+      "finished_at": "2026-10-11T00:45:27.883Z",
+      "native_session_id": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+      "runner_instance_id": "55f789fd-17d9-48ad-8f65-0f806782c436",
+      "session_id_before": null,
+      "session_id_after": "01a1286b-9338-7101-8ced-733e9b28ae99"
+    },
+    "continuationRun": {
+      "id": "6f31e383-8400-4675-acd2-11563007b66d",
+      "status": "succeeded",
+      "started_at": "2026-10-11T02:40:41.830Z",
+      "finished_at": "2026-10-11T02:43:37.252Z",
+      "native_session_id": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+      "runner_instance_id": "55f789fd-17d9-48ad-8f65-0f806782c436",
+      "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+      "session_id_after": "01a1286b-9338-7101-8ced-733e9b28ae99"
+    },
+    "sameNormalizedSession": true,
+    "sameProviderSession": true,
+    "sameLogicalRunner": true,
+    "independentProof": {
+      "at": "2026-10-11T02:44:26.082483+00:00",
+      "bootId": "7d0e87da-b3af-467b-bba2-facdbc4237d9",
+      "marker": {
+        "exists": true,
+        "lineCount": 1,
+        "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+      },
+      "checkpoints": [
+        {
+          "fileKind": "runner-state.json",
+          "mtime": 1791686617,
+          "runId": "6f31e383-8400-4675-acd2-11563007b66d",
+          "runnerInstanceId": "55f789fd-17d9-48ad-8f65-0f806782c436",
+          "normalizedSessionId": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+          "lifecycle": "ready"
+        },
+        {
+          "fileKind": "codex-provider-state.json",
+          "mtime": 1791686617,
+          "lifecycle": "session_open",
+          "threadId": "01a1286b-9338-7101-8ced-733e9b28ae99",
+          "activeProviderTurnId": null,
+          "completedTurnAuthoritative": true
+        }
+      ]
+    },
+    "markerUnchanged": true,
+    "priorQuarantinePreserved": true,
+    "noManualReset": true,
+    "provenance": [
+      {
+        "file": "retry-awake-local36-followup-d.json",
+        "sha256": "b58bcdb74a9c0b2636349fd09ab5c1694533d9a4f14f77817744a1545c2d1811"
+      },
+      {
+        "file": "retry-local-36-restart-proof.json",
+        "sha256": "563a32e1acb7946cc58504cc813377d14b2c2deca6131a3383c1fb8b93b7428f"
+      },
+      {
+        "file": "retry-awake-final-cleanup.json",
+        "sha256": "98f4da9a511a1f920ccad6a0754c98e297eade1f6f00e907a7f140243942471a"
+      }
+    ]
   }
 }

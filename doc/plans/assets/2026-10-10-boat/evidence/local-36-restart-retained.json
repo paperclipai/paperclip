@@ -1,0 +1,66 @@
+{
+  "sandboxId": "bx_ndnggjad",
+  "exitCode": 0,
+  "timedOut": false,
+  "data": {
+    "marker": {
+      "exists": true,
+      "lineCount": 1,
+      "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+    },
+    "checkpoints": [
+      {
+        "fileKind": "runner-state.json",
+        "mtime": 1791686617,
+        "runId": "6f31e383-8400-4675-acd2-11563007b66d",
+        "runnerInstanceId": "55f789fd-17d9-48ad-8f65-0f806782c436",
+        "normalizedSessionId": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+        "lifecycle": "ready"
+      },
+      {
+        "fileKind": "codex-provider-state.json",
+        "mtime": 1791686617,
+        "lifecycle": "session_open",
+        "threadId": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "activeProviderTurnId": null,
+        "completedTurnAuthoritative": true
+      }
+    ],
+    "at": "2026-10-11T02:44:26.082483+00:00",
+    "bootId": "7d0e87da-b3af-467b-bba2-facdbc4237d9",
+    "ownerId": "c18f88e5-439a-4c62-a3f4-be9ee9ab8df3",
+    "processes": [
+      {
+        "pid": 30100,
+        "name": "paperclip-runne",
+        "ppid": 1323,
+        "startTicks": 34883,
+        "ownerMatched": true
+      },
+      {
+        "pid": 30385,
+        "name": "MainThread",
+        "ppid": 30100,
+        "startTicks": 35238,
+        "ownerMatched": true
+      },
+      {
+        "pid": 30394,
+        "name": "codex",
+        "ppid": 30385,
+        "startTicks": 35242,
+        "ownerMatched": true
+      },
+      {
+        "pid": 30462,
+        "name": "cua-driver",
+        "ppid": 30394,
+        "startTicks": 35261,
+        "ownerMatched": true
+      }
+    ]
+  },
+  "error": null,
+  "result": "passed_orderly_controller_restart_and_archived_saved_session_continuation",
+  "limit": "Not active controller-crash recovery. Local36 serves source193c2 with runner binary and provider pack from the recorded local fixture."
+}
