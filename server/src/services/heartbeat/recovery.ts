@@ -13,7 +13,7 @@ import {
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -72,6 +72,8 @@ import {
   type HotRestartReportRun,
 } from "../hot-restart.js";
 import { serverVersion } from "../../version.js";
+import { adapterExecutionControls, waitForAdapterStop } from "../adapter-execution-control.js";
+import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 
 import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
@@ -1086,12 +1088,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     const retryRunIds: string[] = [];
     const restartSuspendedRunIds: string[] = [];
 
-    for (const { run, agent } of activeRuns) {
+    const settlementDeadline = new Date(Date.now() + 30_000);
+    const settlements = await Promise.allSettled(activeRuns.map(async ({ run, agent }) => {
       // Shutdown owns only this boot's legacy executions. Expired foreign
       // owners belong to the reaper, not another container's drain.
       if (run.runtimeMode === "legacy" && run.controllerBootId &&
-          run.controllerBootId !== legacyControllerBootId) continue;
-      if (isNativeRunnerOwnershipHeld(run)) continue;
+          run.controllerBootId !== legacyControllerBootId) return;
+      if (isNativeRunnerOwnershipHeld(run)) return;
       if (
         run.runtimeMode === "native" &&
         agent.adapterType === "paperclip_runner"
@@ -1152,10 +1155,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           },
         });
         restartSuspendedRunIds.push(run.id);
-        continue;
+        return;
       }
       const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
+      const control = run.runtimeMode === "legacy" ? adapterExecutionControls.get(run.id) : undefined;
+      if (control) await beginLegacyShutdownWorkspaceSettlement(db, run, settlementDeadline);
       try {
         if (run.runtimeMode === "native") {
           await cancelHeartbeatNativeRun({
@@ -1165,7 +1170,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             runtimeMode: run.runtimeMode,
           });
         }
-        if (running) {
+        if (running && !control) {
           await terminateHeartbeatRunProcess({
             pid: running.child.pid,
             processGroupId: running.processGroupId,
@@ -1173,7 +1178,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
         }
       } finally {
-        runningProcesses.delete(run.id);
+        if (!control && runningProcesses.get(run.id) === running) runningProcesses.delete(run.id);
       }
 
       const persistedCancellationResult =
@@ -1199,8 +1204,62 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           }),
         },
       );
-      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
+      if (!interruptedStatus.updated || !interruptedStatus.run) {
+        // A competing terminal write does not prove the owned adapter settled.
+        if (control) {
+          control.controller.abort(new Error(message));
+          try {
+            await waitForAdapterStop(control.settled, Math.max(1, settlementDeadline.getTime() - Date.now()));
+            await finishLegacyShutdownWorkspaceSettlement(db, run);
+            const current = await getRun(run.id, { includeExecutionEvidence: true });
+            if (current && HEARTBEAT_RUN_TERMINAL_STATUSES.some(status => status === current.status)) {
+              await releaseEnvironmentLeasesForRun({ runId: current.id, companyId: current.companyId,
+                agentId: current.agentId, status: current.status, failureReason: current.error ?? undefined });
+            }
+          } catch { /* The durable fence retains this source after controller loss. */ }
+        }
+        return;
+      }
       let interrupted = interruptedStatus.run;
+      if (control) {
+        // Keep the exact lease open while its adapter stops the provider and
+        // copies files back. Provider release closes command admission and
+        // must not race the adapter's git export or instruction collection.
+        control.controller.abort(new Error(message));
+        try {
+          await waitForAdapterStop(control.settled, Math.max(1, settlementDeadline.getTime() - Date.now()), {
+            runId: run.id, adapterType: agent.adapterType, runtimeMode: run.runtimeMode,
+            abortRequested: true,
+          }, control);
+          await finishLegacyShutdownWorkspaceSettlement(db, run);
+        } catch {
+          logger.warn({ runId: run.id }, "Shutdown adapter settlement timed out; retaining the sandbox through normal cleanup");
+          const [sandbox] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+            eq(environmentLeases.status, "active"), ne(environmentLeases.provider, "local"),
+            or(sql`${environmentLeases.metadata}->>'driver' = 'sandbox'`,
+              sql`${environmentLeases.metadata}->>'sandboxProviderPlugin' = 'true'`),
+          )).limit(1);
+          if (sandbox) {
+            // An unjoined restore cannot certify saved files. Record the exact
+            // stop-only sources and repair hold before provider cleanup starts.
+            const current = await getRun(run.id, { includeExecutionEvidence: true });
+            if (current) {
+              const preserved = await terminalizeLegacyExecution({ db, run: current, status: current.status,
+                recordRestoreFailureOnly: true, patch: { resultJson: { workspaceRestoreFailure: "restore_failed" } } });
+              if (preserved) await finishLegacyShutdownWorkspaceSettlement(db, run, "expired");
+            }
+          }
+          if (runningProcesses.get(run.id) === running && running) {
+            await terminateHeartbeatRunProcess({ pid: running.child.pid, processGroupId: running.processGroupId,
+              graceMs: Math.max(1, running.graceSec) * 1000 });
+            if (runningProcesses.get(run.id) === running) runningProcesses.delete(run.id);
+          }
+        }
+        // Settlement can save restore-failure evidence after the shutdown CAS.
+        // Classification and retry must use the current row, not its snapshot.
+        interrupted = (await getRun(run.id, { includeExecutionEvidence: true })) ?? interrupted;
+      }
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: null,
@@ -1243,6 +1302,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
       interruptedRunIds.push(interrupted.id);
+    }));
+    for (const [index, settlement] of settlements.entries()) {
+      if (settlement.status === "rejected") logger.warn({ runId: activeRuns[index]!.run.id,
+        errorKind: "shutdown_settlement_failed" }, "Shutdown settlement failed; durable cleanup protection remains in place");
     }
 
     if (interruptedRunIds.length > 0) {
@@ -1436,6 +1499,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
     let recovered = 0;
     for (const { lease } of rows) {
+      if (!(await allowLegacyShutdownWorkspaceCleanup(db, lease))) {
+        await deferOrphanedActiveLease(lease.id);
+        continue;
+      }
       // A provider resource id names one physical sandbox. A different lease
       // row can still hold that same resource in a live status, so this sweep
       // must not tear down a sandbox that a different lease still owns.
@@ -1554,6 +1621,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     let capped = 0;
     for (const row of rows) {
       if (pendingCleanupAttemptsInFlight.has(row.id)) continue;
+      if (!(await allowLegacyShutdownWorkspaceCleanup(db, row))) {
+        await deferPendingCleanupLease(row.id);
+        continue;
+      }
       const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
       const attempts = readPendingCleanupRetryAttempts(metadata);
 
@@ -2370,6 +2441,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // pending_cleanup sweep, so this tick can stop the recovered sandbox.
     // Isolate the sweep so its failure never hides the reaper result.
     try {
+      await sweepLegacyShutdownWorkspaceSettlements(db);
       const orphanedActiveLeaseSweep = await sweepOrphanedActiveLeases({
         backoffMs: staleThresholdMs,
       });
