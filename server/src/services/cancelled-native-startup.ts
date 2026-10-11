@@ -73,16 +73,12 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   return !execution;
 }
 
-/** Resource waiting is replayable only before any provider admission, independently of operator Stop. */
-export async function canRetryComputerAdmissionWait(db: Db, run: Run): Promise<boolean> {
+/** Retain task ownership for a typed wait that never admitted provider work.
+ * This proves no provider effects, not that the preparing controller is gone. */
+export async function isComputerAdmissionWaitBeforeProvider(db: Db, run: Run): Promise<boolean> {
   if (!isComputerAdmissionWait(run) || !run.finishedAt || run.runtimeModeResolvedAt ||
       run.nativeIssueId || run.nativeSessionId || run.processPid || run.processGroupId ||
-      run.processStartedAt || run.sessionIdAfter || adapterExecutionControls.has(run.id)) return false;
-  const settledAt = run.resultJson?.computerAdmissionPreparationSettledAt;
-  const settled = typeof settledAt === "string" && Number.isFinite(Date.parse(settledAt));
-  if (!settled && !(run.executionStage === "preparing" && run.controllerBootId &&
-      run.controllerBootId !== legacyControllerBootId && run.controllerLeaseExpiresAt &&
-      run.controllerLeaseExpiresAt <= new Date())) return false;
+      run.processStartedAt || run.sessionIdAfter) return false;
   const admission = run.resultJson!.computerAdmission as Record<string, string>;
   const [computer] = await db.select({ id: computers.id }).from(computers).where(and(
     eq(computers.id, admission.computerId), eq(computers.companyId, run.companyId),
@@ -104,4 +100,20 @@ export async function canRetryComputerAdmissionWait(db: Db, run: Run): Promise<b
         "provider.event", "provider.rpc_result", "tool.execution.started"])),
   )).limit(1);
   return !execution;
+}
+
+/** Shared cleanup fence for retry admission and acknowledgement of a later Stop. */
+export function hasSettledComputerAdmissionPreparation(run: Run): boolean {
+  if (adapterExecutionControls.has(run.id)) return false;
+  const settledAt = run.resultJson?.computerAdmissionPreparationSettledAt;
+  const settled = typeof settledAt === "string" && Number.isFinite(Date.parse(settledAt));
+  if (!settled && !(run.executionStage === "preparing" && run.controllerBootId &&
+      run.controllerBootId !== legacyControllerBootId && run.controllerLeaseExpiresAt &&
+      run.controllerLeaseExpiresAt <= new Date())) return false;
+  return true;
+}
+
+/** Scheduling additionally requires cleanup or an expired prior controller. */
+export async function canRetryComputerAdmissionWait(db: Db, run: Run): Promise<boolean> {
+  return hasSettledComputerAdmissionPreparation(run) && isComputerAdmissionWaitBeforeProvider(db, run);
 }
