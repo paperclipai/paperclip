@@ -510,13 +510,13 @@ describe("native replacement execution authority", () => {
 });
 
 
-describe("AI subscription wait ownership", () => {
+describe.each(["ai_connection_wait", "computer_admission_wait"] as const)("%s ownership", (retryReasonKind) => {
   it.each([null, "another-run"])("preserves assignee lock guards and admits only recorded non-assignee waits: %s", (issueExecutionRunId) => {
     const gate = {
-      ...baseGateFacts(), retryReasonKind: "ai_connection_wait" as const,
+      ...baseGateFacts(), retryReasonKind,
       enforceIssueExecutionLock: true, issueExecutionRunId,
     };
-    const queued = { ...baseStalenessFacts(), retryReasonKind: "ai_connection_wait" as const, issueExecutionRunId };
+    const queued = { ...baseStalenessFacts(), retryReasonKind, issueExecutionRunId };
     expect(decideScheduledRetryGate(gate, NOW)).toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
     expect(decideQueuedRunStaleness(queued, NOW)).toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
     const nonAssignee = { issueAssigneeAgentId: "another-agent", isNonAssigneeWorkspaceBusyRetry: true };

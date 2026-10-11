@@ -10,6 +10,7 @@ export type RetryReasonKind =
   | "max_turn_continuation"
   | "disposition_repair"
   | "native_safe_replacement"
+  | "computer_admission_wait"
   | "ai_connection_wait"
   | "other";
 
@@ -408,7 +409,7 @@ export function decideScheduledRetryGate(
   const lockOutcome = decideExecutionLock({
     requiresExecutionLock:
       (requiresInProgress ||
-        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
+        ((facts.retryReasonKind === "ai_connection_wait" || facts.retryReasonKind === "computer_admission_wait") && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
       facts.enforceIssueExecutionLock,
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
@@ -640,7 +641,7 @@ export function decideQueuedRunStaleness(
   const lockOutcome = decideExecutionLock({
     // A server-recorded non-assignee wake never held the task execution lock.
     requiresExecutionLock: requiresInProgress ||
-      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry),
+      ((facts.retryReasonKind === "ai_connection_wait" || facts.retryReasonKind === "computer_admission_wait") && !facts.isNonAssigneeWorkspaceBusyRetry),
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });

@@ -1,3 +1,4 @@
+import { ComputerStopPendingError } from "../modules/computers/index.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
@@ -1106,6 +1107,8 @@ export function heartbeatService(
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
+    finalizeComputerAdmissionDeferral,
+    scheduleComputerAdmissionRetry,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
@@ -5143,6 +5146,15 @@ export function heartbeatService(
           eventMessage: "stale execution continuation cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
+      } else if (outerErr instanceof ComputerStopPendingError &&
+          outerErr.admission.runId === run.id && outerErr.admission.companyId === run.companyId &&
+          !legacyAdapterEntered && !nativeDispatchStarted && !nativeOwnershipHeld &&
+          run.runtimeMode === "legacy" && !runOptions.nativeRestartRecovery && !parseObject(run.runnerProfileJson).nativeExecutionInput &&
+          !parseObject(run.contextSnapshot?.explicitUserContinuation).failedRunId &&
+          !run.contextSnapshot?.queuedCommentInterrupt && !executionControl.controller.signal.aborted) {
+        const nonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true ||
+          isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, parseObject(run.contextSnapshot));
+        await finalizeComputerAdmissionDeferral(run, outerErr, !nonAssignee);
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the
@@ -5349,6 +5361,7 @@ export function heartbeatService(
           controllerLeaseExpiresAt: null,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+          sql`${heartbeatRuns.errorCode} is distinct from 'computer_admission_wait'`,
           inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
 
       } finally {
@@ -5362,6 +5375,24 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
+      }
+      if (latestRun?.status === "cancelled" && latestRun.errorCode === "computer_admission_wait" &&
+          !nativeDispatchStarted && !legacyAdapterEntered && !nativeOwnershipHeld) {
+        // Keep the controller lease until this atomic cleanup receipt: a crash
+        // before it is recoverable only after the old controller lease expires.
+        // An intervening Stop permanently suppresses automatic admission retry.
+        const aborted = executionControl.controller.signal.aborted;
+        const [settledWait] = await db.update(heartbeatRuns).set({
+          executionStage: "settled",
+          controllerLeaseExpiresAt: null,
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+            ${JSON.stringify(aborted
+              ? { computerAdmissionRetryOutcome: "aborted" }
+              : { computerAdmissionPreparationSettledAt: new Date().toISOString() })}::jsonb`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
+          eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+          eq(heartbeatRuns.errorCode, "computer_admission_wait"))).returning();
+        if (settledWait && !aborted) await scheduleComputerAdmissionRetry(settledWait);
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
