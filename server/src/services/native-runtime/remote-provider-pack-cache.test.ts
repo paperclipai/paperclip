@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import { computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
+import { RemoteProviderPackVerificationError, assertRemoteProviderPackVerificationResult, computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 
 const roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
@@ -103,7 +103,7 @@ async function fixture() {
   return {
     cacheRoot: computerProviderPackCachePath(home, digest), sessionKey: "task-a",
     owner: { ownerId: "owner-a", generation: 1 }, runner,
-    verify: async (root: string) => { expect(await fs.readFile(join(root, "payload"), "utf8")).toBe("verified bytes"); },
+    verify: async (root: string) => { if (await fs.readFile(join(root, "payload"), "utf8") !== "verified bytes") throw new RemoteProviderPackVerificationError("mismatch", "artifact_digest_mismatch"); },
     stage: async (root: string, guarded: CommandManagedRuntimeRunner) => {
       const result = await guarded.execute({ command: "python3", args: ["-c", "import os,sys;os.mkdir(sys.argv[1],0o700);open(os.path.join(sys.argv[1],'payload'),'w').write(sys.stdin.read())", root], stdin: "verified bytes" });
       if (result.exitCode !== 0) throw new Error(result.stderr);
@@ -138,6 +138,23 @@ describe("persistent computer provider pack cache", () => {
     await expect(prepareComputerProviderPackCache({ ...input, stage })).rejects.toThrow("operator remove or quarantine this exact cache");
     expect(stage).not.toHaveBeenCalled();
     expect(await fs.readFile(join(input.cacheRoot, "payload"), "utf8")).toBe("corrupt");
+  });
+
+  it.each(["timeout", "transport", "command", "compatibility"])("preserves the shared pack without a deletion recommendation after %s failure", async (kind) => {
+    const input = await fixture();
+    await fs.mkdir(input.cacheRoot, { recursive: true });
+    await fs.writeFile(join(input.cacheRoot, "payload"), "verified bytes");
+    const secretCause = new Error("private command/path/token");
+    const failure = kind === "transport" ? secretCause
+      : new RemoteProviderPackVerificationError(kind === "compatibility" ? "incompatible" : "unavailable",
+        kind === "timeout" ? "timeout" : kind === "compatibility" ? "node_version_incompatible" : "command_failed", secretCause);
+    const stage = vi.fn(input.stage);
+    const error = await prepareComputerProviderPackCache({ ...input, stage, verify: async () => { throw failure; } }).catch(error => error);
+    expect(error).toBeInstanceOf(RemoteProviderPackVerificationError);
+    expect(error.message).not.toMatch(/corrupt|remove|quarantine|private command/);
+    expect(error.cause).toBe(kind === "transport" ? failure : secretCause);
+    expect(stage).not.toHaveBeenCalled();
+    expect(await fs.readFile(join(input.cacheRoot, "payload"), "utf8")).toBe("verified bytes");
   });
 
   it("publishes without replacement when two tasks race and verifies the winner", async () => {
@@ -219,5 +236,34 @@ describe("persistent computer provider pack cache", () => {
     await prepareComputerProviderPackCache({ ...input, sessionKey: "another-task" });
     await expect(prepareComputerProviderPackCache({ ...input, owner: { ...input.owner, generation: 2 } })).resolves.toBe("reused");
     await expect(fs.stat(attempted)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("remote provider verification result classification", () => {
+  const result = { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+  it.each(["manifest_mismatch", "artifact_digest_mismatch", "dist_digest_mismatch", "candidate_digest_mismatch", "package_version_mismatch"])("recognizes only an explicit %s result", (reason) => {
+    expect(() => assertRemoteProviderPackVerificationResult({ ...result, exitCode: 42, stderr: `paperclip-provider-pack-verification:${reason}` }))
+      .toThrow(expect.objectContaining({ kind: "mismatch", reason }));
+  });
+  it.each([
+    { exitCode: 42, timedOut: true, stderr: "paperclip-provider-pack-verification:artifact_digest_mismatch" },
+    { exitCode: 255, timedOut: false, stderr: "private SSH stderr" },
+    { exitCode: 1, timedOut: false, stderr: "Error: artifact digest mismatch" },
+    { exitCode: 42, timedOut: false, stderr: "paperclip-provider-pack-verification:unknown" },
+    { exitCode: 42, timedOut: false, stderr: "paperclip-provider-pack-verification:artifact_digest_mismatch\nprivate stderr" },
+  ])("does not classify incomplete or unexpected results as corruption: %j", (failure) => {
+    const error = (() => { try { assertRemoteProviderPackVerificationResult({ ...result, ...failure }); } catch (error) { return error; } })();
+    expect(error).toMatchObject({ kind: "unavailable" });
+    expect((error as Error).message).not.toMatch(/private|digest_mismatch|quarantine/);
+  });
+  it("distinguishes a completed OpenCode version mismatch from a failed or timed-out version probe", () => {
+    expect(() => assertRemoteProviderPackVerificationResult({ ...result, stdout: "1.2.3" }, "1.2.3")).not.toThrow();
+    expect(() => assertRemoteProviderPackVerificationResult({ ...result, stdout: "1.2.2" }, "1.2.3")).toThrow(expect.objectContaining({ kind: "mismatch", reason: "opencode_version_mismatch" }));
+    for (const failure of [{ exitCode: 1 }, { timedOut: true }])
+      expect(() => assertRemoteProviderPackVerificationResult({ ...result, ...failure }, "1.2.3")).toThrow(expect.objectContaining({ kind: "unavailable" }));
+  });
+  it.each(["node_version_incompatible", "target_mismatch"])("keeps %s distinct from cache corruption", reason => {
+    expect(() => assertRemoteProviderPackVerificationResult({ ...result, exitCode: 42, stderr: `paperclip-provider-pack-verification:${reason}` }))
+      .toThrow(expect.objectContaining({ kind: "incompatible", reason }));
   });
 });
