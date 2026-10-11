@@ -1,5 +1,6 @@
 import { compareAndSealRetiredComputerCheckpoint, retiredComputerCheckpointIsSettled, retiredComputerCheckpointUnsettledReason, retireUnlaunchedComputerAttempt, nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
 import { prepareHeartbeatGitHubLaunchers } from "../heartbeat-github-launchers.js";
+import { RemoteProviderPackVerificationError } from "./remote-provider-pack-cache.js";
 import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9741,6 +9742,37 @@ describe("native session bounded recovery", () => {
     expect(await nativeProviderRecoveryEvidence({
       db: db as never, runId: "run", sourceFailureCode: code,
     })).toMatchObject({ recoveryMode: mode });
+  });
+
+  it.each(["timeout", "transport_error", "command_failed"] as const)(
+    "keeps unavailable pack verification distinct and bounds startup retries (%s)", (reason) => {
+      const code = nativeSessionFailureSourceCode(new RemoteProviderPackVerificationError("unavailable", reason));
+      expect(code).toBe("runner_remote_provider_verification_unavailable");
+      const now = new Date("2026-10-11T00:00:00Z");
+      expect(nativeSessionFailureDisposition(1, now, code)).toEqual({
+        phase: "retryable_failure", failureCode: "native_session_interrupted",
+        nextAttemptAt: new Date("2026-10-11T00:00:30Z"),
+      });
+      expect(nativeSessionFailureDisposition(3, now, code)).toEqual({
+        phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
+      });
+    },
+  );
+
+  it.each([
+    [{}, [], "bootstrap_retry"],
+    [{ uncertain: true }, [], "ambiguous_state"],
+    [{}, [{ eventType: "turn.started" }], "ambiguous_state"],
+    [{ providerSessionId: "existing-provider" }, [], "exact_checkpoint_resume"],
+    [{ providerSessionId: "existing-provider", terminal: { runTerminalState: "failed" } }, [], "ambiguous_state"],
+  ])("unavailable pack verification preserves provider recovery evidence (%j)", async (checkpoint, events, mode) => {
+    const code = nativeSessionFailureSourceCode(new RemoteProviderPackVerificationError("unavailable", "timeout"));
+    let reads = 0;
+    const db = { select: () => ({ from: () => ({ where: () => ({
+      limit: async () => ++reads === 1 ? [{ runnerProfileJson: { sessionCheckpoint: checkpoint } }] : events,
+    }) }) }) };
+    expect(await nativeProviderRecoveryEvidence({ db: db as never, runId: "run", sourceFailureCode: code }))
+      .toMatchObject({ recoveryMode: mode });
   });
 
   it("requires operator action without retrying an approval-required terminal", () => {
