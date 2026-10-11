@@ -1216,6 +1216,11 @@ export function environmentRoutes(
           : existing.config;
     const patch = {
       ...req.body,
+      // A reconnect becomes available only after the existing computer's
+      // cleanup and attachment checks succeed.
+      ...(existing.driver === "computer" && req.body.status === "active"
+        ? { status: existing.status }
+        : {}),
       ...(req.body.envVars !== undefined
         ? {
             envVars: await secrets.normalizeEnvBindingsForPersistence(
