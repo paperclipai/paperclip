@@ -203,6 +203,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
   resumeExecutionWaitComments: () => Promise<unknown>;
+  readmitUnblockedExecutionWaits: () => Promise<unknown>;
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
   resumeSavedLegacyComments: (companyId: string, queueId: string) => Promise<unknown>;
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
@@ -365,6 +366,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     liveRunExecutions,
     getSchedulingSuppression,
     resumeExecutionWaitComments,
+    readmitUnblockedExecutionWaits,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
@@ -1749,6 +1751,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
+    await readmitUnblockedExecutionWaits();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
