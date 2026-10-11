@@ -114,12 +114,6 @@ for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
   });
 }
 
-test("workspaces-c selects only the db project", () => {
-  const selected = dryRunJson(["--mode", "general", "--group", "general-workspaces-c"]);
-  assert.deepEqual(selected.workspaceProjects, ["@paperclipai/db"]);
-  assert.equal(selected.workspacesVitestShard, null);
-});
-
 test("workspace lanes cover every non-server project in the root Vitest configuration", () => {
   const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
   const roots = [...config.matchAll(/^\s+"([^"]+)",?\s*$/gm)].map(match => match[1]);
@@ -129,6 +123,76 @@ test("workspace lanes cover every non-server project in the root Vitest configur
   const actual = ["general-workspaces-a", "general-workspaces-b", "general-workspaces-c"]
     .flatMap(group => dryRunJson(["--mode", "general", "--group", group]).workspaceProjects).sort();
   assert.deepEqual(actual, expected, "no configured project may be silently omitted or run twice");
+});
+
+// Collects every `- group:` matrix entry in a workflow with the keys it sets.
+// Comment and blank lines are dropped first, and an entry ends only when the
+// indentation returns to the item level, so a comment between two keys cannot
+// hide a shard setting from the assertions below.
+function matrixEntries(text) {
+  const entries = [];
+  let current = null;
+  for (const line of text.split("\n")) {
+    if (/^\s*(#|$)/.test(line)) continue;
+    const indent = line.match(/^ */)[0].length;
+    const item = line.match(/^ *- group: (\S+)/);
+    if (item) {
+      current = { group: item[1], indent, keys: ["group"] };
+      entries.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (indent <= current.indent) { current = null; continue; }
+    const key = line.match(/^ *([A-Za-z_]+):/);
+    if (key) current.keys.push(key[1]);
+  }
+  return entries;
+}
+
+test("matrixEntries sees shard keys that sit behind comments or later in the entry", () => {
+  const entries = matrixEntries([
+    "        include:",
+    "          - group: general-workspaces-b",
+    "            group_label: workspaces-b",
+    "            # a comment between keys must not hide the shard setting",
+    "            shard_index: 0",
+    "",
+    "            shard_count: 3",
+    "          - group: general-workspaces-c",
+    "            group_label: workspaces-c",
+    "      steps:",
+    "        - name: unrelated",
+    "          shard_index: 9",
+  ].join("\n"));
+  assert.deepEqual(entries.map(entry => entry.group), ["general-workspaces-b", "general-workspaces-c"]);
+  assert.deepEqual(entries[0].keys, ["group", "group_label", "shard_index", "shard_count"]);
+  assert.deepEqual(entries[1].keys, ["group", "group_label"], "keys after the matrix must not leak into the last entry");
+});
+
+test("workspaces-c runs the db project alone and workspaces-b no longer carries it", () => {
+  // The db project was 168-250s of the 436-513s workspaces-b vitest time
+  // (PR runs 38084171761, 38083084276 and 38083020834, 2026-10-10), so it
+  // runs in its own lane. The PR and release matrices both carry that lane.
+  const workspacesC = dryRunJson(["--mode", "general", "--group", "general-workspaces-c"]);
+  assert.deepEqual(workspacesC.workspaceProjects, ["@paperclipai/db"]);
+  assert.equal(workspacesC.workspacesVitestShard, null);
+  const workspacesB = dryRunJson(["--mode", "general", "--group", "general-workspaces-b"]);
+  assert.ok(!workspacesB.workspaceProjects.includes("@paperclipai/db"), "db must not run twice");
+  assert.ok(workspacesB.workspaceProjects.length > 0, "workspaces-b must still run its other projects");
+  for (const workflow of ["pr-trusted.yml", "release-verify.yml"]) {
+    const entries = matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
+    // The parser must demonstrably see shard keys in this workflow, otherwise
+    // the unsharded assertions below could pass for the wrong reason.
+    const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
+    assert.ok(sharded.length > 0 && sharded.every(entry => entry.keys.includes("shard_index") && entry.keys.includes("shard_count")),
+      `${workflow} must carry the sharded workspaces-a entries`);
+    for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
+      const matching = entries.filter(entry => entry.group === group);
+      assert.equal(matching.length, 1, `${workflow} must run ${group} exactly once`);
+      assert.ok(matching[0].keys.includes("group_label"), `${workflow} must label the ${group} job`);
+      assert.deepEqual(matching[0].keys.filter(key => key.startsWith("shard_")), [], `${workflow} must run ${group} unsharded`);
+    }
+  }
 });
 
 test("workspaces-a shards map to Vitest native --shard slices over a stable project list", () => {
