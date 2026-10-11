@@ -4532,6 +4532,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toHaveLength(1);
   });
 
+  async function reapLostConversationRun(contextSnapshot?: Record<string, unknown>) {
+    const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local", processPid: 999_999_999, contextSnapshot });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      adapterDispatch: { adapterType: "claude_local" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    return { run, retries };
+  }
+
+  it("retries a lost local run once", async () => {
+    const { run, retries } = await reapLostConversationRun();
+    expect(run).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(run?.error).toContain("retrying once");
+    expect(retries).toHaveLength(1);
+  });
+
+  it("does not retry a lost plugin session run", async () => {
+    const { run, retries } = await reapLostConversationRun({
+      taskKey: "plugin:acme.chat:session:s-1",
+      paperclipAgentMessage: { text: "hi", source: "plugin_session", pluginKey: "acme.chat", sessionId: "s-1" },
+    });
+    expect(run).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(run?.error).not.toContain("retrying once");
+    expect(retries).toHaveLength(0);
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,

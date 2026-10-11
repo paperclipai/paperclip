@@ -363,6 +363,12 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+// Plugin agent sessions own delivery and retry. Their reply forwarder is bound
+// to the original run id, so a host retry spends tokens on an unseen reply.
+export function isPluginSessionRunContext(contextSnapshot: unknown) {
+  return parseObject(parseObject(contextSnapshot).paperclipAgentMessage).source === "plugin_session";
+}
+
 /** Retry persistence uses the service database and explicit lifecycle callbacks. */
 export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDependencies) {
   const {
@@ -408,6 +414,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
+    }
+    if (isPluginSessionRunContext(run.contextSnapshot)) {
+      return { outcome: "not_scheduled" as const, reason: "Plugin sessions own delivery and retry for their runs.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     const now = opts?.now ?? new Date();
     const retryReason =
