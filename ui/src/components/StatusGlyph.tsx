@@ -25,6 +25,8 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * The in-progress animation represents task workflow status, independently of
  * run execution. It remains between runs until the task status changes; live
  * indicators and run details report whether an agent is currently executing.
+ * Call sites can opt out with `animate={false}` — kanban column headers keep
+ * the glyph static while the column is empty, so an idle board does not spin.
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
@@ -77,9 +79,11 @@ interface StatusGlyphProps {
   className?: string;
   /** Accessible label; when set the SVG gets `role="img"`, else it's decorative. */
   title?: string;
+  /** Spin the `in_progress` glyph. Default `true`; pass `false` to render it static. */
+  animate?: boolean;
 }
 
-export function StatusGlyph({ status, size = "md", className, title }: StatusGlyphProps) {
+export function StatusGlyph({ status, size = "md", className, title, animate = true }: StatusGlyphProps) {
   const px = SIZE_PX[size];
   const Icon = STATUS_ICON[status] ?? STATUS_ICON_DEFAULT;
   const cssVar = taskStatusIconVar[status] ?? taskStatusIconVarDefault;
@@ -89,7 +93,7 @@ export function StatusGlyph({ status, size = "md", className, title }: StatusGly
   return (
     <Icon
       size={px}
-      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && "motion-safe:animate-spin", className)}
+      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && animate && "motion-safe:animate-spin", className)}
       style={{ color: `var(${cssVar})` } as CSSProperties}
       {...a11y}
     >
