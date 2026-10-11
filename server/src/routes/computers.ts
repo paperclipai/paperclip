@@ -39,19 +39,20 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
       if (req.method === "GET") { res.json(null); return; }
       throw unprocessable("Boat environments are disabled.");
     }
-    const [lease] = await db.select().from(environmentLeases)
-      .where(and(eq(environmentLeases.companyId, issue.companyId), eq(environmentLeases.issueId, issue.id), eq(environmentLeases.provider, "boat")))
-      // Every computer admission inserts a lease. Finalization can update an older
-      // lease later, but must not make it the task's current authority again.
-      .orderBy(desc(environmentLeases.createdAt), desc(environmentLeases.id)).limit(1);
     const [agent] = issue.assigneeAgentId ? await db.select().from(agents)
       .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, issue.assigneeAgentId))).limit(1) : [];
-    const environmentId = lease?.environmentId ?? agent?.defaultEnvironmentId ?? (await settings.get()).defaultEnvironmentId;
+    const environmentId = agent?.defaultEnvironmentId ?? (await settings.get()).defaultEnvironmentId;
     const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1) : [];
     if (!environment || environment.driver !== "computer" || environment.metadata?.computerCompanyId !== issue.companyId || environment.status !== "active") {
       if (req.method === "GET") { res.json(null); return; }
       throw notFound("Computer not available for this task");
     }
+    const [lease] = await db.select().from(environmentLeases)
+      .where(and(eq(environmentLeases.companyId, issue.companyId), eq(environmentLeases.issueId, issue.id),
+        eq(environmentLeases.environmentId, environment.id), eq(environmentLeases.provider, "boat")))
+      // A historical lease cannot select the task's computer. Within the current
+      // selection, later finalization must not promote an older admission.
+      .orderBy(desc(environmentLeases.createdAt), desc(environmentLeases.id)).limit(1);
     res.locals.computer = { environment, issue, lease, agent };
     next();
   });
