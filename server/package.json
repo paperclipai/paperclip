@@ -85,7 +85,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.7.2",
-    "chat": "4.39.0",
+    "chat": "4.41.1",
     "chokidar": "^5.0.0",
     "compression": "^1.8.2",
     "detect-port": "^2.1.0",
