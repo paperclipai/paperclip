@@ -27,6 +27,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
+import { HttpError } from "../errors.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -4603,5 +4604,201 @@ describeEmbeddedPostgres("secretService", () => {
         actorId: "user-without-membership",
       }),
     ).rejects.toThrow(/active member|secrets:read|forbidden/i);
+  });
+
+  describe("removeIfUnbound (guarded secret delete)", () => {
+    async function seedAgent(companyId: string) {
+      const [agent] = await db
+        .insert(agents)
+        .values({
+          companyId,
+          name: "BoundAgent",
+          role: "engineer",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        })
+        .returning();
+      return agent!;
+    }
+
+    it("blocks the delete while a binding references the secret and mutates nothing", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secret = await svc.create(companyId, {
+        name: `guarded-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+      const agent = await seedAgent(companyId);
+      await svc.syncEnvBindingsForTarget(
+        companyId,
+        { targetType: "agent", targetId: agent.id },
+        { OPENAI_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } },
+      );
+
+      const error: HttpError = await svc.removeIfUnbound(secret.id).catch((err) => err);
+      expect(error).toBeInstanceOf(HttpError);
+      expect(error.status).toBe(409);
+      expect(error.message).toContain("still bound to 1 consumer");
+      expect(error.message).toContain(`agent "BoundAgent" at env.OPENAI_API_KEY`);
+      const details = error.details as { code?: string; bindings?: Array<{ target?: { label?: string } }> };
+      expect(details.code).toBe("secret_in_use");
+      expect(details.bindings?.[0]?.target?.label).toBe("BoundAgent");
+
+      // Nothing was mutated: the secret stays active and the binding stays.
+      const secretRow = await svc.getById(secret.id);
+      expect(secretRow?.status).toBe("active");
+      const references = await svc.listBindingReferences(companyId, secret.id);
+      expect(references).toHaveLength(1);
+    });
+
+    it("deletes an unbound secret and fences later binding writes against the removed secret", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secret = await svc.create(companyId, {
+        name: `unguarded-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+      const agent = await seedAgent(companyId);
+
+      const removed = await svc.removeIfUnbound(secret.id);
+      expect(removed?.id).toBe(secret.id);
+      expect(await svc.getById(secret.id)).toBeNull();
+
+      // A consumer that still carries the deleted secret id in its config
+      // cannot re-create a binding for it.
+      await expect(
+        svc.syncEnvBindingsForTarget(
+          companyId,
+          { targetType: "agent", targetId: agent.id },
+          { OPENAI_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } },
+        ),
+      ).rejects.toThrow(/Secret not found/i);
+    });
+
+    it("retries cleanup without the binding guard when the row is already soft-deleted", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secret = await svc.create(companyId, {
+        name: `retry-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+      // Reproduce a delete that stopped between the soft delete and the hard
+      // delete: the row is `deleted` and a binding row survived.
+      await db
+        .update(companySecrets)
+        .set({
+          key: `${secret.key}__deleted__${secret.id}`,
+          name: `${secret.name}__deleted__${secret.id}`,
+          status: "deleted",
+          deletedAt: new Date(),
+        })
+        .where(eq(companySecrets.id, secret.id));
+      await db.insert(companySecretBindings).values({
+        companyId,
+        secretId: secret.id,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.OPENAI_API_KEY",
+      });
+
+      const removed = await svc.removeIfUnbound(secret.id);
+      expect(removed?.id).toBe(secret.id);
+      expect(await svc.getById(secret.id)).toBeNull();
+    });
+
+    it("holds the per-secret advisory lock across the binding count, so binding writes and the delete serialize", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secret = await svc.create(companyId, {
+        name: `locked-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+
+      // A binding write in flight: the same transaction-scoped advisory lock
+      // the guarded delete must take, held on another pooled connection.
+      const lockEntered = deferred<void>();
+      const releaseHolder = deferred<void>();
+      const holder = db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${"paperclip:secret-bindings:" + secret.id}, 0))`,
+        );
+        lockEntered.resolve();
+        await releaseHolder.promise;
+        throw new Error("release the holder transaction");
+      });
+      await lockEntered.promise;
+
+      const removal = svc.removeIfUnbound(secret.id);
+      const outcome = await Promise.race([
+        removal.then(
+          () => "settled" as const,
+          () => "settled" as const,
+        ),
+        new Promise<"pending">((resolve) => {
+          setTimeout(() => resolve("pending"), 750);
+        }),
+      ]);
+      expect(outcome).toBe("pending");
+
+      releaseHolder.resolve();
+      await holder.catch(() => {});
+      await expect(removal).resolves.toMatchObject({ id: secret.id });
+      expect(await svc.getById(secret.id)).toBeNull();
+    });
+
+    it("locks the combined config and env secret ids as one sorted batch, so crossed environment saves cannot deadlock", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secretA = await svc.create(companyId, {
+        name: `cross-a-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+      const secretB = await svc.create(companyId, {
+        name: `cross-b-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+
+      // Two environment-like saves whose secret usage crosses: save 1 binds
+      // secret A as its private-key config ref and secret B in env, save 2
+      // the reverse. When both binding surfaces are written through one call
+      // that takes the combined id set in sorted order, the two transactions
+      // serialize on the first id instead of each holding one id while
+      // waiting for the other. Back-to-back per-surface locking deadlocks
+      // here and Postgres aborts one save with a 40P01.
+      const save = (targetId: string, configSecretId: string, envSecretId: string) =>
+        db.transaction((tx) =>
+          svc.syncEnvironmentSecretBindings(
+            companyId,
+            { targetType: "environment", targetId },
+            {
+              instanceTargetRefs: [{ secretId: configSecretId, configPath: "privateKeySecretRef" }],
+              envValue: { SSH_KEY_ENV: { type: "secret_ref", secretId: envSecretId, version: "latest" } },
+            },
+            { db: tx },
+          ),
+        );
+
+      for (let round = 0; round < 3; round++) {
+        const results = await Promise.allSettled([
+          save(`env-cross-1`, secretA.id, secretB.id),
+          save(`env-cross-2`, secretB.id, secretA.id),
+        ]);
+        const failures = results
+          .filter((result) => result.status === "rejected")
+          .map((result) => (result as PromiseRejectedResult).reason);
+        expect(failures).toEqual([]);
+
+        const bindingsA = await svc.listBindingReferences(companyId, secretA.id);
+        const bindingsB = await svc.listBindingReferences(companyId, secretB.id);
+        expect(bindingsA).toHaveLength(2);
+        expect(bindingsB).toHaveLength(2);
+      }
+    });
   });
 });

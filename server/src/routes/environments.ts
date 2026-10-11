@@ -1044,18 +1044,19 @@ export function environmentRoutes(
       }),
     };
     // Create the row and its binding rows atomically so an invalid secret
-    // ref cannot leave an environment persisted without its bindings.
+    // ref cannot leave an environment persisted without its bindings. Both
+    // binding surfaces go through one call that takes the combined secret-id
+    // lock batch in sorted order, so two concurrent environment creates with
+    // crossed config/env secrets cannot deadlock.
     const environment = await db.transaction(async (tx) => {
       const created = await svc.create(input, undefined, { db: tx });
-      await secrets.replaceSecretRefsForInstanceTarget(
-        { targetType: "environment", targetId: created.id },
-        await collectEnvironmentSecretRefs({ db, environment: created }),
-        { db: tx },
-      );
-      await secrets.syncEnvBindingsForTarget(
+      await secrets.syncEnvironmentSecretBindings(
         companyId,
         { targetType: "environment", targetId: created.id },
-        created.envVars,
+        {
+          instanceTargetRefs: await collectEnvironmentSecretRefs({ db, environment: created }),
+          envValue: created.envVars,
+        },
         { db: tx },
       );
       return created;
@@ -1208,21 +1209,26 @@ export function environmentRoutes(
     // Persist the config change and its binding rows atomically: a binding
     // ref that fails validation (e.g. a deleted secret) must roll the whole
     // save back instead of leaving the config re-pointed with stale bindings.
+    // Both binding surfaces go through one call that takes the combined
+    // secret-id lock batch in sorted order, so concurrent saves with crossed
+    // config/env secrets cannot deadlock.
     const environment = await db.transaction(async (tx) => {
       const updated = await svc.update(existing.id, patch, { db: tx });
       if (!updated) return null;
-      if (patch.config !== undefined || patch.driver !== undefined) {
-        await secrets.replaceSecretRefsForInstanceTarget(
-          { targetType: "environment", targetId: updated.id },
-          await collectEnvironmentSecretRefs({ db, environment: updated }),
-          { db: tx },
-        );
-      }
-      if (patch.envVars !== undefined) {
-        await secrets.syncEnvBindingsForTarget(
+      const syncingConfig = patch.config !== undefined || patch.driver !== undefined;
+      const syncingEnv = patch.envVars !== undefined;
+      if (syncingConfig || syncingEnv) {
+        await secrets.syncEnvironmentSecretBindings(
           companyIdForSecrets!,
           { targetType: "environment", targetId: updated.id },
-          updated.envVars,
+          {
+            ...(syncingConfig
+              ? {
+                  instanceTargetRefs: await collectEnvironmentSecretRefs({ db, environment: updated }),
+                }
+              : {}),
+            ...(syncingEnv ? { envValue: updated.envVars } : {}),
+          },
           { db: tx },
         );
       }
