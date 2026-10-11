@@ -206,7 +206,11 @@ describe("ACPX runtime host", () => {
     const port = runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
     const gate = deferred<AcpxRuntimePort>();
     const stages: Array<{ stage: string; elapsedMs: number }> = [];
-    const openRuntime = vi.fn(() => gate.promise);
+    const enteredRuntime = deferred<void>();
+    const openRuntime = vi.fn(() => {
+      enteredRuntime.resolve();
+      return gate.promise;
+    });
     const opening = trackAdmissionOpening(AcpxRuntimeHost.open({
       ...fixture.options, agent: "claude", model: "claude-sonnet-5",
       semanticTools: { tools: [], handler: async () => ({}) },
@@ -219,7 +223,8 @@ describe("ACPX runtime host", () => {
       },
     }));
     try {
-      await vi.waitFor(() => expect(openRuntime).toHaveBeenCalledOnce());
+      await enteredRuntime.promise;
+      expect(openRuntime).toHaveBeenCalledOnce();
       expect(stages.at(-1)?.stage).toBe("handshake");
     } finally {
       gate.resolve(port);
