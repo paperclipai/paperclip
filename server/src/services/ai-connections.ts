@@ -725,8 +725,19 @@ export function aiConnectionService(db: Db) {
               ),
             ),
           ),
-        );
+        )
+        // Lock the application row. Connection removal locks it too before it
+        // counts the remaining connections, so the two cannot interleave.
+        .for("update");
       if (!app) throw unprocessable("Could not find the provider application");
+      // Removing the last connection archives the provider application, and the
+      // Connectors page hides archived applications. Reactivate it so the new
+      // account is visible.
+      if (app.status === "archived")
+        await tx
+          .update(toolApplications)
+          .set({ status: "active", archivedAt: null, updatedAt: new Date() })
+          .where(eq(toolApplications.id, app.id));
       if (reconnect)
         await tx
           .update(toolConnections)
