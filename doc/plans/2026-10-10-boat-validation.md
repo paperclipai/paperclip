@@ -2,15 +2,15 @@
 
 **Experimental and unmerged. Local journeys and partial staging qualification passed on the sources below; final-source staging acceptance remains incomplete.** A successful build, probe, or earlier-source journey does not establish the remaining product conditions.
 
-## Current source boundary (2026-10-11 03:29 UTC)
+## Current source boundary (2026-10-11 03:55 UTC)
 
 | Surface | Source and evidence |
 | --- | --- |
-| Combined branch | Runtime `3bd413a9b3`; corrects both pending-wait lifecycle defects. |
-| Core branch | `11ccf7b1a2d8ad2921cff2a41ae2265e0896640b`; 338 actual-entrypoint tests, server TypeScript and independent review passed. Fresh CI remains pending. |
-| Serving staging | Deployment 16 `2e8859ab762e5b2ce97f2ea774e385fd333f9cee` verified at 02:59:15.776 UTC. |
+| Combined branch | `c4fd4d8c1a`: includes pause recovery, truthful verification errors, bounded 120-second Boat full-pack verification, UI waiting correction, and upstream CI alignment. Local39 is serving this source; live retries are in progress. |
+| Core branch | `c1273036d5`; focused tests and independent reviews passed. Fresh CI is pending. A new review identified a concurrent Stop/suppression ordering race; correction and regression tests are in progress. |
+| Serving staging | Deployment 18 `bd86e22e72578fa8a240160b6001802eb2cd40f1` verified at 03:56:25.724 UTC. It does not yet include the subsequent pause, verifier, UI, or Stop/suppression-race corrections. |
 | Cancelled candidate | Deployment 17 `ca8ab88c78556c4711d59f71c6293619543a66a1` was cancelled during build before check/deploy. Fresh review found that Stop could leave a retry authorized and that premature terminalization could release the task lock. Corrections passed real cancellation/lifecycle-path tests and independent review; deployment18 of `bd86e22e72` is in progress. |
-| External blocker | At 03:23:54 UTC, staging still had a failing stop and no successful snapshot after 02:19:59 UTC. Local recovered: snapshot verified at 03:16:03.591 and stop completed at 03:16:03.734; provider state was archived. No force, resume, or state reset was used. |
+| Provider and live state | Both providers recovered with verified snapshots: staging archived at 03:30:20.703, local at 03:34:37.716. Local normal Computer Connect subsequently resumed it for read-only cache diagnosis. On local39, ordinary saved-message recovery began for the paused task and a new read-only Claude continuation was submitted. No provider stop was forced or cancelled and no recovery gate or database state was manually cleared. |
 
 Latest source-specific live successes are staging warm HMR and corrected native computer use, local detach/reconnect retention, and local saved-session continuation after controller restart with an unchanged one-line marker. Latest native Claude saved-session recovery, active sibling cancellation isolation, and the new pending-wait UI journey remain unverified. A local cancellation during a **failing** stop is narrower evidence.
 
@@ -90,6 +90,22 @@ The attempted local 37 UI check encountered a **failing** stop instead of a pend
 The follow-up correction, core `11ccf7b1a2` / combined `3bd413a9b3` / staging `bd86e22e72`, separates pre-provider ownership retention from cleanup-gated scheduling. Actual Stop persists suppression under scheduling locks and cancels only the exact retry chain. It passed 338 tests across four suites with no skips, server TypeScript and independent review. Tests now exercise real lifecycle and cancellation entry points, including queued messages and unrelated/reassigned work. Deployment18 is in progress; this is not yet a live pending-wait pass.
 
 Local37 then attempted an ordinary saved Claude continuation after provider recovery. Run `7b6baf95` retained the original normalized session, provider thread and logical runner, but failed at 03:28:55.832 with `runner_remote_provider_cache_corrupt`. Lease cleanup succeeded and the new owner retired without a process binding. No proof file was read; the browser showed [Run failed and Blocked](assets/2026-10-10-boat/local-37-claude-resume-failed.png). Cache diagnosis is in progress; no cache reset or mutation was used.
+
+## Local38 admission waiting and Pause work (2026-10-11 03:36 UTC)
+
+On `949a1ce18a`, normal admission waited through a pending provider stop, retained the task lock and scheduled successors without provider work. Normal **Pause work** at 03:34:37.736 created a pause hold; the scheduler cancelled the queued successor at 03:35:13.025. No later run, owner or lease appeared in the 03:36:05 observation. This proves Pause work, not a live Stop-button race. The initial UI showed both a pause notice and a retry countdown. The reviewed UI correction `a761054e6a` hides waiting notices while paused and uses “Connecting to computer” instead of promising a restart time. It passed 159 UI tests, UI TypeScript, token gates and independent review.
+
+Releasing the pause without waking and sending a new explicit read-only message exposed another gap: at 03:39:40 the message remained deferred behind execution recovery, with no provider work. The reviewed correction `a5cc05d2c3` / combined `956f32fe23` proves that the exact scheduled successor never started from its scheduler receipt and settled parent. It passed 318 tests, TypeScript and independent review. Existing explicit continuation accepts only unchanged new post-finish input; historical false-hold repair retains that path’s fresh-session contract. Live retest is pending, and no recovery gate was manually cleared. Both Boat stops had completed by then: staging at 03:30:20.703 and local at 03:34:37.716, each with a verified snapshot.
+
+The Claude verifier failure lasted 30,007 ms against an exact 30,000 ms deadline. Classification fix `fd3ec56106` (combined `2f03982a47`) preserves unavailable verification as such instead of claiming corrupt bytes and recommending cache removal. Only an explicit verified mismatch yields corruption. All validation and deadlines remain unchanged. 45 cache tests, 159 selected related tests, server TypeScript and independent review passed; a later permitted read-only probe passed all retained-pack integrity checks in 23.061 seconds, 25.709 including transport. Pi and Cursor candidate trees took 12.318 and 9.127 seconds respectively. The full check verifies about 1.155 GB and 17,561 files even for Claude. No cache mutation or OpenCode version execution was performed. Persistent byte corruption was not found; live Claude continuation remains unverified.
+
+## Local39 retries (2026-10-11 03:55 UTC)
+
+Local38 shut down gracefully, preserving the same database. Local39 health verified `c4fd4d8c1a` with startup recovery ready at 03:54:26.705. The existing post-pause message began normally without another user message or a manual recovery reset. This historical repair uses the existing fresh-session continuation contract; it is not a saved-native-session pass. An ordinary composer message on BOA-14 then requested a read-only continuation of the existing Claude session and unchanged file hashes. Both outcomes remain pending.
+
+Core `c1273036d5` gives only the full computer-provider pack integrity walk up to 120 seconds. Every hash and identity check remains required; lightweight version checks and other transports remain at 30 seconds. Existing cancellation, owner expiry, runner warm timeout and turn bounds are unchanged. 49 cache tests, server TypeScript and independent review passed. The patch is motivated by measured valid retained bytes and narrow deadline margin, not proof that the later live retry will succeed.
+
+A fresh PR review found a separate Stop race in the outer retry wrapper: delayed suppression could overwrite an already aborted outcome. The next staging deployment is held for its correction. The old UI attachment E2E rerun passed; upstream workspace partition drift is corrected, while new-head CI is still pending.
 
 ## Checks and their limits
 

@@ -1588,6 +1588,427 @@
     "sourceCommit": "bd86e22e72578fa8a240160b6001802eb2cd40f1",
     "requestId": "f8cb13bc-51c4-4639-9323-adc2560dda18",
     "prepareRunId": "38108515304",
-    "status": "in progress; no serving verification yet"
+    "status": "succeeded",
+    "verification": "verified",
+    "checkedAt": "2026-10-11T03:56:25.724Z",
+    "receiptSha256": "8007669d64280de064527faf2bf07a45ad1cd6099a9b693d4f3394847f1bc6b8"
+  },
+  "local38AdmissionPause": {
+    "checkedAt": "2026-10-11T03:36:05.053Z",
+    "servingSource": "949a1ce",
+    "outcome": "PASS: durable pending admission, automatic retry, and normal UI Pause work suppresses later dispatch",
+    "scope": "BOA16 existing native Codex task; pre-provider admission uses legacy controller bookkeeping",
+    "runs": [
+      {
+        "id": "63ba1874-a618-49de-af91-29a6ee3b2402",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:33:27.017Z",
+        "started_at": "2026-10-11T03:33:27.077Z",
+        "finished_at": "2026-10-11T03:33:27.615Z",
+        "error_code": "computer_admission_wait",
+        "error": "Computer is still saving its previous session. This task will retry automatically.",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": null,
+        "session_id_after": null,
+        "retry_of_run_id": null,
+        "scheduled_retry_at": null,
+        "scheduled_retry_attempt": 0,
+        "scheduled_retry_reason": null,
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": "2026-10-11T03:33:27.631Z",
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": {
+          "kind": "computer_admission_wait",
+          "providerWorkStarted": false
+        },
+        "computer_admission": {
+          "runId": "63ba1874-a618-49de-af91-29a6ee3b2402",
+          "stopId": "stop_1805dc75feffca6e",
+          "agentId": "30b7766c-107d-441f-ba45-506459cf2134",
+          "companyId": "3081dd54-008a-4a49-8cc3-9a63c1f2dda7",
+          "computerId": "1feffcc6-7014-4e35-9b1d-cb067fecb7a8",
+          "sessionKey": "b1726cdbdbb33061239c7763b6b7d630816ba4ba7f6a20915a8103c77a04f4e9",
+          "environmentId": "dcc7e124-e838-4458-a627-e7987366beaf",
+          "idleTimeoutMs": 300000,
+          "deferPendingStop": true
+        },
+        "cancellation": {
+          "reason": "Waiting for the computer to finish saving",
+          "source": "control_plane",
+          "expected": true,
+          "initiator": {
+            "type": "system"
+          },
+          "recordedAt": "2026-10-11T03:33:27.615Z"
+        }
+      },
+      {
+        "id": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:33:27.646Z",
+        "started_at": "2026-10-11T03:34:13.027Z",
+        "finished_at": "2026-10-11T03:34:13.354Z",
+        "error_code": "computer_admission_wait",
+        "error": "Computer is still saving its previous session. This task will retry automatically.",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": "63ba1874-a618-49de-af91-29a6ee3b2402",
+        "scheduled_retry_at": "2026-10-11T03:33:57.634Z",
+        "scheduled_retry_attempt": 1,
+        "scheduled_retry_reason": "computer_admission_wait",
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": "2026-10-11T03:34:13.370Z",
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": {
+          "kind": "computer_admission_wait",
+          "providerWorkStarted": false
+        },
+        "computer_admission": {
+          "runId": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+          "stopId": "stop_1805dc75feffca6e",
+          "agentId": "30b7766c-107d-441f-ba45-506459cf2134",
+          "companyId": "3081dd54-008a-4a49-8cc3-9a63c1f2dda7",
+          "computerId": "1feffcc6-7014-4e35-9b1d-cb067fecb7a8",
+          "sessionKey": "b1726cdbdbb33061239c7763b6b7d630816ba4ba7f6a20915a8103c77a04f4e9",
+          "environmentId": "dcc7e124-e838-4458-a627-e7987366beaf",
+          "idleTimeoutMs": 300000,
+          "deferPendingStop": true
+        },
+        "cancellation": {
+          "reason": "Waiting for the computer to finish saving",
+          "source": "control_plane",
+          "expected": true,
+          "initiator": {
+            "type": "system"
+          },
+          "recordedAt": "2026-10-11T03:34:13.354Z"
+        }
+      },
+      {
+        "id": "20edea90-04bc-4d84-b996-ce113d86db18",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:34:13.381Z",
+        "started_at": null,
+        "finished_at": "2026-10-11T03:35:13.025Z",
+        "error_code": "issue_paused",
+        "error": "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+        "scheduled_retry_at": "2026-10-11T03:34:43.372Z",
+        "scheduled_retry_attempt": 2,
+        "scheduled_retry_reason": "computer_admission_wait",
+        "execution_stage": null,
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": null,
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": null,
+        "computer_admission": null,
+        "cancellation": null
+      }
+    ],
+    "waitingIssueState": [
+      {
+        "id": "e125016a-d038-4550-b7d5-3707985fdee3",
+        "status": "in_progress",
+        "assignee_agent_id": "30b7766c-107d-441f-ba45-506459cf2134",
+        "execution_run_id": "20edea90-04bc-4d84-b996-ce113d86db18",
+        "execution_locked_at": "2026-10-11T03:34:13.372Z",
+        "execution_state_status": null
+      }
+    ],
+    "waitingActiveHolds": [],
+    "pausedIssueState": [
+      {
+        "id": "e125016a-d038-4550-b7d5-3707985fdee3",
+        "status": "in_progress",
+        "assignee_agent_id": "30b7766c-107d-441f-ba45-506459cf2134",
+        "execution_run_id": null,
+        "execution_locked_at": null,
+        "execution_state_status": null
+      }
+    ],
+    "pausedActiveHolds": [
+      {
+        "id": "4b419574-cc7e-41cf-a50d-9cf0e084a9d5",
+        "status": "active",
+        "mode": "pause",
+        "created_at": "2026-10-11T03:34:37.736Z"
+      }
+    ],
+    "newOwnerIds": [],
+    "leasesForAdmissionRuns": [],
+    "subsequentRunsAfterPausedSuccessor": [],
+    "eventTypes": [
+      {
+        "event_type": "lifecycle",
+        "count": 4,
+        "first_at": "2026-10-11T03:33:27.666Z",
+        "last_at": "2026-10-11T03:35:13.026Z"
+      }
+    ],
+    "limits": [
+      "UI action was More task actions \u2192 Pause work, not a Stop button.",
+      "This proves suppressed dispatch while paused, not recovery after provider archival completes.",
+      "No guest reads or provider lifecycle mutations were performed."
+    ],
+    "evidence": [
+      {
+        "file": "retry-local38-pending-provider-baseline.json",
+        "sha256": "dca4fd2e5f6db3f83f61eebbb7cbb08cefb2a4155f88ad2dbd149e1fa7ce4762"
+      },
+      {
+        "file": "retry-local37-admission-local38baseline.json",
+        "sha256": "ec5d0e95e66bbff9dbdf713b80f1de3d8d5946e79c94de8cdf5197cf60263e45"
+      },
+      {
+        "file": "retry-local38-admission-active0334.json",
+        "sha256": "ccb76860a44552a1b2fad76d80abff08c97ac8d3d09e0391f4e3fecd74399561"
+      },
+      {
+        "file": "retry-local38-admission-paused0335.json",
+        "sha256": "0444992c6065056e1873cb0a1d46d14c4ec95e76a62bf35e15f22d5ee74d365a"
+      },
+      {
+        "file": "retry-local38-admission-paused0336.json",
+        "sha256": "048cd41400771b9e8a2099270651d74d3b24a745770fb0dc87b67133d57ceddb"
+      }
+    ],
+    "source": "949a1ce18a",
+    "uiFollowup": "Paused display initially retained a misleading retry countdown. Reviewed UI correction a761054e6a hides waiting surfaces under active pause and uses neutral Connecting to computer copy for admission waits."
+  },
+  "local38ResumeLimit": {
+    "newMessageAt": "2026-10-11T03:38:24.380Z",
+    "observedAt": "2026-10-11T03:39:40Z",
+    "state": "deferred_issue_execution",
+    "reason": "execution_recovery",
+    "providerWorkStarted": false,
+    "next": "Investigate recovery gate without manually clearing it."
+  },
+  "providerRecovery0338": {
+    "recordedAt": "2026-10-11T03:38:43.839353+00:00",
+    "sandboxId": "bx_b8sawfyp",
+    "state": "archived",
+    "hydrated": true,
+    "health": "ok",
+    "lastSnapshotAttemptAt": "2026-10-11T03:30:04.372Z",
+    "lastSnapshotStatus": "completed",
+    "snapshotCompletedAt": "2026-10-11T03:30:13.427Z",
+    "snapshotVerifiedAt": "2026-10-11T03:30:13.427Z",
+    "stop": {
+      "id": "stop_804de979b357c47a",
+      "status": "completed",
+      "requestedAt": null,
+      "lastAttemptAt": "2026-10-11T03:30:20.703Z",
+      "endedAt": "2026-10-11T03:30:20.703Z",
+      "error": null
+    },
+    "scope": "Single read-only staging recovery check; no guest or lifecycle action"
+  },
+  "providerVerificationClassification": {
+    "core": "fd3ec56106",
+    "combined": "2f03982a47",
+    "observedVerifyMs": 30007,
+    "deadlineMs": 30000,
+    "result": "Classification corrected: timeout or transport failure is verification_unavailable, explicit verified mismatch alone is cache_corrupt. Full verification and deadline unchanged.",
+    "tests": {
+      "cache": 45,
+      "selectedRelated": 159,
+      "serverTypecheck": "passed",
+      "independentReview": "passed"
+    },
+    "limit": "No live Claude continuation success. Actual slow remote step is not yet identified."
+  },
+  "uiWaitingCorrection": {
+    "commit": "a761054e6a",
+    "tests": 159,
+    "typecheck": "passed",
+    "tokenGates": "passed",
+    "independentReview": "passed",
+    "provenance": [
+      {
+        "file": "boat-wait-ui-tests-direct.log",
+        "sha256": "0801cefc6ea9cce5c4e18e449a26bbc3fe4a5c1633e91cc2feb8406ebd38de0c"
+      },
+      {
+        "file": "boat-wait-ui-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "file": "boat-wait-ui-token-gates-direct.log",
+        "sha256": "452e64671e958c539290f6b327ac01ff5a76719e995430a599132863ed568516"
+      }
+    ]
+  },
+  "readOnlyPackDiagnosis": {
+    "recordedAt": "2026-10-11T03:42:51.260Z",
+    "providerObserved": {
+      "state": "idle",
+      "health": "ok",
+      "stopStatus": "completed"
+    },
+    "packDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+    "transportAndCommandElapsedMs": 25709,
+    "exitCode": 0,
+    "timedOut": false,
+    "stages": [
+      {
+        "stage": "manifest",
+        "elapsedMs": 2,
+        "pass": true,
+        "digest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+        "totalMs": 2
+      },
+      {
+        "stage": "artifact_nodeCommand",
+        "elapsedMs": 104,
+        "pass": true,
+        "totalMs": 106
+      },
+      {
+        "stage": "artifact_productionLock",
+        "elapsedMs": 2,
+        "pass": true,
+        "totalMs": 108
+      },
+      {
+        "stage": "artifact_opencodeCommand",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 108
+      },
+      {
+        "stage": "artifact_opencodeExecutable",
+        "elapsedMs": 170,
+        "pass": true,
+        "totalMs": 278
+      },
+      {
+        "stage": "artifact_opencodeProxy",
+        "elapsedMs": 3,
+        "pass": true,
+        "totalMs": 281
+      },
+      {
+        "stage": "artifact_acpxSidecar",
+        "elapsedMs": 8,
+        "pass": true,
+        "totalMs": 289
+      },
+      {
+        "stage": "artifact_grokLauncher",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 289
+      },
+      {
+        "stage": "dist_tree",
+        "elapsedMs": 118,
+        "pass": true,
+        "files": 1433,
+        "bytes": 24415028,
+        "totalMs": 407
+      },
+      {
+        "stage": "candidate_pi",
+        "elapsedMs": 12318,
+        "pass": true,
+        "files": 15673,
+        "bytes": 547621317,
+        "totalMs": 12725
+      },
+      {
+        "stage": "candidate_cursor",
+        "elapsedMs": 9127,
+        "pass": true,
+        "files": 455,
+        "bytes": 583208146,
+        "totalMs": 21853
+      },
+      {
+        "stage": "node_target_versions",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 21853
+      },
+      {
+        "stage": "package_versions",
+        "elapsedMs": 1208,
+        "pass": true,
+        "totalMs": 23061
+      },
+      {
+        "stage": "complete",
+        "pass": true,
+        "totalMs": 23061
+      }
+    ],
+    "stderrPresent": false,
+    "scope": "Read-only verifier stages; no OpenCode version execution or cache mutation",
+    "provenance": {
+      "file": "retry-local38-pack-readonly-timing.json",
+      "sha256": "a586e5115202761f1e434e3331896d074eaf745878555d6949f461af8a6c3537"
+    }
+  },
+  "pausedAdmissionRecoveryCorrection": {
+    "core": "a5cc05d2c3",
+    "combined": "956f32fe23",
+    "staging": "b48ac8412f",
+    "tests": 318,
+    "files": 3,
+    "skipped": 0,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Exact scheduler pause receipt, positively settled matching parent and no execution evidence prove a cancelled scheduled retry did not start. Only unchanged NEW post-finish user input can use the existing explicit continuation path. Saved-message sweep is covered.",
+    "historicalRecoveryLimit": "Existing false recovery holds use the existing explicit continuation forceFreshSession contract. This does not prove saved native-session continuation after that historical hold.",
+    "provenance": [
+      {
+        "file": "computer-wait-pause-final-tests.log",
+        "sha256": "12055ea05cab80f5b2a4e0ffc2d085c213d1ed23e6b3ea65d67f2f93580e03fd"
+      },
+      {
+        "file": "computer-wait-pause-final-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "latestObservation": {
+    "recordedAt": "2026-10-11T03:56:00Z",
+    "canonical": "c4fd4d8c1a44e6a062d8742a89eae850ce2ef0cc",
+    "core": "c1273036d5",
+    "stagingCandidate": "2d8030417c",
+    "localServer": "local39",
+    "status": "live saved-Claude and paused-task continuation in progress; new Stop/suppression race under correction",
+    "originalSourceAndRemainingFields": "Historical at original recordedAt; later follow-ups supersede individual conditions without erasing original failures."
+  },
+  "boundedComputerPackVerification": {
+    "core": "c1273036d5",
+    "combined": "c4fd4d8c1a",
+    "staging": "2d8030417c",
+    "fullHashTimeoutMs": 120000,
+    "otherTransportAndVersionTimeoutMs": 30000,
+    "tests": 49,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "unchanged": [
+      "all integrity checks",
+      "owner retirement and cancellation fences",
+      "runner warm timeout",
+      "turn and recovery budgets"
+    ],
+    "liveOutcome": "pending"
   }
 }

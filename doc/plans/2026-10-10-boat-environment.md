@@ -238,8 +238,9 @@ behavior must retain cleanup, and routes must enforce company access.
 [Validation and evidence](2026-10-10-boat-validation.md) distinguish browser
 journeys from process receipts and automated checks. Each result retains its
 source revision. A connection probe, a generated screenshot, or an agent's
-statement alone does not prove the complete journey. Staging hot reload remains
-blocked by the test browser; it is not counted as passed.
+statement alone does not prove the complete journey. Staging hot reload subsequently
+passed on deployment 14 with unchanged browser and process state; final-source
+qualification and the remaining conditions are tracked in the validation report.
 
 Implementation is split into [Core #15813](https://github.com/paperclipai/paperclip/pull/15813)
 and dependent [UI and acceptance #15804](https://github.com/paperclipai/paperclip/pull/15804).
