@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ComputerRepository, ComputerBackend } from "./ports.js";
 import {
   ComputerError,
+  ComputerStopPendingError,
   assertAdmission,
   exactOwner,
   expired,
@@ -57,6 +58,7 @@ export function createComputerService(
   async function admitRecord<T>(
     scope: Scope,
     change: (record: ComputerRecord) => T,
+    pendingStopRunId?: string,
   ): Promise<T> {
     const attempts = Math.ceil((options.admissionWaitMs ?? 120_000) / 1000);
     const wait =
@@ -71,13 +73,13 @@ export function createComputerService(
       } catch (error) {
         if (
           !(error instanceof ComputerError) ||
-          error.code !== "conflict" ||
-          attempt >= attempts
+          error.code !== "conflict"
         )
           throw error;
         const current = await repository.get(scope);
         if (current.ledger.status !== "attached") throw error;
         if (error instanceof ComputerSessionBusyError && error.runId && error.agentId) {
+          if (attempt >= attempts) throw error;
           // A terminal database status does not prove the process has stopped.
           // Wait for the existing owner transition; never retire it here or
           // advance its generation while final commands might still run.
@@ -86,6 +88,17 @@ export function createComputerService(
           continue;
         }
         if (!current.ledger.action) throw error;
+        if (pendingStopRunId && current.ledger.action.providerStopId) {
+          const action = current.ledger.action;
+          const stop = await backend.stopStatus(current, action.providerStopId!);
+          const latest = await repository.get(scope);
+          if (stop.id === action.providerStopId && stop.status === "pending" &&
+              latest.ledger.status === "attached" && latest.ledger.action?.id === action.id &&
+              latest.ledger.action.providerStopId === stop.id) {
+            throw new ComputerStopPendingError({ ...scope, computerId: current.id, stopId: stop.id, runId: pendingStopRunId });
+          }
+        }
+        if (attempt >= attempts) throw error;
         await reconcileRecord(current);
         if ((await repository.get(scope)).ledger.action) await wait(1000);
       }
@@ -387,6 +400,7 @@ finally:
       probeId?: string;
       sessionKey: string;
       idleTimeoutMs: number;
+      deferPendingStop?: boolean;
     },
   ) {
     if (input.agentId) segment(input.agentId);
@@ -455,7 +469,7 @@ finally:
           : agentHome,
       };
       return { record: structuredClone(record), owner: structuredClone(owner) };
-    });
+    }, input.deferPendingStop ? input.runId : undefined);
     await backend.ready(result.record);
     await backend.claim(result.record);
     if (result.owner.generation === 1 && !result.owner.process) {

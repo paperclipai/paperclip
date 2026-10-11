@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
-  approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
+  computers, approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, completionContracts, environmentLeases, environments, issueRelations, issueTreeHolds, issueTreeHoldMembers,
 } from "@paperclipai/db";
@@ -468,6 +468,58 @@ const support = await getEmbeddedPostgresTestSupport();
   const dispatchExplicitRetry = (f: Fixture, run: typeof heartbeatRuns.$inferSelect) => buildExecutionContinuation({
     db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: run.id,
     context: run.contextSnapshot!, summary: null, exposeLowTrustRaw: false,
+  });
+
+  async function seedComputerWaitExplicitTurn() {
+    const f = await seedTimedOutExplicitTurn();
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "computer" }).returning();
+    const [computer] = await db.insert(computers).values({ companyId: f.companyId, environmentId: environment.id,
+      providerId: randomUUID(), ledger: {} }).returning();
+    const [parent] = await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "computer_admission_wait",
+      executionStage: "settled", controllerLeaseExpiresAt: null,
+      contextSnapshot: { ...f.parent.contextSnapshot, computerAdmissionDeferredWhileAssignee: true },
+      resultJson: { executionRecovery: { kind: "computer_admission_wait", providerWorkStarted: false },
+        computerAdmission: { companyId: f.companyId, runId: f.parent.id, environmentId: environment.id, computerId: computer.id, stopId: "stop_1" },
+        cancellation: { expected: true, source: "control_plane", initiator: { type: "system" } },
+        computerAdmissionPreparationSettledAt: f.now.toISOString() },
+    }).where(eq(heartbeatRuns.id, f.parent.id)).returning();
+    return { ...f, parent };
+  }
+
+  it("transfers an unchanged explicit message after a settled computer wait with one successor", async () => {
+    const f = await seedComputerWaitExplicitTurn();
+    const heartbeat = heartbeatService(db);
+    const options = { now: f.now, retryReason: "computer_admission_wait", delayMs: 1000 };
+    const [scheduled, duplicate] = await Promise.all([
+      heartbeat.scheduleBoundedRetry(f.parent.id, options), heartbeat.scheduleBoundedRetry(f.parent.id, options),
+    ]);
+    expect(scheduled).toMatchObject({ outcome: "scheduled" });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected computer wait successor");
+    expect(duplicate).toMatchObject({ outcome: "scheduled", run: { id: scheduled.run.id } });
+    expect(scheduled.run.contextSnapshot?.explicitUserContinuation).toEqual({ previousRunId: f.parent.id, commentId: f.commentId });
+    await expect(dispatchExplicitRetry(f, scheduled.run)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    const receipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.find(receipt => receipt.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
+  });
+
+  it.each(["edited", "operator-stop", "active-control", "interrupt-receipt", "superseded"])("does not transfer computer wait authority after %s", async kind => {
+    const f = await seedComputerWaitExplicitTurn();
+    if (kind === "edited") await db.update(issueComments).set({ body: "Changed instructions" }).where(eq(issueComments.id, f.commentId));
+    if (kind === "operator-stop") await db.update(heartbeatRuns).set({ errorCode: "operator_interrupted" }).where(eq(heartbeatRuns.id, f.parent.id));
+    if (kind === "interrupt-receipt") await db.update(issueRecoveryActions).set({ evidence: { ...f.receipt.evidence,
+      explicitUserContinuation: { ...(f.receipt.evidence.explicitUserContinuation as Record<string, unknown>), queuedCommentInterruptId: randomUUID() },
+    } }).where(eq(issueRecoveryActions.id, f.receipt.id));
+    if (kind === "superseded") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", contextSnapshot: { issueId: f.issueId }, createdAt: new Date(f.now.getTime() + 1000) });
+    const control = createAdapterExecutionControl();
+    if (kind === "active-control") adapterExecutionControls.set(f.parent.id, control);
+    try {
+      const result = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now, retryReason: "computer_admission_wait" });
+      expect(result.outcome).not.toBe("scheduled");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(1);
+    } finally { adapterExecutionControls.delete(f.parent.id); control.finish(); }
   });
 
   it("re-admits an explicit user turn's timeout retry with its own durable authorization", async () => {
