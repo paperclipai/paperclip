@@ -109,8 +109,15 @@ const WORK_CHECKS = [
     OR (d.status = 'fallback_queued' AND d.target_run_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM agent_wakeup_requests w WHERE w.company_id = d.company_id
         AND w.idempotency_key = 'question-response:' || d.interaction_id::text
-        AND w.status IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')
-        AND w.finished_at IS NOT NULL))`,
+        AND w.idempotency_key LIKE 'question-response:%'
+        AND w.finished_at IS NOT NULL
+        AND (w.status IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')
+          OR (w.status = 'coalesced' AND EXISTS (
+            SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
+              AND r.company_id = w.company_id AND r.agent_id = w.agent_id
+              AND r.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
+              AND r.finished_at IS NOT NULL AND r.scheduled_retry_at IS NULL
+              AND r.cost_accounting_pending = false)))))`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[

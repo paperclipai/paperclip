@@ -75,6 +75,12 @@ export const agentWakeupRequests = pgTable(
     )
       .on(table.companyId, table.idempotencyKey)
       .where(sql`(${table.idempotencyKey} LIKE 'question-response:%' OR ${table.idempotencyKey} LIKE 'interaction:%') AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    // Sleep checks also need failed/cancelled/skipped receipts, which the
+    // delivery idempotency fence deliberately excludes.
+    questionResponseHistoryIdx: index("agent_wakeup_requests_question_response_history_idx")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'question-response:%'`),
     connectionIntentDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_connection_intent_delivery_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'connection-intent:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),

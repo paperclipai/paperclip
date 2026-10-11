@@ -277,6 +277,35 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(present);
   });
 
+  it("permits a deferred question fallback after its coalesced continuation finishes", async () => {
+    const delivery = await seedQuestionDelivery({ targetRunId: null });
+    await seedQuestionWake(delivery, { status: "deferred_issue_execution", finishedAt: null });
+    expect(await read()).toEqual(present);
+    await db.update(agentWakeupRequests).set({
+      status: "coalesced", runId: delivery.runId, finishedAt: new Date(now),
+    }).where(eq(agentWakeupRequests.companyId, delivery.companyId));
+    expect(await read()).toEqual(none);
+  });
+
+  it.each(["missing_run", "wrong_company", "wrong_agent", "unfinished", "retry", "accounting"])(
+    "keeps a coalesced question fallback awake with %s linked-run evidence", async kind => {
+      const delivery = await seedQuestionDelivery({ targetRunId: null });
+      let runId = delivery.runId;
+      if (kind === "missing_run") runId = randomUUID();
+      if (kind === "wrong_company") runId = (await seedQuestionDelivery({ status: "failed", targetRunId: null })).runId;
+      if (kind === "wrong_agent") {
+        const otherAgent = randomUUID();
+        await db.insert(agents).values({ id: otherAgent, companyId: delivery.companyId, name: "Other", role: "engineer", status: "idle", adapterType: "process" });
+        await db.update(heartbeatRuns).set({ agentId: otherAgent }).where(eq(heartbeatRuns.id, runId));
+      }
+      if (kind === "unfinished") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+      if (kind === "retry") await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(now + 1000) }).where(eq(heartbeatRuns.id, runId));
+      if (kind === "accounting") await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, runId));
+      await seedQuestionWake(delivery, { status: "coalesced", runId });
+      expect(await read()).toEqual(present);
+    },
+  );
+
   it("does not accept another interaction's or company's question wake receipt", async () => {
     const delivery = await seedQuestionDelivery({ targetRunId: null });
     await seedQuestionWake(delivery, { idempotencyKey: `question-response:${randomUUID()}` });
