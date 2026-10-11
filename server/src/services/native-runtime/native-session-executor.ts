@@ -10891,10 +10891,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   }
 }
 
-/** A dead computer runner may retain a ready checkpoint after controller loss.
- * Match the local quiescent-recovery proof before sealing it for normal rotation.
- */
-export function retiredComputerCheckpointIsSettled(input: {
+type RetiredComputerCheckpointInput = {
   execution: NativeExecutionInput;
   priorExecution: NativeExecutionInput;
   identity: RunnerdDurableIdentity;
@@ -10903,34 +10900,77 @@ export function retiredComputerCheckpointIsSettled(input: {
   provider: Record<string, unknown>;
   checkpoint: Record<string, unknown>;
   currentCheckpoint: Record<string, unknown>;
-}): boolean {
+};
+
+type RetiredComputerCheckpointUnsettledReason =
+  | "provider_kind"
+  | "runner_schema"
+  | "runner_lifecycle"
+  | "runner_identity"
+  | "controller_identity"
+  | "runner_outbox"
+  | "runner_terminal_delivery"
+  | "controller_commands"
+  | "controller_terminal_event"
+  | "controller_terminal_identity"
+  | "provider_terminal_authority"
+  | "prior_run_identity"
+  | "issue_scope"
+  | "session_scope"
+  | "session_config"
+  | "provider_session_identity"
+  | `${"prior" | "current"}_checkpoint_${"provider_session" | "driver" | "active_turn" | "runtime_requests" | "run_identity" | "session_identity" | "company_identity" | "agent_identity" | "issue_identity"}`;
+
+/** Fixed reason codes are safe to surface in run logs; never include checkpoint
+ * values, provider configuration, prompts, paths, or credentials in diagnostics. */
+export function retiredComputerCheckpointUnsettledReason(
+  input: RetiredComputerCheckpointInput,
+): RetiredComputerCheckpointUnsettledReason | null {
   const { execution, priorExecution, identity, runner, control, provider, checkpoint, currentCheckpoint } = input;
-  if (execution.provider.kind !== "codex" || priorExecution.provider.kind !== "codex") return false;
+  if (execution.provider.kind !== "codex" || priorExecution.provider.kind !== "codex") return "provider_kind";
   const events = control.committedEvents;
   const commands = control.commands;
   const terminal = record(record(Array.isArray(events) ? events.at(-1) : null).envelope);
   const fields = ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"] as const;
-  if (runner.schema !== RUNNERD_STATE_SCHEMA || runner.lifecycle !== "ready" ||
-      fields.some(key => runner[key] !== identity[key] || record(control.identity)[key] !== identity[key]) ||
-      !Array.isArray(runner.outbox) || runner.outbox.length !== 0 || runner.pendingTerminalDelivery !== null ||
-      !Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
-      !Array.isArray(events) || record(events.at(-1)).eventType !== "run.terminal" ||
-      terminal.runId !== identity.runId || terminal.normalizedSessionId !== identity.normalizedSessionId ||
-      provider.completedTurnAuthoritative !== true || priorExecution.binding.runId !== identity.runId ||
-      priorExecution.binding.issueId !== execution.binding.issueId ||
-      nativeSessionScopeKey(priorExecution) !== nativeSessionScopeKey(execution) ||
-      nativeSessionConfigDigest(priorExecution) !== nativeSessionConfigDigest(execution)) return false;
+  if (runner.schema !== RUNNERD_STATE_SCHEMA) return "runner_schema";
+  if (runner.lifecycle !== "ready") return "runner_lifecycle";
+  if (fields.some(key => runner[key] !== identity[key])) return "runner_identity";
+  if (fields.some(key => record(control.identity)[key] !== identity[key])) return "controller_identity";
+  if (!Array.isArray(runner.outbox) || runner.outbox.length !== 0) return "runner_outbox";
+  if (runner.pendingTerminalDelivery !== null) return "runner_terminal_delivery";
+  if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed")) return "controller_commands";
+  if (!Array.isArray(events) || record(events.at(-1)).eventType !== "run.terminal") return "controller_terminal_event";
+  if (terminal.runId !== identity.runId || terminal.normalizedSessionId !== identity.normalizedSessionId) return "controller_terminal_identity";
+  if (provider.completedTurnAuthoritative !== true) return "provider_terminal_authority";
+  if (priorExecution.binding.runId !== identity.runId) return "prior_run_identity";
+  if (priorExecution.binding.issueId !== execution.binding.issueId) return "issue_scope";
+  if (nativeSessionScopeKey(priorExecution) !== nativeSessionScopeKey(execution)) return "session_scope";
+  if (nativeSessionConfigDigest(priorExecution) !== nativeSessionConfigDigest(execution)) return "session_config";
   const providerIdentity = providerSessionIdentityFromDurableProviderState({ execution: priorExecution, providerState: provider });
-  if (!providerIdentity.providerSessionId) return false;
-  return [checkpoint, currentCheckpoint].every((value, index) => {
+  if (!providerIdentity.providerSessionId) return "provider_session_identity";
+  for (const [source, value, expectedRunId] of [
+    ["prior", checkpoint, identity.runId],
+    ["current", currentCheckpoint, execution.binding.runId],
+  ] as const) {
     const binding = record(value.identity);
-    return value.providerSessionId === providerIdentity.providerSessionId &&
-      value.driverKind === priorExecution.session.driverKind && value.activeTurnId === null &&
-      Array.isArray(value.pendingRuntimeRequests) && value.pendingRuntimeRequests.length === 0 &&
-      binding.runId === (index === 0 ? identity.runId : execution.binding.runId) &&
-      binding.sessionId === identity.normalizedSessionId && binding.companyId === execution.binding.companyId &&
-      binding.agentId === execution.binding.agentId && binding.issueId === execution.binding.issueId;
-  });
+    if (value.providerSessionId !== providerIdentity.providerSessionId) return `${source}_checkpoint_provider_session`;
+    if (value.driverKind !== priorExecution.session.driverKind) return `${source}_checkpoint_driver`;
+    if (value.activeTurnId !== null) return `${source}_checkpoint_active_turn`;
+    if (!Array.isArray(value.pendingRuntimeRequests) || value.pendingRuntimeRequests.length !== 0) return `${source}_checkpoint_runtime_requests`;
+    if (binding.runId !== expectedRunId) return `${source}_checkpoint_run_identity`;
+    if (binding.sessionId !== identity.normalizedSessionId) return `${source}_checkpoint_session_identity`;
+    if (binding.companyId !== execution.binding.companyId) return `${source}_checkpoint_company_identity`;
+    if (binding.agentId !== execution.binding.agentId) return `${source}_checkpoint_agent_identity`;
+    if (binding.issueId !== execution.binding.issueId) return `${source}_checkpoint_issue_identity`;
+  }
+  return null;
+}
+
+/** A dead computer runner may retain a ready checkpoint after controller loss.
+ * Match the local quiescent-recovery proof before sealing it for normal rotation.
+ */
+export function retiredComputerCheckpointIsSettled(input: RetiredComputerCheckpointInput): boolean {
+  return retiredComputerCheckpointUnsettledReason(input) === null;
 }
 
 async function sealRetiredComputerRunnerState(input: {
@@ -10969,12 +11009,15 @@ print(json.dumps(rows))`, runnerPath, providerPath], bypassSession: true, timeou
     throw new Error("runner_remote_retirement_authority_unverified");
   const profile = record(prior.runnerProfileJson);
   const previous = parseNativeExecutionInput(profile.nativeExecutionInput);
-  if (!retiredComputerCheckpointIsSettled({ execution: input.execution, priorExecution: previous, identity, runner,
-      control: record(JSON.parse(controlBytes.toString("utf8"))), provider: record(JSON.parse(providerBytes!.toString("utf8"))),
-      checkpoint: record(profile.sessionCheckpoint), currentCheckpoint: record(record(current.runnerProfileJson).sessionCheckpoint) }) ||
-      await verifyPriorRunnerdStateForSessionScope({ db: input.db, root: input.root, identity, execution: input.execution,
-        allowVerifiedBackup: false, allowRetainedWarmRunner: false, remoteRunnerState: true, runnerExecutionTarget: input.target }) !== "verified")
-    throw new Error("runner_remote_retirement_checkpoint_unsettled");
+  const unsettledReason = retiredComputerCheckpointUnsettledReason({ execution: input.execution, priorExecution: previous, identity, runner,
+    control: record(JSON.parse(controlBytes.toString("utf8"))), provider: record(JSON.parse(providerBytes!.toString("utf8"))),
+    checkpoint: record(profile.sessionCheckpoint), currentCheckpoint: record(record(current.runnerProfileJson).sessionCheckpoint) });
+  if (unsettledReason !== null)
+    throw new Error(`runner_remote_retirement_checkpoint_unsettled: ${unsettledReason}`);
+  const priorAuthority = await verifyPriorRunnerdStateForSessionScope({ db: input.db, root: input.root, identity, execution: input.execution,
+    allowVerifiedBackup: false, allowRetainedWarmRunner: false, remoteRunnerState: true, runnerExecutionTarget: input.target });
+  if (priorAuthority !== "verified")
+    throw new Error(`runner_remote_retirement_checkpoint_unsettled: prior_authority_${priorAuthority}`);
   // Recheck exact durable retirement after all awaited reads; never infer death
   // from a missing PID or turn status. The compare-and-swap preserves ambiguity.
   const workspace = readNativeComputerWorkspaceReference(profile.nativeComputerWorkspace);

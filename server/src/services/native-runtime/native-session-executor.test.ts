@@ -1,4 +1,4 @@
-import { compareAndSealRetiredComputerCheckpoint, retiredComputerCheckpointIsSettled, retireUnlaunchedComputerAttempt, nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
+import { compareAndSealRetiredComputerCheckpoint, retiredComputerCheckpointIsSettled, retiredComputerCheckpointUnsettledReason, retireUnlaunchedComputerAttempt, nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
 import { prepareHeartbeatGitHubLaunchers } from "../heartbeat-github-launchers.js";
 import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
@@ -13969,6 +13969,57 @@ describe("computer idle authority transition", () => {
       if (condition === "acpx") input.execution = { ...input.execution, provider: { ...input.execution.provider, kind: "acpx" } } as typeof input.execution;
       expect(retiredComputerCheckpointIsSettled(input)).toBe(false);
     });
+
+  it("reports no diagnostic for settled evidence", () => {
+    expect(retiredComputerCheckpointUnsettledReason(settled())).toBeNull();
+  });
+
+  type SettlementInput = Parameters<typeof retiredComputerCheckpointUnsettledReason>[0];
+  it.each<{ reason: string; change: (input: SettlementInput) => void }>([
+    { reason: "provider_kind", change: input => { input.execution = { ...input.execution, provider: { ...input.execution.provider, kind: "acpx" } } as typeof input.execution; } },
+    { reason: "runner_schema", change: input => { input.runner.schema = "unknown"; } },
+    { reason: "runner_lifecycle", change: input => { input.runner.lifecycle = "running"; } },
+    { reason: "runner_identity", change: input => { input.runner.runId = "private-mismatched-value"; } },
+    { reason: "controller_identity", change: input => { input.control.identity = { ...input.identity, runnerInstanceId: "private-mismatched-value" }; } },
+    { reason: "runner_outbox", change: input => { input.runner.outbox = [{ secret: "private-unacknowledged-output" }]; } },
+    { reason: "runner_terminal_delivery", change: input => { input.runner.pendingTerminalDelivery = { secret: "private-terminal-output" }; } },
+    { reason: "controller_commands", change: input => { input.control.commands = [{ status: "pending", input: "private-command" }]; } },
+    { reason: "controller_terminal_event", change: input => { input.control.committedEvents = [{ eventType: "run.started" }]; } },
+    { reason: "controller_terminal_identity", change: input => { input.control.committedEvents = [{ eventType: "run.terminal", envelope: { ...input.identity, runId: "private-other-run" } }]; } },
+    { reason: "provider_terminal_authority", change: input => { input.provider.completedTurnAuthoritative = false; } },
+    { reason: "prior_run_identity", change: input => { input.priorExecution = { ...input.priorExecution, binding: { ...input.priorExecution.binding, runId: "private-other-run" } }; } },
+    { reason: "issue_scope", change: input => { input.execution = { ...input.execution, binding: { ...input.execution.binding, issueId: "private-other-issue" } }; } },
+    { reason: "session_scope", change: input => { input.execution = { ...input.execution, session: { ...input.execution.session, normalizedSessionId: "private-other-session" } } as typeof input.execution; } },
+    { reason: "session_config", change: input => { input.execution = { ...input.execution, provider: { ...input.execution.provider, model: "private-changed-model" } } as typeof input.execution; } },
+    { reason: "provider_session_identity", change: input => { input.provider.threadId = null; } },
+  ])("classifies $reason without exposing evidence values or accepting recovery", ({ reason, change }) => {
+    const input: SettlementInput = settled();
+    change(input);
+    expect(retiredComputerCheckpointUnsettledReason(input)).toBe(reason);
+    expect(retiredComputerCheckpointIsSettled(input)).toBe(false);
+  });
+
+  describe.each(["prior", "current"] as const)("%s checkpoint diagnostics", source => {
+    it.each([
+      ["provider_session", "providerSessionId"],
+      ["driver", "driverKind"],
+      ["active_turn", "activeTurnId"],
+      ["runtime_requests", "pendingRuntimeRequests"],
+      ["run_identity", "runId"],
+      ["session_identity", "sessionId"],
+      ["company_identity", "companyId"],
+      ["agent_identity", "agentId"],
+      ["issue_identity", "issueId"],
+    ] as const)("identifies %s separately from the other checkpoint", (reason, field) => {
+      const input: SettlementInput = settled();
+      const key = source === "prior" ? "checkpoint" : "currentCheckpoint";
+      input[key] = reason.endsWith("_identity")
+        ? { ...input[key], identity: { ...input[key].identity as Record<string, unknown>, [field]: "private-mismatched-value" } }
+        : { ...input[key], [field]: "private-mismatched-value" };
+      expect(retiredComputerCheckpointUnsettledReason(input)).toBe(`${source}_checkpoint_${reason}`);
+      expect(retiredComputerCheckpointIsSettled(input)).toBe(false);
+    });
+  });
 
   it.each(["unchanged", "runner-changed", "provider-changed", "symlink", "interrupted"])(
     "atomically seals only the unchanged remote bytes (%s)", async (condition) => {
