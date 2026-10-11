@@ -294,4 +294,95 @@ describe("plugin SDK test harness", () => {
       body: "relayed reply",
     });
   });
+
+  describe("attributed agent session sends", () => {
+    function sessionHarness(capabilities: PaperclipPluginManifestV1["capabilities"]) {
+      const harness = createTestHarness({
+        manifest: {
+          id: "paperclip.test-attributed-session-send",
+          apiVersion: 1,
+          version: "0.1.0",
+          displayName: "Attributed Session Send",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["agent.sessions.create", ...capabilities],
+          entrypoints: { worker: "./dist/worker.js" },
+        },
+      });
+      const member = (id: string, principalId: string, companyId: string, overrides: { status?: string; membershipRole?: string } = {}) => ({
+        id,
+        companyId,
+        principalType: "user" as const,
+        principalId,
+        status: (overrides.status ?? "active") as "active",
+        membershipRole: overrides.membershipRole ?? "operator",
+        grants: [],
+        createdAt: new Date("2026-06-03T11:00:00.000Z"),
+        updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+      });
+      harness.seed({
+        agents: [{ id: "agent-1", companyId: "company-1", name: "Engineer" } as never],
+        projects: [
+          { id: "project-1", companyId: "company-1", name: "Launch" } as never,
+          { id: "project-other", companyId: "company-2", name: "Elsewhere" } as never,
+        ],
+        accessMembers: [
+          member("member-active", "user-active", "company-1"),
+          member("member-suspended", "user-suspended", "company-1", { status: "suspended" }),
+          member("member-viewer", "user-viewer", "company-1", { membershipRole: "viewer" }),
+          member("member-other", "user-other-company", "company-2"),
+        ],
+      });
+      return harness;
+    }
+
+    it("accepts a verified actorUserId and a same-company projectId", async () => {
+      const harness = sessionHarness(["agent.sessions.send", "agent.sessions.send_human_attributed"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+
+      await expect(
+        harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", {
+          prompt: "hello",
+          actorUserId: "user-active",
+          projectId: "project-1",
+        }),
+      ).resolves.toEqual({ runId: expect.any(String) });
+    });
+
+    it("requires agent.sessions.send_human_attributed for actorUserId", async () => {
+      const harness = sessionHarness(["agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+
+      await expect(
+        harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", {
+          prompt: "hello",
+          actorUserId: "user-active",
+        }),
+      ).rejects.toThrow("agent.sessions.send_human_attributed");
+    });
+
+    it.each([
+      ["user-unknown", "is not an active human member of this company"],
+      ["user-suspended", "is not an active human member of this company"],
+      ["user-other-company", "is not an active human member of this company"],
+      ["user-viewer", "viewer (read-only) access"],
+    ])("refuses actorUserId %s", async (actorUserId, message) => {
+      const harness = sessionHarness(["agent.sessions.send", "agent.sessions.send_human_attributed"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+
+      await expect(
+        harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", { prompt: "hello", actorUserId }),
+      ).rejects.toThrow(message);
+    });
+
+    it.each(["project-other", "project-missing"])("refuses projectId %s outside the company", async (projectId) => {
+      const harness = sessionHarness(["agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+
+      await expect(
+        harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", { prompt: "hello", projectId }),
+      ).rejects.toThrow("Project not found");
+    });
+  });
 });

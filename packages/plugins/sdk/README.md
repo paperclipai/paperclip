@@ -368,6 +368,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `agent.sessions.create` |
 | | `agent.sessions.list` |
 | | `agent.sessions.send` |
+| | `agent.sessions.send_human_attributed` |
 | | `agent.sessions.close` |
 | **UI** | `ui.sidebar.register` |
 | | `ui.page.register` |
@@ -1257,6 +1258,56 @@ await ctx.agents.sessions.close(session.sessionId, companyId);
 ```
 
 Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, `agent.sessions.close`.
+
+By default a session send is requested by the plugin itself. A plugin that
+relays a message a person actually sent, such as a chat gateway, can attribute
+the send to that person and scope it to a project:
+
+```ts
+await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
+  prompt: messageText,
+  actorUserId: verifiedChatUser.paperclipUserId,
+  projectId,
+});
+```
+
+- `actorUserId` makes that person the wake's requesting user, so the run's
+  responsible user and its cost land on them. It requires the
+  `agent.sessions.send_human_attributed` capability in addition to
+  `agent.sessions.send`. The host verifies that the user is an active,
+  non-viewer human member of the company and refuses the send otherwise, so a
+  plugin cannot forge attribution to an arbitrary, inactive, or read-only user.
+- `projectId` runs the wake under that project, like an issue in that
+  project: the run uses the project's workspace, execution-workspace policy
+  and env, the project budget hard-stop applies, and the run's cost events
+  carry the project. It needs only `agent.sessions.send`. A project from
+  another company is refused. A private project must list the session's
+  agent as an access member, and also the `actorUserId` user when one is
+  passed; otherwise the send is refused as "Project not found".
+- When either field is passed, the host writes an
+  `agent.session_wakeup_requested` activity entry naming the agent, session,
+  run, the project when given, and the user as the initiating actor when
+  given.
+- There is no `issueId` option. Leave both fields out and the plugin stays
+  the requester, with no activity entry.
+
+Every `sendMessage` call gets its own run, with or without these fields. A
+send is never folded into a queued or running run for the same session, so
+each prompt reaches the agent and each run keeps its own user and project.
+Runs of one session run one after another, even when the agent may run
+several runs at once: a send made while a run of that session is running
+waits in the queue until that run finishes, because both runs resume and
+save the same session conversation.
+
+Older hosts silently drop `projectId` (and `actorUserId`), and there is no
+runtime signal that tells a plugin whether the host applied them. A plugin
+that relies on project scoping must state the minimum Paperclip host version
+it supports.
+
+| API | Capability |
+|-----|------------|
+| `ctx.agents.sessions.sendMessage` | `agent.sessions.send` |
+| `ctx.agents.sessions.sendMessage` with `actorUserId` | `agent.sessions.send` + `agent.sessions.send_human_attributed` |
 
 Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `PluginAgentSessionsClient`.
 

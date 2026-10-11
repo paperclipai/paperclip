@@ -466,6 +466,18 @@ Authoring rules:
 - Use managed agents for plugin-provided labor. Use `ctx.agents.invoke()` or
   `ctx.agents.sessions` only after you have a real agent id, either selected by
   the operator or resolved from `ctx.agents.managed`.
+- When a session message relays something a person sent, pass `actorUserId`
+  to `ctx.agents.sessions.sendMessage` (needs
+  `agent.sessions.send_human_attributed`) so the run and its cost are
+  attributed to that verified company member. Pass `projectId` to run the
+  send like an issue in that project: it uses the project's workspace and
+  env, the project budget applies, and cost lands on the project. A private
+  project must list the session's agent, and the `actorUserId` user when
+  given, as access members. Every send gets its own run; the host never
+  merges it into a queued or running run of the same session, and runs of
+  one session run one after another. Older hosts
+  drop `projectId` without any signal, so state a minimum host version if
+  your plugin relies on it.
 - Use managed routines for recurring or externally triggered work that should
   produce tasks. Schedule, webhook, and API triggers are visible routine
   triggers, and each run has the normal Paperclip issue/audit trail.

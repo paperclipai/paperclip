@@ -100,6 +100,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issues.requestWakeups": ["issues.wakeup"],
   "issue.comments.create": ["issue.comments.create"],
   "issue.comments.create_human_attributed": ["issue.comments.create_human_attributed"],
+  "agent.sessions.send": ["agent.sessions.send"],
+  "agent.sessions.send_human_attributed": ["agent.sessions.send_human_attributed"],
   "issue.interactions.create": ["issue.interactions.create"],
   "issue.interactions.respond": ["issue.interactions.respond"],
   "approvals.respond": ["approvals.respond"],
