@@ -228,6 +228,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     && connection.enabled
     && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
       || connection.credentialPolicy === "per_user"
+      || connection.credentialPolicy === "per_agent"
       || !isToolConnectionAttentionHealth(connection.healthStatus))
     && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
   ).map((connection) => connection.id));
