@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
+  ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  resolveCommentOnlyProgressStreakCap,
 } from "../services/issue-rewake-throttle.ts";
 
 const NOW = new Date("2026-07-12T18:14:00.000Z");
@@ -100,6 +102,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         now: NOW,
         recentTerminalRuns: [],
         runIdsWithIssueProgress: new Set(),
+        runIdsWithCommentOnlyProgress: new Set(),
         hasNewIssueInputSinceLastRun: false,
       }),
     ).toEqual({ blocked: false, noProgressStreak: 0 });
@@ -110,6 +113,7 @@ describe("evaluateIssueRewakeThrottle", () => {
       now: NOW,
       recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 10 })],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
@@ -123,6 +127,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision.blocked).toBe(true);
@@ -143,6 +148,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: ISSUE_REWAKE_BASE_COOLDOWN_MS / 1000 + 30 }),
       ],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 2 });
@@ -158,6 +164,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: 90 }),
       ],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision.blocked).toBe(true);
@@ -176,6 +183,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: 70 }),
       ],
       runIdsWithIssueProgress: new Set(["r2"]),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
@@ -189,6 +197,7 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
@@ -202,8 +211,97 @@ describe("evaluateIssueRewakeThrottle", () => {
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(),
       hasNewIssueInputSinceLastRun: true,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("still exempts a single comment-only run, matching a one-off status update", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", finishedSecondsAgo: 10 }),
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(["r2"]),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("stops exempting once consecutive comment-only runs exceed the cap, so a loop that only ever comments still escalates", () => {
+    // Every run in this sample posted a comment and nothing else — the exact
+    // shape of a heartbeat protocol that always confirms "nothing to report."
+    // Without the cap, the newest run's comment would exempt every
+    // evaluation forever; this is the gap #14458's sibling bug left in the
+    // throttle after the stranded-sweep lane was bounded.
+    const runs = [
+      runSample({ id: "r4", finishedSecondsAgo: 10 }),
+      runSample({ id: "r3", finishedSecondsAgo: 40 }),
+      runSample({ id: "r2", finishedSecondsAgo: 70 }),
+      runSample({ id: "r1", finishedSecondsAgo: 100 }),
+    ];
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: runs,
+      runIdsWithIssueProgress: new Set(),
+      runIdsWithCommentOnlyProgress: new Set(["r4", "r3", "r2", "r1"]),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(4);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 4);
+    }
+  });
+
+  it("confirms the in-repo default cap this file's narrative depends on", () => {
+    // The single-exemption test above and the cap-exceeded test below only
+    // mean what they say if the default is exactly 1 — pin it so a future
+    // change to the default fails loudly here instead of silently changing
+    // what those two tests actually exercise.
+    expect(ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK).toBe(1);
+  });
+
+  it("stops converting comment-only runs at the first real progress action further back", () => {
+    // r4/r3/r2 are consecutive comment-only runs past the cap; r1 (oldest)
+    // has real (non-comment) progress. The conversion must still stop at r1
+    // exactly as the original "break on first progress" check always did —
+    // this proves the exhausted-cap path doesn't walk past genuine progress
+    // once it starts counting comment-only runs as no-progress.
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r4", finishedSecondsAgo: 10 }),
+        runSample({ id: "r3", finishedSecondsAgo: 40 }),
+        runSample({ id: "r2", finishedSecondsAgo: 70 }),
+        runSample({ id: "r1", finishedSecondsAgo: 100 }),
+      ],
+      runIdsWithIssueProgress: new Set(["r1"]),
+      runIdsWithCommentOnlyProgress: new Set(["r4", "r3", "r2"]),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(3);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 2);
+    }
+  });
+});
+
+describe("resolveCommentOnlyProgressStreakCap", () => {
+  it("normalizes missing, blank, non-finite, and sub-floor overrides to a usable integer", () => {
+    expect(resolveCommentOnlyProgressStreakCap(undefined)).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("   ")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("not-a-number")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("Infinity")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("0")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("-5")).toBe(1);
+    expect(resolveCommentOnlyProgressStreakCap("3.9")).toBe(3);
+    expect(resolveCommentOnlyProgressStreakCap("5")).toBe(5);
+    expect(resolveCommentOnlyProgressStreakCap(undefined, 2)).toBe(2);
   });
 });

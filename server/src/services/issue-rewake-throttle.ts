@@ -22,6 +22,15 @@
  * follow-ups) insert their runs directly and never pass through this gate, so
  * crash recovery stays immediate; only repeated no-op re-invocations slow
  * down.
+ *
+ * A run whose only issue-visible trace is its own comment is bounded
+ * separately (see ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK below): a
+ * comment alone resets the streak like any other progress action, but only
+ * for a limited number of runs in a row. Without that bound, a heartbeat
+ * protocol that always posts a status comment — including a "nothing to
+ * report" confirmation — renews its own exemption on every run, so the
+ * no-progress streak this module exists to count can never form and the
+ * throttle never engages for that agent on that issue.
  */
 
 /** Consecutive no-progress runs required before the cooldown engages. */
@@ -40,6 +49,31 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
 /**
+ * How many consecutive runs a comment alone can exempt from the no-progress
+ * streak before the exemption stops applying. Below the cap, a run whose
+ * only issue-visible trace is its own comment behaves exactly like any other
+ * progress action (matches a genuine one-off status update). At or above the
+ * cap, that run is counted toward the no-progress streak instead, so a
+ * protocol that comments on every run cannot hold the throttle open forever.
+ * Override with the environment variable of the same name; floor 1.
+ */
+export function resolveCommentOnlyProgressStreakCap(
+  raw: string | undefined,
+  fallback = 1,
+): number {
+  const parsed = Number(raw);
+  if (raw === undefined || raw.trim() === "" || !Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+
+export const ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK =
+  resolveCommentOnlyProgressStreakCap(
+    process.env.ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK,
+  );
+
+/**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
  * applies to; every event-shaped reason (comments, mentions, blockers
@@ -53,6 +87,15 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The one progress action that a run can leave purely by narrating itself: a
+ * comment requires no other state to change. Exported so callers that split
+ * runIdsWithIssueProgress from runIdsWithCommentOnlyProgress (see
+ * ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK) agree with this module on
+ * which action that split turns on.
+ */
+export const ISSUE_COMMENT_ADDED_ACTIVITY_ACTION = "issue.comment_added";
+
+/**
  * Activity actions that count as issue-visible progress when attributed to a
  * run. Deliberately narrower than run-liveness "concrete action evidence":
  * tool calls inside the workspace do not move the issue, so they do not reset
@@ -61,7 +104,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
  */
 export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
   "issue.updated",
-  "issue.comment_added",
+  ISSUE_COMMENT_ADDED_ACTIVITY_ACTION,
   "issue.created",
   "issue.child_created",
   "issue.assigned",
@@ -131,6 +174,13 @@ export interface IssueRewakeThrottleInput {
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
   runIdsWithIssueProgress: ReadonlySet<string>;
+  /**
+   * Runs among the sample whose only issue-visible trace was a comment (no
+   * other progress action). Disjoint from runIdsWithIssueProgress: a run
+   * that left a comment and some other trace belongs there instead. Bounded
+   * by ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK below.
+   */
+  runIdsWithCommentOnlyProgress: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
 }
@@ -157,12 +207,30 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
+  // Measure the leading run of consecutive comment-only "progress" before
+  // deciding whether any of it is exempt. A single evaluation only ever sees
+  // a fresh slice of an ongoing loop — every run in a self-sustaining storm
+  // posts its own comment, so the newest run alone can never distinguish a
+  // one-off status update from the 50th repeat. Counting the whole
+  // consecutive prefix first makes that distinction possible.
+  let leadingCommentOnlyStreak = 0;
+  for (const run of runs) {
+    if (run.status !== "succeeded" || !run.finishedAt) break;
+    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    if (!input.runIdsWithCommentOnlyProgress.has(run.id)) break;
+    leadingCommentOnlyStreak += 1;
+  }
+  const commentOnlyGraceExhausted =
+    leadingCommentOnlyStreak > ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK;
+
   let noProgressStreak = 0;
   for (const run of runs) {
     // A failed/cancelled/interrupted run breaks the streak: its follow-up is
     // recovery, not a redundant re-poll, and must not be delayed.
     if (run.status !== "succeeded" || !run.finishedAt) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
+    const isCommentOnly = input.runIdsWithCommentOnlyProgress.has(run.id);
+    if (isCommentOnly && !commentOnlyGraceExhausted) break;
     noProgressStreak += 1;
   }
 
