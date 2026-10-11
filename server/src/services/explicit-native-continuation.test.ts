@@ -24,6 +24,8 @@ import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
 const support = await getEmbeddedPostgresTestSupport();
@@ -1494,6 +1496,77 @@ const support = await getEmbeddedPostgresTestSupport();
     else expect(runs[0].contextSnapshot).toMatchObject({ wakeCommentId: f.commentId });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
   });
+
+  it.each(["accepted", "multiple_sources", "missing_receipt", "missing_successor", "foreign_task", "foreign_agent", "context_mismatch", "unrestored_workspace"])(
+    "periodic legacy recovery preserves only a bound admitted user continuation (%s)", async scenario => {
+      const f = await seed();
+      await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
+        errorCode: "process_lost", resultJson: null,
+      }).where(eq(heartbeatRuns.id, f.sourceRunId)).returning();
+      await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+        .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      let olderSource: typeof source | undefined;
+      if (scenario === "multiple_sources") {
+        [olderSource] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+          runtimeMode: "legacy", status: "failed", processPid: 999999999, errorCode: "process_lost",
+          contextSnapshot: { issueId: f.issueId }, createdAt: new Date("2026-09-11T08:00:00Z"),
+          finishedAt: new Date("2026-09-11T09:00:00Z"),
+        }).returning();
+        await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+          kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: olderSource.id,
+          status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+          evidence: { runId: olderSource.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+        });
+      }
+      // Admit through the real user wake, but hold capacity so the periodic
+      // source revisit deterministically wins before the dispatch gate.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: "board",
+        payload: { issueId: f.issueId, commentId: f.commentId },
+        contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId },
+      });
+      const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      expect(successor.contextSnapshot).toMatchObject({ previousRunId: source.id, explicitUserContinuation: { commentId: f.commentId } });
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      if (scenario === "missing_receipt") await db.update(issueRecoveryActions).set({
+        evidence: { runId: source.id },
+      }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      if (scenario === "missing_successor") {
+        await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id));
+      }
+      if (scenario === "foreign_agent") {
+        const [foreign] = await db.insert(agents).values({ companyId: f.companyId, name: "Other owner", role: "engineer", adapterType: "claude_local" }).returning();
+        await db.update(heartbeatRuns).set({ agentId: foreign.id }).where(eq(heartbeatRuns.id, successor.id));
+      }
+      if (scenario === "foreign_task" || scenario === "context_mismatch") await db.update(heartbeatRuns).set({
+        contextSnapshot: { ...successor.contextSnapshot, ...(scenario === "foreign_task" ? { issueId: randomUUID() } : {
+          explicitUserContinuation: { ...successor.contextSnapshot!.explicitUserContinuation as object, previousRunId: randomUUID() },
+        }) },
+      }).where(eq(heartbeatRuns.id, successor.id));
+      if (scenario === "unrestored_workspace") await db.update(heartbeatRuns).set({
+        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" },
+      }).where(eq(heartbeatRuns.id, source.id));
+      // Recovery's snapshot predates admission. Repeated sweeps must preserve
+      // the committed decision while never treating it as proof of file repair.
+      await terminalizeLegacyExecution({ db, run: source, status: source.status });
+      await terminalizeLegacyExecution({ db, run: source, status: source.status });
+      if (olderSource) await terminalizeLegacyExecution({ db, run: olderSource, status: olderSource.status });
+      const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+      if (scenario === "accepted" || scenario === "multiple_sources") {
+        expect(blocker).toBeNull();
+        expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+          runId: successor.id, companyId: f.companyId, expectedStatus: "queued", now: new Date(),
+        })).toMatchObject({ outcome: "not_stale" });
+        const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+        expect(actions).toHaveLength(olderSource ? 2 : 1);
+        for (const action of actions) expect(action).toMatchObject({ status: "resolved", outcome: "cancelled" });
+      } else expect(blocker).not.toBeNull();
+    },
+  );
 
   it("queues the actual user wake with a fresh session and retained source context", async () => {
     const f = await seed();
