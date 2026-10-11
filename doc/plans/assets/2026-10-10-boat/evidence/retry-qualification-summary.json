@@ -949,6 +949,159 @@
         "file": "retry-awake-final-cleanup.json",
         "sha256": "98f4da9a511a1f920ccad6a0754c98e297eade1f6f00e907a7f140243942471a"
       }
+    ],
+    "postWarmExpiry": {
+      "ownerRetiredObservedAt": "2026-10-11T02:49:23Z",
+      "providerStateAt": "2026-10-11T02:49:24Z",
+      "providerState": "archiving",
+      "stopRequestedAt": "2026-10-11T02:49:01.985Z",
+      "physicalArchiveCompleted": false,
+      "noGuestReadOrManualLifecycleMutation": true
+    }
+  },
+  "deployment16": {
+    "sha": "2e8859ab762e5b2ce97f2ea774e385fd333f9cee",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "requestId": "66b7d1a0-ca8e-4c71-8e91-aef42fb66e35",
+    "checkedAt": "2026-10-11T02:59:15.776Z",
+    "providerBlocker": {
+      "at": "2026-10-11T02:56:29.333752+00:00",
+      "sandboxId": "bx_b8sawfyp",
+      "state": "idle",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "snapshots": true,
+      "stop": {
+        "id": "stop_804de979b357c47a",
+        "status": "failing",
+        "requestedAt": "2026-10-11T02:34:21.063Z",
+        "lastAttemptAt": "2026-10-11T02:56:20.600Z",
+        "error": "Refusing archive/stop: Sandbox machine sandbox-node-defc0af28a6bec36 has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z).",
+        "endedAt": null
+      },
+      "lastSnapshotAttemptAt": "2026-10-11T02:54:41.003Z",
+      "lastSnapshotStatus": "in_progress",
+      "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+      "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+      "stopPendingSeconds": 1328.271,
+      "snapshotAttemptElapsedSeconds": 108.331
+    },
+    "providerFollowUp": {
+      "recordedAt": "2026-10-11T03:01:41.119836+00:00",
+      "scope": "Read-only provider status, no guest reads or lifecycle actions",
+      "fixtures": [
+        {
+          "fixture": "staging",
+          "sandboxId": "bx_b8sawfyp",
+          "observedAt": "2026-10-11T03:01:41.089449+00:00",
+          "state": "idle",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T02:54:41.003Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+          "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+          "stop": {
+            "id": "stop_804de979b357c47a",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:34:21.063Z",
+            "lastAttemptAt": "2026-10-11T03:01:20.448Z",
+            "endedAt": null,
+            "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+          },
+          "providerErrorPresent": false
+        },
+        {
+          "fixture": "local-main",
+          "sandboxId": "bx_ndnggjad",
+          "observedAt": "2026-10-11T03:01:41.119643+00:00",
+          "state": "archiving",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T02:54:23.415Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+          "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+          "stop": {
+            "id": "stop_e6158ef3a5ab49f1",
+            "status": "pending",
+            "requestedAt": "2026-10-11T02:49:01.985Z",
+            "lastAttemptAt": null,
+            "endedAt": null,
+            "error": null
+          },
+          "providerErrorPresent": false
+        }
+      ]
+    }
+  },
+  "resourceStatus0258": {
+    "recordedAt": "2026-10-11T02:58:00.008349+00:00",
+    "scope": "Read-only provider status; no guest reads, wake, stop, or lifecycle mutation",
+    "fixtures": [
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "observedAt": "2026-10-11T02:57:59.988360+00:00",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "in_progress",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "pending",
+          "requestedAt": "2026-10-11T02:49:01.985Z",
+          "lastAttemptAt": null,
+          "endedAt": null,
+          "error": null
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "local-onboarding",
+        "sandboxId": "bx_f3jvebwu",
+        "observedAt": "2026-10-11T02:58:00.008138+00:00",
+        "state": "archived",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "completed",
+        "stop": {
+          "id": "stop_4baaa2099e8c268d",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T02:21:09.133Z",
+          "endedAt": "2026-10-11T02:21:09.133Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "builder",
+        "sandboxId": "bx_3tp9d5uv",
+        "observedAt": "2026-10-11T02:57:59.997786+00:00",
+        "state": "archived",
+        "hydrated": false,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "completed",
+        "stop": {
+          "id": "stop_192aadbc06d25d9f",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-10T16:04:23.914Z",
+          "endedAt": "2026-10-10T16:04:23.914Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      }
     ]
   }
 }

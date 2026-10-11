@@ -1,0 +1,34 @@
+{
+  "coreCommit": "a4c864a062a685e40d92fb015496dad3b1ce0f1e",
+  "combinedCommit": "04ce7eb2a8",
+  "stagingCommit": "ca8ab88c78",
+  "focusedTests": {
+    "files": 6,
+    "passed": 437,
+    "skipped": 0
+  },
+  "afterWordingCorrection": {
+    "files": 2,
+    "passed": 84,
+    "skipped": 0
+  },
+  "typecheck": "server passed",
+  "independentReview": "No remaining actionable findings",
+  "databaseMethod": "Unique disposable databases with actual migrations on the task-owned local PostgreSQL server via a temporary test harness override; product database untouched; all disposable databases removed. Native isolated-cluster bootstrap failed before this fallback.",
+  "automaticScope": "Verified pending provider stop, ordinary pre-provider turn or unchanged explicit user message; task lock, original session, cancellation and continuation authorization retained.",
+  "excluded": "Failing/superseded stops, existing owner conflicts, provider work already started, one-run Retry/Interrupt intents retain existing behavior.",
+  "provenance": [
+    {
+      "file": "computer-wait-final-focused.log",
+      "sha256": "128e037b10598d10b67452b0c59394f4da7d1fb2188355ac68d8d8b3c8ade863"
+    },
+    {
+      "file": "computer-wait-copy-focused.log",
+      "sha256": "4cba2c71ddd3e25dca11905ec4629845425d5ceb6c8189cb93846b2a1a1a68e7"
+    },
+    {
+      "file": "computer-wait-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

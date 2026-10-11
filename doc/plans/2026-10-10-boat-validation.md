@@ -76,6 +76,14 @@ On deployment 15, ordinary Codex continuation `5913803a` and legacy Claude `633e
 
 Local 36 restart continuation `6f31e383` succeeded 02:40:41.830–02:43:37.252. The normal same-task follow-up retained normalized session `994ca5b6`, provider thread `01a1286b`, and logical runner identity on a new physical owner/boot. The [independent read](assets/2026-10-10-boat/evidence/local-36-restart-retained.json) and [completed task](assets/2026-10-10-boat/local-36-restart-retained.png) showed exactly one marker line with unchanged SHA-256 `12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c`. This is a successful orderly controller restart plus archived saved-session continuation, not active crash recovery.
 
+## Deployment 16 and provider snapshot failure (2026-10-11 02:59 UTC)
+
+Deployment 16 **2e8859ab762e5b2ce97f2ea774e385fd333f9cee** verified serving at 02:59:15.776 through the official workflow. It carries the reviewed saved-package authority fix. Live saved-session verification remains blocked: at 02:56:29 Boat reported stop `804de979` as **failing**, refusing archive because no successful snapshot existed within 30 minutes. The latest snapshot attempt remained in progress. Provider `idle` is not a completed-stop receipt; no resume, forced stop, or bypass was issued.
+
+The separate pending-stop correction is committed as core `a4c864a062`, combined `04ce7eb2a8`, and staging `ca8ab88c78`. It reuses durable scheduled retries before provider work and preserves cancellation, task ownership, explicit message authorization, and saved-session identity. It passed 437 focused tests with no skips using isolated real PostgreSQL databases; the final wording change passed 84 affected tests, server TypeScript passed, and independent review found no remaining issue. [Verification receipt](assets/2026-10-10-boat/evidence/computer-admission-wait-tests.json). The native test-cluster bootstrap failed, so tests used unique disposable databases on the task-owned server; none remain and the product database was untouched. Explicit one-run Retry/Interrupt intents retain their previous manual-retry behavior. Deployment 17 is in progress; this correction is not part of deployment 16.
+
+The attempted local 37 UI check encountered a **failing** stop instead of a pending one: Boat reported that the final snapshot failed and kept the machine alive to protect unsaved data. Normal UI Stop cancelled read-only attempt `b380b52e` at 03:09:07.157, before any environment lease, computer owner, native runner, or provider work. This does not count as a live pending-wait or successful continuation pass; final cleanup/cancellation verification is recorded separately when complete.
+
 ## Checks and their limits
 
 | Check | Recorded result |
