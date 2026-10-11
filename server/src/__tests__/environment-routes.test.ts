@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -10,6 +10,12 @@ const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
   decide: vi.fn(),
+}));
+
+const mockComputerAttach = vi.hoisted(() => vi.fn());
+vi.mock("../modules/computers/index.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../modules/computers/index.js")>(),
+  computerService: () => ({ attach: mockComputerAttach }),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -278,6 +284,7 @@ describe("environment routes", () => {
   });
 
   beforeEach(() => {
+    mockComputerAttach.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockAccessService.decide.mockReset();
@@ -2668,6 +2675,37 @@ describe("environment routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps a Boat unavailable until reconnect succeeds (attach succeeds: %s)", async (succeeds) => {
+    let environment = {
+      ...createEnvironment(),
+      driver: "computer",
+      status: "archived" as "active" | "archived",
+      config: {
+        provider: "boat",
+        sandboxId: "bx_retained",
+        apiKeySecretRef: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111" },
+      },
+      metadata: { computerCompanyId: "company-1" },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.update.mockImplementation(async (_id, patch) => {
+      environment = { ...environment, ...patch };
+      return environment;
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBoatEnvironments: true });
+    mockComputerAttach.mockImplementation(async () => {
+      expect(environment.status).toBe("archived");
+      if (!succeeds) throw conflict("Computer cleanup is pending");
+      return { computerId: "computer-1" };
+    });
+    const app = createApp({ type: "board", userId: "user-1", source: "local_implicit" });
+    const res = await request(app).patch(`/api/environments/${environment.id}`).send({ status: "active" });
+    expect(res.status, JSON.stringify(res.body)).toBe(succeeds ? 200 : 409);
+    expect(mockComputerAttach).toHaveBeenCalledOnce();
+    expect(environment.status).toBe(succeeds ? "active" : "archived");
+    if (!succeeds) expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("logs a redacted update summary instead of raw config or metadata", async () => {

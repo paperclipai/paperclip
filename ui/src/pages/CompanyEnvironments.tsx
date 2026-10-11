@@ -102,17 +102,20 @@ function environmentEditPath(environmentId: string) {
 // Keep in sync with environmentDeleteBlockMessage in server/src/routes/environments.ts —
 // the server enforces these gates with a 409; this copy lets the modal explain
 // the block before the user hits it.
-function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): string | null {
+function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius, isComputer = false): string | null {
   if (impact.staticReferences.isManagedLocal) {
     return "Cannot delete the managed local environment.";
   }
   if (impact.staticReferences.isInstanceDefault) {
+    if (isComputer) return "Choose another default environment before disconnecting this computer.";
     return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
   }
   if (impact.pendingCleanupLeaseCount > 0) {
+    if (isComputer) return "Computer cleanup is pending. Wait for it to finish, then retry disconnecting. Its files will remain on Boat.";
     return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
   }
   if (impact.reusableSandboxLeaseCount > 0) {
+    if (isComputer) return "This computer still has saved runner connections. Disconnecting stops its runners and retains its files on Boat.";
     return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
   }
   return null;
@@ -1609,10 +1612,25 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         queryKey: ["environment-delete-blast-radius", input.environment.id],
       });
       pushToast({
-        title: "Failed to delete environment",
-        body: error instanceof Error ? error.message : "Environment delete failed.",
+        title: input.environment.driver === "computer" ? "Failed to disconnect computer" : "Failed to delete environment",
+        body: error instanceof Error ? error.message : input.environment.driver === "computer" ? "Computer disconnect failed. Close this dialog and retry." : "Environment delete failed.",
         tone: "error",
       });
+    },
+  });
+
+  const reconnectComputerMutation = useMutation({
+    mutationFn: (environment: Environment) =>
+      environmentsApi.update(environment.id, { status: "active" }, selectedCompanyId),
+    onSuccess: async (environment) => {
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.environments.list(selectedCompanyId) });
+      }
+      setProbeResults((current) => ({ ...current, [environment.id]: null }));
+      pushToast({ title: "Computer connected", body: `${environment.name} is ready to use with its retained files.`, tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: "Failed to connect computer", body: error instanceof Error ? error.message : "Computer connection failed. Try again.", tone: "error" });
     },
   });
 
@@ -1880,7 +1898,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     ? environmentCapabilities?.sandboxProviders?.[editingSandboxProvider]
     : null;
   const editingSandboxDisplayName = editingSandboxCapability?.displayName ?? editingSandboxProvider ?? "sandbox";
-  const nonLocalEnvironments = savedEnvironments.filter((environment) => !isLocalEnvironment(environment));
+  const nonLocalEnvironments = savedEnvironments.filter((environment) => !isLocalEnvironment(environment) &&
+    (environment.driver !== "computer" || environment.status === "active"));
   const instanceDefaultEnvironmentId = normalizeNonLocalEnvironmentId(
     instanceSettings?.defaultEnvironmentId ?? null,
     savedEnvironments,
@@ -1896,7 +1915,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     deleteBlastRadius.deleteBlockedReasons.length > 0 &&
     deleteBlastRadius.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease");
   const deleteBlockMessage =
-    deleteBlastRadius && !reusableLeaseOnlyBlock ? environmentDeleteBlockMessage(deleteBlastRadius) : null;
+    deleteBlastRadius && !reusableLeaseOnlyBlock ? environmentDeleteBlockMessage(deleteBlastRadius, editingEnvironment?.driver === "computer") : null;
   const deleteUsageLoading = deleteBlastRadiusQuery.isPending || companyAgentsQuery.isPending;
   const deleteUsageError = deleteBlastRadiusQuery.isError || companyAgentsQuery.isError;
   // Environments are instance-scoped while the agent list is company-scoped, so
@@ -1933,7 +1952,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       );
     }
     if (deleteBlastRadius.activeRuntimeUse.hasActiveRuntimeUse) {
-      deleteImpactNotes.push("Active runs or sandbox leases currently resolve to this environment.");
+      deleteImpactNotes.push(editingEnvironment?.driver === "computer"
+        ? "Active runs and warm runners on this computer will be stopped."
+        : "Active runs or sandbox leases currently resolve to this environment.");
     }
   }
   // One row per workspace holding blocking sandbox leases (several leases can
@@ -1963,7 +1984,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         });
       }
     }
-    return Array.from(groups.values());
+    return Array.from(groups, ([key, group]) => ({ ...group, key }));
   })();
 
   if (!selectedCompanyId) {
@@ -2025,7 +2046,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
         <div className="space-y-1">
           {savedEnvironments.map((environment) => {
-            const probe = probeResults[environment.id] ?? null;
+            const computerDisconnected = environment.driver === "computer" && environment.status === "archived";
+            const probe = computerDisconnected ? null : probeResults[environment.id] ?? null;
             const sandboxProvider = readEnvironmentSandboxProvider(environment);
             const sandboxProviderCapability = sandboxProvider
               ? environmentCapabilities?.sandboxProviders?.[sandboxProvider]
@@ -2046,6 +2068,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                           <span className="text-muted-foreground"> · {environment.driver === "computer" ? "Boat" : environment.driver}</span>
                         )}
                       </span>
+                      {computerDisconnected ? (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">Disconnected</span>
+                      ) : null}
                       {isPlatformManagedEnvironment(environment) ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
                           <Lock className="h-3 w-3" aria-hidden />
@@ -2062,7 +2087,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         {typeof environment.config.username === "string" ? environment.config.username : "user"}
                       </div>
                     ) : environment.driver === "computer" ? (
-                      <div className="text-xs text-muted-foreground">Persistent agent folders and a shared desktop on Boat.</div>
+                      <div className="text-xs text-muted-foreground">{computerDisconnected
+                        ? "Your computer and files are retained on Boat. Reconnect to use them again."
+                        : "Persistent agent folders and a shared desktop on Boat."}</div>
                     ) : environment.driver === "sandbox" ? (
                       <div className="text-xs text-muted-foreground">
                         {(() => {
@@ -2082,7 +2109,16 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {environment.driver !== "local" ? (
+                    {computerDisconnected ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => reconnectComputerMutation.mutate(environment)}
+                        disabled={reconnectComputerMutation.isPending || !experimentalSettings?.enableBoatEnvironments}
+                      >
+                        {reconnectComputerMutation.isPending && reconnectComputerMutation.variables?.id === environment.id ? "Connecting..." : "Reconnect"}
+                      </Button>
+                    ) : environment.driver !== "local" ? (
                       <Button
                         size="sm"
                         variant="outline"
@@ -2219,7 +2255,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   Environments
                 </Link>
               </Button>
-              {editingEnvironment ? (
+              {editingEnvironment && !(editingEnvironment.driver === "computer" && editingEnvironment.status === "archived") ? (
                 <Button
                   size="icon-sm"
                   variant="ghost"
@@ -2535,10 +2571,14 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               disabled={environmentMutation.isPending || !environmentFormValid}
             >
               {environmentMutation.isPending
-                ? editingEnvironmentId
+                ? editingEnvironment?.driver === "computer" && editingEnvironment.status === "archived"
+                  ? "Connecting..."
+                  : editingEnvironmentId
                   ? "Saving..."
                   : "Creating..."
-                : editingEnvironmentId
+                : editingEnvironment?.driver === "computer" && editingEnvironment.status === "archived"
+                  ? "Save and reconnect"
+                  : editingEnvironmentId
                   ? "Save environment"
                   : "Create environment"}
             </Button>
@@ -2562,8 +2602,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         ? "Could not check what uses this environment. Close this dialog and retry."
                         : deleteBlockMessage
                           ?? ([
-                            editingEnvironment.driver === "computer" ? "Paperclip will stop using this computer. Its filesystem will be retained on Boat." : null,
-                            reusableLeaseOnlyBlock && deleteBlastRadius
+                            editingEnvironment.driver === "computer" ? "Paperclip will stop this computer’s runners and disconnect it. The computer and its files will remain on Boat. Workspaces stay open." : null,
+                            editingEnvironment.driver !== "computer" && reusableLeaseOnlyBlock && deleteBlastRadius
                               ? `${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 reusable sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} reusable sandboxes`} will be destroyed; the workspaces holding them stay open and provision a fresh sandbox on their next run.`
                               : null,
                             agentsUsingEnvironment.length > 0
@@ -2575,12 +2615,12 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                             || "This environment will be permanently deleted and future runs stop resolving to it.")}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
-                {reusableLeaseHolderGroups.length > 0 ? (
+                {editingEnvironment.driver !== "computer" && reusableLeaseHolderGroups.length > 0 ? (
                   <div className="space-y-1.5" data-testid="environment-delete-lease-holders">
                     <div className="text-xs font-medium text-muted-foreground">Sandbox leases held by</div>
                     <ul className="space-y-1">
                       {reusableLeaseHolderGroups.map((group) => (
-                        <li key={group.workspaceId ?? group.label} className="text-sm">
+                        <li key={group.key} className="text-sm">
                           {group.workspaceId ? (
                             <Link
                               className="underline underline-offset-2 hover:text-foreground"
