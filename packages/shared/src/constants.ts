@@ -232,6 +232,24 @@ export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
+// Mirrors `Express.Request["actor"]["source"]` (server/src/types/express.d.ts). Persisted on
+// the comment row at write time because the live request's auth context does not survive past
+// the request — a later read (e.g. the comment-supersede sweep) has no other way to recover it.
+// Only "session" is a real interactive browser login. Every other source
+// (a board API key, the local_implicit trusted-mode sentinel, a cloud-tenant SSO binding) can
+// carry a genuine `authorUserId` with no `createdByRunId`, which is exactly the shape a live
+// human comment has — so those sources must never be treated as "the user typed this".
+export const ISSUE_COMMENT_AUTH_SOURCES = [
+  "session",
+  "board_key",
+  "local_implicit",
+  "cloud_tenant",
+  "agent_key",
+  "agent_jwt",
+  "mcp_oauth",
+] as const;
+export type IssueCommentAuthSource = (typeof ISSUE_COMMENT_AUTH_SOURCES)[number];
+
 export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
 export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
 

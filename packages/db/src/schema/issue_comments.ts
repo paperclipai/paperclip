@@ -1,5 +1,6 @@
 import type {
   IssueCommentAuthorType,
+  IssueCommentAuthSource,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -22,6 +23,13 @@ export const issueComments = pgTable(
     authorUserId: text("author_user_id"),
     onBehalfOfUserId: text("on_behalf_of_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
+    // How the request that created this comment authenticated (session / board_key /
+    // local_implicit / cloud_tenant / agent_key / agent_jwt). `createdByRunId` alone cannot
+    // tell a genuine interactive human reply apart from a board-API-key-authenticated script
+    // posting as the same user — this column is that missing signal. Null on rows
+    // written before this column existed; those are deliberately NOT treated as "session" by
+    // the supersede gate, since their true source is unknown.
+    authSource: text("auth_source").$type<IssueCommentAuthSource>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     // Persisted result of best-effort agent-attribution derivation for comments
     // authored by a non-human sentinel (e.g. `local-board`). Populated once by a

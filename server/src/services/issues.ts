@@ -87,6 +87,7 @@ import type {
   AcceptedPlanDecomposition,
   IssueComment,
   IssueCommentAuthorType,
+  IssueCommentAuthSource,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -12485,6 +12486,11 @@ export function issueService(db: Db) {
         userId?: string;
         runId?: string | null;
         onBehalfOfUserId?: string | null;
+        // How the request authenticated (session / board_key / local_implicit / cloud_tenant /
+        // agent_key / agent_jwt) — see `authSource` on the issueComments schema for why this
+        // is persisted. Omit only for internal/system call sites that are not
+        // relaying a live HTTP actor.
+        authSource?: IssueCommentAuthSource | null;
       },
       options?: {
         authorType?: IssueCommentAuthorType | null;
@@ -12784,6 +12790,7 @@ export function issueService(db: Db) {
             authorUserId: actor.userId ?? null,
             onBehalfOfUserId,
             authorType,
+            authSource: actor.authSource ?? null,
             createdByRunId,
             body: redactedBody,
             clientRequestId: options?.clientRequestId ?? null,

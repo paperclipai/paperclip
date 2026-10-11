@@ -74,7 +74,7 @@ const support = await getEmbeddedPostgresTestSupport();
         options: [{ id: "blue", label: "Blue" }, { id: "green", label: "Green" }] }] } });
     const first = await f.svc.create(f.issue, question("Which color?"), { agentId: f.agentId });
     await f.svc.expireRequestConfirmationsSupersededByComment(f.issue,
-      { id: f.comment.id, authorUserId: "operator", createdAt: new Date(Date.now() + 1000) }, { userId: "operator" });
+      { id: f.comment.id, authorUserId: "operator", authSource: "session", createdAt: new Date(Date.now() + 1000) }, { userId: "operator" });
     expect((await readCard(first.id)).status).toBe(conversation ? "pending" : "expired");
     const second = await f.svc.create(f.issue, question("Which shade?"), { agentId: f.agentId });
     await f.svc.create(f.issue, question("Which finish?"), { agentId: f.agentId });

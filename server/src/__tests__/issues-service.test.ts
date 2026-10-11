@@ -929,7 +929,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       } as never,
     });
 
-    const comment = await svc.addComment(issue.id, "Use option A", { userId: "local-board" });
+    const comment = await svc.addComment(issue.id, "Use option A", { userId: "local-board", authSource: "session" });
 
     const interaction = await db
       .select()

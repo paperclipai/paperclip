@@ -654,7 +654,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       return issuesSvc.addComment(
         fixture.issueId,
         "The board supplied the missing scope.",
-        { userId: "board-user" },
+        { userId: "board-user", authSource: "session" },
         { authorType: "user" },
         tx,
       );
@@ -851,6 +851,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         createdAt: new Date(Date.now() + 1_000),
         authorUserId: "user-board",
         createdByRunId: null,
+        authSource: "session",
       },
       { userId: "user-board" },
     );
@@ -1750,6 +1751,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: commentId,
       createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     });
@@ -1860,6 +1862,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: randomUUID(),
       createdAt: new Date(createdAtMs - 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     })).resolves.toHaveLength(0);
@@ -1912,6 +1915,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       authorUserId: "local-board",
       authorType: "user",
+      authSource: "session",
       body: "Please revise this first.",
       createdAt: new Date("2026-05-18T12:01:00.000Z"),
       updatedAt: new Date("2026-05-18T12:01:00.000Z"),
@@ -2914,6 +2918,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: commentId,
       createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     });
@@ -3165,6 +3170,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: commentId,
       createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     });
@@ -3544,6 +3550,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: commentId,
       createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     });
@@ -3745,6 +3752,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: randomUUID(),
       createdAt: new Date(createdAtMs - 1_000),
       authorUserId: "local-board",
+      authSource: "session",
     }, {
       userId: "local-board",
     })).resolves.toHaveLength(0);
@@ -3781,6 +3789,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
       createdByRunId: randomUUID(),
+      authSource: "session",
     }, {
       userId: "local-board",
     });
@@ -3789,6 +3798,66 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const rows = await db.select().from(issueThreadInteractions);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("does not supersede a human_only request confirmation for a board-API-key comment, only for a real session comment", async () => {
+    // A `human_only` card is explicitly waiting on a flesh-and-blood person, not an
+    // agent run. Before `authSource` existed, a script holding a board API key could post a
+    // comment attributed to the real user (authorUserId set, createdByRunId null — identical
+    // shape to a live browser reply) and silently kill the card. This is the control: the same
+    // comment body/author must behave differently purely on auth source.
+    const { companyId, issueId } = await seedConfirmationIssue("human_only comment supersede via board key");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Top up the Webshare proxy balance?",
+        supersedeOnUserComment: true,
+      },
+      resolverPolicy: "human_only",
+    }, {
+      userId: "ian",
+    });
+
+    const notSuperseded = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "ian",
+      createdByRunId: null,
+      authSource: "board_key",
+    }, {
+      userId: "ian",
+    });
+
+    // Control that must fail: a board-API-key comment carries the exact same authorUserId /
+    // createdByRunId shape as a genuine reply, so a sweep that only checked those two fields
+    // would wrongly supersede here too.
+    expect(notSuperseded).toHaveLength(0);
+    const stillPending = await interactionsSvc.getById(created.id);
+    expect(stillPending?.status).toBe("pending");
+
+    const superseded = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(new Date(created.createdAt).getTime() + 2_000),
+      authorUserId: "ian",
+      createdByRunId: null,
+      authSource: "session",
+    }, {
+      userId: "ian",
+    });
+
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]).toMatchObject({ id: created.id, status: "expired" });
   });
 
   it("repairs historical request confirmations superseded by later user comments idempotently", async () => {
@@ -3829,6 +3898,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       authorUserId: "local-board",
       authorType: "user",
+      authSource: "session",
       body: "Please revise this first.",
       createdAt: new Date("2026-05-18T12:01:00.000Z"),
       updatedAt: new Date("2026-05-18T12:01:00.000Z"),
@@ -3907,6 +3977,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       authorUserId: "local-board",
       authorType: "user",
       createdByRunId: runId,
+      authSource: "session",
       body: "SLA escalation relay posted from a heartbeat run.",
       createdAt: new Date("2026-05-18T12:01:00.000Z"),
       updatedAt: new Date("2026-05-18T12:01:00.000Z"),

@@ -180,6 +180,7 @@ const support = await getEmbeddedPostgresTestSupport();
               source: "session",
               userId,
               companyIds: allowed ? [companyId] : [],
+              runId: req.header("x-paperclip-run-id") ?? undefined,
             };
             next();
           });
@@ -274,8 +275,22 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(blockedSend.status).toBe(409);
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, chatId))).toHaveLength(0);
       const resetRequest = { body: "/new", clientRequestId: randomUUID() };
-      const reset = await request(app).post(`/api/issues/${chatId}/comments`).send(resetRequest);
+      const [{ conversationSessionGeneration: generationBeforeReset }] = await db
+        .select({ conversationSessionGeneration: issues.conversationSessionGeneration })
+        .from(issues).where(eq(issues.id, chatId));
+      const resetRun = await runFor(chatId, resetRequest.clientRequestId, {
+        conversationSessionGeneration: generationBeforeReset,
+      });
+      const reset = await request(app).post(`/api/issues/${chatId}/comments`)
+        .set("x-paperclip-run-id", resetRun.id)
+        .send(resetRequest);
       expect(reset.status).toBe(201);
+      // Regression (REF-8879 / Greptile P1): a session actor relaying a live run's
+      // x-paperclip-run-id must have that run id persisted on the comment, or a
+      // run-originated Agent Chat reply can expire a pending human_only card.
+      expect(
+        (await db.select().from(issueComments).where(eq(issueComments.id, reset.body.id)))[0],
+      ).toMatchObject({ createdByRunId: resetRun.id, authSource: "session" });
       const retriedResets = await Promise.all(Array.from({ length: 3 }, () =>
         request(app).post(`/api/issues/${chatId}/comments`).send(resetRequest)));
       expect(retriedResets.every((response) => response.status === 201 && response.body.id === reset.body.id)).toBe(true);
