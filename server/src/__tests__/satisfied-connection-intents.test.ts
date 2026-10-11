@@ -233,6 +233,46 @@ describePostgres("already available connection requests", () => {
     expect(await legacyExecutionNeedsReconciliationWithEvidence(db, cancelled)).toBe(true);
   });
 
+  it("does not let an old delivery complete after cancellation rearms its continuation", async () => {
+    const f = await seed(); const run = await retry(f);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    const key = `connection-intent:${f.intent.id}:expired`;
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", status: "claimed", idempotencyKey: key, runId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ status: "queued", wakeupRequestId: wake!.id,
+      contextSnapshot: { issueId: f.issueId, interactionId: f.intent.id, connectionIntentResolution: "existing_connection",
+        interactionKind: "connection_intent", interactionStatus: "expired", mutation: "interaction", source: "connection_intent.resolved" } }).where(eq(heartbeatRuns.id, run.id));
+    let cancelled = false;
+    // Pause precisely after durableWake() succeeds, before its completion write.
+    const racingDb = new Proxy(db, { get(target, property) {
+      if (property !== "update") return Reflect.get(target, property);
+      return (table: Parameters<typeof db.update>[0]) => {
+        const builder = db.update(table);
+        if (table !== connectionIntentDeliveries) return builder;
+        return { set(values: Parameters<typeof builder.set>[0]) {
+          const update = builder.set(values);
+          if (!values.deliveredAt) return update;
+          return { async where(condition: Parameters<typeof update.where>[0]) {
+            await db.update(connectionGrants).set({ status: "revoked" });
+            expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId,
+              runId: run.id, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled" });
+            cancelled = true;
+            return update.where(condition);
+          } };
+        } };
+      };
+    } });
+    await connectionIntentDeliveryService(racingDb, { wakeup: vi.fn() }).deliver(f.intent.id);
+    expect(cancelled).toBe(true);
+    expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).toBeNull();
+    await db.update(connectionGrants).set({ status: "active" });
+    const wakeup = vi.fn(async () => { await db.insert(agentWakeupRequests).values({ companyId: f.companyId,
+      agentId: f.agentId, source: "automation", status: "queued", idempotencyKey: key }); return null; });
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
+    expect(wakeup).toHaveBeenCalledOnce();
+    expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).not.toBeNull();
+  });
+
   it("records a system completion and one durable continuation with a one-connection pool", async () => {
     const f = await seed();
     const single = createDb(temp.connectionString, { maxConnections: 1 });

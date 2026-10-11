@@ -133,7 +133,9 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai" } | undefined;
     if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))
       || ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId) {
-      await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
+      await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
+        eq(connectionIntentDeliveries.companyId, claimed.companyId),
+        eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
       return;
     }
     const userId = interaction.addresseeUserId;
@@ -143,7 +145,9 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         eq(companyMemberships.principalId, userId ?? ""), eq(companyMemberships.status, "active"),
       )).limit(1);
       if (!membership?.membershipRole || membership.membershipRole === "viewer") {
-        await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
+        await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
+        eq(connectionIntentDeliveries.companyId, claimed.companyId),
+        eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
         return;
       }
     }
@@ -206,7 +210,9 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       }
     }
     if ((await durableWake()).length) {
-      await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
+      await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
+        eq(connectionIntentDeliveries.companyId, claimed.companyId),
+        eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
     }
   }
   async function hasPending() {
