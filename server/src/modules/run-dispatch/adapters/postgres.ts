@@ -22,6 +22,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction } from "../../../services/budgets.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
+import { findSatisfiedToolConnection } from "../../../services/satisfied-connection-intents.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
 import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../../services/recovery/legacy-continuation.js";
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
@@ -72,6 +73,7 @@ import { RunDispatchApplicationError } from "../application/types.js";
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
   conversationContinuation: boolean;
+  responsibleUserId: string | null;
   runId: string;
   companyId: string;
   agentId: string;
@@ -365,10 +367,10 @@ export function createPostgresRunDispatchAdapter(
     facts.issueCheckoutRunId = issue.checkoutRunId;
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
-        dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+        dbOrTx.select().from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.status, "pending"),
-        )).limit(1),
+        )),
         dbOrTx.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
           eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
         )).where(and(
@@ -376,7 +378,10 @@ export function createPostgresRunDispatchAdapter(
           inArray(approvals.status, ["pending", "revision_requested"]),
         )).limit(1),
       ]);
-      facts.pendingResponse = interactions.length > 0 ? "interaction" : linkedApprovals.length > 0 ? "approval" : null;
+      const pending = await Promise.all(interactions.map(async (interaction) =>
+        interaction.addresseeUserId !== input.responsibleUserId ||
+        !(await findSatisfiedToolConnection(dbOrTx as unknown as Db, issue, interaction))));
+      facts.pendingResponse = pending.some(Boolean) ? "interaction" : linkedApprovals.length > 0 ? "approval" : null;
     }
     facts.reviewParticipant = await readNativeReviewParticipantFacts(dbOrTx, {
       companyId: input.companyId, issueId, agentId: input.agentId,
@@ -464,6 +469,7 @@ export function createPostgresRunDispatchAdapter(
         companyId: run.companyId,
         agentId: run.agentId,
         conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
+        responsibleUserId: run.responsibleUserId,
         contextSnapshot: parseObject(run.contextSnapshot),
         scheduledRetryReason: run.scheduledRetryReason,
         retryReasonOverride: input.retryReasonOverride,
@@ -770,6 +776,7 @@ export function createPostgresRunDispatchAdapter(
           companyId: run.companyId,
           agentId: run.agentId,
           conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
+          responsibleUserId: run.responsibleUserId,
           contextSnapshot: parseObject(run.contextSnapshot),
           scheduledRetryReason: run.scheduledRetryReason,
           retryReasonOverride: run.scheduledRetryReason,

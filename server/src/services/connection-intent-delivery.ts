@@ -1,6 +1,7 @@
 import { connectionIntentService } from "./connection-intents.js";
+import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
 import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
-import { and, eq, isNull, lte, asc, notInArray, desc, sql } from "drizzle-orm";
+import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
 import { issueService } from "./issues.js";
@@ -13,10 +14,11 @@ export async function wakeConnectionIntentAfterResolution(
   input: {
     loaded: {
       issue: { id: string; assigneeAgentId: string | null; status: string };
-      interaction: { id: string; resolvedAt?: string | Date | null; payload?: unknown };
+      interaction: { id: string; resolvedAt?: string | Date | null; payload?: unknown; addresseeUserId?: string | null };
     };
     status: string;
     actorId: string;
+    actorType?: "user" | "system";
   },
 ) {
   const agentId = input.loaded.issue.assigneeAgentId;
@@ -37,7 +39,7 @@ export async function wakeConnectionIntentAfterResolution(
       mutation: "interaction",
     },
     idempotencyKey: `connection-intent:${input.loaded.interaction.id}:${input.status}`,
-    requestedByActorType: "user",
+    requestedByActorType: input.actorType ?? "user",
     requestedByActorId: input.actorId,
     contextSnapshot: {
       issueId: input.loaded.issue.id,
@@ -48,6 +50,9 @@ export async function wakeConnectionIntentAfterResolution(
       mutation: "interaction",
       wakeReason: "issue_commented",
       source: "connection_intent.resolved",
+      ...(input.actorType === "system" && input.loaded.interaction.addresseeUserId
+        ? { responsibleUserId: input.loaded.interaction.addresseeUserId, connectionIntentResolution: "existing_connection" }
+        : {}),
       ...(interactionResolvedAt
         ? { interactionResolvedAt }
         : {}),
@@ -64,6 +69,7 @@ export async function wakeConnectionIntentAfterResolution(
 
 
 export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbeat, "wakeup">) {
+  const satisfiedIntents = satisfiedConnectionIntentService(db);
   // Only a repaired AI-authentication failure may reopen a blocked task. An old
   // card must never resume a newer failure, a reassignment, or a manual hold.
   async function restoreAiBlockedTask(loaded: {
@@ -121,8 +127,11 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       .from(issueThreadInteractions).innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
       .where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId), eq(issues.companyId, claimed.companyId)));
     const interaction = loaded?.interaction;
+    const retiredForAvailableConnection = interaction?.status === "expired"
+      && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
+      && typeof interaction.result.connectionId === "string";
     const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai" } | undefined;
-    if (!loaded || !interaction || !["accepted", "rejected"].includes(interaction.status)
+    if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))
       || ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId) {
       await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
       return;
@@ -143,6 +152,10 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose });
       if (!ready) return;
     }
+    if (retiredForAvailableConnection) {
+      const ready = await findSatisfiedToolConnection(db, loaded.issue, { ...interaction, status: "pending" });
+      if (!ready || ready.id !== (interaction.result as { connectionId: string }).connectionId) return;
+    }
     if (interaction.status === "accepted" && payload?.purpose === "ai" && loaded.issue.status === "blocked") {
       const restored = await restoreAiBlockedTask(loaded);
       if (!restored) return;
@@ -157,7 +170,10 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     // Check before dispatch: the previous worker may have crashed after enqueueing.
     if (!(await durableWake()).length) {
       try {
-        await wakeConnectionIntentAfterResolution(heartbeat, { loaded, status: interaction.status, actorId: interaction.resolvedByUserId ?? interaction.addresseeUserId! });
+        await wakeConnectionIntentAfterResolution(heartbeat, { loaded, status: interaction.status,
+          actorId: retiredForAvailableConnection ? "connection-reconciliation" : interaction.resolvedByUserId ?? interaction.addresseeUserId!,
+          ...(retiredForAvailableConnection ? { actorType: "system" as const } : {}),
+        });
       } catch (error) {
         // The unique wake key also protects overlapping leases. Other failures retry.
         if (!(await durableWake()).length) throw error;
@@ -168,10 +184,16 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     }
   }
   async function hasPending() {
-    return (await db.select({ id: connectionIntentDeliveries.interactionId }).from(connectionIntentDeliveries)
-      .where(isNull(connectionIntentDeliveries.deliveredAt)).limit(1)).length > 0;
+    if ((await db.select({ id: connectionIntentDeliveries.interactionId }).from(connectionIntentDeliveries)
+      .where(isNull(connectionIntentDeliveries.deliveredAt)).limit(1)).length > 0) return true;
+    return (await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
+      .innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId)))
+      .where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
+        inArray(issues.status, ["in_progress", "in_review"]), isNull(issues.assigneeUserId)))
+      .limit(1)).length > 0;
   }
   return { deliver, hasPending, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
+    await satisfiedIntents.sweepPending();
     const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date())))
       .orderBy(asc(connectionIntentDeliveries.nextAttemptAt)).limit(50);
     let failed = 0;
