@@ -196,6 +196,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       scopeType: "agent",
       scopeId: agentId,
       scopeName: "Budget Agent SECRET_TOKEN_SHOULD_NOT_LEAK",
+      cause: "budget_exhausted",
       reason: "Agent is paused because its budget hard-stop was reached.",
     });
 
@@ -241,12 +242,14 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     expect(await service.getInvocationBlock(companyId, agentId)).toMatchObject({
       scopeType: "company",
       scopeId: companyId,
+      cause: "company_paused",
       reason: "Budget pause requires a policy or an explicit operator resume.",
     });
     await db.update(companies).set({ pauseReason: null }).where(eq(companies.id, companyId));
     expect(await service.getInvocationBlock(companyId, agentId)).toMatchObject({
       scopeType: "company",
       scopeId: companyId,
+      cause: "company_paused",
       reason: "Company is paused and cannot start new work.",
     });
   });
@@ -322,6 +325,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       scopeType: "project",
       scopeId: projectId,
       scopeName: "Budget Project",
+      cause: "budget_exhausted",
       reason: "Project cannot start work because its budget hard-stop is still exceeded.",
     });
 
