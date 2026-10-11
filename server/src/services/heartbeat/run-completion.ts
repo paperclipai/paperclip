@@ -50,6 +50,30 @@ type RunState = ReturnType<typeof createHeartbeatRunState>;
 type IssueContext = Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getIssueExecutionContext"]>> | null;
 type TaskSession = Awaited<ReturnType<RunState["getTaskSession"]>> | null;
 
+/** Closed diagnostics for a host cancellation overriding a completed native turn. */
+export function nativeCompletionCancellationDiagnostic(input: {
+  outcome: RunSessionOutcome;
+  nativeTerminal: string | undefined;
+  persistedRunStatus: string | null;
+  signal: AbortSignal;
+}) {
+  if (input.outcome !== "cancelled" || input.nativeTerminal !== "succeeded") return null;
+  const persistedCancellation = input.persistedRunStatus === "cancelled";
+  if (!persistedCancellation && !input.signal.aborted) return null;
+  const abortMessage = input.signal.reason instanceof Error ? input.signal.reason.message : null;
+  return {
+    nativeTerminal: "succeeded",
+    outcomeSource: persistedCancellation ? "persisted_terminal" : "execution_signal",
+    persistedRunStatus: input.persistedRunStatus === null ? "missing"
+      : ["queued", "scheduled_retry", "running", "succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(input.persistedRunStatus)
+        ? input.persistedRunStatus : "unknown",
+    signalAborted: input.signal.aborted,
+    abortReason: !input.signal.aborted ? "not_aborted"
+      : abortMessage === "Legacy controller lease lost" ? "legacy_controller_lease_lost"
+        : abortMessage === "Run stopped before provider startup" ? "stopped_before_provider_startup" : "other",
+  };
+}
+
 /** Completion persists terminal outcomes; the executor retains dispatch and cleanup ownership. */
 export interface HeartbeatRunCompletionDependencies extends Pick<RunState,
   "getRun" | "getAgent" | "resolveNormalizedUsageForSession" | "clearTaskSessions" | "upsertTaskSession">,
@@ -393,6 +417,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     } else {
       outcome = "failed";
     }
+    const nativeCancellationDiagnostic = nativeCompletionCancellationDiagnostic({
+      outcome,
+      nativeTerminal: adapterResult.nativeFinalization?.terminal.runTerminalState,
+      persistedRunStatus: latestRun?.status ?? null,
+      signal,
+    });
 
     const nextSessionState = resolveNextSessionState({
       adapterType: agent.adapterType,
@@ -666,6 +696,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         payload: {
           status,
           exitCode: adapterResult.exitCode,
+          ...(nativeCancellationDiagnostic ? { nativeOutcomeOverride: nativeCancellationDiagnostic } : {}),
           ...(readRunCancellation(finalizedRun.resultJson) ? { cancellation: readRunCancellation(finalizedRun.resultJson) } : {}),
         },
       });
