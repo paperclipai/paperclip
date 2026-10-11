@@ -16511,7 +16511,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).resolves.toEqual([]);
   });
 
-  it("rejects a dedicated-agent OAuth callback after its manager scope excludes the agent", async () => {
+  it("rechecks a narrowed OAuth manager scope against the pending agent", async () => {
     vi.stubEnv(
       "PAPERCLIP_TOOL_OAUTH_AGENT_SCOPED_EXAMPLE_TEST_CLIENT_ID",
       "agent-scoped-client-id",
@@ -16596,6 +16596,18 @@ describeEmbeddedPostgres("tool access service", () => {
     const state = new URL(connectRes.body.auth.startUrl).searchParams.get(
       "state",
     )!;
+    const otherConnectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://agent-scoped.example.test/mcp",
+        name: "Other scoped manager agent OAuth MCP",
+        grantKind: "agent",
+        subjectAgentId: otherAgent.id,
+      })
+      .expect(201);
+    const otherState = new URL(
+      otherConnectRes.body.auth.startUrl,
+    ).searchParams.get("state")!;
     const secretsBeforeCallback = await db
       .select({ id: companySecrets.id })
       .from(companySecrets)
@@ -16603,7 +16615,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await db
       .update(principalPermissionGrants)
-      .set({ scope: { agentIds: [otherAgent.id] } })
+      .set({ scope: { agentIds: [pendingAgent.id] } })
       .where(
         and(
           eq(principalPermissionGrants.companyId, company.id),
@@ -16618,14 +16630,19 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await request(app)
       .get("/api/tools/oauth/callback")
-      .query({ state, code: "scoped-manager-code" })
+      .query({ state: otherState, code: "out-of-scope-manager-code" })
       .expect(403);
 
     await expect(
       db
         .select()
         .from(connectionGrants)
-        .where(eq(connectionGrants.connectionId, connectRes.body.connectionId)),
+        .where(
+          eq(
+            connectionGrants.connectionId,
+            otherConnectRes.body.connectionId,
+          ),
+        ),
     ).resolves.toEqual([]);
     await expect(
       db
@@ -16637,8 +16654,46 @@ describeEmbeddedPostgres("tool access service", () => {
       db
         .select()
         .from(toolConnectionInstalls)
-        .where(eq(toolConnectionInstalls.connectionId, connectRes.body.connectionId)),
+        .where(
+          eq(
+            toolConnectionInstalls.connectionId,
+            otherConnectRes.body.connectionId,
+          ),
+        ),
     ).resolves.toEqual([]);
+
+    await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "in-scope-manager-code" })
+      .expect(200);
+
+    await expect(
+      db
+        .select({
+          kind: connectionGrants.kind,
+          subjectAgentId: connectionGrants.subjectAgentId,
+          status: connectionGrants.status,
+        })
+        .from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connectRes.body.connectionId)),
+    ).resolves.toEqual([
+      {
+        kind: "agent",
+        subjectAgentId: pendingAgent.id,
+        status: "active",
+      },
+    ]);
+    await expect(
+      db
+        .select({
+          targetType: toolConnectionInstalls.targetType,
+          targetId: toolConnectionInstalls.targetId,
+        })
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connectRes.body.connectionId)),
+    ).resolves.toEqual([
+      { targetType: "agent", targetId: pendingAgent.id },
+    ]);
   });
 
   it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
