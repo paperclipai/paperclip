@@ -84,6 +84,7 @@ pub struct AcpxSidecarTransport {
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
+    admission_diagnostic: Option<(&'static str, u64)>,
     poisoned: bool,
 }
 
@@ -322,6 +323,7 @@ impl AcpxSidecarTransport {
             buffered_events: VecDeque::new(),
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
+            admission_diagnostic: None,
             poisoned: false,
         })
     }
@@ -601,6 +603,7 @@ impl AcpxSidecarTransport {
 
     fn diagnostic_suffix(&self) -> String {
         let diagnostics = self.stderr_tail.snapshot().lines.join("\n");
+        let admission = admission_diagnostic_suffix(self.admission_diagnostic);
         let categories = if self.stderr_categories.is_empty() {
             String::new()
         } else {
@@ -614,15 +617,22 @@ impl AcpxSidecarTransport {
             )
         };
         if diagnostics.is_empty() {
-            categories
+            format!("{admission}{categories}")
         } else {
-            format!("{categories} stderrTail={diagnostics:?}")
+            format!("{admission}{categories} stderrTail={diagnostics:?}")
         }
     }
 
     fn record_stderr(&mut self, line: &str) {
         // Only fixed categories cross this boundary. Raw errors, stack paths,
         // identifiers, and credential-bearing strings remain fully redacted.
+        if let Some(progress) = parse_admission_diagnostic(line) {
+            // Cleanup can race the outer deadline; preserve the admission step
+            // that failed rather than replacing it with generic teardown.
+            if progress.0 != "cleanup" || self.admission_diagnostic.is_none() {
+                self.admission_diagnostic = Some(progress);
+            }
+        }
         self.stderr_categories
             .extend(stderr_diagnostic_categories(line));
         self.stderr_tail.push(redact_diagnostic(line));
@@ -785,6 +795,40 @@ fn nullable_identifier(
         )));
     }
     Ok(Some(value.to_owned()))
+}
+
+// Reuse the sidecar's diagnostic channel, retaining only a closed stage and
+// bounded integer. Unknown lines remain fully redacted and never grant authority.
+fn parse_admission_diagnostic(line: &str) -> Option<(&'static str, u64)> {
+    let (stage, elapsed) = line
+        .strip_prefix("[paperclip-acpx-sidecar] admission_")?
+        .split_once(": elapsedMs=")?;
+    let stage = match stage {
+        "binding" => "binding",
+        "installation" => "installation",
+        "sandbox" => "sandbox",
+        "lifetime" => "lifetime",
+        "agent_files" => "agent_files",
+        "skills" => "skills",
+        "command" => "command",
+        "tool_bridge" => "tool_bridge",
+        "handshake" => "handshake",
+        "verification" => "verification",
+        "ready" => "ready",
+        "cleanup" => "cleanup",
+        _ => return None,
+    };
+    if elapsed.is_empty() || !elapsed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let elapsed = elapsed.parse::<u64>().ok()?;
+    (elapsed <= 3_600_000).then_some((stage, elapsed))
+}
+
+fn admission_diagnostic_suffix(progress: Option<(&'static str, u64)>) -> String {
+    progress.map_or_else(String::new, |(stage, elapsed)| {
+        format!(" admissionStage={stage} admissionElapsedMs={elapsed}")
+    })
 }
 
 fn redact_diagnostic(value: &str) -> String {
@@ -991,6 +1035,60 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admission_diagnostics_accept_only_closed_stages_and_bounded_integer_timing() {
+        assert_eq!(
+            parse_admission_diagnostic(
+                "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=321"
+            ),
+            Some(("handshake", 321))
+        );
+        for line in [
+            "[paperclip-acpx-sidecar] admission_private-path: elapsedMs=321",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=321 private-token",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=-1",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=NaN",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=3600001",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=18446744073709551616",
+            "private-prefix [paperclip-acpx-sidecar] admission_handshake: elapsedMs=321",
+        ] {
+            assert_eq!(parse_admission_diagnostic(line), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admission_timeout_retains_last_safe_stage_without_untrusted_stderr() {
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s\\n' '[paperclip-acpx-sidecar] admission_sandbox: elapsedMs=1' '[paperclip-acpx-sidecar] admission_handshake: elapsedMs=24' '[paperclip-acpx-sidecar] admission_handshake: elapsedMs=25 /private/token-canary' '[paperclip-acpx-sidecar] admission_cleanup: elapsedMs=26' >&2; sleep 2".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(200),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("request timed out at session.open"),
+            "{error}"
+        );
+        assert!(
+            error.contains("admissionStage=handshake admissionElapsedMs=24"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("private") && !error.contains("token-canary"),
+            "{error}"
+        );
+        assert!(transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .is_err());
+    }
+
     #[test]
     fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
         assert!(pi_credential_environment_keys(None).unwrap().is_empty());
