@@ -901,6 +901,67 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX recovery identity does not match the persisted runtime record" => {
             "recovery_identity_mismatch"
         }
+        // Older pinned sidecars send these internal failures without a stable
+        // code. Keep only closed categories: messages can contain filesystem
+        // paths, provider output, or credentials and must never be surfaced.
+        "ACPX sidecar already owns a session or its cleanup" => "sidecar_session_owned",
+        "ACPX session profile differs from its initialization" => "sidecar_profile_mismatch",
+        "assigned native MCP launch binding is unavailable" => "native_mcp_binding_unavailable",
+        "Verified ACPX installation does not match its profile" => "installation_profile_mismatch",
+        "ACP agent directory must be an absolute normalized registered path"
+        | "ACP agent directory must be a real directory"
+        | "ACP agent directory cannot be a filesystem root" => "agent_directory_invalid",
+        "ACP agent directory overlaps protected runtime state" => "agent_directory_overlap",
+        "ACP registered agent directory changed during provider lifetime" => {
+            "agent_directory_changed"
+        }
+        "ACPX agent home must be a real directory" => "provider_home_invalid",
+        "ACPX agent home permissions are unsafe" => "provider_home_permissions",
+        "Managed Codex credential ownership could not be established" => {
+            "provider_lifetime_admission_failed"
+        }
+        "ACPX recovery runtime directory is unavailable" => "recovery_directory_unavailable",
+        "ACPX recovery runtime directory escaped its namespace" => "recovery_directory_escape",
+        "ACPX recovery workspace record is unavailable" => "recovery_workspace_record_unavailable",
+        "ACPX recovery workspace record is invalid" => "recovery_workspace_record_invalid",
+        "ACPX recovery workspace record changed while read" => "recovery_workspace_record_changed",
+        "ACPX recovery workspace is unavailable" => "recovery_workspace_unavailable",
+        "ACPX sandbox path must be a real directory"
+        | "ACPX sandbox directory changed during preparation"
+        | "ACPX sandbox directory escaped its private parent" => "sandbox_directory_invalid",
+        "runtime context asset root must be a directory"
+        | "staged runtime context root must be a directory"
+        | "staged runtime context asset must be a regular file"
+        | "materialized runtime context root must be a directory"
+        | "materialized runtime context asset must be a regular file" => {
+            "runtime_asset_type_invalid"
+        }
+        "runtime context skill name must be a safe relative path"
+        | "runtime context skill name must stay inside the skills home"
+        | "runtime context skill names must not overlap" => "runtime_skill_name_invalid",
+        "runtime context skills home must be a fresh destination" => {
+            "runtime_skills_destination_exists"
+        }
+        _ if error
+            .message
+            .starts_with("runtime context asset contains a symlink: ") =>
+        {
+            "runtime_asset_symlink"
+        }
+        _ if error
+            .message
+            .starts_with("runtime context asset contains an unsupported file: ") =>
+        {
+            "runtime_asset_type_invalid"
+        }
+        _ if error.message.starts_with("ENOENT: ") => "filesystem_entry_missing",
+        _ if error.message.starts_with("EACCES: ") || error.message.starts_with("EPERM: ") => {
+            "filesystem_permission_denied"
+        }
+        _ if error.message.starts_with("ELOOP: ") => "filesystem_link_rejected",
+        _ if error.message.starts_with("ENOTDIR: ") => "filesystem_not_directory",
+        _ if error.message.starts_with("EROFS: ") => "filesystem_read_only",
+        _ if error.message.starts_with("ENOSPC: ") => "filesystem_full",
         "ACPX provider lifetime lease is unavailable" => "provider_lifetime_unavailable",
         "Managed Codex credential home already has an active lease" => "provider_lifetime_owned",
         "ACPX session handshake exceeded its admission deadline" => "session_handshake_timeout",
@@ -1059,6 +1120,98 @@ mod tests {
             assert!(!classification.contains("canary"));
             assert!(!classification.contains("secret"));
         }
+    }
+
+    #[test]
+    fn pinned_sidecar_admission_failures_expose_only_closed_categories() {
+        for (message, expected) in [
+            (
+                "ACP agent directory overlaps protected runtime state",
+                "agent_directory_overlap",
+            ),
+            (
+                "ACPX recovery workspace record is invalid",
+                "recovery_workspace_record_invalid",
+            ),
+            (
+                "ACPX agent home permissions are unsafe",
+                "provider_home_permissions",
+            ),
+            (
+                "assigned native MCP launch binding is unavailable",
+                "native_mcp_binding_unavailable",
+            ),
+            (
+                "runtime context skills home must be a fresh destination",
+                "runtime_skills_destination_exists",
+            ),
+            (
+                "runtime context asset contains a symlink: /private-token-canary",
+                "runtime_asset_symlink",
+            ),
+            (
+                "runtime context asset contains an unsupported file: /private-token-canary",
+                "runtime_asset_type_invalid",
+            ),
+            (
+                "ENOENT: no such file or directory, open '/private-token-canary'",
+                "filesystem_entry_missing",
+            ),
+            (
+                "EACCES: permission denied, open '/private-token-canary'",
+                "filesystem_permission_denied",
+            ),
+            (
+                "EPERM: operation not permitted '/private-token-canary'",
+                "filesystem_permission_denied",
+            ),
+            (
+                "ELOOP: too many symbolic links '/private-token-canary'",
+                "filesystem_link_rejected",
+            ),
+            (
+                "ENOTDIR: not a directory '/private-token-canary'",
+                "filesystem_not_directory",
+            ),
+            (
+                "EROFS: read-only filesystem '/private-token-canary'",
+                "filesystem_read_only",
+            ),
+            (
+                "ENOSPC: no space left '/private-token-canary'",
+                "filesystem_full",
+            ),
+            ("private-token-canary ENOENT: missing", "unclassified"),
+            ("ENOENT_EXTRA: private-token-canary", "unclassified"),
+            (
+                "ACP agent directory overlaps protected runtime state private-token-canary",
+                "unclassified",
+            ),
+            (
+                "unknown failure https://user:private-token-canary@example.invalid",
+                "unclassified",
+            ),
+        ] {
+            let error = ResponseError {
+                code: "acpx_sidecar_command_failed".to_owned(),
+                message: message.to_owned(),
+                retryable: false,
+            };
+            let classification = response_error_classification(&error);
+            assert_eq!(classification, expected);
+            assert!(!classification.contains("private-token-canary"));
+            assert!(!classification.contains('/'));
+        }
+        // An established stable code keeps precedence over incidental text.
+        let error = ResponseError {
+            code: "AUTH_REQUIRED".to_owned(),
+            message: "ENOENT: private-token-canary".to_owned(),
+            retryable: true,
+        };
+        assert_eq!(
+            response_error_classification(&error),
+            "authentication_required"
+        );
     }
 
     #[test]
