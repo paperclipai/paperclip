@@ -12,12 +12,30 @@ export function pinnedComputerProviderPack(input: {
     value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const control = object(input.control);
   const identity = object(control.identity);
-  const provider = object(object(control.runAttachTemplate).provider);
   const fail = (): never => { throw new Error("runner_remote_provider_pack_provenance_unavailable"); };
   if (control.schema !== "paperclip.runner.durable.control-plane-state.v1" ||
       ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId"].some(key =>
-        typeof input.identity[key] !== "string" || !input.identity[key] || identity[key] !== input.identity[key]) ||
-      provider.kind !== "acpx" || provider.provider !== "acpx" || provider.driver !== "acpx_runtime" ||
+        typeof input.identity[key] !== "string" || !input.identity[key] || identity[key] !== input.identity[key])) return fail();
+  let provider = object(object(control.runAttachTemplate).provider);
+  if (control.runAttachTemplate === undefined || control.runAttachTemplate === null) {
+    // Cold epoch rotation can retain the controller-authored run.attach command
+    // without also persisting its attachment template. A failed
+    // command still records authorized launch paths; it is not settlement proof.
+    const candidates = (Array.isArray(control.commands) ? control.commands : []).map(object)
+      .filter(command => ["run.prepare", "run.attach"].includes(String(command.type)) &&
+        Number.isSafeInteger(command.controllerSeq) && Number(command.controllerSeq) > 0 &&
+        ["pending", "completed", "failed"].includes(String(command.status)))
+      .map(command => object(object(command.payload).provider))
+      .filter(candidate => candidate.runId === identity.runId && candidate.normalizedSessionId === identity.normalizedSessionId);
+    if (!candidates.length) return fail();
+    const authority = (candidate: Record<string, unknown>) => JSON.stringify([
+      candidate.kind, candidate.provider, candidate.driver, candidate.agent, candidate.model,
+      candidate.normalizedSessionId, candidate.sidecarCommand, candidate.sidecarArgs,
+    ]);
+    if (candidates.some(candidate => authority(candidate) !== authority(candidates[0]!))) return fail();
+    provider = candidates[0]!;
+  }
+  if (provider.kind !== "acpx" || provider.provider !== "acpx" || provider.driver !== "acpx_runtime" ||
       provider.agent !== input.provider.agent || provider.model !== input.provider.model ||
       provider.normalizedSessionId !== identity.normalizedSessionId || typeof provider.sidecarCommand !== "string" ||
       !Array.isArray(provider.sidecarArgs) || provider.sidecarArgs.length !== 1) return fail();
