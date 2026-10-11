@@ -984,8 +984,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/skills-catalog
       '@photon-ai/advanced-imessage':
-        specifier: 2.1.0
-        version: 2.1.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
+        specifier: 2.2.0
+        version: 2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
       '@vercel/connect':
         specifier: 2.3.3
         version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(ai@7.0.130(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=sryle6qd5qfmnxvoebal4gashi)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))))
@@ -1815,8 +1815,8 @@ packages:
   '@bufbuild/protobuf@1.10.0':
     resolution: {integrity: sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag==}
 
-  '@bufbuild/protobuf@2.15.0':
-    resolution: {integrity: sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA==}
+  '@bufbuild/protobuf@2.16.0':
+    resolution: {integrity: sha512-FWa0sPlqYGJgpTs6OxBRcL/AW4JT0OIO+W1ajerluoTVh8CV0B7XM1qsNCRgnkSCkRCgOICKHRQlY17jrsm0+Q==}
 
   '@chat-adapter/discord@4.39.0':
     resolution: {integrity: sha512-9IS4HF0Jw+Ucsm3f7XaXGCGb22Swb/r6FGaHoSDYxOEraQ88pFH5S7xc8//C+pCnqhX7p8QwLB/dYaNxDnl9pw==}
@@ -3595,8 +3595,8 @@ packages:
   '@paralleldrive/cuid2@2.3.1':
     resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
 
-  '@photon-ai/advanced-imessage@2.1.0':
-    resolution: {integrity: sha512-KT/aCBWcq667alyKe8DclqDUa/0fUuW2ZYDCxfIKuQBm08U4JcNG56fCdNUd69MFkKkzZgW35j59EYsx5DnLcQ==}
+  '@photon-ai/advanced-imessage@2.2.0':
+    resolution: {integrity: sha512-WpRU/dAfPwZo6OZAwdKJ6YTmrJZAbhAVlO2skRucMmgyGHrhpyHt3p7ZJKvlkT900Fx7bFMN1VxheuV+jNh2KQ==}
     engines: {node: '>=18.17'}
     peerDependencies:
       '@grpc/grpc-js': ^1.12.6
@@ -9780,7 +9780,7 @@ snapshots:
 
   '@bufbuild/protobuf@1.10.0': {}
 
-  '@bufbuild/protobuf@2.15.0': {}
+  '@bufbuild/protobuf@2.16.0': {}
 
   '@chat-adapter/discord@4.39.0(patch_hash=nywlhls7dd4npegrgax7jqdbxa)(ai@7.0.130(zod@4.4.3))(zod@4.4.3)':
     dependencies:
@@ -11613,9 +11613,9 @@ snapshots:
     dependencies:
       '@noble/hashes': 1.8.0
 
-  '@photon-ai/advanced-imessage@2.1.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
+  '@photon-ai/advanced-imessage@2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)':
     dependencies:
-      '@bufbuild/protobuf': 2.15.0
+      '@bufbuild/protobuf': 2.16.0
     optionalDependencies:
       '@grpc/grpc-js': 1.14.5
       nice-grpc: 2.1.17
