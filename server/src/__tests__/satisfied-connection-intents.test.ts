@@ -191,19 +191,31 @@ describePostgres("already available connection requests", () => {
       details: expect.objectContaining({ previousConnectionId: f.connection.id, connectionId: replacement.id }) })]));
   });
 
-  it("rearms an unstarted wait without manufacturing a workspace repair hold", async () => {
+  it.each(["queued", "running"] as const)("rearms an unstarted %s wait without manufacturing a workspace repair hold", async (status) => {
     const f = await seed(); const run = await retry(f);
     await satisfiedConnectionIntentService(db).sweepPending();
     const key = `connection-intent:${f.intent.id}:expired`;
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
       source: "automation", status: "claimed", idempotencyKey: key, runId: run.id }).returning();
     await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() });
-    await db.update(heartbeatRuns).set({ status: "queued", wakeupRequestId: wake!.id, resultJson: null,
+    await db.update(heartbeatRuns).set({ status, startedAt: status === "running" ? new Date() : null,
+      runtimeModeResolvedAt: status === "running" ? new Date() : null,
+      controllerBootId: status === "running" ? randomUUID() : null,
+      executionStage: status === "running" ? "preparing" : null, wakeupRequestId: wake!.id, resultJson: null,
       contextSnapshot: { issueId: f.issueId, interactionId: f.intent.id, connectionIntentResolution: "existing_connection",
         interactionKind: "connection_intent", interactionStatus: "expired", mutation: "interaction", wakeReason: "issue_commented", source: "connection_intent.resolved" } }).where(eq(heartbeatRuns.id, run.id));
     await db.update(connectionGrants).set({ status: "revoked" });
-    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: run.id,
-      expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
+    const dispatch = createPostgresRunDispatchAdapter(db);
+    if (status === "queued") {
+      expect(await dispatch.cancelStaleQueuedRun({ companyId: f.companyId, runId: run.id,
+        expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
+    } else {
+      const invoke = vi.fn(async () => null);
+      expect(await dispatch.dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: run.id,
+        expectedStatus: "running", now: new Date(), dispatch: invoke })).toMatchObject({ dispatched: false,
+          cancellation: { outcome: "cancelled", errorCode: "issue_waiting_for_response" } });
+      expect(invoke).not.toHaveBeenCalled();
+    }
     const cancelled = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0];
     expect(await legacyExecutionNeedsReconciliationWithEvidence(db, cancelled)).toBe(false);
     expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).toBeNull();

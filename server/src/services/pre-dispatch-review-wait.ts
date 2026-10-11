@@ -14,6 +14,9 @@ type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "pr
 export function isPreDispatchReviewWait(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, DispatchFields>>,
 ): boolean {
+  const finalResponseWait = run.errorCode === "issue_waiting_for_response" &&
+    (run.resultJson?.preDispatchResponseWait as { version?: number; providerWorkStarted?: boolean } | undefined)?.version === 1 &&
+    (run.resultJson?.preDispatchResponseWait as { providerWorkStarted?: boolean } | undefined)?.providerWorkStarted === false;
   return run.runtimeMode === "legacy" && run.status === "cancelled" &&
     (run.errorCode === "issue_continuation_waiting_on_review" ||
       (run.errorCode === "issue_waiting_for_response" &&
@@ -26,10 +29,10 @@ export function isPreDispatchReviewWait(
     run.resultJson?.stopReason === run.errorCode &&
     run.resultJson?.timeoutSource === "stale_queued_run_gate" &&
     run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive" &&
-    run.startedAt === null && run.runtimeModeResolvedAt === null &&
+    (finalResponseWait || (run.startedAt === null && run.runtimeModeResolvedAt === null)) &&
     run.processPid === null && run.processGroupId === null && run.processStartedAt === null &&
     run.nativeIssueId === null && run.nativeSessionId === null && run.sessionIdAfter === null &&
-    run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null;
+    (finalResponseWait || (run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null));
 }
 
 /** The row receipt is a candidate, not permission to discard conflicting

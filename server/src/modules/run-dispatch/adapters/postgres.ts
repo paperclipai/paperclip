@@ -882,6 +882,7 @@ export function createPostgresRunDispatchAdapter(
     decision: Extract<ReturnType<typeof decideQueuedRunStaleness>, { stale: true }>,
     expectedStatus: "queued" | "running",
     now: Date,
+    providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
       const [row] = await tx
         .update(heartbeatRuns)
@@ -893,6 +894,9 @@ export function createPostgresRunDispatchAdapter(
           resultJson: {
             ...parseObject(run.resultJson),
             stopReason: decision.errorCode,
+            ...(providerDispatchNotStarted && decision.errorCode === "issue_waiting_for_response"
+              ? { preDispatchResponseWait: { version: 1, providerWorkStarted: false } }
+              : {}),
             ...(decision.errorCode === "execution_reconciliation_required"
               ? { executionWait: decision.details }
               : {}),
@@ -1146,6 +1150,7 @@ export function createPostgresRunDispatchAdapter(
           decision,
           input.expectedStatus,
           input.now,
+          true, // This locked gate has not handed off to the provider callback.
         );
         return { dispatched: false as const, cancellation };
       }
