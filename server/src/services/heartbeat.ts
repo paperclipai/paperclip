@@ -5386,13 +5386,17 @@ export function heartbeatService(
           executionStage: "settled",
           controllerLeaseExpiresAt: null,
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
-            ${JSON.stringify(aborted
-              ? { computerAdmissionRetryOutcome: "aborted" }
-              : { computerAdmissionPreparationSettledAt: new Date().toISOString() })}::jsonb`,
+            case when ${aborted} or ${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' = 'aborted'
+              then ${JSON.stringify({ computerAdmissionRetryOutcome: "aborted",
+                executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } })}::jsonb
+              else ${JSON.stringify({ computerAdmissionPreparationSettledAt: new Date().toISOString() })}::jsonb end`,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
           eq(heartbeatRuns.errorCode, "computer_admission_wait"))).returning();
-        if (settledWait && !aborted) await scheduleComputerAdmissionRetry(settledWait);
+        if (settledWait?.resultJson?.computerAdmissionRetryOutcome === "aborted") {
+          await releaseIssueExecutionAndPromote(settledWait, { suppressImmediateRecovery: true });
+          await finalizeAgentStatus(run.agentId, "cancelled", undefined, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+        } else if (settledWait) await scheduleComputerAdmissionRetry(settledWait);
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
