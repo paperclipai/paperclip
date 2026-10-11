@@ -1536,6 +1536,39 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it("admits the read-only quota and window-spend cost reports on both transports", () => {
+    const quotaReads: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/companies/co-1/costs/quota-windows" },
+      { method: "GET", path: "/api/companies/co-1/costs/window-spend" },
+    ];
+    for (const request of quotaReads) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBeNull();
+      expect(
+        authorizeSandboxCallbackBridgeRequestWithRoutes(request, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST),
+      ).toBeNull();
+    }
+
+    const denied: Array<{ method: string; path: string }> = [
+      // Reads only: spend and quota cannot be written over the bridge.
+      { method: "POST", path: "/api/companies/co-1/costs/quota-windows" },
+      { method: "POST", path: "/api/companies/co-1/costs/window-spend" },
+      { method: "POST", path: "/api/companies/co-1/cost-events" },
+      { method: "POST", path: "/api/companies/co-1/finance-events" },
+      // The two grants must not widen to the other cost reports or to budgets.
+      { method: "GET", path: "/api/companies/co-1/costs/summary" },
+      { method: "GET", path: "/api/companies/co-1/costs/finance-events" },
+      { method: "GET", path: "/api/companies/co-1/budgets/overview" },
+      // No extra segment under either grant.
+      { method: "GET", path: "/api/companies/co-1/costs/quota-windows/q-1" },
+      { method: "GET", path: "/api/companies/co-1/costs/window-spend/w-1" },
+    ];
+    for (const request of denied) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
+        `Route not allowed: ${request.method} ${request.path}`,
+      );
+    }
+  });
+
   it.each([
     [4 * 60 * 60 * 1000, 30_000],
     [250, 250],

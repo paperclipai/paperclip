@@ -151,6 +151,13 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 
+  // Read-only usage headroom: the quota windows a subscription runs out of, and
+  // the spend measured inside them. The company cost aggregate already reaches
+  // an agent through the allowlisted dashboard read; these two add the windows.
+  // Reads only — recording cost or finance events stays denied.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/costs\/quota-windows$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/costs\/window-spend$/ },
+
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/inboxes$/ },
