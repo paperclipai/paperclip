@@ -1614,6 +1614,12 @@ AI authentication, inbox setup, or an upstream aggregator service keep their nor
 approval paths. Task ownership, real questions, approvals, budgets, pauses, and
 workspace recovery checks still govern admission.
 
+New requests notify the connection worker so this reconciliation also starts after an idle startup scan. Readiness uses the gateway's runtime tool
+listing policy with issue, project, and run context. System-retired requests are
+rechecked against the next run's responsible user and current access, and saved
+continuations defer while another question or linked approval remains pending.
+Those checks run again during queued and final dispatch admission.
+
 ## Responses submitted during an active run
 
 A confirmation, checkbox confirmation, or question answer is new conversation

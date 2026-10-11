@@ -207,7 +207,7 @@ export async function materializeNativeInteractionResponses(input: {
       const [run] = await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.agentId, input.agentId)));
       const ready = issue.assigneeAgentId === input.agentId && run?.responsibleUserId === interaction.addresseeUserId
-        ? await findSatisfiedToolConnection(input.db, issue, { ...interaction, addresseeUserId: interaction.addresseeUserId ?? null, status: "pending" }) : null;
+        ? await findSatisfiedToolConnection(input.db, issue, { ...interaction, addresseeUserId: interaction.addresseeUserId ?? null, status: "pending" }, input.runId) : null;
       if (!ready || ready.id !== interactionResult.connectionId) {
         throw new NativeInteractionBridgeError("native_interaction_unresolved", "The existing connection is no longer available");
       }

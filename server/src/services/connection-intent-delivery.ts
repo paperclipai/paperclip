@@ -1,5 +1,5 @@
 import { connectionIntentService } from "./connection-intents.js";
-import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
+import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
 import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
 import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
@@ -155,6 +155,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     if (retiredForAvailableConnection) {
       const ready = await findSatisfiedToolConnection(db, loaded.issue, { ...interaction, status: "pending" });
       if (!ready || ready.id !== (interaction.result as { connectionId: string }).connectionId) return;
+      if (await connectionContinuationPendingResponse(db, loaded.issue, userId, interaction.sourceRunId)) return;
     }
     if (interaction.status === "accepted" && payload?.purpose === "ai" && loaded.issue.status === "blocked") {
       const restored = await restoreAiBlockedTask(loaded);

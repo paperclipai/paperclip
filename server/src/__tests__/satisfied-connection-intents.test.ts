@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
-  connectionIntentDeliveries, createDb, environmentLeases, heartbeatRuns, issueRecoveryActions, issueThreadInteractions, issues, toolApplications,
+import { activityLog, agents, approvals, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
+  connectionIntentDeliveries, createDb, environmentLeases, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
   toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles, toolPolicies,
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
@@ -10,6 +10,8 @@ import { connectionIntentDeliveryService } from "../services/connection-intent-d
 import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -62,6 +64,95 @@ describePostgres("already available connection requests", () => {
     const f = await seed(); const run = await retry(f);
     await db.update(heartbeatRuns).set({ responsibleUserId: "someone-else" }).where(eq(heartbeatRuns.id, run.id));
     expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+  });
+
+  it("notifies an idle worker when a new connection request commits", async () => {
+    const f = await seed(); const source = await retry(f);
+    await db.delete(issueThreadInteractions);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    expect(await worker.hasPending()).toBe(false);
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.connection, notified);
+    try {
+      await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
+        payload: f.intent.payload, sourceRunId: source.id, addresseeUserId: "connection-owner", idempotencyKey: "new-card",
+      });
+      expect(notified).toHaveBeenCalledOnce();
+      expect(await worker.hasPending()).toBe(true);
+      await worker.sweepPending();
+      expect(wakeup).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it.each(["wrong_identity", "revoked", "disabled", "removed_member", "denied_policy"] as const)("rechecks %s after the card retires", async (reason) => {
+    const f = await seed(); const run = await retry(f);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    if (reason === "wrong_identity") await db.update(heartbeatRuns).set({ responsibleUserId: "someone-else" });
+    if (reason === "revoked") await db.update(connectionGrants).set({ status: "revoked" });
+    if (reason === "disabled") await db.update(toolConnections).set({ enabled: false });
+    if (reason === "removed_member") await db.delete(companyMemberships);
+    if (reason === "denied_policy") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block this task", policyType: "block", selectors: { issueId: f.issueId } });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+  });
+
+  it.each(["company", "issue", "project"] as const)("uses %s policy when deciding whether tools are ready", async (scope) => {
+    const f = await seed();
+    const selectors = scope === "issue" ? { issueId: f.issueId } : scope === "project" ? { projectId: randomUUID() } : {};
+    if (scope === "project") {
+      const projectId = (selectors as { projectId: string }).projectId;
+      await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Tools" });
+      await db.update(issues).set({ projectId });
+    }
+    await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block tools", policyType: "block", selectors });
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+  });
+
+  it("retains invocation approval when the authorized connection's tools require it", async () => {
+    const f = await seed();
+    await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Ask before use", policyType: "require_approval", selectors: { issueId: f.issueId } });
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+    expect((await db.select().from(toolPolicies))[0].policyType).toBe("require_approval");
+    expect(await db.select().from(approvals)).toHaveLength(0);
+    expect((await db.select().from(issueThreadInteractions))[0].resolvedByUserId).toBeNull();
+  });
+
+  async function addWait(f: Awaited<ReturnType<typeof seed>>, kind: "question" | "approval") {
+    if (kind === "question") {
+      const [question] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+        kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }).returning();
+      return async () => { await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, question!.id)); };
+    }
+    const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "tool_action", status: "pending", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval!.id });
+    return async () => { await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approval!.id)); };
+  }
+
+  it.each(["question", "approval"] as const)("defers the saved system continuation for another %s", async (kind) => {
+    const f = await seed(); const clearWait = await addWait(f, kind);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    expect(wakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).toBeNull();
+    await clearWait();
+    await db.update(connectionIntentDeliveries).set({ nextAttemptAt: new Date() });
+    await worker.sweepPending();
+    expect(wakeup).toHaveBeenCalledOnce();
+  });
+
+  it.each(["question", "approval", "revoked"] as const)("rechecks a queued system continuation after %s changes", async (kind) => {
+    const f = await seed(); const run = await retry(f);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    await db.update(heartbeatRuns).set({ status: "queued", contextSnapshot: { issueId: f.issueId,
+      connectionIntentResolution: "existing_connection", interactionKind: "connection_intent", interactionStatus: "expired",
+      mutation: "interaction", wakeReason: "issue_commented", source: "connection_intent.resolved" } }).where(eq(heartbeatRuns.id, run.id));
+    if (kind === "revoked") await db.update(connectionGrants).set({ status: "revoked" });
+    else await addWait(f, kind);
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: run.id,
+      expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
   });
 
   it("records a system completion and one durable continuation with a one-connection pool", async () => {

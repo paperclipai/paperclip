@@ -6,9 +6,6 @@ import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
-  approvals,
-  issueApprovals,
-  issueThreadInteractions,
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
@@ -22,7 +19,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction } from "../../../services/budgets.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
-import { findSatisfiedToolConnection } from "../../../services/satisfied-connection-intents.js";
+import { connectionContinuationPendingResponse } from "../../../services/satisfied-connection-intents.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
 import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../../services/recovery/legacy-continuation.js";
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
@@ -86,6 +83,8 @@ type LoadGateFactsResult =
   | { agentFound: true; facts: ScheduledRetryFacts }
   | { agentFound: false; issueId: string | null };
 type LoadStalenessFactsInput = {
+  responsibleUserId: string | null;
+  conversationContinuation: boolean;
   runId: string;
   companyId: string;
   agentId: string;
@@ -339,6 +338,7 @@ export function createPostgresRunDispatchAdapter(
       .select({
         id: issues.id,
         companyId: issues.companyId,
+        projectId: issues.projectId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -366,22 +366,8 @@ export function createPostgresRunDispatchAdapter(
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
     if (input.conversationContinuation) {
-      const [interactions, linkedApprovals] = await Promise.all([
-        dbOrTx.select().from(issueThreadInteractions).where(and(
-          eq(issueThreadInteractions.companyId, input.companyId),
-          eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.status, "pending"),
-        )),
-        dbOrTx.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
-          eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
-        )).where(and(
-          eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, issueId),
-          inArray(approvals.status, ["pending", "revision_requested"]),
-        )).limit(1),
-      ]);
-      const pending = await Promise.all(interactions.map(async (interaction) =>
-        interaction.addresseeUserId !== input.responsibleUserId ||
-        !(await findSatisfiedToolConnection(dbOrTx as unknown as Db, issue, interaction))));
-      facts.pendingResponse = pending.some(Boolean) ? "interaction" : linkedApprovals.length > 0 ? "approval" : null;
+      facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
+        issue, input.responsibleUserId, input.runId);
     }
     facts.reviewParticipant = await readNativeReviewParticipantFacts(dbOrTx, {
       companyId: input.companyId, issueId, agentId: input.agentId,
@@ -525,6 +511,9 @@ export function createPostgresRunDispatchAdapter(
     const issueQuery = dbOrTx
       .select({
         id: issues.id,
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+        assigneeUserId: issues.assigneeUserId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
@@ -606,6 +595,9 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
+      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+        ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
+        : null,
       issueFound: issue !== null,
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
@@ -983,6 +975,8 @@ export function createPostgresRunDispatchAdapter(
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
+        responsibleUserId: run.responsibleUserId,
+        conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
         issueId,
         contextSnapshot,
         scheduledRetryReason: run.scheduledRetryReason,
