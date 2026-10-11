@@ -1166,7 +1166,7 @@ async function inspectCommand(
   }
 }
 
-async function openVerifiedRuntimeExecutable(
+export async function openVerifiedRuntimeExecutable(
   executablePath: string,
   expectedDigest: string,
   agent: string,
@@ -1197,59 +1197,84 @@ async function openVerifiedRuntimeExecutable(
   }
 
   try {
-    const before = await handle.stat({ bigint: true });
-    if (
-      !before.isFile() ||
-      before.size < 1n ||
-      before.size > BigInt(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES) ||
-      (before.mode & 0o111n) === 0n
-    ) {
-      throw new Error(
-        `ACPX ${agent} runtime executable must be a bounded executable file`,
-      );
-    }
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(1024 * 1024);
-    let position = 0;
-    try {
-      while (position < Number(before.size)) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, Number(before.size) - position),
-          position,
+    let lexicalBaseline = lexicalBefore;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = await handle.stat({ bigint: true });
+      if (
+        !before.isFile() ||
+        before.size < 1n ||
+        before.size > BigInt(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES) ||
+        (before.mode & 0o111n) === 0n
+      ) {
+        throw new Error(
+          `ACPX ${agent} runtime executable must be a bounded executable file`,
         );
-        if (bytesRead === 0) break;
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
       }
-    } finally {
-      buffer.fill(0);
-    }
-    const after = await handle.stat({ bigint: true });
-    const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
-      () => null,
-    );
-    const beforeIdentity = fileIdentity(before);
-    const afterIdentity = fileIdentity(after);
-    if (
-      position !== Number(before.size) ||
-      lexicalAfter === null ||
-      lexicalAfter.isSymbolicLink() ||
-      !lexicalAfter.isFile() ||
-      !sameIdentity(fileIdentity(lexicalBefore), fileIdentity(lexicalAfter)) ||
-      !sameIdentity(fileIdentity(lexicalAfter), afterIdentity) ||
-      !sameIdentity(beforeIdentity, afterIdentity)
-    ) {
-      throw new Error(
-        `ACPX ${agent} runtime executable changed while it was verified`,
+      const beforeIdentity = fileIdentity(before);
+      if (
+        !sameIdentity(fileIdentity(lexicalBaseline), beforeIdentity) ||
+        lexicalBaseline.mode !== before.mode
+      ) {
+        throw new Error(
+          `ACPX ${agent} runtime executable changed while it was verified`,
+        );
+      }
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      let position = 0;
+      try {
+        while (position < Number(before.size)) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, Number(before.size) - position),
+            position,
+          );
+          if (bytesRead === 0) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+      } finally {
+        buffer.fill(0);
+      }
+      const after = await handle.stat({ bigint: true });
+      const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
+        () => null,
       );
+      const afterIdentity = fileIdentity(after);
+      if (
+        position !== Number(before.size) ||
+        lexicalAfter === null ||
+        lexicalAfter.isSymbolicLink() ||
+        !lexicalAfter.isFile() ||
+        !sameIdentity(fileIdentity(lexicalAfter), afterIdentity) ||
+        lexicalAfter.mode !== after.mode ||
+        before.mode !== after.mode ||
+        !sameIdentity(
+          { ...beforeIdentity, changedNanoseconds: afterIdentity.changedNanoseconds },
+          afterIdentity,
+        )
+      ) {
+        throw new Error(
+          `ACPX ${agent} runtime executable changed while it was verified`,
+        );
+      }
+      const digest = `sha256:${hash.digest("hex")}`;
+      if (digest !== expectedDigest) {
+        throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
+      }
+      if (sameIdentity(beforeIdentity, afterIdentity)) {
+        return { handle, identity: afterIdentity };
+      }
+      // A lazy filesystem restore can change ctime on the first read. Only
+      // already-qualified bytes with otherwise identical metadata may receive
+      // one complete re-read on this same descriptor. The final pass must be
+      // fully stable; later launch identity comparisons remain strict.
+      lexicalBaseline = lexicalAfter;
     }
-    const digest = `sha256:${hash.digest("hex")}`;
-    if (digest !== expectedDigest) {
-      throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
-    }
-    return { handle, identity: afterIdentity };
+    throw new Error(
+      `ACPX ${agent} runtime executable changed while it was verified`,
+    );
   } catch (error) {
     await handle.close();
     throw error;
