@@ -6430,6 +6430,7 @@ export function nativeSessionFailureSourceCode(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_provider_verification_unavailable"
   | "runner_remote_artifact_platform_mismatch"
   | "provider_process_exited"
   | "provider_stdout_closed"
@@ -6476,6 +6477,9 @@ export function nativeSessionFailureSourceCode(
   }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
+  }
+  if (/^runner_remote_provider_verification_unavailable(?::|$)/.test(message)) {
+    return "runner_remote_provider_verification_unavailable";
   }
   if (/provider_process_exited/i.test(message)) {
     return "provider_process_exited";
@@ -6601,6 +6605,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
     "runner_remote_provider_artifact_incompatible",
+    "runner_remote_provider_verification_unavailable",
     "runner_remote_artifact_platform_mismatch",
     "provider_process_exited",
     "provider_stdout_closed",
