@@ -96,6 +96,32 @@ Collapsed by default. Open it when the server's docs are specific:
 - **Custom headers** — for servers that name their own headers.
 - **Browser sign-in** — optionally with a client ID and secret you registered
   yourself, for providers that require preregistration.
+- **Client credentials** — for machine-to-machine servers that accept the OAuth
+  2.0 client credentials grant. Enter the token URL, client ID and client
+  secret, and optionally a scope and an audience. No browser sign-in occurs.
+
+### Client credentials
+
+Paperclip sends `grant_type=client_credentials` to the token URL, and sends the
+access token to the MCP server as `Authorization: Bearer`. The client secret,
+the access token and any refresh token are Paperclip secrets on the connection's
+organization grant.
+
+Paperclip renews the access token when it is less than one minute from expiry,
+and when the MCP server rejects it with a 401:
+
+1. If the token response included a refresh token, Paperclip uses it first.
+2. If there is no refresh token, or the provider rejects it, Paperclip requests
+   a new token with the client credentials. A rejected refresh token is then
+   discarded.
+
+The connection does not need a reconnect while the client credentials stay
+valid.
+
+Paperclip always uses the client ID and secret you entered, even when the
+deployment sets `PAPERCLIP_TOOL_OAUTH_*` client variables. If the MCP server
+still rejects a new token, the error asks you to check the scope and audience.
+Paperclip does not replace your token URL with one the MCP server advertises.
 
 Every value you enter becomes a Paperclip secret. Values are write-only: they
 never appear in stored config JSON, logs, activity details, API responses after

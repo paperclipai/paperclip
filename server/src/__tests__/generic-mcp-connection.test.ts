@@ -288,6 +288,66 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
   };
 }
 
+const CLIENT_CREDENTIALS_TOKEN_URL = `${ISSUER}/token`;
+const CLIENT_CREDENTIALS_SECRET = "cc-client-secret-canary";
+
+/**
+ * An MCP server that accepts only the latest access token, and a token endpoint
+ * that serves the client-credentials and refresh-token grants.
+ */
+function installClientCredentialsFixture() {
+  const tokenRequests: URLSearchParams[] = [];
+  const mcpAuthorizations: string[] = [];
+  let issuedTokens = 0;
+  let acceptedAccessToken: string | null = null;
+  const fixture = {
+    tokenRequests,
+    mcpAuthorizations,
+    issueRefreshToken: true,
+    rejectRefreshToken: false,
+    failRefreshTokenTemporarily: false,
+    revokeAccessToken() {
+      acceptedAccessToken = null;
+    },
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    const href = String(url);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (href === CLIENT_CREDENTIALS_TOKEN_URL && method === "POST") {
+      const body = new URLSearchParams(init?.body?.toString() ?? "");
+      tokenRequests.push(body);
+      if (body.get("grant_type") === "refresh_token" && fixture.rejectRefreshToken) {
+        return jsonResponse({ error: "invalid_grant" }, 400);
+      }
+      if (body.get("grant_type") === "refresh_token" && fixture.failRefreshTokenTemporarily) {
+        return jsonResponse({ error: "temporarily_unavailable" }, 503);
+      }
+      issuedTokens += 1;
+      acceptedAccessToken = `cc-access-${issuedTokens}`;
+      return jsonResponse({
+        access_token: acceptedAccessToken,
+        ...(fixture.issueRefreshToken ? { refresh_token: `cc-refresh-${issuedTokens}` } : {}),
+        expires_in: 3600,
+        token_type: "Bearer",
+      });
+    }
+    if (href === MCP_URL && method === "POST") {
+      const authorization = headerRecord(init).authorization ?? "";
+      mcpAuthorizations.push(authorization);
+      if (!acceptedAccessToken || authorization !== `Bearer ${acceptedAccessToken}`) {
+        return { ok: false, status: 401, headers: { get: () => null }, text: async () => "", json: async () => ({}) } as unknown as Response;
+      }
+      const rpc = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (rpc.method === "tools/call") {
+        return jsonResponse({ jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: "ok" }] } });
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+    }
+    return jsonResponse({ error: "not_found" }, 404);
+  });
+  return fixture;
+}
+
 async function createCompany(db: ReturnType<typeof createDb>) {
   const company = await db
     .insert(companies)
@@ -1729,6 +1789,219 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     const tokenRequest = fixture.requestsTo("/token").at(-1)!;
     expect(tokenRequest.headers.authorization).toMatch(/^Basic /);
     expect((tokenRequest.body as URLSearchParams).get("client_secret")).toBeNull();
+  });
+
+  describe("OAuth client credentials", () => {
+    const clientCredentialsInput = {
+      link: MCP_URL,
+      name: "Fixture client credentials",
+      authMode: "oauth_client_credentials" as const,
+      oauthClient: {
+        clientId: "cc-client",
+        clientSecret: CLIENT_CREDENTIALS_SECRET,
+        tokenUrl: CLIENT_CREDENTIALS_TOKEN_URL,
+        scope: "mcp:read",
+        audience: "https://api.fixture.test",
+      },
+    };
+
+    async function organizationGrant(connectionId: string) {
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, connectionId),
+        eq(connectionGrants.kind, "organization"),
+      ));
+      return grant!;
+    }
+
+    async function expireAccessToken(connectionId: string) {
+      const grant = await organizationGrant(connectionId);
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          ...grant.providerTenant,
+          oauth: { ...(grant.providerTenant?.oauth as Record<string, unknown>), accessTokenExpiresAt: "2000-01-01T00:00:00.000Z" },
+        },
+      }).where(eq(connectionGrants.id, grant.id));
+    }
+
+    function credentialPaths(grant: typeof connectionGrants.$inferSelect) {
+      return grant.credentialSecretRefs.map((ref) => ref.configPath).sort();
+    }
+
+    it("gets a token without browser sign-in and keeps every credential out of responses and logs", async () => {
+      const fixture = installClientCredentialsFixture();
+      const company = await createCompany(db);
+      const logChunks: string[] = [];
+      const logStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logChunks.push(chunk.toString());
+          callback();
+        },
+      });
+      const app = createRouteApp(db, { deploymentMode: "local_trusted", deploymentExposure: "private" },
+        createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, logStream)));
+      const consoleSpy = captureConsole();
+
+      const response = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send(clientCredentialsInput);
+
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      expect(response.body.auth ?? null).toBeNull();
+      expect(response.body.actions.readOnly.map((action: { toolName: string }) => action.toolName)).toEqual(["list_insights"]);
+      const [tokenRequest] = fixture.tokenRequests;
+      expect(Object.fromEntries(tokenRequest!)).toMatchObject({
+        grant_type: "client_credentials",
+        client_id: "cc-client",
+        client_secret: CLIENT_CREDENTIALS_SECRET,
+        scope: "mcp:read",
+        audience: "https://api.fixture.test",
+      });
+      expect(fixture.mcpAuthorizations.at(-1)).toBe("Bearer cc-access-1");
+      const grant = await organizationGrant(response.body.connectionId);
+      expect(credentialPaths(grant)).toEqual(["oauth.access_token", "oauth.client_secret", "oauth.refresh_token"]);
+
+      const connectionsResponse = await request(app).get(`/api/companies/${company.id}/tools/connections`).expect(200);
+      expect(connectionsResponse.body.connections).toEqual([expect.objectContaining({ id: response.body.connectionId })]);
+      const surfaces = [
+        JSON.stringify(response.body),
+        JSON.stringify(connectionsResponse.body),
+        logChunks.join(""),
+        await providerLeakSurfaces(consoleSpy, null),
+        JSON.stringify(await db.select().from(connectionGrants)),
+      ].join("\n");
+      for (const value of [CLIENT_CREDENTIALS_SECRET, "cc-access-1", "cc-refresh-1"]) {
+        expect(surfaces).not.toContain(value);
+      }
+    });
+
+    it("sends the operator's client, not a deployment client, to the token URL", async () => {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "deployment-client");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "deployment-secret");
+      const fixture = installClientCredentialsFixture();
+      const company = await createCompany(db);
+
+      await toolAccessService(db).connectGalleryApp(company.id, clientCredentialsInput);
+
+      expect(Object.fromEntries(fixture.tokenRequests[0]!)).toMatchObject({
+        client_id: "cc-client",
+        client_secret: CLIENT_CREDENTIALS_SECRET,
+      });
+    });
+
+    it("keeps the operator's token URL when the app answers with a sign-in challenge", async () => {
+      const operatorTokenUrl = `${MCP_ORIGIN}/operator/token`;
+      const resourceMetadataUrl = `${MCP_ORIGIN}/.well-known/oauth-protected-resource/mcp`;
+      const tokenPosts: string[] = [];
+      let rejectTokens = false;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (method === "POST" && href.endsWith("/token")) {
+          tokenPosts.push(href);
+          return jsonResponse({ access_token: `token-${tokenPosts.length}`, expires_in: 3600, token_type: "Bearer" });
+        }
+        if (href === MCP_URL) {
+          return rejectTokens
+            ? unauthorizedMcpResponse(resourceMetadataUrl)
+            : jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+        }
+        if (href === resourceMetadataUrl) return jsonResponse({ resource: MCP_URL, authorization_servers: [ISSUER] });
+        if (href === `${MCP_ORIGIN}/.well-known/oauth-authorization-server/tenant/acme`) {
+          return jsonResponse({ issuer: ISSUER, authorization_endpoint: `${ISSUER}/authorize`, token_endpoint: `${ISSUER}/token` });
+        }
+        return jsonResponse({ error: "not_found" }, 404);
+      });
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        ...clientCredentialsInput,
+        oauthClient: { ...clientCredentialsInput.oauthClient, tokenUrl: operatorTokenUrl },
+      });
+      rejectTokens = true;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" }))
+          .rejects.toMatchObject({ details: expect.objectContaining({ code: "oauth_client_credentials_rejected" }) });
+      }
+
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect(connection!.config.oauth).toMatchObject({ tokenUrl: operatorTokenUrl, grantType: "client_credentials" });
+      expect(new Set(tokenPosts)).toEqual(new Set([operatorTokenUrl]));
+    });
+
+    it("renews an expired token with the refresh token", async () => {
+      const fixture = installClientCredentialsFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, clientCredentialsInput);
+      await expireAccessToken(connected.connectionId);
+
+      await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+
+      expect(fixture.tokenRequests.map((body) => body.get("grant_type"))).toEqual(["client_credentials", "refresh_token"]);
+      expect(fixture.tokenRequests[1]!.get("refresh_token")).toBe("cc-refresh-1");
+      expect(fixture.mcpAuthorizations.at(-1)).toBe("Bearer cc-access-2");
+    });
+
+    it("uses the client credentials again when the refresh token is rejected", async () => {
+      const fixture = installClientCredentialsFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, clientCredentialsInput);
+      await expireAccessToken(connected.connectionId);
+      fixture.rejectRefreshToken = true;
+      fixture.issueRefreshToken = false;
+
+      await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+
+      expect(fixture.tokenRequests.map((body) => body.get("grant_type")))
+        .toEqual(["client_credentials", "refresh_token", "client_credentials"]);
+      expect(fixture.mcpAuthorizations.at(-1)).toBe("Bearer cc-access-2");
+      const grant = await organizationGrant(connected.connectionId);
+      expect(grant.status).toBe("active");
+      expect(credentialPaths(grant)).toEqual(["oauth.access_token", "oauth.client_secret"]);
+    });
+
+    it("keeps the refresh token when the token URL fails temporarily", async () => {
+      const fixture = installClientCredentialsFixture();
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, clientCredentialsInput);
+      await expireAccessToken(connected.connectionId);
+      fixture.failRefreshTokenTemporarily = true;
+
+      await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" }).catch(() => undefined);
+
+      expect(fixture.tokenRequests.map((body) => body.get("grant_type"))).toEqual(["client_credentials", "refresh_token"]);
+      const grant = await organizationGrant(connected.connectionId);
+      expect(credentialPaths(grant)).toEqual(["oauth.access_token", "oauth.client_secret", "oauth.refresh_token"]);
+    });
+
+    it("renews the token when the MCP server rejects it before it expires", async () => {
+      const fixture = installClientCredentialsFixture();
+      fixture.issueRefreshToken = false;
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, clientCredentialsInput);
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Insight reader", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+      const refreshed = await service.refreshCatalog(connected.connectionId, { actorType: "user", actorId: "board-user" });
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: refreshed.catalog.map((entry) => entry.id),
+        askFirstCatalogEntryIds: [],
+        access: { agentIds: [agent!.id] },
+      }, { actorType: "user", actorId: "board-user" });
+      const gateway = createToolGatewayService(db, {
+        toolActionSigningSecret: "client-credentials-test-only-signing-secret",
+        oauthGrantRefresher: (input) => service.refreshOAuthGrantCredentials(input),
+      });
+      fixture.revokeAccessToken();
+
+      await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connected.connectionId, agentId: agent!.id, userId: "board-user", toolName: "list_insights", parameters: {} }))
+        .resolves.toMatchObject({ decision: "allowed" });
+
+      expect(fixture.tokenRequests.map((body) => body.get("grant_type"))).toEqual(["client_credentials", "client_credentials"]);
+      expect(fixture.mcpAuthorizations.slice(-2)).toEqual(["Bearer cc-access-1", "Bearer cc-access-2"]);
+    });
   });
 
   it("refuses a callback whose iss names a different authorization server", async () => {

@@ -351,7 +351,7 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
  * probes the endpoint and branches on what it finds. The rest are the explicit
  * choices behind "Advanced authentication", where the operator already knows.
  */
-export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
+export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth", "oauth_client_credentials"] as const;
 
 export const genericMcpAuthModeSchema = z.enum(GENERIC_MCP_AUTH_MODES);
 
@@ -361,10 +361,16 @@ export type GenericMcpAuthMode = z.infer<typeof genericMcpAuthModeSchema>;
  * A preregistered OAuth client an operator pasted in because the authorization
  * server supports neither CIMD nor dynamic registration. The secret is write-only:
  * it becomes a Paperclip secret ref and is never read back.
+ *
+ * `tokenUrl`, `scope` and `audience` apply only to `oauth_client_credentials`,
+ * where Paperclip gets tokens from the token endpoint without a browser sign-in.
  */
 export const genericMcpOAuthClientSchema = z.object({
   clientId: z.string().trim().min(1).max(4096),
   clientSecret: z.string().min(1).max(16384).optional(),
+  tokenUrl: z.string().trim().url().max(2000).optional(),
+  scope: z.string().trim().min(1).max(2000).optional(),
+  audience: z.string().trim().min(1).max(2000).optional(),
 }).strict();
 
 export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
@@ -455,6 +461,16 @@ export const connectToolAppSchema = z.object({
       path: ["authMode"],
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
     });
+  }
+  if (value.authMode === "oauth_client_credentials") {
+    if (!value.oauthClient?.clientSecret) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient", "clientSecret"], message: "Client credentials need a client secret" });
+    }
+    if (!value.oauthClient?.tokenUrl) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient", "tokenUrl"], message: "Client credentials need a token URL" });
+    }
+  } else if (value.oauthClient?.tokenUrl || value.oauthClient?.scope || value.oauthClient?.audience) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["oauthClient"], message: "Token URL, scope and audience apply only to client credentials" });
   }
   if (value.resumeConnectionId && value.reconnectConnectionId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reconnectConnectionId"], message: "Choose resume or reconnect, not both" });
