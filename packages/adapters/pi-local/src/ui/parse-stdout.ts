@@ -39,8 +39,14 @@ function extractTextContent(content: string | Array<{ type: string; text?: strin
 // Track pending tool calls for proper toolUseId matching
 let pendingToolCalls = new Map<string, { toolName: string; args: unknown }>();
 
+// Pi streams assistant text as deltas, then repeats it in text_end/thinking_end,
+// message_end, turn_end and agent_end. Show the deltas; message_end is used only
+// when the message did not stream.
+let streamed = false;
+
 export function resetParserState(): void {
   pendingToolCalls.clear();
+  streamed = false;
 }
 
 export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
@@ -72,16 +78,6 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
     if (messages && messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
       if (lastMessage?.role === "assistant") {
-        const content = lastMessage.content as string | Array<{ type: string; text?: string; thinking?: string }>;
-        const { text, thinking } = extractTextContent(content);
-        
-        if (thinking) {
-          entries.push({ kind: "thinking", ts, text: thinking });
-        }
-        if (text) {
-          entries.push({ kind: "assistant", ts, text });
-        }
-        
         // Extract usage
         const usage = asRecord(lastMessage.usage);
         if (usage) {
@@ -122,22 +118,9 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
   }
 
   if (type === "turn_end") {
-    const message = asRecord(parsed.message);
     const toolResults = parsed.toolResults as Array<Record<string, unknown>> | undefined;
     
     const entries: TranscriptEntry[] = [];
-    
-    if (message) {
-      const content = message.content as string | Array<{ type: string; text?: string; thinking?: string }>;
-      const { text, thinking } = extractTextContent(content);
-      
-      if (thinking) {
-        entries.push({ kind: "thinking", ts, text: thinking });
-      }
-      if (text) {
-        entries.push({ kind: "assistant", ts, text });
-      }
-    }
     
     // Process tool results - match with pending tool calls
     if (toolResults) {
@@ -180,6 +163,7 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
 
   // Message streaming
   if (type === "message_start") {
+    streamed = false;
     return [];
   }
 
@@ -192,6 +176,7 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
       if (msgType === "thinking_delta") {
         const delta = asString(assistantEvent.delta);
         if (delta) {
+          streamed = true;
           return [{ kind: "thinking", ts, text: delta, delta: true }];
         }
       }
@@ -200,23 +185,8 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
       if (msgType === "text_delta") {
         const delta = asString(assistantEvent.delta);
         if (delta) {
+          streamed = true;
           return [{ kind: "assistant", ts, text: delta, delta: true }];
-        }
-      }
-      
-      // Handle thinking end - emit full thinking block
-      if (msgType === "thinking_end") {
-        const content = asString(assistantEvent.content);
-        if (content) {
-          return [{ kind: "thinking", ts, text: content }];
-        }
-      }
-      
-      // Handle text end - emit full text block
-      if (msgType === "text_end") {
-        const content = asString(assistantEvent.content);
-        if (content) {
-          return [{ kind: "assistant", ts, text: content }];
         }
       }
     }
@@ -225,7 +195,7 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
 
   if (type === "message_end") {
     const message = asRecord(parsed.message);
-    if (message) {
+    if (message && !streamed) {
       const content = message.content as string | Array<{ type: string; text?: string; thinking?: string }>;
       const { text, thinking } = extractTextContent(content);
       
