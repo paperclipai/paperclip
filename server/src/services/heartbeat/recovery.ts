@@ -13,7 +13,7 @@ import {
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -72,6 +72,7 @@ import {
   type HotRestartReportRun,
 } from "../hot-restart.js";
 import { serverVersion } from "../../version.js";
+import { adapterExecutionControls, waitForAdapterStop } from "../adapter-execution-control.js";
 
 import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
@@ -1156,6 +1157,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       }
       const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
+      const control = run.runtimeMode === "legacy" ? adapterExecutionControls.get(run.id) : undefined;
       try {
         if (run.runtimeMode === "native") {
           await cancelHeartbeatNativeRun({
@@ -1165,7 +1167,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             runtimeMode: run.runtimeMode,
           });
         }
-        if (running) {
+        if (running && !control) {
           await terminateHeartbeatRunProcess({
             pid: running.child.pid,
             processGroupId: running.processGroupId,
@@ -1173,7 +1175,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
         }
       } finally {
-        runningProcesses.delete(run.id);
+        if (!control && runningProcesses.get(run.id) === running) runningProcesses.delete(run.id);
       }
 
       const persistedCancellationResult =
@@ -1201,6 +1203,41 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       );
       if (!interruptedStatus.updated || !interruptedStatus.run) continue;
       let interrupted = interruptedStatus.run;
+      if (control) {
+        // Keep the exact lease open while its adapter stops the provider and
+        // copies files back. Provider release closes command admission and
+        // must not race the adapter's git export or instruction collection.
+        control.controller.abort(new Error(message));
+        try {
+          await waitForAdapterStop(control.settled, 30_000, {
+            runId: run.id, adapterType: agent.adapterType, runtimeMode: run.runtimeMode,
+            abortRequested: true,
+          }, control);
+        } catch {
+          logger.warn({ runId: run.id }, "Shutdown adapter settlement timed out; retaining the sandbox through normal cleanup");
+          const [sandbox] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+            eq(environmentLeases.status, "active"), ne(environmentLeases.provider, "local"),
+            or(sql`${environmentLeases.metadata}->>'driver' = 'sandbox'`,
+              sql`${environmentLeases.metadata}->>'sandboxProviderPlugin' = 'true'`),
+          )).limit(1);
+          if (sandbox) {
+            // An unjoined restore cannot certify saved files. Record the exact
+            // stop-only sources and repair hold before provider cleanup starts.
+            const current = await getRun(run.id, { includeExecutionEvidence: true });
+            if (current) await terminalizeLegacyExecution({ db, run: current, status: current.status,
+              recordRestoreFailureOnly: true, patch: { resultJson: { workspaceRestoreFailure: "restore_failed" } } });
+          }
+          if (runningProcesses.get(run.id) === running && running) {
+            await terminateHeartbeatRunProcess({ pid: running.child.pid, processGroupId: running.processGroupId,
+              graceMs: Math.max(1, running.graceSec) * 1000 });
+            if (runningProcesses.get(run.id) === running) runningProcesses.delete(run.id);
+          }
+        }
+        // Settlement can save restore-failure evidence after the shutdown CAS.
+        // Classification and retry must use the current row, not its snapshot.
+        interrupted = (await getRun(run.id, { includeExecutionEvidence: true })) ?? interrupted;
+      }
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: null,

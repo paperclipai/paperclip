@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -10,6 +10,7 @@ import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "./r
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -183,6 +184,79 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Recover this run", status: "in_progress", assigneeAgentId: agentId });
     return (await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, invocationSource: "automation", status: "running", runtimeMode: "legacy" }).returning())[0];
   }
+
+  it.each(["restored", "restore_failed"])("keeps the sandbox available until adapter workspace settlement: %s", async outcome => {
+    const run = await seedRun();
+    const deps = callbacks(db);
+    deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning();
+      return { updated: true, run: updated };
+    });
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    const control = createAdapterExecutionControl();
+    adapterExecutionControls.set(run.id, control);
+    const drain = createHeartbeatRecovery(db, deps).drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]);
+    try {
+      await vi.waitFor(() => expect(control.controller.signal.aborted).toBe(true));
+      expect(deps.releaseEnvironmentLeasesForRun).not.toHaveBeenCalled();
+      expect(deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+      expect((await deps.getRun(run.id))?.status).toBe("interrupted");
+      const resultJson = outcome === "restore_failed" ? { workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [randomUUID()] } }
+        : { workspaceRestored: true };
+      await db.update(heartbeatRuns).set({ resultJson }).where(eq(heartbeatRuns.id, run.id));
+      control.finish();
+      await drain;
+      expect(deps.releaseEnvironmentLeasesForRun).toHaveBeenCalledOnce();
+      expect(deps.classifyAndPersistRunLiveness).toHaveBeenCalledWith(expect.objectContaining({
+        resultJson: expect.objectContaining(resultJson) }), expect.anything());
+    } finally {
+      control.finish();
+      adapterExecutionControls.delete(run.id);
+      await drain;
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
+  it("pins an unjoined sandbox restore for repair before bounded shutdown cleanup", async () => {
+    const run = await seedRun();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: run.issueId } }).where(eq(heartbeatRuns.id, run.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
+      issueId: run.issueId, status: "active", provider: "daytona", providerLeaseId: randomUUID(), leasePolicy: "ephemeral",
+      metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: "fixture-plugin", remoteCwd: "/home/daytona/workspace" } }).returning();
+    const deps = callbacks(db);
+    deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning();
+      return { updated: true, run: updated };
+    });
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    deps.releaseEnvironmentLeasesForRun.mockImplementation(async () => {
+      expect((await deps.getRun(run.id))?.resultJson).toMatchObject({ workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [lease.id] } });
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0]).toMatchObject({
+        status: "pending_cleanup", leasePolicy: "retain_on_failure", metadata: { sandboxStopAndRetain: { leaseId: lease.id } } });
+    });
+    const control = createAdapterExecutionControl();
+    adapterExecutionControls.set(run.id, control);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const drain = createHeartbeatRecovery(db, deps).drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]);
+    try {
+      await vi.waitFor(() => expect(control.controller.signal.aborted).toBe(true));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await drain;
+      expect(deps.releaseEnvironmentLeasesForRun).toHaveBeenCalledOnce();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!)))
+        .toEqual([expect.objectContaining({ evidence: expect.objectContaining({ workspaceRestoreFailure: "restore_failed" }) })]);
+    } finally {
+      vi.useRealTimers();
+      control.finish();
+      adapterExecutionControls.delete(run.id);
+      await drain;
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
 
   it("uses the shared live-execution set after construction across two factories", async () => {
     const run = await seedRun();
