@@ -7526,15 +7526,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         ? subTasksTree
         : null}
 
-      <IssueMonitorBanner
-        key={issue.id}
-        onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
-        issue={issue}
-        workProducts={workProducts}
-        checkError={checkIssueMonitorNow.error?.message}
-        onCheckNow={() => checkIssueMonitorNow.mutate()}
-        checkingNow={checkIssueMonitorNow.isPending}
-      />
+      {!activePauseHold ? (
+        <IssueMonitorBanner
+          key={issue.id}
+          onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
+          issue={issue}
+          workProducts={workProducts}
+          checkError={checkIssueMonitorNow.error?.message}
+          onCheckNow={() => checkIssueMonitorNow.mutate()}
+          checkingNow={checkIssueMonitorNow.isPending}
+        />
+      ) : null}
 
       {taskChatShellEnabled ? null : (
         <InlineEditor
@@ -8095,7 +8097,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}
                   composerAccessory={
-                    hasVisibleMonitorSurface(issue) ? (
+                    !activePauseHold && hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
                         workProducts={workProducts}

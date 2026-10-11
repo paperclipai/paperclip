@@ -5647,6 +5647,12 @@ describe("IssueDetail", () => {
       createIssue({
         status: "in_review",
         assigneeAgentId: "agent-1",
+        scheduledRetry: {
+          runId: "waiting-run", status: "scheduled_retry", agentId: "agent-1",
+          agentName: "Agent", retryOfRunId: "previous-wait",
+          scheduledRetryAt: new Date(Date.now() + 30_000),
+          scheduledRetryAttempt: 2, scheduledRetryReason: "computer_admission_wait",
+        },
       }),
     );
     mockIssuesApi.getTreeControlState.mockResolvedValue({
@@ -5683,6 +5689,8 @@ describe("IssueDetail", () => {
       expect(container.textContent).toContain("Task is paused.");
       expect(container.textContent).toContain("in_review");
       expect(container.textContent).not.toContain("Subtree is paused.");
+      expect(container.textContent).not.toContain("Connecting to computer");
+      expect(container.querySelector('[data-testid="issue-monitor-composer-strip"]')).toBeNull();
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button")).find(
