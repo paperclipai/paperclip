@@ -797,6 +797,7 @@ export type {
   FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
   PluginSandboxEnvironmentConfig,
+  BoatEnvironmentConfig,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
@@ -2870,4 +2871,5 @@ export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOp
 
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
 
+export type { ComputerViewer, TaskComputer } from "./types/computer-view.js";
 export * from "./fast-response.js";

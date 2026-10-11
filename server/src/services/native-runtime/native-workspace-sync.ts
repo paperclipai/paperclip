@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, heartbeatRuns } from "@paperclipai/db";
 import type { EnvironmentLease } from "@paperclipai/shared";
@@ -825,6 +825,21 @@ async function finalizePreparedRuntime(input: {
   return reference;
 }
 
+/** Persistent remote bytes have no controller export/restore descriptor. */
+export interface NativeComputerWorkspaceReference {
+  leaseId: string; providerLeaseId: string; remoteCwd: string;
+  computerOwner: { computerId: string; ownerId: string; generation: number; listenerPort: number };
+}
+export function readNativeComputerWorkspaceReference(value: unknown): NativeComputerWorkspaceReference | null {
+  const parsed = parseObject(value);
+  if (parsed.kind !== "remote-persistent" || typeof parsed.leaseId !== "string" ||
+      typeof parsed.providerLeaseId !== "string" || typeof parsed.remoteCwd !== "string" ||
+      typeof parsed.computerId !== "string" || !Number.isSafeInteger(parsed.ownerGeneration) || Number(parsed.ownerGeneration) < 1 ||
+      !Number.isInteger(parsed.listenerPort) || Number(parsed.listenerPort) < 1 || Number(parsed.listenerPort) > 65535) return null;
+  return { leaseId: parsed.leaseId, providerLeaseId: parsed.providerLeaseId, remoteCwd: parsed.remoteCwd,
+    computerOwner: { computerId: parsed.computerId, ownerId: parsed.providerLeaseId, generation: Number(parsed.ownerGeneration), listenerPort: Number(parsed.listenerPort) } };
+}
+
 export async function prepareNativeWorkspaceSync(input: {
   db: Db;
   runId: string;
@@ -837,6 +852,20 @@ export async function prepareNativeWorkspaceSync(input: {
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
 }): Promise<PreparedNativeWorkspaceSync | null> {
+  if (input.target?.kind === "remote" && input.target.transport === "computer") {
+    const target = input.target;
+    if (input.restartRecovery?.kind === "reattach_remote_runner" &&
+        (input.restartRecovery.remote.providerLeaseId !== target.resourceAuthority.ownerId ||
+         input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) throw new Error("native_remote_recovery_lease_mismatch");
+    const descriptor = { kind: "remote-persistent", leaseId: input.lease.id,
+      providerLeaseId: target.resourceAuthority.ownerId, computerId: target.resourceAuthority.computerId,
+      ownerGeneration: target.resourceAuthority.generation, listenerPort: target.listenerPort, remoteCwd: target.remoteCwd,
+      placementId: target.fileAuthority.placementId };
+    await input.db.update(heartbeatRuns).set({
+      runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeComputerWorkspace: descriptor })}::jsonb`,
+    }).where(eq(heartbeatRuns.id, input.runId));
+    return null;
+  }
   if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
   }

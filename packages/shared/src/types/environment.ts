@@ -175,3 +175,11 @@ export interface EnvironmentLease {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** Attached persistent computer; credentials always resolve in the owning company. */
+export interface BoatEnvironmentConfig {
+  provider: "boat";
+  sandboxId: string;
+  apiKeySecretRef: EnvSecretRefBinding;
+  runnerIdleTimeoutMs?: number;
+}

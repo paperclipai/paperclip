@@ -16,6 +16,7 @@ import { browserUseRoutes } from "./routes/browser-use.js";
 import { registerChatActionWork } from "./services/chat-action-work.js";
 import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
+import { computerRoutes } from "./routes/computers.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
@@ -1018,6 +1019,7 @@ export async function createApp(
     { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
     (session, run) => toolGateway.browserUseSessionAuthorized({ ...session, runId: run.heartbeatRunId, invocationId: run.invocationId }));
   api.use(browserUseRoutes(db, browserUse));
+  api.use(computerRoutes(db));
   api.use(toolGatewayRoutes(db, toolGateway));
   api.use(
     pluginRoutes(

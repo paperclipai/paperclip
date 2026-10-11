@@ -1,3 +1,4 @@
+import { adapterExecutionTargetIsCommandBacked } from "@paperclipai/adapter-utils/execution-target";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -205,7 +206,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const effectiveWorkspaceCwd = executionTarget?.workspaceRealization?.mode === "in_place"
+    ? executionTarget.workspaceRealization.authoritativeRoot
+    : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
@@ -216,7 +219,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.agentIdentity) };
@@ -426,7 +431,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
-  const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
+  const executionTargetIsCommandBacked = adapterExecutionTargetIsCommandBacked(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -453,11 +458,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : [];
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const effectiveWorkspaceCwd = executionTarget?.workspaceRealization?.mode === "in_place"
+    ? executionTarget.workspaceRealization.authoritativeRoot
+    : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const hasExplicitClaudeConfigDir =
     typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim().length > 0;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  // Controller scratch supplies prompt bytes; persistent computer paths come
+  // from the registered instruction copy, including a nested entry file.
+  const persistentComputer = executionTarget?.kind === "remote" && executionTarget.transport === "computer";
+  const promptInstructionsFilePath = persistentComputer
+    ? asString(workspaceContext.instructionsFilePath, "").trim()
+    : instructionsFilePath;
+  const instructionsFileDir = promptInstructionsFilePath ? `${(persistentComputer ? path.posix : path).dirname(promptInstructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
     agentIdentity: ctx.agentIdentity,
     runId,
@@ -482,7 +495,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
-  Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
+  Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsCommandBacked }));
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
@@ -506,12 +519,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      instructionsPathDirective =
-        `Agent instructions for this run were loaded from ${instructionsFilePath}. ` +
+      instructionsPathDirective = promptInstructionsFilePath ?
+        `Agent instructions for this run were loaded from ${promptInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory. ` +
-        `This location replaces any instruction file location from earlier turns.`;
+        `This location replaces any instruction file location from earlier turns.` : "";
       combinedInstructionsContents = instructionsContent +
         "\nUse the agent instruction file location supplied in the current run prompt to resolve relative file references.";
     } catch (err) {
@@ -612,11 +625,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
+  const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
           "stdout",
-          `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "Claude runtime assets" : "workspace and Claude runtime assets"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
         );
         return await prepareAdapterExecutionTargetRuntime({
           runId,
@@ -624,6 +638,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "claude",
           timeoutSec,
           workspaceLocalDir: cwd,
+          workspaceRemoteDir: targetWorkspaceRealization?.mode === "in_place"
+            ? targetWorkspaceRealization.authoritativeRoot : undefined,
+          syncWorkspace: targetWorkspaceRealization?.mode !== "in_place",
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
@@ -712,6 +729,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: executionTarget,
       remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir,
+      remoteSkillsDir: config.managedAiConnection
+        ? path.posix.join(effectivePromptBundleAddDir, ".claude", "skills") : undefined,
       options: {
         cwd,
         env,
@@ -748,7 +767,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   let effectiveEffort = effort;
-  if (executionTargetIsSandbox && effort) {
+  if (executionTargetIsCommandBacked && effort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({
       runId,
       command,

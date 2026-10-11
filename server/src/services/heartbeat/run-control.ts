@@ -31,7 +31,7 @@ import {
   admitExplicitNativeContinuation,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
-import { isCancelledNativeStartup } from "../cancelled-native-startup.js";
+import { isPausedComputerAdmissionRetryBeforeProvider, isCancelledNativeStartup, isComputerAdmissionWaitBeforeProvider, hasSettledComputerAdmissionPreparation } from "../cancelled-native-startup.js";
 import {
   executionBlockerPredicate,
   getExecutionBlocker,
@@ -91,7 +91,7 @@ import {
 } from "../issue-queued-comment-queue.js";
 import {
   cancelNativeSession,
-  closeWarmNativeSessionsForEnvironment,
+  closeWarmNativeSessionsForRun,
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
@@ -292,36 +292,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (providerResourceDisposition === "destroy") {
       const closeResult = await (
         options.closeWarmNativeSessionsForRun ??
-        (async ({ runId, reason }) => {
-          const environmentIds = await db
-            .selectDistinct({ environmentId: environmentLeases.environmentId })
-            .from(environmentLeases)
-            .where(
-              and(
-                eq(environmentLeases.heartbeatRunId, runId),
-                eq(environmentLeases.status, "active"),
-              ),
-            )
-            .then((rows) =>
-              rows.flatMap((row) =>
-                typeof row.environmentId === "string" &&
-                row.environmentId.length > 0
-                  ? [row.environmentId]
-                  : [],
-              ),
-            );
-          const aggregate = { closed: 0, busy: 0, failed: 0 };
-          for (const environmentId of environmentIds) {
-            const result = await closeWarmNativeSessionsForEnvironment({
-              environmentId,
-              reason,
-            });
-            aggregate.closed += result.closed;
-            aggregate.busy += result.busy;
-            aggregate.failed += result.failed;
-          }
-          return aggregate;
-        })
+        closeWarmNativeSessionsForRun
       )({
         runId: input.runId,
         reason: "terminal heartbeat run destroyed its environment lease",
@@ -415,7 +386,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       ? await db.select().from(nativeRunFinalizations).where(and(
           eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
         )) : [];
-    const cancelledPreparation = run.runtimeMode === "legacy" &&
+    const pausedComputerRetry = await isPausedComputerAdmissionRetryBeforeProvider(db, run);
+    const cancelledPreparation = pausedComputerRetry || run.runtimeMode === "legacy" &&
       await isCancelledNativeStartup(db, run, preparationCoordinator);
     if (run.runtimeMode !== "native" && !cancelledPreparation &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
@@ -451,6 +423,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
       let payload = parseObject(wake.payload);
       if (payload.queuedCommentInterrupt) {
+        if (pausedComputerRetry) continue;
         await resumeQueuedCommentInterrupt(wake.companyId, wake.id);
         continue;
       }
@@ -871,15 +844,84 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     return Math.max(100, Math.min(30_000, Math.trunc(requestedGraceMs)));
   }
 
+  async function cancelComputerAdmissionWait(
+    run: typeof heartbeatRuns.$inferSelect, reason: string, options: CancelRunOptions,
+  ) {
+    const cancellation = requestedRunCancellation(options.resultJson ?? {}, reason);
+    const stop = async (tx: Db) => {
+      // Match retry scheduling's lock order, including a scheduler that already
+      // transferred the task to this wait's exact successor.
+      if (run.scopeKind === "issue" && run.issueId) await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId))).for("update");
+      const [current] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+      )).for("update");
+      if (!current || current.status !== "cancelled" || current.errorCode !== "computer_admission_wait") return null;
+      const alreadyStopped = current.resultJson?.computerAdmissionRetryOutcome === "aborted";
+      // A scheduler may have suppressed its successor but not released the
+      // task yet. Stop can still claim this exact verified pre-provider wait;
+      // removing only that disposition for proof does not authorize a retry.
+      const beforeSuppression = current.resultJson?.computerAdmissionRetryOutcome === "suppressed"
+        ? { ...current, resultJson: { ...current.resultJson, computerAdmissionRetryOutcome: undefined } }
+        : current;
+      if (!alreadyStopped && !(await isComputerAdmissionWaitBeforeProvider(tx, beforeSuppression))) return null;
+      const [stopped] = alreadyStopped ? [current] : await tx.update(heartbeatRuns).set({
+        error: reason, updatedAt: new Date(),
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+          computerAdmissionRetryOutcome: "aborted", cancellation,
+          // This Stop did not cancel provider work; preparation never admitted it.
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        })}::jsonb`,
+      }).where(eq(heartbeatRuns.id, current.id)).returning();
+      const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+        eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, "computer_admission_wait"),
+        eq(heartbeatRuns.scopeKind, current.scopeKind),
+        current.issueId ? eq(heartbeatRuns.issueId, current.issueId) : isNull(heartbeatRuns.issueId),
+      )).limit(1);
+      return { stopped, successorId: successor?.id, updated: !alreadyStopped };
+    };
+    const outcome = await db.transaction(tx => options.budgetEnforcement
+      ? withCurrentBudgetEnforcement(tx as unknown as Db, options.budgetEnforcement, stop)
+      : stop(tx as unknown as Db));
+    if (!outcome) return getRun(run.id);
+    adapterExecutionControls.get(run.id)?.controller.abort(new Error(reason));
+    if (outcome.successorId) {
+      // Native cancellation request IDs belong to one run and cannot be lent
+      // to its successor. The successor uses its existing owned Stop path.
+      const { cancellationRequestId: _requestId, cancellationRequestedByUserId: _requestUser, ...successorOptions } = options;
+      await cancelRunInternal(outcome.successorId, reason, successorOptions);
+    }
+    if (outcome.updated) {
+      await appendRunEvent(outcome.stopped, { eventType: "lifecycle", stream: "system", level: "info",
+        message: "computer admission retry cancelled", payload: { cancellation } });
+    }
+    // The executor's finally block owns this acknowledgement while cleanup is
+    // live. Until then retain the task lock and do not drain queued messages.
+    if (!activeRunExecutions.has(run.id) && hasSettledComputerAdmissionPreparation(outcome.stopped)) {
+      const [acknowledged] = await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+        ${JSON.stringify({ executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } })}::jsonb`,
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "cancelled"),
+        sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' = 'aborted'`)).returning();
+      if (!acknowledged) return getRun(run.id);
+      await releaseIssueExecutionAndPromote(acknowledged, { suppressImmediateRecovery: true });
+      await finalizeAgentStatus(run.agentId, "cancelled", undefined, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+    }
+    return getRun(run.id);
+  }
+
   async function cancelRunInternal(
     runId: string,
     reason = "Cancelled by control plane",
     options: CancelRunOptions = {},
-  ) {
+  ): Promise<typeof heartbeatRuns.$inferSelect | null> {
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (options.cancellationRequestId) {
       run = await claimCancellationRequest(db, runId, run.companyId, options.cancellationRequestId, options.cancellationRequestedByUserId ?? null);
+    }
+    if (run.status === "cancelled" && run.errorCode === "computer_admission_wait") {
+      return cancelComputerAdmissionWait(run, reason, options);
     }
     // The caller claim checked retry eligibility under both durable row locks.
     // This is only a cancellation candidate: dispatch rechecks the coordinator

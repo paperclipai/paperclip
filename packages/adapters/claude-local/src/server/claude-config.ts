@@ -221,7 +221,16 @@ export async function prepareClaudeConfigSeed(
 export function buildRemoteClaudeConfigMaterializationCommand(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteSkillsDir?: string;
 }): string {
+  // --setting-sources user excludes --add-dir's project-scoped skills. Mount
+  // only the approved bundle into this isolated runtime's user skill scope.
+  const skillsLink = shellQuote(path.posix.join(input.remoteClaudeConfigDir, "skills"));
+  const mountSkills = input.remoteSkillsDir
+    ? ` && { if [ -e ${skillsLink} ] && [ ! -L ${skillsLink} ]; then ` +
+      `echo 'Managed Claude skills path is not a symlink' >&2; exit 1; fi; ` +
+      `ln -sfn ${shellQuote(input.remoteSkillsDir)} ${skillsLink}; }`
+    : "";
   return `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)} && ` +
     `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
     `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
@@ -230,7 +239,7 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
     `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
     `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
     `fi; ` +
-    `done`;
+    `done` + mountSkills;
 }
 
 export async function materializeRemoteClaudeConfig(input: {
@@ -238,17 +247,22 @@ export async function materializeRemoteClaudeConfig(input: {
   target: AdapterExecutionTarget | null | undefined;
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteSkillsDir?: string;
   options: AdapterExecutionTargetShellOptions;
 }): Promise<void> {
-  await runAdapterExecutionTargetShellCommand(
+  const result = await runAdapterExecutionTargetShellCommand(
     input.runId,
     input.target,
     buildRemoteClaudeConfigMaterializationCommand({
       remoteClaudeConfigDir: input.remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir: input.remoteClaudeConfigSeedDir,
+      remoteSkillsDir: input.remoteSkillsDir,
     }),
     input.options,
   );
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("Could not materialize the managed Claude config and skills");
+  }
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -302,8 +316,11 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
       const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
-      const managedRemoteCwd =
-        input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
+      const workspaceRealization = input.target?.kind === "remote"
+        ? input.target.workspaceRealization : undefined;
+      const managedRemoteCwd = workspaceRealization?.mode === "in_place"
+        ? workspaceRealization.authoritativeRoot
+        : input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
       tempWorkspaceDir = await fs.mkdtemp(
         path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"),
       );
@@ -313,6 +330,9 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         adapterKey: "claude",
         workspaceLocalDir: tempWorkspaceDir,
         workspaceRemoteDir: managedRemoteCwd,
+        // A readiness probe only stages config assets. In-place workspaces are
+        // persistent authority and must never receive the empty probe workspace.
+        syncWorkspace: workspaceRealization?.mode !== "in_place",
         timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
         assets: [
           {

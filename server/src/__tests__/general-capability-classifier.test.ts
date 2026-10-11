@@ -108,15 +108,19 @@ describe("general capability classifier", () => {
     }
   });
 
-  it("defines static capability support for the four drivers", () => {
+  it("defines static capability support for every driver", () => {
     expect(Object.keys(ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT).sort()).toEqual([
+      "computer",
       "local",
       "plugin",
       "sandbox",
       "ssh",
     ]);
-    // The two remote provider drivers support the whole capability set; the two
+    // The three provider drivers support the whole capability set; the two
     // host drivers support none.
+    expect(ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.computer.supportedCapabilities.size).toBe(
+      SANDBOX_CAPABILITY_KEYS.length,
+    );
     expect(ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities.size).toBe(
       SANDBOX_CAPABILITY_KEYS.length,
     );

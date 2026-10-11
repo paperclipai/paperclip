@@ -1,3 +1,4 @@
+import { isComputerAdmissionWaitBeforeProvider, isPausedComputerAdmissionRetryBeforeProvider } from "./cancelled-native-startup.js";
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
@@ -60,7 +61,8 @@ export function legacyExecutionNeedsReconciliation(
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
   return await hasUnrestoredRemoteWorkspace(db, run) ||
-    (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run)));
+    (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run)) &&
+      !(await isComputerAdmissionWaitBeforeProvider(db, run)) && !(await isPausedComputerAdmissionRetryBeforeProvider(db, run)));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */
@@ -214,6 +216,27 @@ export async function terminalizeLegacyExecution(input: {
           ),
         )).limit(1);
       if (reconciled) return updated;
+      if (!hasWorkspaceRestoreFailure(updated.resultJson) && !hasRequiredWorkspaceRecovery(updated.resultJson)) {
+        // A new user turn is also a durable decision about this old hold. It
+        // does not certify old actions or files; match the admitted successor
+        // so a periodic stale-source sweep cannot recreate its retired hold.
+        const [continued] = await tx.select({ id: issueRecoveryActions.id })
+          .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
+            eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+            sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId'`,
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}`,
+            sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'`,
+            sql`${heartbeatRuns.contextSnapshot}->'explicitUserContinuation'->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'`,
+            sql`${heartbeatRuns.contextSnapshot}->'explicitUserContinuation'->>'commentId' is not distinct from ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'commentId'`,
+            sql`${heartbeatRuns.contextSnapshot}->'explicitUserContinuation'->>'failedRunId' is not distinct from ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'failedRunId'`,
+          )).where(and(
+            eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+            eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
+            eq(issueRecoveryActions.status, "resolved"), eq(issueRecoveryActions.outcome, "cancelled"),
+            sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId') = ${run.id}`,
+          )).limit(1);
+        if (continued) return updated;
+      }
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,

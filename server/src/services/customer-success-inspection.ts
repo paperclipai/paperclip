@@ -329,7 +329,7 @@ export async function readCustomerSuccessResource(
       if (q.operation.startsWith("files.")) {
         try {
           const issue = await ownRow(tx, schema.issues, q.companyId!, q.resourceId!);
-          const files = workspaceFileResourceService(tx);
+          const files = workspaceFileResourceService(tx, undefined, { allowComputerAccess: false });
           const input = { path: q.path ?? "", ...q.context, limit: q.limit, offset: q.offset };
           const opts = {
             issue: issue as unknown as NonNullable<Parameters<typeof files.list>[2]>["issue"],
@@ -338,6 +338,17 @@ export async function readCustomerSuccessResource(
           if (q.operation === "files.read")
             return await files.readContent(q.resourceId!, input, opts);
           const resolved = await files.prepareDownload(q.resourceId!, input, opts);
+          if ("bytes" in resolved) {
+            const bytes = resolved.bytes;
+            if (bytes.length === 0 && !q.range) return binary(bytes, 0);
+            const start = q.range?.start ?? 0;
+            const end = q.range?.end ?? bytes.length - 1;
+            if (start >= bytes.length || end >= bytes.length || end - start + 1 > MAX_INSPECTION_BYTES)
+              throw unprocessable("Request a bounded byte range");
+            // The remote backend already captured a bounded, confined snapshot;
+            // do not reinterpret its path on the controller filesystem.
+            return binary(bytes.subarray(start, end + 1), bytes.length, start);
+          }
           const file = await fs.open(resolved.realPath, constants.O_RDONLY | constants.O_NOFOLLOW);
           try {
             const stat = await file.stat();

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
-import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers } from "@paperclipai/adapter-utils/execution-target";
+import { adapterExecutionTargetIsCommandBacked, cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers } from "@paperclipai/adapter-utils/execution-target";
 
 type LauncherInput = Parameters<typeof prepareGitHubOperationLaunchers>[0];
 
@@ -21,12 +21,12 @@ export async function prepareHeartbeatGitHubLaunchers(
   if (input.native && input.githubConfigured) {
     return { env: githubBrokerEnvironment(input.env, { url: "", token: "" }), cleanupLocation: null };
   }
-  // An unconfigured sandbox has no managed GitHub identity to broker. Its
+  // An unconfigured command-backed environment has no managed GitHub identity to broker. Its
   // token-free wrappers still isolate image credentials, but may live as long
   // as the workspace so a warm provider never inherits a deleted run path.
   // Other adapter paths retain their run-scoped capability/retirement rules.
   const anonymous = input.native && !input.githubConfigured &&
-    input.target?.kind === "remote" && input.target.transport === "sandbox";
+    adapterExecutionTargetIsCommandBacked(input.target);
   const location = {
     runId: anonymous
       ? `anonymous-${input.agentId}-${createHash("sha256").update(input.env.PATH ?? "").digest("hex").slice(0, 16)}`

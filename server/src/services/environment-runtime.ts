@@ -1,3 +1,4 @@
+import { createComputerEnvironmentDriver } from "./computer-environment-driver.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
@@ -432,6 +433,8 @@ function stripSecretRefValuesFromPluginLeaseMetadata(input: {
 }
 
 export interface EnvironmentDriverAcquireInput {
+  /** Stable selected execution configuration; command-backed warm owners fence changes. */
+  executionConfigurationKey?: string;
   companyId: string;
   environment: Environment;
   issueId: string | null;
@@ -523,6 +526,8 @@ export interface EnvironmentDriverLeaseInput {
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
+  /** Ephemeral authentication for the initial checkout, excluded from durable metadata. */
+  gitAuth?: { configArgs: string[]; env: Record<string, string> };
   workspace: {
     localPath?: string;
     remotePath?: string;
@@ -3839,6 +3844,7 @@ export function environmentRuntimeService(
   const defaultDrivers = [
     createLocalEnvironmentDriver(db),
     createSshEnvironmentDriver(db),
+    createComputerEnvironmentDriver(db),
     createSandboxEnvironmentDriver(db, {
       pluginWorkerManager: options.pluginWorkerManager,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
@@ -3977,6 +3983,7 @@ export function environmentRuntimeService(
     },
 
     async acquireRunLease(input: {
+      executionConfigurationKey?: string;
       companyId: string;
       environment: Environment;
       issueId: string | null;
@@ -4015,6 +4022,7 @@ export function environmentRuntimeService(
       });
       const driver = requireDriver(input.environment);
       const lease = await driver.acquireRunLease({
+        executionConfigurationKey: input.executionConfigurationKey,
         companyId: input.companyId,
         environment: input.environment,
         issueId: input.issueId,

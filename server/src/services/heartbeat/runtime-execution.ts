@@ -265,6 +265,22 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   }
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   const inspectFinalizeWorkspaceBranch = async () => {
+    // A remote pathname must never be inspected as a controller Git tree.
+    if (executionTarget?.kind === "remote" && executionTarget.transport === "computer") {
+      if (executionWorkspace.strategy === "git_worktree" && executionWorkspace.branchName) {
+        const branch = await executionTarget.runner!.execute({
+          command: "git",
+          args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          cwd: executionTarget.remoteCwd,
+          timeoutMs: 10_000,
+          bypassSession: true,
+        });
+        if (branch.exitCode !== 0 || branch.timedOut || branch.stdout.trim() !== executionWorkspace.branchName) {
+          throw new Error("computer_workspace_branch_mismatch");
+        }
+      }
+      return null;
+    }
     const workspaceRecord = persistedExecutionWorkspace?.id
       ? await executionWorkspacesSvc.getById(
           persistedExecutionWorkspace.id,
@@ -828,7 +844,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onProviderStopped: collectStoppedInstructions,
               onDispatch: markDispatchStarted,
               signal: executionControl.controller.signal,
-              ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
+              ...(executionTarget?.kind === "remote" && (executionTarget.transport === "sandbox" || executionTarget.transport === "computer") ? {
                 stopRemoteStartup: async () => {
                   // Scope comes from the running host invocation, never agent
                   // config. Keep adapter ownership until setup has unwound.

@@ -1,3 +1,5 @@
+import { canRetryComputerAdmissionWait } from "../cancelled-native-startup.js";
+import type { ComputerStopPendingError } from "../../modules/computers/index.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
@@ -22,6 +24,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
   ne,
   notInArray,
@@ -48,6 +51,7 @@ import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
+  COMPUTER_ADMISSION_WAIT_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
@@ -420,6 +424,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
       ),
     );
+    if (retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON && !(await canRetryComputerAdmissionWait(db, run))) {
+      return { outcome: "not_scheduled" as const, reason: "Computer admission retry requires a settled pre-provider wait.", issueId: run.issueId };
+    }
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
     const computedBaseSchedule =
@@ -551,7 +558,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const requiresIssueGate =
       isTransientWorkspaceGitScanCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
-      (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) ||
+      (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON || retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON) ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
@@ -562,6 +569,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         now,
       });
       if (!gate.allowed) {
+        if (retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON && gate.errorCode === "issue_execution_lock_changed") {
+          // A concurrent scheduler may already have transferred the task lock.
+          const [existing] = await db.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.retryOfRunId, run.id),
+          )).limit(1);
+          if (existing) return { outcome: "scheduled" as const, run: existing, reusedExisting: true };
+        }
         await appendRunEvent(run, {
           eventType: "lifecycle",
           stream: "system",
@@ -615,6 +629,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         retryOfRunId: run.id,
         wakeReason,
         retryReason,
+        ...(retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON
+          ? { failureRetriesBeforeComputerWait: executionFailureRetryCount(run) } : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -707,6 +723,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );
+          if (retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON) {
+            const [lockedRun] = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+            ));
+            if (!lockedRun || !(await canRetryComputerAdmissionWait(tx as unknown as Db, lockedRun))) {
+              return { outcome: "not_scheduled", reason: "Computer admission wait changed before retry admission.",
+                errorCode: "issue_execution_lock_changed", issueId, details: {} };
+            }
+          }
           const [existing] = await tx
             .select()
             .from(heartbeatRuns)
@@ -948,7 +973,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         }
 
         if (
-          (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) && issueId &&
+          (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON || retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON) && issueId &&
           !isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)
         ) {
           // The issue row is locked above. Recheck after the preflight gate so
@@ -966,7 +991,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && retryReason === "transient_failure" ? await admitExplicitContinuationRetry({
+          const continuation = issueId && (retryReason === "transient_failure" || retryReason === COMPUTER_ADMISSION_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
           }) : null;
@@ -1365,6 +1390,62 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       .then((rows) => rows[0] ?? null);
   }
 
+  async function finalizeComputerAdmissionDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    error: ComputerStopPendingError,
+    wasIssueAssignee: boolean,
+  ) {
+    const now = new Date();
+    const message = `${error.message} This task will retry automatically.`;
+    const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: message, errorCode: COMPUTER_ADMISSION_WAIT_RETRY_REASON, finishedAt: now,
+      resultJson: {
+        executionRecovery: { kind: "computer_admission_wait", providerWorkStarted: false },
+        computerAdmission: error.admission,
+        cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for the computer to finish saving", recordedAt: now.toISOString() },
+      },
+      contextSnapshot: { ...parseObject(run.contextSnapshot), computerAdmissionDeferredWhileAssignee: wasIssueAssignee },
+    });
+    // An operator Stop or another owner already terminalized this run.
+    if (!cancelled.updated) return;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: message }).catch(() => undefined);
+    return cancelled.run;
+  }
+
+  async function scheduleComputerAdmissionRetry(run: typeof heartbeatRuns.$inferSelect) {
+    if (!(await canRetryComputerAdmissionWait(db, run))) return;
+    const agent = await getAgent(run.agentId);
+    if (!agent) return;
+    const retry = await scheduleBoundedRetryForRun(run, agent, {
+      retryReason: COMPUTER_ADMISSION_WAIT_RETRY_REASON, wakeReason: "computer_admission_retry",
+      maxAttempts: executionRetryAttemptCount(run, COMPUTER_ADMISSION_WAIT_RETRY_REASON) + 1,
+      delayMs: 30_000,
+    });
+    const authorizationLost = retry.outcome !== "scheduled" && "errorCode" in retry &&
+      retry.errorCode === "continuation_user_authorization_missing";
+    if (retry.outcome !== "scheduled") {
+      const reason = "reason" in retry ? retry.reason : "The retry limit was reached.";
+      const [suppressed] = await db.update(heartbeatRuns).set({
+        ...(authorizationLost ? { status: "failed", errorCode: "computer_admission_retry_unavailable" } : {}),
+        error: `Computer admission retry was not scheduled: ${reason}`,
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+        ${JSON.stringify({ computerAdmissionRetryOutcome: "suppressed" })}::jsonb`,
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, COMPUTER_ADMISSION_WAIT_RETRY_REASON),
+        sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' is null`)).returning();
+      // Stop or another terminal owner won. Its acknowledgement and release
+      // must not be replaced by this scheduler's stale suppression outcome.
+      if (!suppressed) return;
+      await appendRunEvent(suppressed, { eventType: "lifecycle", stream: "system", level: authorizationLost ? "warn" : "info",
+        message: `Computer admission retry was not scheduled: ${reason}`, payload: { retryScheduled: false } });
+      await releaseIssueExecutionAndPromote(suppressed);
+    }
+    await finalizeAgentStatus(run.agentId, authorizationLost ? "failed" : "cancelled", null,
+      { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+  }
+
+
   // Credential rotation can briefly contend with a fresh runtime read. Keep
   // the task on its automatic pre-provider retry path while the lock clears.
   async function finalizeAiConnectionBusyDeferral(
@@ -1575,6 +1656,19 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
+    // Recover a crash after preparation cleanup but before successor scheduling.
+    // The scheduler rechecks task ownership and deduplicates under its locks.
+    const pendingComputerWaits = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, COMPUTER_ADMISSION_WAIT_RETRY_REASON),
+      sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' is null`,
+      sql`not exists (select 1 from heartbeat_runs successor where successor.company_id = ${heartbeatRuns.companyId} and successor.retry_of_run_id = ${heartbeatRuns.id})`,
+      ...(cutoff ? [gte(heartbeatRuns.createdAt, cutoff)] : []),
+    )).orderBy(sql`coalesce(${heartbeatRuns.resultJson}->>'computerAdmissionRetryCheckedAt', '')`, asc(heartbeatRuns.id)).limit(50);
+    for (const wait of pendingComputerWaits) {
+      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+        ${JSON.stringify({ computerAdmissionRetryCheckedAt: now.toISOString() })}::jsonb` }).where(eq(heartbeatRuns.id, wait.id));
+      await scheduleComputerAdmissionRetry(wait);
+    }
     const result = await runDispatch.promoteDueScheduledRetries({
       now,
       cutoff,
@@ -1828,6 +1922,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
+    finalizeComputerAdmissionDeferral,
+    scheduleComputerAdmissionRetry,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
     retryScheduledRetryNow,

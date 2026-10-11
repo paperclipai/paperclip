@@ -303,6 +303,23 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
+  it("resolves run-scoped checkout credentials without persisting them in workspace metadata", async () => {
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const request = mockBuildWorkspaceRealizationRequest.getMockImplementation()!();
+    request.source.repoUrl = "https://github.com/company/private-repo.git";
+    mockBuildWorkspaceRealizationRequest.mockReturnValue(request);
+    const gitAuth = { configArgs: ["-c", "credential.helper="], env: { PAPERCLIP_GIT_TOKEN: "scoped-fixture-token" }, source: "managed_connection" as const, secretName: null };
+    const resolveGitAuth = vi.fn(async () => gitAuth);
+    await orchestrator.realizeForRun({ ...makeRealizeInput({ environment: makeEnvironment("computer") }), resolveGitAuth });
+    expect(resolveGitAuth).toHaveBeenCalledExactlyOnceWith(request.source.repoUrl);
+    expect(runtime.realizeWorkspace).toHaveBeenCalledWith(expect.objectContaining({ gitAuth }));
+    const dispatched = vi.mocked(runtime.realizeWorkspace).mock.calls[0]![0];
+    expect(JSON.stringify(dispatched.workspace)).not.toContain("scoped-fixture-token");
+    expect(JSON.stringify(mockUpdateLeaseMetadata.mock.calls)).not.toContain("scoped-fixture-token");
+    expect(JSON.stringify(mockUpdateExecutionWorkspace.mock.calls)).not.toContain("scoped-fixture-token");
+  });
+
   it("uses an in-place authoritative root on the adapter execution target", async () => {
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
       kind: "remote",
@@ -749,6 +766,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
 
 describe("native runner lifecycle changes before lease acquisition", () => {
+  it("fences computer warm admission when the selected model changes", async () => {
+    const environment = { ...makeEnvironment("computer"), config: { provider: "boat" } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    const input = { companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType: "paperclip_runner",
+      issueId: "task", heartbeatRunId: "run-1", agentId: "agent-1", persistedExecutionWorkspace: null, executionWorkspaceSettings: null };
+    for (const model of ["model-a", "model-a", "model-b"]) await orchestrator.acquireForRun({ ...input, adapterConfig: { provider: "codex", model } });
+    const keys = acquireRunLease.mock.calls.map(([input]) => input.executionConfigurationKey);
+    expect(keys[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
   it("requests a reusable lease when an existing task switches from per-turn to warm", async () => {
     const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
     mockGetEnvironment.mockResolvedValue(environment);

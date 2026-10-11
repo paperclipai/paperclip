@@ -1,3 +1,4 @@
+import * as computerModule from "../modules/computers/index.js";
 import express from "express";
 import type { Request } from "express";
 import { execFile } from "node:child_process";
@@ -206,6 +207,145 @@ describeEmbeddedPostgres("workspace file resources", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("browses a recorded computer placement and confines previews/downloads to safe relative files", async () => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    const environmentId = crypto.randomUUID(), placementId = crypto.randomUUID();
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: "/home/user/paperclip/remote/project",
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId, placementId } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    const bytes = Buffer.from("only on Boat");
+    const readBytes = vi.fn(async () => ({ bytes, sha256: "unused-by-preview" }));
+    const listPage = vi.fn(async () => ({ entries: [{ name: "README.md", kind: "file", size: bytes.length, mtimeMs: 1 },
+      { name: ".env", kind: "file", size: 1, mtimeMs: 1 }, { name: ".paperclip-runtime", kind: "directory", size: 0, mtimeMs: 1 }], truncated: true }));
+    const stat = vi.fn(async (name: string) => ({ name, kind: "file", size: bytes.length, mtimeMs: 1 }));
+    const workspaceFiles = vi.fn(async () => ({ root: "/home/user/paperclip/remote/project", listPage, stat, readBytes }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const listed = await service.list(graph.issueId, { workspace: "execution" });
+      expect(listed.items.map(item => item.title)).toEqual(["README.md"]);
+      expect(listed.truncated).toBe(true);
+      expect(listPage).toHaveBeenCalledWith(undefined, { limit: 1000 });
+      expect(workspaceFiles).toHaveBeenCalledWith({ companyId: graph.companyId, environmentId, placementId });
+      const content = await service.readContent(graph.issueId, { path: "README.md", workspace: "execution" });
+      expect(content.content).toEqual({ encoding: "utf8", data: "only on Boat" });
+      expect(readBytes).toHaveBeenCalledWith("README.md", WORKSPACE_FILE_TEXT_MAX_BYTES);
+      await service.readContent(graph.issueId, { path: "beyond-listing-cap.md", workspace: "execution" });
+      expect(stat).toHaveBeenCalledWith("beyond-listing-cap.md");
+      expect(listPage).toHaveBeenCalledOnce();
+      expect(await service.prepareDownload(graph.issueId, { path: "README.md", workspace: "execution" })).toMatchObject({ bytes });
+      readBytes.mockClear();
+      await expect(service.readContent(graph.issueId, { path: ".env", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
+      await expect(service.readContent(graph.issueId, { path: "../other-company/secret", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
+      expect(readBytes).not.toHaveBeenCalled();
+      workspaceFiles.mockClear();
+      const readOnly = workspaceFileResourceService(db, undefined, { allowComputerAccess: false });
+      await expect(readOnly.prepareDownload(graph.issueId, { path: "README.md", workspace: "execution" })).rejects.toMatchObject({ status: 422, details: { code: "remote_workspace" } });
+      expect(workspaceFiles).not.toHaveBeenCalled();
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
+  it.each(["project", "discovery"])("falls through a missing persistent file to the existing automatic %s candidate", async (fallback) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, targetProjectRoot: workspace.targetProjectRoot, executionRoot: workspace.executionRoot });
+    const environmentId = crypto.randomUUID(), placementId = crypto.randomUUID();
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId, placementId } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    const root = fallback === "project" ? workspace.projectRoot : workspace.targetProjectRoot;
+    const workspaceId = fallback === "project" ? graph.projectWorkspaceId : graph.targetProjectWorkspaceId;
+    await fs.mkdir(path.join(root, "docs"));
+    await fs.writeFile(path.join(root, "docs", "guide.md"), "legitimate project fallback");
+    // A controller path with the same spelling is never the placement's authority.
+    await fs.mkdir(path.join(workspace.executionRoot, "docs"));
+    await fs.writeFile(path.join(workspace.executionRoot, "docs", "guide.md"), "stale controller copy");
+    const missing = Object.assign(new Error("Remote file missing"), { code: "not_found" });
+    const stat = vi.fn().mockRejectedValue(missing);
+    const listPage = vi.fn().mockRejectedValue(missing);
+    const readBytes = vi.fn();
+    const workspaceFiles = vi.fn(async () => ({ root: workspace.executionRoot, stat, listPage, readBytes }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const input = { path: "docs/guide.md" };
+      expect(await service.resolve(graph.issueId, input)).toMatchObject({ workspaceId });
+      expect(await service.readContent(graph.issueId, input)).toMatchObject({ resource: { workspaceId }, content: { data: "legitimate project fallback" } });
+      expect(await service.prepareDownload(graph.issueId, input)).toMatchObject({ resource: { workspaceId }, realPath: path.join(root, "docs", "guide.md") });
+      const availability = await service.availability(graph.issueId, { queries: [input] });
+      expect(availability.results[0]).toMatchObject({ openable: true, resource: { workspaceId } });
+      expect(await service.list(graph.issueId, { path: "docs/" })).toMatchObject({ items: [expect.objectContaining({ workspaceId, title: "guide.md" })] });
+      expect(readBytes).not.toHaveBeenCalled();
+      expect(workspaceFiles).toHaveBeenCalledWith({ companyId: graph.companyId, environmentId, placementId });
+      for (const method of [service.resolve, service.readContent, service.prepareDownload]) {
+        await expect(method(graph.issueId, { ...input, workspace: "execution" })).rejects.toMatchObject({ status: 404 });
+      }
+      await expect(service.list(graph.issueId, { path: "docs/", workspace: "execution" })).rejects.toMatchObject({ status: 404 });
+      expect((await service.availability(graph.issueId, { queries: [{ ...input, workspace: "execution" }] })).results[0])
+        .toMatchObject({ openable: false, unavailableReason: "not_found", resource: null });
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
+  it.each([["not_found", 404], ["forbidden", 403], ["provider_error", 502]] as const)("keeps recursive persistent searches scoped when a child returns %s", async (code, status) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId: crypto.randomUUID(), placementId: crypto.randomUUID() } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.mkdir(path.join(workspace.projectRoot, "docs"));
+    await fs.writeFile(path.join(workspace.projectRoot, "docs", "guide-local.md"), "must not replace remote matches");
+    const listPage = vi.fn(async (relative: string) => {
+      if (relative === "docs/vanished") throw Object.assign(new Error("Child unavailable"), { code });
+      expect(relative).toBe("docs");
+      return { entries: [
+        { name: "guide-before.md", kind: "file", size: 12, mtimeMs: 1 },
+        { name: "vanished", kind: "directory", size: 0, mtimeMs: 1 },
+        { name: "guide-after.md", kind: "file", size: 12, mtimeMs: 1 },
+      ], truncated: false };
+    });
+    const workspaceFiles = vi.fn(async () => ({ root: workspace.executionRoot, listPage }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const result = service.list(graph.issueId, { path: "docs/", q: "guide" });
+      if (code === "not_found") {
+        const listed = await result;
+        expect(listed.items.map(item => item.title)).toEqual(["guide-after.md", "guide-before.md"]);
+        expect(listed.items.every(item => item.workspaceKind === "execution_workspace")).toBe(true);
+        expect(listed.scannedCount).toBe(3);
+        expect(listed.truncated).toBe(false);
+      } else {
+        await expect(result).rejects.toMatchObject({ status });
+      }
+      expect(listPage.mock.calls.map(([relative]) => relative)).toEqual(["docs", "docs/vanished"]);
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
+  it.each([["forbidden", 403], ["provider_error", 502]] as const)("does not fall back from a persistent %s error", async (code, status) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId: crypto.randomUUID(), placementId: crypto.randomUUID() } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.mkdir(path.join(workspace.projectRoot, "docs"));
+    await fs.writeFile(path.join(workspace.projectRoot, "docs", "guide.md"), "must not be returned");
+    const failure = Object.assign(new Error("Remote access failed"), { code });
+    const workspaceFiles = vi.fn(async () => ({ stat: vi.fn().mockRejectedValue(failure), listPage: vi.fn().mockRejectedValue(failure) }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      for (const method of [service.resolve, service.readContent, service.prepareDownload]) {
+        await expect(method(graph.issueId, { path: "docs/guide.md" })).rejects.toMatchObject({ status });
+      }
+      await expect(service.list(graph.issueId, { path: "docs/" })).rejects.toMatchObject({ status });
+      if (code === "forbidden") {
+        expect((await service.availability(graph.issueId, { queries: [{ path: "docs/guide.md" }] })).results[0]).toMatchObject({ openable: false, resource: null });
+      } else {
+        await expect(service.availability(graph.issueId, { queries: [{ path: "docs/guide.md" }] })).rejects.toMatchObject({ status });
+      }
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
   });
 
   it("withholds private task files and private cross-project targets", async () => {

@@ -82,6 +82,7 @@ export type {
   FakeSandboxEnvironmentConfig,
   LocalEnvironmentConfig,
   PluginSandboxEnvironmentConfig,
+  BoatEnvironmentConfig,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
@@ -1101,3 +1102,4 @@ export type { AgentInstructionCandidate } from "./agent.js";
 export * from "./skill-source.js";
 
 export * from "./agent-lifecycle.js";
+export type { ComputerViewer, TaskComputer } from "./computer-view.js";

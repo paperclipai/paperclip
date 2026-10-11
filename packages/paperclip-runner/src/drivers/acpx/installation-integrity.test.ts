@@ -8,6 +8,8 @@ import {
   link,
   mkdir,
   mkdtemp,
+  open,
+  type FileHandle,
   readFile,
   realpath,
   rename,
@@ -15,6 +17,7 @@ import {
   symlink,
   stat,
   writeFile,
+  utimes,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,6 +28,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   verifyProvisionedGrokExecutable,
+  openVerifiedRuntimeExecutable,
   builtinGrokLauncherPath,
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
@@ -54,6 +58,61 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it.each(["once", "every_read", "wrong_digest", "mode", "mtime", "replacement", "symlink", "second_content"] as const)("requires stable full re-verification after a ctime-only transition (%s)", async (transition) => {
+    const directory = await mkdtemp(join(tmpdir(), "paperclip-runtime-hydration-"));
+    temporaryDirectories.push(directory);
+    const executable = join(directory, "runtime");
+    const bytes = Buffer.from("qualified runtime fixture");
+    await writeFile(executable, bytes, { mode: 0o755 });
+    const digest = `sha256:${createHash("sha256").update(transition === "wrong_digest" ? "wrong" : bytes).digest("hex")}`;
+    const probe = await open(executable, "r");
+    const prototype = Object.getPrototypeOf(probe) as FileHandle;
+    const originalRead = probe.read;
+    await probe.close();
+    let reads = 0;
+    const readSpy = vi.spyOn(prototype, "read").mockImplementation(async function (this: FileHandle, ...args: Parameters<FileHandle["read"]>) {
+      if (reads === 1 && transition === "second_content") {
+        await writeFile(executable, Buffer.alloc(bytes.length, 120));
+      }
+      const result = await Reflect.apply(originalRead, this, args);
+      reads += 1;
+      if (reads === 1 || transition === "every_read") {
+        const before = await stat(executable, { bigint: true });
+        // chmod to the existing mode models Boat hydration: ctime alone changes.
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await chmod(executable, 0o755);
+          if ((await stat(executable, { bigint: true })).ctimeNs !== before.ctimeNs) break;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        const after = await stat(executable, { bigint: true });
+        expect(after.ctimeNs).not.toBe(before.ctimeNs);
+        expect([after.dev, after.ino, after.size, after.mode, after.mtimeNs]).toEqual([before.dev, before.ino, before.size, before.mode, before.mtimeNs]);
+        if (transition === "mode") await chmod(executable, 0o700);
+        if (transition === "mtime") await utimes(executable, new Date(0), new Date(0));
+        if (transition === "replacement" || transition === "symlink") {
+          const moved = `${executable}.original`;
+          await rename(executable, moved);
+          if (transition === "symlink") await symlink(moved, executable);
+          else await writeFile(executable, bytes, { mode: 0o755 });
+        }
+      }
+      return result;
+    });
+    try {
+      if (transition === "once") {
+        const verified = await openVerifiedRuntimeExecutable(executable, digest, "fixture");
+        try {
+          const stable = await verified.handle.stat({ bigint: true });
+          expect(verified.identity.changedNanoseconds).toBe(stable.ctimeNs.toString());
+          expect(verified.identity.modifiedNanoseconds).toBe(stable.mtimeNs.toString());
+        } finally { await verified.handle.close(); }
+      } else {
+        await expect(openVerifiedRuntimeExecutable(executable, digest, "fixture")).rejects.toThrow(transition === "wrong_digest" ? "digest mismatch" : "changed while it was verified");
+      }
+      expect(reads).toBe(["once", "every_read", "second_content"].includes(transition) ? 2 : 1);
+    } finally { readSpy.mockRestore(); }
+  });
+
   it.each([false, true])("admits only the declared qualified Codex platform in its npm-hoisted slot (published platform declaration: %s)", async (publishedDeclaration) => {
     const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-hoist-")));
     temporaryDirectories.push(parent);

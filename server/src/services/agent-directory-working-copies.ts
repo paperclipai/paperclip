@@ -1,3 +1,5 @@
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
+import { materializeInstructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -20,6 +22,7 @@ import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
 export class AgentDirectoryReuseInvalidatedError extends Error {}
+const persistent = (row: Pick<Copy, "receipt">) => row.receipt?.fileAuthority === "remote-persistent";
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
 const key = (row: Pick<Copy, "companyId" | "runId">) => `${row.companyId}:${row.runId}`;
@@ -42,12 +45,17 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
   const store = agentFileStore(db);
   const ownerFile = (row: Copy) => path.join(path.dirname(row.localRoot), "owner.json");
   async function owns(row: Copy) {
-    if (row.receipt?.warm !== true) return true;
+    if (persistent(row) || row.receipt?.warm !== true) return true;
     return await fs.readFile(ownerFile(row), "utf8").then(s => JSON.parse(s).runId === row.runId).catch(error => error.code === "ENOENT" && row.processStoppedAt !== null);
   }
   async function canReuse(companyId: string, agentId: string, runId: string) {
     const row = await get(companyId, runId);
     if (!row || row.agentId !== agentId || row.state !== "warm_saved" || row.errorCode || !await owns(row)) return false;
+    if (persistent(row)) {
+      const remote = await persistentAgentFiles(db, companyId, agentId, String(row.receipt?.environmentId));
+      if (!remote || remote.root !== row.executionRoot) return false;
+      return (await readPersistentAgentFile(remote, row.entryFile))?.sha256 === row.receipt?.sessionEntryHash;
+    }
     const entry = baseline(row).entries.get(row.entryFile);
     if (entry?.kind !== "file" || entry.hash !== row.receipt?.sessionEntryHash) return false;
     return store.locked(companyId, agentId, actor(row), false, async (_tx, _agent, root) =>
@@ -96,6 +104,41 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (agentInstructionsBundleMode(agent) !== "managed") return null;
     const bound = await resolveInstructionActor(db, { type: "agent", companyId: input.companyId, agentId: input.agentId, runId: input.runId });
     const root = resolveManagedInstructionsRoot(agent);
+    if (input.target?.kind === "remote" && input.target.transport === "computer" && input.target.fileAuthority?.kind === "remote-persistent") {
+      const authority = input.target.fileAuthority;
+      const remote = await persistentAgentFiles(db, input.companyId, input.agentId, input.target.environmentId ?? undefined);
+      if (!remote || remote.root !== authority.agentHome) throw conflict("Persistent agent placement changed");
+      await store.locked(input.companyId, input.agentId, bound, false, async (_tx, _agent, canonical) => seedPersistentAgentHome(remote, canonical));
+      const entryFile = deriveBundleState(agent).entryFile;
+      let entry = await readPersistentAgentFile(remote, entryFile);
+      if (!entry) {
+        // An adopted directory may predate Paperclip. Deliver the missing managed
+        // entry with create-only CAS, without replacing any personal bytes.
+        const seed = await readInstructionBytes(root, entryFile);
+        if (!seed) throw notFound("The persistent agent instruction entry is missing");
+        await remote.writeBytes(entryFile, seed, null);
+        entry = await readPersistentAgentFile(remote, entryFile);
+        if (!entry) throw notFound("The persistent agent instruction entry is missing");
+      }
+      // Only prompt bytes are staged locally. This scratch is never an authority
+      // for personal files, nor is it uploaded into the persistent directory.
+      const localRoot = path.join(path.dirname(root), "file-sync", "runs", input.runId, "live");
+      await materializeInstructionBytes(localRoot, entryFile, entry.bytes);
+      const values = { entryFile, baseRevisionId: null, baseHash: entry.sha256, localRoot,
+        executionRoot: authority.agentHome, location: `remote:${input.target.environmentId}`, state: "prepared",
+        candidateBase64: null, candidateHash: null, processStoppedAt: null, attempts: 0,
+        nextAttemptAt: null, errorCode: null, errorMessage: null,
+        receipt: { schema: AGENT_FILES_CONTRACT, fileAuthority: "remote-persistent", placementId: authority.placementId,
+          environmentId: input.target.environmentId, workspaceCwd: input.cwd, warm: input.warm === true,
+          sessionEntryHash: entry.sha256, cleanupPending: false } };
+      const existing = await get(input.companyId, input.runId);
+      if (existing && (!persistent(existing) || existing.executionRoot !== authority.agentHome)) throw conflict("Agent file authority changed");
+      const result = existing ? await patch(existing, values)
+        : (await db.insert(copies).values({ companyId: input.companyId, agentId: input.agentId, runId: input.runId,
+            responsibleUserId: bound.onBehalfOfUserId!, ...values }).returning())[0]!;
+      input.onWarmHandoff?.(result);
+      return result;
+    }
     if (input.reuseRunId) {
       const prior = await get(input.companyId, input.reuseRunId);
       if (!prior || prior.agentId !== input.agentId) throw conflict("Managed warm directory owner changed");
@@ -241,6 +284,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     return inspectAgentDirectory(row.localRoot);
   }
   async function hasChanges(row: Copy, target?: AdapterExecutionTarget | null) {
+    if (persistent(row)) return false; // Bytes already live on the authoritative computer.
     try {
       if (row.receipt?.retainedByRunId || row.receipt?.retirementRequired || typeof row.receipt?.materializationIdentity !== "string") return true;
       const observed = await observe(row, target);
@@ -251,6 +295,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
   }
   /** Rebind one physical materialization; earlier runs lose collection authority. */
   async function adopt(input: { companyId: string; agentId: string; runId: string; previousRunId: string; target?: AdapterExecutionTarget | null; cwd: string; allowRetirementHandoff?: boolean }) {
+    if (input.target?.kind === "remote" && input.target.transport === "computer" && input.target.fileAuthority?.kind === "remote-persistent") return prepareCopy({ ...input, warm: true });
     let prior = await get(input.companyId, input.previousRunId);
     if (!prior || prior.agentId !== input.agentId || prior.state !== "unchanged_turn" || prior.receipt?.retainedByRunId || prior.processStoppedAt
       || prior.receipt?.workspaceCwd !== input.cwd || prior.location !== (input.target?.kind === "remote" ? `remote:${input.target.environmentId ?? ""}` : "local")) return null;
@@ -317,6 +362,8 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     return adopted;
   }
   async function checkpoint(row: Copy, target?: AdapterExecutionTarget | null, stopped = false): Promise<Copy> {
+    if (persistent(row)) return patch(row, { state: stopped ? "unchanged" : "warm_saved", nextAttemptAt: null,
+      ...(stopped ? { processStoppedAt: new Date() } : {}) });
     if (!await owns(row) || row.state === "superseded") return row;
     let failure: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -356,6 +403,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       receipt: { ...row.receipt, storageWarning: storageLimit ? agentStorageWarning(failure instanceof AgentFileLimitError ? failure.message : "Agent folder exceeds a storage limit") : null } });
   }
   async function collectStopped(row: Copy, target?: AdapterExecutionTarget | null) {
+    if (persistent(row)) {
+      const settled = await patch(row, { state: "unchanged", processStoppedAt: new Date(), nextAttemptAt: null });
+      await release(settled);
+      return settled;
+    }
     if (row.receipt?.retainedByRunId) return row;
     if (!await owns(row) || row.state === "superseded") return row;
     if (row.receipt?.warm === true && !completed.has(row.state)) {
@@ -412,6 +464,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       completed.has(row.state) && row.receipt?.cleanupPending === false;
   }
   async function release(row: Copy, target?: AdapterExecutionTarget | null) {
+    if (persistent(row)) {
+      // No remote command, snapshot, or directory deletion is legal here.
+      if (row.processStoppedAt) await fs.rm(path.dirname(row.localRoot), { recursive: true, force: true });
+      return;
+    }
     if (releaseIsNoop(row) || !await owns(row)) return;
     const destroyedOnly = row.receipt?.cleanupDestroyedOnly === true;
     if (row.receipt?.retainedByRunId || row.state === "superseded" || !await owns(row) || !row.processStoppedAt) return;
@@ -503,6 +560,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     return lease;
   }
   async function recoverStoppedRemote(row: Copy) {
+    if (persistent(row)) return patch(row, { state: "unchanged", processStoppedAt: row.processStoppedAt ?? new Date(), nextAttemptAt: null });
     const lease = await ownedRemoteLease(row);
     const destroyed = lease && hasRemoteTerminationReceipt(lease)
       && (lease.metadata?.remoteExecutionTermination as { state?: string } | undefined)?.state === "destroyed";
@@ -553,7 +611,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const current = await get(row.companyId, row.runId);
       // This check changes no receipt or bytes. A concurrent stop merely leaves
       // cleanup to its owner or the recovery sweep; it grants no new authority.
-      if (!current || releaseIsNoop(current)) return;
+      if (!current || (!persistent(current) && releaseIsNoop(current))) return;
       await serial(current, release, "agent_directory_release");
     },
   };

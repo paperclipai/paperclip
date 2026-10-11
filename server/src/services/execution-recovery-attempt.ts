@@ -32,6 +32,10 @@ function historicalFailureCount(run: RetryRun): number {
     const saved = count(run.contextSnapshot?.failureRetriesBeforeAiConnectionWait);
     if (saved !== null) return saved;
   }
+  if (run.scheduledRetryReason === "computer_admission_wait") {
+    const saved = count(run.contextSnapshot?.failureRetriesBeforeComputerWait);
+    if (saved !== null) return saved;
+  }
   if (run.scheduledRetryReason === "workspace_busy") {
     const saved = count(run.contextSnapshot?.failureRetriesBeforeWorkspaceWait);
     if (saved !== null) return saved;
@@ -42,7 +46,7 @@ function historicalFailureCount(run: RetryRun): number {
 
 export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccounting {
   const saved = savedAccounting(run);
-  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"].includes(run.scheduledRetryReason ?? "");
+  const nonFailureLane = ["computer_admission_wait", "max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"].includes(run.scheduledRetryReason ?? "");
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
@@ -57,7 +61,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 }
 
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
-  if (reason === "workspace_busy" || reason === "ai_connection_busy" || reason === "ai_connection_pool_wait") {
+  if (reason === "computer_admission_wait" || reason === "workspace_busy" || reason === "ai_connection_busy" || reason === "ai_connection_pool_wait") {
     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
   }
   const accounting = executionRetryAccounting(run);
@@ -67,6 +71,24 @@ export function executionRetryAttemptCount(run: RetryRun, reason: string): numbe
 export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number): ExecutionRetryAccounting {
   const accounting = executionRetryAccounting(run);
   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
-  else if (reason !== "workspace_busy" && reason !== "ai_connection_busy" && reason !== "ai_connection_pool_wait") accounting.failureRetries = attempt;
+  else if (reason !== "computer_admission_wait" && reason !== "workspace_busy" && reason !== "ai_connection_busy" && reason !== "ai_connection_pool_wait") accounting.failureRetries = attempt;
   return accounting;
+}
+
+/** Only the executor can attest that a pending-stop wait never dispatched and finished cleanup. */
+export function isComputerAdmissionWait(run: {
+  id: string; companyId: string; status: string; runtimeMode: string; errorCode?: string | null;
+  resultJson?: Record<string, unknown> | null; runnerProfileJson?: Record<string, unknown> | null;
+}): boolean {
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const result = object(run.resultJson), recovery = object(result.executionRecovery), cancellation = object(result.cancellation), admission = object(result.computerAdmission);
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && run.errorCode === "computer_admission_wait" &&
+    recovery.kind === "computer_admission_wait" && recovery.providerWorkStarted === false &&
+    result.computerAdmissionRetryOutcome == null &&
+    cancellation.expected === true && cancellation.source === "control_plane" &&
+    object(cancellation.initiator).type === "system" &&
+    admission.runId === run.id && admission.companyId === run.companyId &&
+    [admission.computerId, admission.environmentId].every(value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) &&
+    typeof admission.stopId === "string" && admission.stopId.length > 0 &&
+    !object(run.runnerProfileJson).nativeExecutionInput;
 }

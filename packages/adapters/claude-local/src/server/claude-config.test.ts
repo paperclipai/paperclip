@@ -1,5 +1,7 @@
 import * as fs from "node:fs/promises";
 import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -22,7 +24,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import { buildRemoteClaudeConfigMaterializationCommand, prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -166,6 +168,51 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
     }
   });
 
+  it("materializes config without syncing the persistent in-place workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-in-place-probe-"));
+    cleanupDirs.push(root);
+    const remoteRoot = "/home/user/paperclip/company/agents/agent";
+    const target: AdapterExecutionTarget = {
+      ...sandboxTarget,
+      workspaceRealization: {
+        mode: "in_place",
+        authoritativeRoot: remoteRoot,
+        pathAliases: [],
+        outboundRestorePaths: [],
+      },
+    };
+    const restoreWorkspace = vi.fn(async () => {});
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async (input) => {
+      // Reproduce the production boundary: importing a host workspace would
+      // overwrite remote authority. Only the selected config asset may stage.
+      expect(input.syncWorkspace).toBe(false);
+      expect(input.workspaceRemoteDir).toBe(remoteRoot);
+      expect(input.assets).toEqual([{ key: "config-seed", localDir: root, followSymlinks: true }]);
+      return {
+        runtimeRootDir: `${remoteRoot}/.paperclip-runtime/claude`,
+        assetDirs: { "config-seed": `${remoteRoot}/.paperclip-runtime/claude/config-seed` },
+        restoreWorkspace,
+      };
+    });
+    const env = { CLAUDE_CONFIG_DIR: root };
+    const checks = await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: true,
+      runId: "run-in-place",
+      target,
+      cwd: remoteRoot,
+      companyId: "company-1",
+      env,
+      installCommand: "install-claude",
+      detectCommand: "claude",
+      targetIsRemote: true,
+      targetIsSandbox: true,
+      helloProbeTimeoutSec: 30,
+    });
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_managed_config_dir", level: "info" })]);
+    expect(env.CLAUDE_CONFIG_DIR).toBe(`${remoteRoot}/.paperclip-runtime/claude/config`);
+    expect(restoreWorkspace).toHaveBeenCalledOnce();
+  });
+
   it("keeps a thrown config-materialization error out of every check and the log", async () => {
     // The runtime preparation throws an error that carries two untrusted values:
     // an opaque credential marker and a proxy marker. Neither may reach a check
@@ -220,5 +267,33 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
       errorClass: "Error",
     });
     warnSpy.mockRestore();
+  });
+});
+
+
+describe("managed Claude user-scope skills", () => {
+  it("refreshes only its skill symlink and refuses an existing directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-user-skills-"));
+    const config = path.join(root, "config");
+    const seed = path.join(root, "seed");
+    const first = path.join(root, "first-skills");
+    const second = path.join(root, "second-skills");
+    const run = (remoteSkillsDir: string) => promisify(execFile)("sh", ["-c",
+      buildRemoteClaudeConfigMaterializationCommand({
+        remoteClaudeConfigDir: config, remoteClaudeConfigSeedDir: seed, remoteSkillsDir,
+      }),
+    ], { env: { PATH: process.env.PATH, HOME: root } });
+    try {
+      await fs.mkdir(first); await fs.mkdir(second);
+      await run(first);
+      expect(await fs.realpath(path.join(config, "skills"))).toBe(await fs.realpath(first));
+      await run(second);
+      expect(await fs.realpath(path.join(config, "skills"))).toBe(await fs.realpath(second));
+      await fs.unlink(path.join(config, "skills"));
+      await fs.mkdir(path.join(config, "skills"));
+      await fs.writeFile(path.join(config, "skills", "keep.txt"), "user file");
+      await expect(run(first)).rejects.toThrow();
+      expect(await fs.readFile(path.join(config, "skills", "keep.txt"), "utf8")).toBe("user file");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

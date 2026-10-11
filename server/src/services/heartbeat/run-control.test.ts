@@ -1,11 +1,21 @@
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
+import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
+import { createRunDispatch } from "../../modules/run-dispatch/index.js";
+import { ComputerStopPendingError } from "../../modules/computers/index.js";
+import { heartbeatService } from "../heartbeat.js";
+import { canRetryComputerAdmissionWait } from "../cancelled-native-startup.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, issueTreeHolds, issueComments, issueRecoveryActions, computers, environments, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { adapterExecutionControls } from "../adapter-execution-control.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { terminateLocalService } from "../local-service-supervisor.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -170,7 +180,7 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
   afterEach(() => runningProcesses.clear());
 
   async function fixture() {
-    const [company] = await db.insert(companies).values({ name: "Run control", issuePrefix: "RC" }).returning();
+    const [company] = await db.insert(companies).values({ name: "Run control", issuePrefix: "RC", defaultResponsibleUserId: "board" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Controlled agent", adapterType: "codex_local" }).returning();
     return { company, agent };
   }
@@ -179,6 +189,334 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
     runningProcesses.set(run.id, { child: { pid: 424242 } as never, graceSec: 4, processGroupId: 424242 });
     return run;
   }
+
+  async function computerWaitFixture(settled = true) {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Wait for computer", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "computer" }).returning();
+    const [computer] = await db.insert(computers).values({ companyId: f.company.id, environmentId: environment.id, providerId: randomUUID(), ledger: {} }).returning();
+    const id = randomUUID(), now = new Date();
+    const [run] = await db.insert(heartbeatRuns).values({ id, companyId: f.company.id, agentId: f.agent.id,
+      scopeKind: "issue", issueId: issue.id, status: "cancelled", runtimeMode: "legacy", errorCode: "computer_admission_wait", finishedAt: now,
+      executionStage: settled ? "settled" : "preparing", controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+      contextSnapshot: { issueId: issue.id, computerAdmissionDeferredWhileAssignee: true },
+      resultJson: { executionRecovery: { kind: "computer_admission_wait", providerWorkStarted: false },
+        computerAdmission: { companyId: f.company.id, runId: id, environmentId: environment.id, computerId: computer.id, stopId: "stop_test" },
+        cancellation: { source: "control_plane", expected: true, initiator: { type: "system" } },
+        ...(settled ? { computerAdmissionPreparationSettledAt: now.toISOString() } : {}) },
+    }).returning();
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issue.id));
+    return { ...f, issue, run };
+  }
+  async function pausedComputerRetryFixture() {
+    const f = await computerWaitFixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.run.id, { retryReason: "computer_admission_wait", delayMs: 0 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected computer wait successor");
+    const [hold] = await db.insert(issueTreeHolds).values({ companyId: f.company.id, rootIssueId: f.issue.id,
+      mode: "pause", status: "active", reason: "Pause test", releasePolicy: { strategy: "manual" } }).returning();
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({ runId: scheduled.run.id,
+      companyId: f.company.id, now: new Date(Date.now() + 60_000) })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+    const [suppressed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id));
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, hold.id));
+    return { ...f, suppressed };
+  }
+
+  it("pause suppresses an unstarted computer retry without inventing recovery, and a new message after resume queues once", async () => {
+    const f = await pausedComputerRetryFixture();
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, f.suppressed)).toBe(false);
+    await terminalizeLegacyExecution({ db, run: f.suppressed, status: "cancelled", reconcileIfNeeded: true });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toHaveLength(0);
+    // Keep the executor out of this integration test while exercising real wake admission.
+    await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running" });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "Read the saved file after resume." }).returning();
+    const service = heartbeatService(db);
+    const wake = { source: "automation" as const, triggerDetail: "system" as const, reason: "issue_commented",
+      requestedByActorType: "user" as const, requestedByActorId: "board", idempotencyKey: `paused-computer:${comment.id}`,
+      payload: { issueId: f.issue.id, commentId: comment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: comment.id } };
+    await service.wakeup(f.agent.id, wake);
+    await service.wakeup(f.agent.id, wake);
+    const queued = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${comment.id}`);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ status: "queued", agentId: f.agent.id });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toHaveLength(0);
+  });
+
+  it.each(["valid", "saved-message", "saved-old-message", "foreign-parent", "started", "lease", "provider-event", "missing-receipt", "changed-parent", "retry", "interrupt", "deleted-comment", "old-comment"])("historical paused computer retry accepts only verified new-message authority (%s)", async kind => {
+    const f = await pausedComputerRetryFixture();
+    if (kind === "foreign-parent") {
+      const [other] = await db.insert(agents).values({ companyId: f.company.id, name: "Foreign parent agent", adapterType: "paperclip_runner" }).returning();
+      await db.update(heartbeatRuns).set({ agentId: other.id }).where(eq(heartbeatRuns.id, f.run.id));
+    }
+    if (kind === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.suppressed.id));
+    if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.company.id, issueId: f.issue.id, heartbeatRunId: f.suppressed.id, status: "released", releasedAt: new Date(), cleanupStatus: "success" });
+    if (kind === "provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.company.id, agentId: f.agent.id, runId: f.suppressed.id, seq: 999, eventType: "turn.started" });
+    if (kind === "missing-receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.suppressed.id));
+    if (kind === "changed-parent") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.run.id));
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.issue.id,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${f.suppressed.id}`,
+      status: "resolved", outcome: "blocked", ownerType: "board", nextAction: "Historical mistaken hold",
+      evidence: { runId: f.suppressed.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" } } }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "A new instruction", createdAt: new Date(f.suppressed.finishedAt!.getTime() + (["old-comment", "saved-old-message"].includes(kind) ? -1000 : 1000)),
+      ...(kind === "deleted-comment" ? { deletedAt: new Date() } : {}) }).returning();
+    if (kind.startsWith("saved-")) {
+      await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running" });
+      const [saved] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", updatedAt: new Date(Date.now() - 60_000),
+        payload: { issueId: f.issue.id, commentId: comment.id, executionWait: { reason: "execution_recovery", recoveryActionId: action.id },
+          _paperclipWakeContext: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: comment.id, wakeCommentIds: [comment.id] } },
+      }).returning();
+      const service = heartbeatService(db);
+      await service.resumeExecutionWaitComments();
+      await service.resumeExecutionWaitComments();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved.id));
+      const turns = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${comment.id}`);
+      if (kind === "saved-message") {
+        expect(wake.status).toBe("coalesced");
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatchObject({ status: "queued" });
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence.explicitUserContinuation).toMatchObject({ commentId: comment.id });
+      } else {
+        expect(wake.status).toBe("deferred_issue_execution");
+        expect(turns).toHaveLength(0);
+      }
+      return;
+    }
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issue.id)).for("update");
+      return admitExplicitNativeContinuation({ db: tx as unknown as Db, companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+        actorType: "user", actorId: "board", reason: kind === "retry" ? "retry_failed_run" : "issue_commented", commentId: comment.id,
+        successorRunId: randomUUID(), ...(kind === "retry" ? { failedRunId: f.suppressed.id } : {}),
+        ...(kind === "interrupt" ? { queuedCommentInterruptId: randomUUID() } : {}) });
+    });
+    if (kind === "valid") {
+      expect(result).toMatchObject({ previousRunId: f.suppressed.id, commentId: comment.id });
+      const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(updated.evidence.explicitUserContinuation).toMatchObject({ commentId: comment.id, previousRunId: f.suppressed.id });
+    } else {
+      expect(result).toBeNull();
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
+    }
+  });
+
+  const operatorStop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "board" } };
+
+  function lifecycleRetries(deps = callbacks(db), overrides: Partial<HeartbeatRetryDependencies> = {}) {
+    const runControl = createHeartbeatRunControl(db, deps);
+    return createHeartbeatRetries(db, { ...deps,
+      resolveResponsibleUserIdForRunContext: async () => "board",
+      getAgentInvokability: async () => ({ invokable: true }),
+      escalatePlanApprovalResumeFailureNeedsAttention: async () => null,
+      recordPlanApprovalResumeFailureRetry: async () => null,
+      releaseIssueExecutionAndPromote: runControl.releaseIssueExecutionAndPromote,
+      getWorktreeExecutionCutoff: async () => null,
+      applyRunDispatchPostCommitEffects: () => undefined,
+      runDispatch: createRunDispatch(db),
+      ...overrides,
+    });
+  }
+
+  it("real lifecycle terminalization retains a typed wait's task lock before cleanup and only schedules afterward", async () => {
+    const f = await computerWaitFixture(false), deps = callbacks(db);
+    const control = createAdapterExecutionControl();
+    adapterExecutionControls.set(f.run.id, control);
+    deps.activeRunExecutions.add(f.run.id);
+    const [running] = await db.update(heartbeatRuns).set({ status: "running", resultJson: null, errorCode: null, finishedAt: null }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const admission = f.run.resultJson!.computerAdmission as { companyId: string; environmentId: string; computerId: string; stopId: string; runId: string };
+    try {
+      const retries = lifecycleRetries(deps);
+      await retries.finalizeComputerAdmissionDeferral(running, new ComputerStopPendingError(admission), true);
+      const cancelled = (await deps.getRun(f.run.id))!;
+      expect(cancelled).toMatchObject({ status: "cancelled", errorCode: "computer_admission_wait" });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toHaveLength(0);
+      expect(await retries.scheduleBoundedRetryForRun(cancelled, f.agent, { retryReason: "computer_admission_wait" })).toMatchObject({ outcome: "not_scheduled" });
+      deps.activeRunExecutions.delete(f.run.id); adapterExecutionControls.delete(f.run.id); control.finish();
+      const [settled] = await db.update(heartbeatRuns).set({ executionStage: "settled", controllerLeaseExpiresAt: null,
+        resultJson: { ...cancelled.resultJson, computerAdmissionPreparationSettledAt: new Date().toISOString() },
+      }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+      expect(await lifecycleRetries().scheduleBoundedRetryForRun(settled, f.agent, { retryReason: "computer_admission_wait" })).toMatchObject({ outcome: "scheduled" });
+    } finally { adapterExecutionControls.delete(f.run.id); control.finish(); }
+  });
+
+  it("a real Stop between scheduler preflight and source lock prevents the successor", async () => {
+    const f = await computerWaitFixture();
+    const heartbeat = heartbeatService(db);
+    const deps = callbacks(db);
+    // Session resolution happens after the source's preflight proof and before
+    // its transaction; issue/task locking must re-read the persisted Stop.
+    deps.resolveSessionBeforeForWakeup = async () => {
+      await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop at preflight", operatorStop);
+      return null;
+    };
+    expect(await lifecycleRetries(deps).scheduleBoundedRetryForRun(f.run, f.agent, { retryReason: "computer_admission_wait" })).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+  });
+
+  it.each([true, false])("Stop durably suppresses a computer wait before scheduling (cleanup settled=%s)", async settled => {
+    const f = await computerWaitFixture(settled), deps = callbacks(db);
+    const control = createAdapterExecutionControl();
+    if (!settled) { deps.activeRunExecutions.add(f.run.id); adapterExecutionControls.set(f.run.id, control); }
+    try {
+      const stopped = await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+      expect(stopped).toMatchObject({ status: "cancelled", resultJson: { computerAdmissionRetryOutcome: "aborted",
+        cancellation: { source: "operator", initiator: { type: "user", id: "board" } } } });
+      if (!settled) {
+        expect(control.controller.signal.aborted).toBe(true);
+        expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+      }
+      // Preparation finishing later cannot erase a real Stop, even when the
+      // old executor writes its cleanup receipt after the request returns.
+      await db.update(heartbeatRuns).set({ executionStage: "settled", controllerLeaseExpiresAt: null,
+        resultJson: sql`${heartbeatRuns.resultJson} || ${JSON.stringify({ computerAdmissionPreparationSettledAt: new Date().toISOString() })}::jsonb`,
+      }).where(eq(heartbeatRuns.id, f.run.id));
+      expect(await canRetryComputerAdmissionWait(db, (await deps.getRun(f.run.id))!)).toBe(false);
+      expect(await heartbeatService(db).scheduleBoundedRetry(f.run.id, { retryReason: "computer_admission_wait" })).toMatchObject({ outcome: "not_scheduled" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(0);
+      expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+    } finally { adapterExecutionControls.delete(f.run.id); control.finish(); }
+  });
+
+  it.each(["stop-first", "suppression-first"])("the full retry wrapper preserves Stop and old queued input (%s)", async ordering => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    deps.wakeQueue.releaseIssueExecution.mockImplementation(createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, { resolveResponsibleUserId: async () => "board",
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: "board" }),
+        resolveSessionBeforeForWakeup: async () => null }),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    }));
+    const control = createHeartbeatRunControl(db, deps);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "Input queued before Stop" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issue.id, commentId: comment.id,
+        _paperclipWakeContext: { issueId: f.issue.id, wakeCommentId: comment.id, wakeCommentIds: [comment.id] } },
+    }).returning();
+    let finishStop!: () => void, stopRecorded!: () => void;
+    const stopGate = new Promise<void>(resolve => { finishStop = resolve; });
+    const recorded = new Promise<void>(resolve => { stopRecorded = resolve; });
+    let stopping: ReturnType<typeof control.cancelRunInternal> | undefined;
+    const append = deps.appendRunEvent.getMockImplementation()!;
+    deps.appendRunEvent.mockImplementation(async (run, event) => {
+      await append(run, event);
+      if (event.message === "computer admission retry cancelled") {
+        stopRecorded(); await stopGate;
+      }
+      if (ordering === "suppression-first" && event.message?.startsWith("Computer admission retry was not scheduled:")) {
+        stopping = control.cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+        await recorded;
+      }
+    });
+    if (ordering === "stop-first") deps.getAgent.mockImplementation(async () => {
+      stopping = control.cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+      await recorded;
+      return f.agent;
+    });
+    try {
+      await lifecycleRetries(deps, { getAgentInvokability: async () => ordering === "stop-first" ? { invokable: true }
+        : { invokable: false, reason: "paused", message: "Paused", details: {}, invalidOrgChain: false } })
+        .scheduleComputerAdmissionRetry(f.run);
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      expect(current.resultJson?.computerAdmissionRetryOutcome).toBe("aborted");
+      if (ordering === "stop-first") {
+        expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe("deferred_issue_execution");
+    } finally { finishStop(); await stopping; }
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].resultJson?.executionCancellation)
+      .toMatchObject({ state: "acknowledged" });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
+  });
+
+  it("does not release a Stop whose acknowledgement CAS loses terminal ownership", async () => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    const append = deps.appendRunEvent.getMockImplementation()!;
+    deps.appendRunEvent.mockImplementation(async (run, event) => {
+      await append(run, event);
+      if (event.message === "computer admission retry cancelled") await db.update(heartbeatRuns)
+        .set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+    });
+    await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+    expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+    expect(deps.finalizeAgentStatus).not.toHaveBeenCalled();
+  });
+
+  it("Stop persists suppression but leaves a remote controller's live cleanup unacknowledged", async () => {
+    const f = await computerWaitFixture(false), deps = callbacks(db);
+    const stopped = await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop remote preparation", operatorStop);
+    expect(stopped?.resultJson?.computerAdmissionRetryOutcome).toBe("aborted");
+    expect(stopped?.resultJson?.executionCancellation).toBeUndefined();
+    expect(deps.wakeQueue.releaseIssueExecution).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.run.id);
+  });
+
+  it("Stop of a settled computer wait retains old queued messages instead of promoting them", async () => {
+    const f = await computerWaitFixture();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "Queued before Stop" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedByActorType: "system",
+      payload: { issueId: f.issue.id, commentId: comment.id, _paperclipWakeContext: { wakeCommentIds: [comment.id] } },
+    }).returning();
+    const stopped = await heartbeatService(db).cancelRun(f.run.id, "Stop waiting", operatorStop);
+    expect(stopped?.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBeNull();
+  });
+
+  it.each(["scheduled_retry", "queued", "running"])("a stale-parent Stop cancels its exact %s successor through normal cancellation", async status => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.run.id, { retryReason: "computer_admission_wait", delayMs: 30_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected scheduled successor");
+    await db.update(heartbeatRuns).set({ status, ...(status === "running" ? { runtimeModeResolvedAt: new Date(), startedAt: new Date() } : {}) }).where(eq(heartbeatRuns.id, scheduled.run.id));
+    if (status === "running") runningProcesses.set(scheduled.run.id, { child: { pid: 424242 } as never, graceSec: 4, processGroupId: 424242 });
+    const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", runtimeModeResolvedAt: new Date() }).returning();
+    const controller = createHeartbeatRunControl(db, deps);
+    await controller.cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+    await controller.cancelRunInternal(f.run.id, "Stop again", operatorStop);
+    expect(await deps.getRun(scheduled.run.id)).toMatchObject({ status: "cancelled" });
+    expect(await deps.getRun(unrelated.id)).toMatchObject({ status: "running" });
+    expect(terminateLocalService).toHaveBeenCalledTimes(status === "running" ? 1 : 0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toHaveLength(1);
+  });
+
+  it("retries successor cancellation after a Stop failure without reopening parent admission", async () => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.run.id, { retryReason: "computer_admission_wait", delayMs: 30_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected successor");
+    await db.update(heartbeatRuns).set({ status: "running", runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, scheduled.run.id));
+    runningProcesses.set(scheduled.run.id, { child: { pid: 424242 } as never, graceSec: 4, processGroupId: 424242 });
+    vi.mocked(terminateLocalService).mockRejectedValueOnce(new Error("Stop failed"));
+    const controller = createHeartbeatRunControl(db, deps);
+    await expect(controller.cancelRunInternal(f.run.id, "Stop waiting", operatorStop)).rejects.toThrow("Stop failed");
+    expect(await deps.getRun(f.run.id)).toMatchObject({ resultJson: { computerAdmissionRetryOutcome: "aborted" } });
+    await controller.cancelRunInternal(f.run.id, "Stop again", operatorStop);
+    expect(await deps.getRun(scheduled.run.id)).toMatchObject({ status: "cancelled" });
+    expect(terminateLocalService).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["agent", "reason", "issue"])("does not forward stale-parent Stop across a changed successor %s", async kind => {
+    const f = await computerWaitFixture(), deps = callbacks(db);
+    const [otherAgent] = await db.insert(agents).values({ companyId: f.company.id, name: "Reassigned" }).returning();
+    const [otherIssue] = await db.insert(issues).values({ companyId: f.company.id, title: "Other task" }).returning();
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: f.company.id,
+      agentId: kind === "agent" ? otherAgent.id : f.agent.id, scopeKind: "issue", issueId: kind === "issue" ? otherIssue.id : f.issue.id,
+      retryOfRunId: f.run.id, scheduledRetryReason: kind === "reason" ? "transient_failure" : "computer_admission_wait", status: "queued",
+    }).returning();
+    await createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Stop waiting", operatorStop);
+    expect(await deps.getRun(successor.id)).toMatchObject({ status: "queued" });
+  });
 
   it("reports a missing run without entering cancellation", async () => {
     const deps = callbacks(db);

@@ -1,6 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
+import { computerService } from "../modules/computers/index.js";
+import { computerCompanyDeletion } from "../modules/computers/company-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import {
   companies,
@@ -47,6 +49,10 @@ export async function deleteCompany(db: Db, id: string) {
     await lifecycle.terminateAgent(agent.id);
     await scheduleAgentLifecycle(db, agent.id);
   }
+  const computers = computerService(db);
+  for (const computer of await computers.list(id)) {
+    await computers.detach({ companyId: id, environmentId: computer.environmentId });
+  }
   return db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
         // remain compatible: native writers can already hold a child row while
@@ -83,6 +89,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
+        await computerCompanyDeletion.deleteCompanyData(tx, id);
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));

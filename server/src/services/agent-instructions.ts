@@ -1,10 +1,11 @@
-import { inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome, hashPersistentAgentFile, isMissingRemoteFile } from "./persistent-agent-files.js";
+import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
-import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
-import { notFound, unprocessable } from "../errors.js";
+import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
@@ -489,6 +490,61 @@ export function syncInstructionsBundleConfigFromFilePath(
 }
 
 export function agentInstructionsService(db?: Db) {
+  async function remoteFiles(agent: AgentLike) {
+    // External instructions keep their configured authority even when the
+    // agent has a separate personal directory on a computer.
+    if (agentInstructionsBundleMode(agent) === "external") return null;
+    const remote = db ? await persistentAgentFiles(db, agent.companyId, agent.id) : null;
+    if (remote && db) {
+      const root = await db.transaction(async tx => {
+        const [current] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
+        if (!current) throw notFound("Agent not found");
+        // updateBundle previews the prospective managed config before the
+        // caller saves it. Do not adopt a still-external persisted bundle.
+        if (agentInstructionsBundleMode(current) === "external") return null;
+        return adoptAgentFiles(tx, current);
+      });
+      if (!root) return null;
+      await seedPersistentAgentHome(remote, root);
+    }
+    return remote;
+  }
+  async function remotePaths(remote: NonNullable<Awaited<ReturnType<typeof remoteFiles>>>, entryFile: string) {
+    const files = new Map<string, { path: string; size: number }>();
+    let remaining = 1000;
+    let truncated = false;
+    // Reserve the configured entry before browsing. It can be beyond the first
+    // page, or below a directory whose siblings consume the metadata budget.
+    if (entryFile.split("/")[0] !== ".paperclip-runtime") {
+      try {
+        const entry = await remote.stat(instructionPath(entryFile));
+        if (entry.kind === "file") files.set(entryFile, { path: entryFile, size: entry.size });
+      } catch (error) { if (!isMissingRemoteFile(error)) throw error; }
+      remaining -= 1;
+    }
+    const directories = [""];
+    while (directories.length > 0 && remaining > 0) {
+      const relative = directories.shift()!;
+      const page = await remote.listPage(relative, { limit: remaining });
+      remaining -= page.entries.length;
+      truncated ||= page.truncated;
+      for (const entry of page.entries) {
+        const name = relative ? `${relative}/${entry.name}` : entry.name;
+        // Nested names can be user content; only the home-level runtime tree
+        // contains provider packs and mutable session state owned by Paperclip.
+        if (!relative && entry.name === ".paperclip-runtime") continue;
+        instructionPath(name);
+        if (entry.kind === "directory") {
+          if (!IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name)) directories.push(name);
+        } else if (!IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name)) files.set(name, { path: name, size: entry.size });
+      }
+    }
+    truncated ||= directories.length > 0;
+    return {
+      files: [...files.values()],
+      warnings: truncated ? ["The agent folder listing and export are partial because they exceed the 1,000-entry limit. The configured instructions entry is included when available."] : [],
+    };
+  }
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");
     const [head] = await connection.select().from(agentInstructionHeads).where(and(eq(agentInstructionHeads.companyId, agent.companyId),
@@ -497,6 +553,16 @@ export function agentInstructionsService(db?: Db) {
   }
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const summaries: AgentInstructionsFileSummary[] = [];
+      const listing = await remotePaths(remote, state.entryFile);
+      for (const { path: relative, size } of listing.files) {
+        const file = size <= MAX_INSTRUCTION_BYTES ? await readPersistentAgentFile(remote, relative) : null;
+        summaries.push(summarizeFile(relative, state.entryFile, size, file?.bytes ?? null, file?.sha256));
+      }
+      return toBundle(agent, { ...state, rootPath: remote.root, resolvedEntryPath: `${remote.root}/${state.entryFile}`, warnings: [...state.warnings, ...listing.warnings] }, summaries);
+    }
     if (!state.rootPath) return toBundle(agent, state, []);
     await assertInstructionPathSafe(state.rootPath, state.entryFile);
     const stat = await statIfExists(state.rootPath);
@@ -531,6 +597,13 @@ export function agentInstructionsService(db?: Db) {
         virtual: true,
         content,
       };
+    }
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const file = await readPersistentAgentFile(remote, relativePath);
+      if (!file) throw notFound("Instructions file not found");
+      const summary = summarizeFile(relativePath, state.entryFile, file.bytes.length, file.bytes, file.sha256);
+      return { ...summary, content: summary.binary ? "" : file.bytes.toString("utf8") };
     }
     if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
     await assertInstructionPathSafe(state.rootPath, relativePath);
@@ -593,6 +666,14 @@ export function agentInstructionsService(db?: Db) {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     const nextMode = input.mode ?? state.mode ?? "managed";
     const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      if (nextMode !== "managed") throw unprocessable("Persistent computer files require managed instructions");
+      if (!await readPersistentAgentFile(remote, nextEntryFile)) throw notFound("The selected instruction entry does not exist on the computer");
+      const adapterConfig = applyBundleConfig(state.config, { mode: "managed", rootPath: resolveManagedInstructionsRoot(agent),
+        entryFile: nextEntryFile, clearLegacyPromptTemplate: input.clearLegacyPromptTemplate });
+      return { adapterConfig, bundle: await getBundle({ ...agent, adapterConfig }) };
+    }
     let nextRootPath: string;
 
     if (nextMode === "managed") {
@@ -665,6 +746,7 @@ export function agentInstructionsService(db?: Db) {
       throw unprocessable("Entry edits require the canonical instruction commit service and baseRevisionId", { code: "INSTRUCTION_REVISION_REQUIRED" });
     }
     if (configured.mode !== "external") agentFilePath(relativePath);
+    if (await remoteFiles(agent)) throw unprocessable("Persistent remote file edits require the content API and expected content hash");
     const prepared = await ensureWritableBundle(agent, options);
     instructionBytes(content);
     await assertInstructionPathSafe(prepared.state.rootPath!, relativePath);
@@ -693,6 +775,7 @@ export function agentInstructionsService(db?: Db) {
     if (normalizedPath === state.entryFile) {
       throw unprocessable("Cannot delete the bundle entry file");
     }
+    if (await remoteFiles(agent)) throw unprocessable("Persistent remote file deletion requires the content API and expected content hash");
     const absolutePath = await assertInstructionPathSafe(state.rootPath, normalizedPath);
     await fs.rm(absolutePath, { force: true });
     const adapterConfig = buildPersistedBundleConfig(derived, state);
@@ -728,6 +811,17 @@ export function agentInstructionsService(db?: Db) {
     warnings: string[];
   }> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const files: Record<string, string> = {};
+      const listing = await remotePaths(remote, state.entryFile);
+      for (const { path: relative, size } of listing.files) {
+        if (size > MAX_INSTRUCTION_BYTES) continue;
+        const file = await readPersistentAgentFile(remote, relative);
+        if (file) files[relative] = file.bytes.toString("utf8");
+      }
+      return { files, entryFile: state.entryFile, warnings: [...state.warnings, ...listing.warnings] };
+    }
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
@@ -761,11 +855,61 @@ export function agentInstructionsService(db?: Db) {
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
-    const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
-
+    const entryFile = agentFilePath(options?.entryFile ?? ENTRY_FILE_DEFAULT);
+    const initialFiles: Record<string, string> = Object.create(null);
     for (const [relativePath, content] of Object.entries(files)) {
+      const normalized = agentFilePath(relativePath);
       instructionBytes(content);
-      await assertInstructionPathSafe(rootPath, agentFilePath(relativePath));
+      await assertInstructionPathSafe(rootPath, normalized);
+      if (Object.hasOwn(initialFiles, normalized)) throw unprocessable("Duplicate instruction bundle path");
+      initialFiles[normalized] = content;
+    }
+    if (!Object.hasOwn(initialFiles, entryFile)) initialFiles[entryFile] = "";
+
+    // Initialization must not call remoteFiles: that read path seeds an absent
+    // home before the supplied initial bundle has been installed.
+    const remote = db && agentInstructionsBundleMode(agent) !== "external"
+      ? await persistentAgentFiles(db, agent.companyId, agent.id)
+      : null;
+    if (remote) {
+      if (options?.replaceExisting) throw unprocessable("Replace individual persistent files using their expected content hash");
+      // Existing agents can select Boat before their first remote placement.
+      // Preserve their controller personal files before adding a template.
+      const localEntries = await fs.readdir(rootPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      if (localEntries.some(name => name !== ".paperclip-runtime")) await seedPersistentAgentHome(remote, rootPath);
+      const seeded = await remote.seed(initialFiles);
+      if (!seeded.seeded) {
+        // A failed setup may already have created an empty home. Preflight all
+        // requested files before adding anything; existing bytes are never
+        // replaced, including files outside the requested bundle.
+        const missing: Array<[string, string, string]> = [];
+        for (const [relative, content] of Object.entries(initialFiles)) {
+          const expected = fileHash(instructionBytes(content));
+          const current = await hashPersistentAgentFile(remote, relative);
+          if (current && current.sha256 !== expected) throw conflict(
+            "Existing persistent files differ from this initial bundle. Edit them using their expected content hash.",
+            { code: "AGENT_FILE_CONFLICT", path: relative },
+          );
+          if (!current) missing.push([relative, content, expected]);
+        }
+        for (const [relative, content, expected] of missing) {
+          try { await remote.write(relative, content, null); }
+          catch (error) {
+            // Another initializer may have won the create-only CAS. Only an
+            // identical winner is an idempotent success; shell edits still win.
+            const failure = error as { status?: number; code?: string };
+            if (failure.status !== 409 && failure.code !== "conflict") throw error;
+            if ((await hashPersistentAgentFile(remote, relative))?.sha256 !== expected) throw error;
+          }
+        }
+      }
+      const adapterConfig = applyBundleConfig(asRecord(agent.adapterConfig), {
+        mode: "managed", rootPath, entryFile, clearLegacyPromptTemplate: options?.clearLegacyPromptTemplate,
+      });
+      return { adapterConfig, bundle: await getBundle({ ...agent, adapterConfig }) };
     }
     const previous = await readInstructionBytes(rootPath, entryFile);
     if (previous && !previous.equals(instructionBytes(files[entryFile] ?? ""))) {

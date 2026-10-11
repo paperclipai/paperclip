@@ -24,6 +24,7 @@ import { createHostDuplexObservabilityRecorder } from "../duplex-observability-r
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { logger } from "../../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "../git-credentials.js";
+import { readNativeComputerWorkspaceReference } from "../native-runtime/native-workspace-sync.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/index.js";
 import { parseObject } from "../../adapters/utils.js";
 import { materializeNativeChatTaskRoot } from "../native-runtime/native-chat-workspace.js";
@@ -106,6 +107,7 @@ export interface HeartbeatWorkspacePreparationInput {
   };
   environment: {
     selectedEnvironmentId: string;
+    executionConfigurationKey?: string;
     localEnvironment: Environment;
     selectedEnvironmentForConfig: Environment | null;
     environmentResolution: ExecutionWorkspaceEnvironmentResolution;
@@ -285,7 +287,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
         {
           useProjectWorkspace:
             requestedExecutionWorkspaceMode !== "agent_default",
-          anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
+          anchorWorkspace: selectedEnvironmentForConfig?.driver !== "computer" && requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
             ? await resolveReusedGitWorkspaceAnchor({
                 agent,
                 workspace: reusableExistingExecutionWorkspace,
@@ -335,7 +337,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     repoRef: resolvedWorkspace.repoRef,
     additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
   } satisfies ExecutionWorkspaceInput;
-  await assertGitWorktreeBaseWorkspaceReady({
+  if (selectedEnvironmentForConfig?.driver !== "computer") await assertGitWorktreeBaseWorkspaceReady({
     requestedExecutionWorkspaceMode,
     config: hostExecutionWorkspaceConfig,
     issue: issueRef,
@@ -470,7 +472,18 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     executionWorkspace,
     reusedExecutionWorkspace,
     policy: resolvedWorkspaceReusePolicy,
-  } = isDotRun ? { executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace, reusedExecutionWorkspace: false, policy: workspaceReuseProvisioningPolicy } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+  } = (isDotRun || selectedEnvironmentForConfig?.driver === "computer") ? {
+    executionWorkspace: {
+      ...executionWorkspaceBase,
+      strategy: selectedEnvironmentForConfig?.driver === "computer" ? latestWorkspaceStrategyType : "project_primary",
+      cwd: resolvedWorkspace.cwd,
+      branchName: selectedEnvironmentForConfig?.driver === "computer" && latestWorkspaceStrategyType === "git_worktree" && issueId
+        ? reusableExistingExecutionWorkspace?.branchName ?? `paperclip/task-${issueId}` : null,
+      worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false,
+    } as RealizedExecutionWorkspace,
+    reusedExecutionWorkspace: false,
+    policy: workspaceReuseProvisioningPolicy,
+  } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
     {
       requestedShouldReuseExisting,
       existingExecutionWorkspaceId:
@@ -585,7 +598,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     issueRef?.executionWorkspacePreference ?? null;
   let issueExecutionWorkspaceModeForRun =
     issueExecutionWorkspaceSettings?.mode ?? null;
-  const warmReusableExecutionWorkspace =
+  const warmReusableExecutionWorkspace = selectedEnvironmentForConfig?.driver === "computer" ||
     selectedEnvironmentForConfig?.driver === "sandbox" &&
     selectedEnvironmentConfigForFingerprint.reuseLease === true &&
     selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
@@ -866,7 +879,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];
-  if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+  if (selectedEnvironmentForConfig?.driver !== "computer" && executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
       eq(projectWorkspaces.companyId, agent.companyId),
       eq(projectWorkspaces.projectId, executionWorkspace.projectId),
@@ -903,7 +916,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     const remoteRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
       ? runOptions.nativeRestartRecovery : null;
     const recoveryWorkspace = remoteRecovery
-      ? readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) : null;
+      ? (readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) ?? readNativeComputerWorkspaceReference(parseObject(run.runnerProfileJson).nativeComputerWorkspace)) : null;
     if (remoteRecovery && (!recoveryWorkspace || remoteRecovery.runId !== run.id ||
         recoveryWorkspace.providerLeaseId !== remoteRecovery.remote.providerLeaseId ||
         recoveryWorkspace.remoteCwd !== remoteRecovery.remote.remoteCwd)) {
@@ -915,6 +928,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       localEnvironmentId: localEnvironment.id,
       adapterType: agent.adapterType,
       adapterConfig: parseObject(agent.adapterConfig),
+      executionConfigurationKey: input.environment.executionConfigurationKey,
       admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
@@ -1013,6 +1027,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
       duplexObservabilityRecorder,
+      resolveGitAuth: workspaceGitAuthProvider,
     });
     nativeRunnerPreparationSpans.push({
       name: "environment.workspace.realize",
@@ -1049,6 +1064,10 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   // Preserve the host-owned source before adapter context can share lease
   // metadata. A later copy-back failure must not adopt a rebound source.
   const workspaceRestoreSource = structuredClone(realizationResult.lease);
+  if (executionTarget?.kind === "remote" && executionTarget.transport === "computer") {
+    executionWorkspace.cwd = executionTarget.remoteCwd;
+    if (executionWorkspace.strategy === "git_worktree") executionWorkspace.worktreePath = executionTarget.remoteCwd;
+  }
   return {
     resolvedWorkspace,
     hostExecutionWorkspaceConfig,

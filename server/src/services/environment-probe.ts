@@ -11,6 +11,7 @@ import { isBuiltinSandboxProvider, probeSandboxProvider } from "./sandbox-provid
 import { probePluginEnvironmentDriver, probePluginSandboxProviderDriver } from "./plugin-environment-driver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
+import { computerService } from "../modules/computers/index.js";
 
 export async function probeEnvironment(
   db: Db,
@@ -44,6 +45,16 @@ export async function probeEnvironment(
         cwd: process.cwd(),
       },
     };
+  }
+
+  if (parsed.driver === "computer") {
+    if (!resolvedCompanyId || environment.metadata?.computerCompanyId !== resolvedCompanyId) {
+      return { ok: false, driver: "computer", summary: "This computer belongs to a different company.", details: null };
+    }
+    const result = await computerService(db).inspect({ companyId: resolvedCompanyId, environmentId: environment.id });
+    return { ok: result.status === "attached", driver: "computer",
+      summary: result.status === "attached" ? `Boat is attached (${result.state}).` : "Boat is not attached.",
+      details: { sandboxId: result.sandboxId, state: result.state } };
   }
 
   if (parsed.driver === "sandbox") {

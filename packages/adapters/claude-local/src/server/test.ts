@@ -12,6 +12,7 @@ import {
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  adapterExecutionTargetIsCommandBacked,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
@@ -90,7 +91,7 @@ export async function testEnvironment(
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const targetIsSandbox = adapterExecutionTargetIsCommandBacked(target);
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 

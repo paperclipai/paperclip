@@ -1,3 +1,4 @@
+import { ComputerStopPendingError } from "../modules/computers/index.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
@@ -318,7 +319,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentInstructionWorkingCopyService, collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
-
+import { preparePersistentAgentExecutionHome } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -1106,6 +1107,8 @@ export function heartbeatService(
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
+    finalizeComputerAdmissionDeferral,
+    scheduleComputerAdmissionRetry,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
@@ -3704,6 +3707,11 @@ export function heartbeatService(
           selectedEnvironmentForConfig,
           environmentResolution,
           resolvedInstanceSettings,
+          executionConfigurationKey: createHash("sha256").update(JSON.stringify([
+            config, agent.runtimeConfig, agent.permissions, managedAiRuntime?.sessionIdentity,
+            managedAiRuntime?.identity, githubSelection.configured, useHostGitHub, issueContext?.workMode,
+            context.refreshTools === true ? run.id : null,
+          ])).digest("hex"),
         },
         config: {
           mergedConfig,
@@ -3927,6 +3935,11 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      await preparePersistentAgentExecutionHome(db, {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        target: executionTarget,
+      });
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
@@ -4043,7 +4056,8 @@ export function heartbeatService(
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
         realization: workspaceRealization,
-        agentHome: await (async () => {
+        agentHome: executionTarget?.kind === "remote" && executionTarget.transport === "computer"
+          ? executionTarget.fileAuthority.agentHome : await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);
           await fs.mkdir(home, { recursive: true });
           return home;
@@ -4489,7 +4503,7 @@ export function heartbeatService(
               typeof entry[0] === "string" && typeof entry[1] === "string",
           ),
         );
-        const runtimeServices = await ensureRuntimeServicesForRun({
+        const runtimeServices = selectedEnvironmentForConfig?.driver === "computer" ? [] : await ensureRuntimeServicesForRun({
           db,
           runId: run.id,
           agent: {
@@ -4628,9 +4642,9 @@ export function heartbeatService(
             const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
             const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
             const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-            const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+            const warmFiles = nativeRuntimeResolution.kind === "native" && ((executionTarget?.kind === "remote" && executionTarget.transport === "computer") || nativeRuntimeResolution.profile.backend === "codex_app_server" ||
               (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
-              (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+              (executionTarget?.kind === "remote" && (executionTarget.transport === "sandbox" || executionTarget.transport === "computer")
                 ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
                 : parseObject(agent.adapterConfig).lifecycleMode === "warm");
             if (warmFiles && taskSessionForRun?.lastRunId) {
@@ -4700,6 +4714,9 @@ export function heartbeatService(
             if (isAgentDirectoryCopy(instructionCopy)) {
               const workspace = parseObject(context.paperclipWorkspace);
               context.paperclipWorkspace = { ...workspace, agentHome: instructionCopy.executionRoot,
+                ...(instructionCopy.receipt?.fileAuthority === "remote-persistent" ? {
+                  instructionsFilePath: path.posix.join(instructionCopy.executionRoot, instructionCopy.entryFile),
+                } : {}),
                 // Keep the pre-existing permission root stable for ACP session
                 // identity. The per-run copy is already under the company root.
                 agentHomeForPermissions: workspace.agentHome,
@@ -5129,6 +5146,15 @@ export function heartbeatService(
           eventMessage: "stale execution continuation cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
+      } else if (outerErr instanceof ComputerStopPendingError &&
+          outerErr.admission.runId === run.id && outerErr.admission.companyId === run.companyId &&
+          !legacyAdapterEntered && !nativeDispatchStarted && !nativeOwnershipHeld &&
+          run.runtimeMode === "legacy" && !runOptions.nativeRestartRecovery && !parseObject(run.runnerProfileJson).nativeExecutionInput &&
+          !parseObject(run.contextSnapshot?.explicitUserContinuation).failedRunId &&
+          !run.contextSnapshot?.queuedCommentInterrupt && !executionControl.controller.signal.aborted) {
+        const nonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true ||
+          isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, parseObject(run.contextSnapshot));
+        await finalizeComputerAdmissionDeferral(run, outerErr, !nonAssignee);
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the
@@ -5335,6 +5361,7 @@ export function heartbeatService(
           controllerLeaseExpiresAt: null,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+          sql`${heartbeatRuns.errorCode} is distinct from 'computer_admission_wait'`,
           inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
 
       } finally {
@@ -5348,6 +5375,28 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
+      }
+      if (latestRun?.status === "cancelled" && latestRun.errorCode === "computer_admission_wait" &&
+          !nativeDispatchStarted && !legacyAdapterEntered && !nativeOwnershipHeld) {
+        // Keep the controller lease until this atomic cleanup receipt: a crash
+        // before it is recoverable only after the old controller lease expires.
+        // An intervening Stop permanently suppresses automatic admission retry.
+        const aborted = executionControl.controller.signal.aborted;
+        const [settledWait] = await db.update(heartbeatRuns).set({
+          executionStage: "settled",
+          controllerLeaseExpiresAt: null,
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+            case when ${aborted} or ${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' = 'aborted'
+              then ${JSON.stringify({ computerAdmissionRetryOutcome: "aborted",
+                executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } })}::jsonb
+              else ${JSON.stringify({ computerAdmissionPreparationSettledAt: new Date().toISOString() })}::jsonb end`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
+          eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+          eq(heartbeatRuns.errorCode, "computer_admission_wait"))).returning();
+        if (settledWait?.resultJson?.computerAdmissionRetryOutcome === "aborted") {
+          await releaseIssueExecutionAndPromote(settledWait, { suppressImmediateRecovery: true });
+          await finalizeAgentStatus(run.agentId, "cancelled", undefined, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+        } else if (settledWait) await scheduleComputerAdmissionRetry(settledWait);
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.

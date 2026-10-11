@@ -13,8 +13,27 @@ describe("isSandboxProviderSupportedForAdapter", () => {
       "local",
       "ssh",
       "sandbox",
+      "computer",
     ]);
   });
+
+  it.each(["claude_local", "codex_local", "paperclip_runner"] as const)(
+    "exposes computer environments for %s",
+    (adapterType) => {
+      const capabilities = getEnvironmentCapabilities([adapterType]);
+      expect(supportedEnvironmentDriversForAdapter(adapterType)).toContain("computer");
+      expect(capabilities.adapters[0].drivers.computer).toBe("supported");
+    },
+  );
+
+  it.each(["cursor", "gemini_local", "grok_local", "kimi_local", "openclaw"] as const)(
+    "does not advertise unqualified computer support for %s",
+    (adapterType) => {
+      const capabilities = getEnvironmentCapabilities([adapterType]);
+      expect(supportedEnvironmentDriversForAdapter(adapterType)).not.toContain("computer");
+      expect(capabilities.adapters[0].drivers.computer).toBe("unsupported");
+    },
+  );
 
   it("accepts additional sandbox providers for remote-managed adapters", () => {
     expect(

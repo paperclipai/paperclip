@@ -315,6 +315,7 @@ async function dispatch(
       },
       {
         retainAdmissionCleanup: retainFailedAdmissionCleanup,
+        onAdmissionStage: (stage, elapsedMs) => diagnostic(`admission_${stage}`, `elapsedMs=${elapsedMs}`),
         reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
         openRuntime: (options) =>
           openCodexAcpxRuntime(options, {

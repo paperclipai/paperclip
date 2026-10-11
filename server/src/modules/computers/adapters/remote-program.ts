@@ -1,0 +1,387 @@
+/** Fixed remote program. Inputs travel as JSON, never interpolated into Python or shell. */
+export const remoteProgram = String.raw`
+import os,sys,json,hashlib,base64,tempfile,subprocess,fcntl,stat,shutil,errno
+p=json.load(sys.stdin)
+def fail(code):
+ print(json.dumps({'error':code}));sys.exit(0)
+def digest(data):return hashlib.sha256(data).hexdigest()
+def run(args,cwd=None,env=None):
+ r=subprocess.run(args,cwd=cwd,env=env,capture_output=True,text=True)
+ if r.returncode:fail('command_failed')
+ return r.stdout.strip()
+root=p['root']
+if not root.startswith('/home/user/paperclip/') or '..' in root.split('/'):fail('invalid')
+# Reject symlinks even in existing ancestors; one Unix user is not an OS boundary.
+def safe(path):
+ if not isinstance(path,str) or path.startswith('/') or '\x00' in path or '..' in path.split('/'):fail('invalid')
+ current=root
+ for part in path.split('/'):
+  if part in ('','.'):continue
+  current=os.path.join(current,part)
+  if os.path.islink(current):fail('invalid')
+ if os.path.commonpath([root,os.path.realpath(current)])!=root:fail('invalid')
+ return current
+current='/'
+for part in root.split('/'):
+ if not part:continue
+ current=os.path.join(current,part)
+ if os.path.islink(current):fail('invalid')
+act=p['action']
+if act=='owned-port':
+ port=p['port'];owner=p['ownerId'];inodes=set()
+ for table in ['/proc/net/tcp','/proc/net/tcp6']:
+  for line in open(table).readlines()[1:]:
+   cols=line.split()
+   if int(cols[1].split(':')[1],16)==port and cols[3]=='0A':inodes.add(cols[9])
+ for pid in os.listdir('/proc'):
+  if not pid.isdigit():continue
+  try:
+   if 'paperclip-'+owner+'.slice' not in open('/proc/'+pid+'/cgroup').read():continue
+   for fd in os.listdir('/proc/'+pid+'/fd'):
+    target=os.readlink('/proc/'+pid+'/fd/'+fd)
+    if target.startswith('socket:[') and target[8:-1] in inodes:print('{}');sys.exit(0)
+  except (FileNotFoundError,PermissionError,ProcessLookupError):pass
+ fail('conflict')
+if act=='seed':
+ if os.path.exists(root):print(json.dumps({'seeded':False}));sys.exit(0)
+ os.makedirs(os.path.dirname(root),exist_ok=True)
+ temp=tempfile.mkdtemp(prefix='.seed-',dir=os.path.dirname(root))
+ try:
+  for name,value in p['files'].items():
+   dest=safe(name);relative=os.path.relpath(dest,root)
+   if relative=='.':fail('invalid')
+   target=os.path.join(temp,relative);os.makedirs(os.path.dirname(target),exist_ok=True)
+   with open(target,'wb') as f:f.write(base64.b64decode(value,validate=True))
+  try:os.rename(temp,root);result=True
+  except FileExistsError:result=False
+  print(json.dumps({'seeded':result}))
+ finally:
+  if os.path.exists(temp):shutil.rmtree(temp)
+ sys.exit(0)
+if act=='workspace':
+ os.makedirs(root,exist_ok=True)
+ # The root is the company/project placement on this physical computer. Keep
+ # clone validation, shared checkout, and worktree creation under one flock.
+ rootfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try:
+  lock=os.open('.paperclip-workspace.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=rootfd)
+ except OSError:fail('invalid')
+ finally:os.close(rootfd)
+ with os.fdopen(lock,'r+') as workspace_lock:
+  info=os.fstat(workspace_lock.fileno())
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+  fcntl.flock(workspace_lock,fcntl.LOCK_EX)
+  repo=p.get('repositoryUrl');branch=p.get('branch');task=p.get('taskId');base_ref=p.get('baseRef')
+  if base_ref and (base_ref.startswith('-') or '\n' in base_ref):fail('invalid')
+  checkout=os.path.join(root,'checkout')
+  if repo:
+   if not (repo.startswith('https://') or repo.startswith('ssh://') or repo.startswith('git@')) or '\n' in repo:fail('invalid')
+   if not os.path.exists(checkout):
+    # Resolve credentials on the controller for this operation. Only the clone
+    # child receives the helper environment; no credential file or Git config persists.
+    auth=p.get('gitAuth') or {};git_env=dict(os.environ)
+    git_env.update({'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1'})
+    git_env.update(auth.get('env',{}))
+    run(['git']+auth.get('configArgs',[])+['clone','--',repo,checkout],env=git_env)
+   elif run(['git','remote','get-url','origin'],checkout)!=repo:fail('conflict')
+  else:
+   os.makedirs(checkout,exist_ok=True)
+   if not os.path.isdir(os.path.join(checkout,'.git')):run(['git','init',checkout])
+  if branch:
+   if branch.startswith('-') or '\n' in branch:fail('invalid')
+   run(['git','check-ref-format','--branch',branch])
+  if p.get('mode')=='worktree':
+   if not task:fail('invalid')
+   target=os.path.join(root,'tasks',task);os.makedirs(os.path.dirname(target),exist_ok=True)
+   task_branch=branch or 'paperclip/task-'+task
+   if not os.path.exists(target):run(['git','worktree','add','-b',task_branch,target,base_ref or 'HEAD'],checkout)
+   run(['git','rev-parse','--show-toplevel'],target)
+   if run(['git','symbolic-ref','--quiet','--short','HEAD'],target)!=task_branch:fail('conflict')
+  else:
+   target=checkout
+   if branch:run(['git','checkout',branch],checkout)
+  print(json.dumps({'remoteCwd':target}));sys.exit(0)
+# Hold directory descriptors throughout each operation. Ancestor symlink swaps cannot
+# redirect a checked pathname outside the selected placement.
+def directory(parts,create=False,start=None):
+ fd=os.dup(start) if start is not None else os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+ try:
+  for part in parts:
+   if not part or part=='.':continue
+   if part=='..':fail('invalid')
+   try:nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   except FileNotFoundError:
+    if not create:raise
+    try:os.mkdir(part,0o700,dir_fd=fd)
+    except FileExistsError:pass
+    nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   os.close(fd);fd=nxt
+  return fd
+ except BaseException:os.close(fd);raise
+# Initial uploads stay in a private sibling until a no-replace rename publishes them.
+# Each request carries at most one bounded chunk, never the whole home.
+seed_actions=('seed-begin','seed-chunk','seed-commit','seed-abort')
+# The durable receipt names one exact upload. Root listings (including home
+# admission) reclaim expired uploads even after a controller crash or publish.
+if act in seed_actions or (act=='list' and not p.get('path') and os.path.lexists(os.path.join(os.path.dirname(root),'.paperclip-seed-'+os.path.basename(root)+'.json'))):
+ import uuid,ctypes,errno,time,math
+ parentfd=None;leasefd=None;stagefd=None
+ try:
+  parentfd=directory(os.path.dirname(root).split('/'),create=act in seed_actions)
+  name=os.path.basename(root);receipt_name='.paperclip-seed-'+name+'.json'
+  leasefd=os.open('.paperclip-seed-'+name+'.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+  info=os.fstat(leasefd)
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+  fcntl.flock(leasefd,fcntl.LOCK_EX)
+  def read_metadata(directory_fd,name):
+   fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory_fd)
+   with os.fdopen(fd,'rb') as f:
+    info=os.fstat(f.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>4096:fail('invalid')
+    return json.loads(f.read(4097))
+  def save_receipt(value):
+   if value is None:
+    try:os.unlink(receipt_name,dir_fd=parentfd)
+    except FileNotFoundError:pass
+   else:
+    temporary=receipt_name+'.tmp'
+    fd=os.open(temporary,os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+    with os.fdopen(fd,'wb') as f:
+     info=os.fstat(f.fileno())
+     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+     f.truncate(0);f.write(json.dumps(value).encode());f.flush();os.fsync(f.fileno())
+    os.rename(temporary,receipt_name,src_dir_fd=parentfd,dst_dir_fd=parentfd)
+   os.fsync(parentfd)
+  def identity(token):return {'purpose':'paperclip-initial-home-v1','root':root,'seedId':token}
+  def remove_receipted_upload(receipt):
+   staging='.paperclip-seed-'+name+'-'+receipt['seedId']
+   try:fd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+   except FileNotFoundError:return
+   try:
+    try:marker=read_metadata(fd,'owner.json')
+    except FileNotFoundError:
+     # Receipt is durable before mkdir. An interrupted begin can only leave
+     # an empty directory here; never recursively remove unmarked content.
+     os.rmdir(staging,dir_fd=parentfd);return
+    if marker!=identity(receipt['seedId']):fail('invalid')
+   finally:os.close(fd)
+   shutil.rmtree(staging,dir_fd=parentfd)
+  try:receipt=read_metadata(parentfd,receipt_name)
+  except FileNotFoundError:receipt=None
+  if receipt is not None:
+   if not isinstance(receipt,dict) or receipt.get('purpose')!='paperclip-initial-home-v1' or receipt.get('root')!=root:fail('invalid')
+   if str(uuid.UUID(receipt.get('seedId','')))!=receipt['seedId']:fail('invalid')
+   updated=receipt.get('updatedAt')
+   if not isinstance(updated,(int,float)) or not math.isfinite(updated):fail('invalid')
+   # Exceeds the 120s queued+executing backend deadline, with restart margin.
+   if time.time()-updated>300:
+    remove_receipted_upload(receipt);save_receipt(None);receipt=None
+  if act in seed_actions:
+   token=p.get('seedId','')
+   if str(uuid.UUID(token))!=token:fail('invalid')
+   staging='.paperclip-seed-'+name+'-'+token
+   if act=='seed-begin':
+    try:
+     existing=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+     if not stat.S_ISDIR(existing.st_mode):fail('invalid')
+     print(json.dumps({'started':False}));sys.exit(0)
+    except FileNotFoundError:pass
+    if receipt is not None:fail('conflict')
+    # Reserve only an absent random path before persisting its exact identity.
+    try:os.stat(staging,dir_fd=parentfd,follow_symlinks=False);fail('conflict')
+    except FileNotFoundError:pass
+    receipt={**identity(token),'updatedAt':time.time()};save_receipt(receipt)
+    os.mkdir(staging,0o700,dir_fd=parentfd)
+    stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+    markerfd=os.open('owner.json',os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=stagefd)
+    with os.fdopen(markerfd,'wb') as f:f.write(json.dumps(identity(token)).encode());f.flush();os.fsync(f.fileno())
+    os.mkdir('tree',0o700,dir_fd=stagefd)
+    print(json.dumps({'started':True}))
+   elif act=='seed-abort':
+    if receipt is not None and receipt['seedId']==token:
+     remove_receipted_upload(receipt);save_receipt(None)
+    print('{}')
+   else:
+    if receipt is None or receipt['seedId']!=token:fail('conflict')
+    stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+    if read_metadata(stagefd,'owner.json')!=identity(token):fail('invalid')
+    if act=='seed-chunk':
+     relative=p.get('path','');safe(relative)
+     parts=[part for part in relative.split('/') if part not in ('','.')]
+     if not parts:fail('invalid')
+     data=base64.b64decode(p['base64'],validate=True);offset=p.get('offset')
+     if len(data)>1024*1024 or type(offset)!=int or offset<0 or offset+len(data)>256*1024*1024:fail('invalid')
+     destfd=directory(['tree']+parts[:-1],create=True,start=stagefd)
+     try:fd=os.open(parts[-1],os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=destfd)
+     finally:os.close(destfd)
+     with os.fdopen(fd,'r+b') as f:
+      info=os.fstat(f.fileno())
+      if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+      if info.st_size!=offset:fail('conflict')
+      f.seek(offset);f.write(data)
+     receipt['updatedAt']=time.time();save_receipt(receipt)
+     print('{}')
+    else:
+     libc=ctypes.CDLL(None,use_errno=True)
+     if hasattr(libc,'renameat2'):status=libc.renameat2(stagefd,b'tree',parentfd,os.fsencode(name),1)
+     elif hasattr(libc,'renameatx_np'):status=libc.renameatx_np(stagefd,b'tree',parentfd,os.fsencode(name),4)
+     else:fail('invalid')
+     if status!=0:
+      code=ctypes.get_errno()
+      if code not in (errno.EEXIST,errno.ENOTEMPTY):raise OSError(code,os.strerror(code))
+      if not stat.S_ISDIR(os.stat(name,dir_fd=parentfd,follow_symlinks=False).st_mode):fail('invalid')
+     remove_receipted_upload(receipt);save_receipt(None)
+     print(json.dumps({'seeded':status==0}))
+ except FileNotFoundError:fail('not_found')
+ except (OSError,ValueError,TypeError,AttributeError):fail('invalid')
+ finally:
+  if stagefd is not None:os.close(stagefd)
+  if leasefd is not None:os.close(leasefd)
+  if parentfd is not None:os.close(parentfd)
+ if act in seed_actions:sys.exit(0)
+try:rootfd=directory(root.split('/'))
+except FileNotFoundError:fail('not_found')
+except OSError:fail('invalid')
+def parent(relative,create=False):
+ safe(relative)
+ parts=[part for part in relative.split('/') if part not in ('','.')]
+ if not parts:fail('invalid')
+ return directory(parts[:-1],create,rootfd),parts[-1]
+path=p.get('path','');safe(path)
+lock=os.open('.paperclip-editor.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=rootfd)
+lock_info=os.fstat(lock)
+if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink!=1:fail('invalid')
+fcntl.flock(lock,fcntl.LOCK_EX)
+def clear_write_receipt():
+ os.ftruncate(lock,0);os.fsync(lock)
+def recover_write():
+ os.lseek(lock,0,os.SEEK_SET);raw=os.read(lock,4097)
+ if not raw:return
+ if len(raw)>4096:fail('invalid')
+ try:receipt=json.loads(raw)
+ except (ValueError,UnicodeDecodeError):
+  # Content is written only after the complete receipt has been fsynced. A
+  # torn receipt can leave an empty temp, but gives no authority to delete it.
+  clear_write_receipt();return
+ if not isinstance(receipt,dict) or receipt.get('version')!=1:fail('invalid')
+ relative=receipt.get('path');name=relative.rsplit('/',1)[-1] if isinstance(relative,str) else ''
+ if not name.startswith('.paperclip-write-') or len(name)!=49 or any(c not in '0123456789abcdef' for c in name[17:]):fail('invalid')
+ if relative.startswith('/') or '\x00' in relative or '..' in relative.split('/'):fail('invalid')
+ parentfd=None
+ try:
+  parentfd=directory(relative.split('/')[:-1],start=rootfd)
+  info=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+  if stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_dev==receipt.get('device') and info.st_ino==receipt.get('inode'):
+   os.unlink(name,dir_fd=parentfd)
+ except OSError as error:
+  # A removed/replaced/inaccessible ancestor makes this receipt unusable. Preserve
+  # whatever occupies that path and allow unrelated file operations to proceed.
+  if error.errno not in (errno.ENOENT,errno.ENOTDIR,errno.ELOOP,errno.EACCES,errno.EPERM):raise
+ finally:
+  if parentfd is not None:os.close(parentfd)
+ clear_write_receipt()
+def record_write(relative,fd):
+ info=os.fstat(fd)
+ receipt=json.dumps({'version':1,'path':relative,'device':info.st_dev,'inode':info.st_ino}).encode()
+ if len(receipt)>4096:fail('invalid')
+ os.lseek(lock,0,os.SEEK_SET);os.ftruncate(lock,0)
+ while receipt:
+  written=os.write(lock,receipt);receipt=receipt[written:]
+ os.fsync(lock)
+try:
+ recover_write()
+ if act=='list':
+  fd=directory(path.split('/'),start=rootfd)
+  try:
+   limit=p.get('limit',1000)
+   if type(limit)!=int or limit<1 or limit>1000:fail('invalid')
+   out=[];truncated=False;scanned=0
+   with os.scandir(fd) as entries:
+    for entry in entries:
+     if entry.name=='.paperclip-editor.lock':continue
+     if scanned>=limit:truncated=True;break
+     scanned+=1
+     if entry.is_symlink():continue
+     try:info=entry.stat(follow_symlinks=False)
+     except FileNotFoundError:continue
+     if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):continue
+     out.append({'name':entry.name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000})
+   print(json.dumps({'entries':out,'truncated':truncated}))
+  finally:os.close(fd)
+ elif act=='stat':
+  parentfd,name=parent(path)
+  try:info=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+  finally:os.close(parentfd)
+  if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):fail('invalid')
+  print(json.dumps({'name':name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000}))
+ elif act=='hash':
+  parentfd,name=parent(path)
+  try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+  finally:os.close(parentfd)
+  with os.fdopen(fd,'rb') as f:
+   if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):fail('invalid')
+   h=hashlib.sha256();size=0
+   while True:
+    block=f.read(65536)
+    if not block:break
+    h.update(block);size+=len(block)
+  print(json.dumps({'sha256':h.hexdigest(),'size':size}))
+ elif act=='read':
+  parentfd,name=parent(path)
+  try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+  finally:os.close(parentfd)
+  with os.fdopen(fd,'rb') as f:
+   st=os.fstat(f.fileno())
+   if not stat.S_ISREG(st.st_mode) or st.st_size>p.get('maxBytes',16*1024*1024):fail('invalid')
+   data=f.read(p.get('maxBytes',16*1024*1024)+1)
+  if len(data)>p.get('maxBytes',16*1024*1024):fail('invalid')
+  print(json.dumps({'base64':base64.b64encode(data).decode(),'sha256':digest(data)}))
+ elif act in ('write','remove','move'):
+  parentfd,name=parent(path,create=act=='write')
+  try:
+   old=None
+   try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+   except FileNotFoundError:fd=None
+   if fd is not None:
+    with os.fdopen(fd,'rb') as f:
+     if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):fail('invalid')
+     h=hashlib.sha256()
+     while True:
+      block=f.read(65536)
+      if not block:break
+      h.update(block)
+     old=h.hexdigest()
+   if old!=p.get('expectedSha256'):fail('conflict')
+   if act=='write':
+    data=base64.b64decode(p['base64'],validate=True)
+    if len(data)>16*1024*1024:fail('invalid')
+    import secrets
+    temp='.paperclip-write-'+secrets.token_hex(16)
+    fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+    try:
+     with os.fdopen(fd,'wb') as f:
+      relative='/'.join([part for part in path.split('/') if part not in ('','.')][:-1]+[temp])
+      record_write(relative,f.fileno())
+      f.write(data);f.flush();os.fsync(f.fileno())
+     os.replace(temp,name,src_dir_fd=parentfd,dst_dir_fd=parentfd)
+    finally:
+     recover_write()
+    print(json.dumps({'sha256':digest(data)}))
+   elif act=='remove':
+    if old is None:fail('not_found')
+    os.unlink(name,dir_fd=parentfd);print('{}')
+   else:
+    if old is None:fail('not_found')
+    targetfd,target=parent(p['to'],create=True)
+    try:
+     try:os.link(name,target,src_dir_fd=parentfd,dst_dir_fd=targetfd,follow_symlinks=False)
+     except FileExistsError:fail('conflict')
+     os.unlink(name,dir_fd=parentfd)
+    finally:os.close(targetfd)
+    print(json.dumps({'sha256':old}))
+  finally:os.close(parentfd)
+ else:fail('invalid')
+except FileNotFoundError:fail('not_found')
+except OSError:fail('invalid')
+finally:os.close(lock);os.close(rootfd)
+`;

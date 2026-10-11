@@ -47,6 +47,7 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableNewestFirstIssueThread: true,
     })).toEqual({
+      enableBoatEnvironments: false,
       enableEnvironments: true,
       enableNativeRunner: false,
       enableAiConnectionRouters: false,

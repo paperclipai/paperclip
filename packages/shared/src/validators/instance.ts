@@ -40,6 +40,7 @@ export const patchInstanceGeneralSettingsSchema = z
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
+  enableBoatEnvironments: z.boolean().default(false),
   enableNativeRunner: z.boolean().default(true),
   enableAiConnectionRouters: z.boolean().default(false),
   enableManagedSandboxOnly: z.boolean().default(false),

@@ -501,9 +501,20 @@ function retargetRunAttachPayload(
     // context, never the prior run's now-stale filesystem grant.
     if (runtimeContext !== undefined) {
       if (currentInstructions !== undefined) {
-        provider.instructions = currentInstructions.context
-          ? retargetComposedInstructions(currentInstructions.text, currentInstructions.context, runtimeContext)
+        // Controller guidance is part of the durable provider profile. A
+        // controller upgrade must not inject it into an existing session; new
+        // managed instructions still use this run's authenticated snapshot.
+        const instructions = typeof provider.instructions === "string"
+          && provider.instructions.includes(COMPUTER_PROCESS_INSTRUCTIONS)
+          ? withComputerProcessInstructions(
+              currentInstructions.text,
+              true,
+              currentInstructions.context,
+            )
           : currentInstructions.text;
+        provider.instructions = currentInstructions.context
+          ? retargetComposedInstructions(instructions, currentInstructions.context, runtimeContext)
+          : instructions;
       } else if (typeof provider.instructions === "string" && provider.runtimeContext) {
         provider.instructions = retargetComposedInstructions(
           provider.instructions,
@@ -1205,6 +1216,10 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions {
+  /** Server-authorized local computer MCP on the selected execution environment. */
+  computerTool?: { command: string; args: readonly string[] } | null;
+  /** Controller-authorized durable personal directory, independent of instructions. */
+  persistentAgentHome?: string;
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -3439,12 +3454,32 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
+const COMPUTER_PROCESS_INSTRUCTIONS = `Computer runtime: files in AGENT_HOME persist across turns. A dev server needed between warm turns must survive the shell tool's process-group cleanup: use a detached session, for example \`nohup setsid <command> </dev/null >dev-server.log 2>&1 &\`, and verify its listener from a separate command after the launching command returns. Detached processes still belong to this runner and stop when its warm timeout expires. Do not create services or change runner ownership to keep them alive.`;
+
+function withComputerProcessInstructions(
+  instructions: string,
+  computerRuntime: boolean,
+  context?: NativeRuntimeContextSnapshot | null,
+): string {
+  if (!computerRuntime) return instructions;
+  if (context) {
+    const suffix = composeNativeSystemInstructions(context, "").slice(context.prompt.text.length);
+    if (suffix && instructions.startsWith(context.prompt.text) && instructions.endsWith(suffix)) {
+      // Keep the canonical asset block last: ACPX verifies this framing when
+      // rotating a registered filesystem grant after idle or process recovery.
+      return `${instructions.slice(0, -suffix.length)}\n\n${COMPUTER_PROCESS_INSTRUCTIONS}${suffix}`;
+    }
+  }
+  return `${instructions}\n\n${COMPUTER_PROCESS_INSTRUCTIONS}`;
+}
+
 export function createRunnerdCodexAppServerArgs(input: {
   environment: NodeJS.ProcessEnv | undefined;
   codexHome: string;
   codexCommand?: string;
   readOnlyRoots?: string[];
   instructionWorkingCopyRoot?: string;
+  persistentAgentHome?: string;
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
   // runner state outside provider reach. Always bind those names to the actual
@@ -3455,9 +3490,10 @@ export function createRunnerdCodexAppServerArgs(input: {
       ...input.environment,
       HOME: input.codexHome,
       CODEX_HOME: input.codexHome,
+      ...(input.persistentAgentHome ? { AGENT_HOME: input.persistentAgentHome } : {}),
     },
     [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
-    input.instructionWorkingCopyRoot,
+    input.instructionWorkingCopyRoot ?? input.persistentAgentHome,
   );
 }
 
@@ -4731,6 +4767,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        computerTool: this.options.computerTool,
       });
     }
     const opencodeProxyPath =
@@ -4819,15 +4856,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const includeCodexCollaborationInstructions =
       provider === "codex" &&
       record(params.config).include_collaboration_mode_instructions !== false;
-    const unboundBaseInstructions = String(
+    const unboundBaseInstructions = withComputerProcessInstructions(String(
       params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent.",
-    );
+    ), Boolean(this.options.persistentAgentHome), sourceRuntimeContext);
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
-        ? unboundBaseInstructions.replaceAll(
-            sourceRuntimeContext.instructions.bundle.rootPath,
-            runtimeContext.instructions.bundle.rootPath,
-          )
+        ? retargetComposedInstructions(unboundBaseInstructions, sourceRuntimeContext, runtimeContext)
         : unboundBaseInstructions;
     const acpxProfile =
       provider === "acpx"
@@ -4966,6 +5000,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                           codexHome,
                           codexCommand: effectiveCodexCommand,
                           instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
+            persistentAgentHome: this.options.persistentAgentHome,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               this.options.environment,
@@ -5450,6 +5485,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             codexHome,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
+            persistentAgentHome: this.options.persistentAgentHome,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
               ...(runtimeContext
@@ -5465,6 +5501,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           });
       }
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
+      core.persistRunAttachTemplate(runAttachTemplate);
       core.queueCommand("run.attach", runAttachTemplate);
     }
     const committedEvents = core.store.state.committedEvents;
@@ -5632,6 +5669,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        computerTool: this.options.computerTool,
       });
     }
     const adoptedRunner = this.options.adoptExistingRunner;
@@ -7073,6 +7111,8 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 });
 
 export const runnerdRecoveryInternals = Object.freeze({
+  withComputerProcessInstructions,
+  retargetComposedInstructions,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   readControlPlaneState,

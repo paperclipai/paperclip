@@ -42,6 +42,11 @@ export interface FeatureCatalogEntry {
 }
 
 export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalogEntry> = {
+  enableBoatEnvironments: {
+    title: "Boat environments",
+    description: "Attach persistent Boat computers for agent execution and a shared desktop.",
+    tier: "managed", cloudDefault: false, selfHostedDefault: false,
+  },
   enableEnvironments: {
     title: "Environments",
     description:

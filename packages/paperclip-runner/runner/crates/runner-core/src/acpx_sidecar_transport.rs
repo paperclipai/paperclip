@@ -84,6 +84,7 @@ pub struct AcpxSidecarTransport {
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
+    admission_diagnostic: Option<(&'static str, u64)>,
     poisoned: bool,
 }
 
@@ -322,6 +323,7 @@ impl AcpxSidecarTransport {
             buffered_events: VecDeque::new(),
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
+            admission_diagnostic: None,
             poisoned: false,
         })
     }
@@ -456,10 +458,11 @@ impl AcpxSidecarTransport {
                     let error = response.error.expect("failed response has validated error");
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
-                            "ACPX sidecar command {} was rejected (retryable={}, classification={})",
+                            "ACPX sidecar command {} was rejected (retryable={}, classification={}){}",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
+                            self.diagnostic_suffix(),
                         ),
                     )));
                 }
@@ -529,6 +532,20 @@ impl AcpxSidecarTransport {
             ));
         }
         self.validate_event_sequence(event.sequence)?;
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeDiagnostic {
+            if let (Some(code), Some(message)) = (
+                event.payload.get("code").and_then(Value::as_str),
+                event.payload.get("message").and_then(Value::as_str),
+            ) {
+                // These frames precede the response on stdout, unlike stderr
+                // whose reader may deliver a matching diagnostic later.
+                if let Some(progress) = parse_admission_diagnostic(&format!(
+                    "[paperclip-acpx-sidecar] {code}: {message}"
+                )) {
+                    self.record_admission_diagnostic(progress);
+                }
+            }
+        }
         self.buffered_events.push_back(event);
         Ok(())
     }
@@ -601,6 +618,7 @@ impl AcpxSidecarTransport {
 
     fn diagnostic_suffix(&self) -> String {
         let diagnostics = self.stderr_tail.snapshot().lines.join("\n");
+        let admission = admission_diagnostic_suffix(self.admission_diagnostic);
         let categories = if self.stderr_categories.is_empty() {
             String::new()
         } else {
@@ -614,18 +632,33 @@ impl AcpxSidecarTransport {
             )
         };
         if diagnostics.is_empty() {
-            categories
+            format!("{admission}{categories}")
         } else {
-            format!("{categories} stderrTail={diagnostics:?}")
+            format!("{admission}{categories} stderrTail={diagnostics:?}")
         }
     }
 
     fn record_stderr(&mut self, line: &str) {
         // Only fixed categories cross this boundary. Raw errors, stack paths,
         // identifiers, and credential-bearing strings remain fully redacted.
+        if let Some(progress) = parse_admission_diagnostic(line) {
+            self.record_admission_diagnostic(progress);
+        }
         self.stderr_categories
             .extend(stderr_diagnostic_categories(line));
         self.stderr_tail.push(redact_diagnostic(line));
+    }
+
+    fn record_admission_diagnostic(&mut self, progress: (&'static str, u64)) {
+        // Preserve the failed step through cleanup and delayed duplicate stderr.
+        // Neither channel may move the observed admission clock backwards.
+        if self
+            .admission_diagnostic
+            .is_some_and(|current| progress.0 == "cleanup" || progress.1 < current.1)
+        {
+            return;
+        }
+        self.admission_diagnostic = Some(progress);
     }
 
     fn poison(&mut self) {
@@ -787,6 +820,40 @@ fn nullable_identifier(
     Ok(Some(value.to_owned()))
 }
 
+// Reuse the sidecar's diagnostic channel, retaining only a closed stage and
+// bounded integer. Unknown lines remain fully redacted and never grant authority.
+fn parse_admission_diagnostic(line: &str) -> Option<(&'static str, u64)> {
+    let (stage, elapsed) = line
+        .strip_prefix("[paperclip-acpx-sidecar] admission_")?
+        .split_once(": elapsedMs=")?;
+    let stage = match stage {
+        "binding" => "binding",
+        "installation" => "installation",
+        "sandbox" => "sandbox",
+        "lifetime" => "lifetime",
+        "agent_files" => "agent_files",
+        "skills" => "skills",
+        "command" => "command",
+        "tool_bridge" => "tool_bridge",
+        "handshake" => "handshake",
+        "verification" => "verification",
+        "ready" => "ready",
+        "cleanup" => "cleanup",
+        _ => return None,
+    };
+    if elapsed.is_empty() || !elapsed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let elapsed = elapsed.parse::<u64>().ok()?;
+    (elapsed <= 3_600_000).then_some((stage, elapsed))
+}
+
+fn admission_diagnostic_suffix(progress: Option<(&'static str, u64)>) -> String {
+    progress.map_or_else(String::new, |(stage, elapsed)| {
+        format!(" admissionStage={stage} admissionElapsedMs={elapsed}")
+    })
+}
+
 fn redact_diagnostic(value: &str) -> String {
     if value.is_empty() {
         String::new()
@@ -901,6 +968,67 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX recovery identity does not match the persisted runtime record" => {
             "recovery_identity_mismatch"
         }
+        // Older pinned sidecars send these internal failures without a stable
+        // code. Keep only closed categories: messages can contain filesystem
+        // paths, provider output, or credentials and must never be surfaced.
+        "ACPX sidecar already owns a session or its cleanup" => "sidecar_session_owned",
+        "ACPX session profile differs from its initialization" => "sidecar_profile_mismatch",
+        "assigned native MCP launch binding is unavailable" => "native_mcp_binding_unavailable",
+        "Verified ACPX installation does not match its profile" => "installation_profile_mismatch",
+        "ACP agent directory must be an absolute normalized registered path"
+        | "ACP agent directory must be a real directory"
+        | "ACP agent directory cannot be a filesystem root" => "agent_directory_invalid",
+        "ACP agent directory overlaps protected runtime state" => "agent_directory_overlap",
+        "ACP registered agent directory changed during provider lifetime" => {
+            "agent_directory_changed"
+        }
+        "ACPX agent home must be a real directory" => "provider_home_invalid",
+        "ACPX agent home permissions are unsafe" => "provider_home_permissions",
+        "Managed Codex credential ownership could not be established" => {
+            "provider_lifetime_admission_failed"
+        }
+        "ACPX recovery runtime directory is unavailable" => "recovery_directory_unavailable",
+        "ACPX recovery runtime directory escaped its namespace" => "recovery_directory_escape",
+        "ACPX recovery workspace record is unavailable" => "recovery_workspace_record_unavailable",
+        "ACPX recovery workspace record is invalid" => "recovery_workspace_record_invalid",
+        "ACPX recovery workspace record changed while read" => "recovery_workspace_record_changed",
+        "ACPX recovery workspace is unavailable" => "recovery_workspace_unavailable",
+        "ACPX sandbox path must be a real directory"
+        | "ACPX sandbox directory changed during preparation"
+        | "ACPX sandbox directory escaped its private parent" => "sandbox_directory_invalid",
+        "runtime context asset root must be a directory"
+        | "staged runtime context root must be a directory"
+        | "staged runtime context asset must be a regular file"
+        | "materialized runtime context root must be a directory"
+        | "materialized runtime context asset must be a regular file" => {
+            "runtime_asset_type_invalid"
+        }
+        "runtime context skill name must be a safe relative path"
+        | "runtime context skill name must stay inside the skills home"
+        | "runtime context skill names must not overlap" => "runtime_skill_name_invalid",
+        "runtime context skills home must be a fresh destination" => {
+            "runtime_skills_destination_exists"
+        }
+        _ if error
+            .message
+            .starts_with("runtime context asset contains a symlink: ") =>
+        {
+            "runtime_asset_symlink"
+        }
+        _ if error
+            .message
+            .starts_with("runtime context asset contains an unsupported file: ") =>
+        {
+            "runtime_asset_type_invalid"
+        }
+        _ if error.message.starts_with("ENOENT: ") => "filesystem_entry_missing",
+        _ if error.message.starts_with("EACCES: ") || error.message.starts_with("EPERM: ") => {
+            "filesystem_permission_denied"
+        }
+        _ if error.message.starts_with("ELOOP: ") => "filesystem_link_rejected",
+        _ if error.message.starts_with("ENOTDIR: ") => "filesystem_not_directory",
+        _ if error.message.starts_with("EROFS: ") => "filesystem_read_only",
+        _ if error.message.starts_with("ENOSPC: ") => "filesystem_full",
         "ACPX provider lifetime lease is unavailable" => "provider_lifetime_unavailable",
         "Managed Codex credential home already has an active lease" => "provider_lifetime_owned",
         "ACPX session handshake exceeded its admission deadline" => "session_handshake_timeout",
@@ -930,6 +1058,158 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admission_diagnostics_accept_only_closed_stages_and_bounded_integer_timing() {
+        assert_eq!(
+            parse_admission_diagnostic(
+                "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=321"
+            ),
+            Some(("handshake", 321))
+        );
+        for line in [
+            "[paperclip-acpx-sidecar] admission_private-path: elapsedMs=321",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=321 private-token",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=-1",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=NaN",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=3600001",
+            "[paperclip-acpx-sidecar] admission_handshake: elapsedMs=18446744073709551616",
+            "private-prefix [paperclip-acpx-sidecar] admission_handshake: elapsedMs=321",
+        ] {
+            assert_eq!(parse_admission_diagnostic(line), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admission_timeout_retains_last_safe_stage_without_untrusted_stderr() {
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s\\n' '[paperclip-acpx-sidecar] admission_sandbox: elapsedMs=1' '[paperclip-acpx-sidecar] admission_handshake: elapsedMs=24' '[paperclip-acpx-sidecar] admission_handshake: elapsedMs=25 /private/token-canary' '[paperclip-acpx-sidecar] admission_cleanup: elapsedMs=26' >&2; sleep 2".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(200),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("request timed out at session.open"),
+            "{error}"
+        );
+        assert!(
+            error.contains("admissionStage=handshake admissionElapsedMs=24"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("private") && !error.contains("token-canary"),
+            "{error}"
+        );
+        assert!(transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admission_rejection_retains_sequenced_stage_and_preserves_buffered_frames() {
+        let diagnostics = [
+            ("admission_handshake", "elapsedMs=24"),
+            ("admission_sandbox", "elapsedMs=1"),
+            ("admission_handshake", "elapsedMs=25 /private/token-canary"),
+            ("admission_cleanup", "elapsedMs=26"),
+        ];
+        let frames: Vec<Value> = diagnostics
+            .iter()
+            .enumerate()
+            .map(|(index, (code, message))| {
+                json!({
+                    "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence": index + 1, "eventType": "runtime.diagnostic", "runId": null,
+                    "turnId": null, "payload": { "code": code, "message": message },
+                })
+            })
+            .collect();
+        let response = json!({ "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "id": 1, "ok": false, "error": { "code": "UNKNOWN_PRIVATE_CODE",
+            "message": "/private/token-canary", "retryable": false } });
+        let lines = frames
+            .iter()
+            .chain(std::iter::once(&response))
+            .map(|frame| format!("'{}'", frame))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                format!("read request; printf '%s\\n' {lines}; sleep 2"),
+            ],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport
+            .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("was rejected (retryable=false, classification=unclassified)"),
+            "{error}"
+        );
+        assert!(
+            error.contains("admissionStage=handshake admissionElapsedMs=24"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("private")
+                && !error.contains("canary")
+                && !error.contains("UNKNOWN_PRIVATE_CODE"),
+            "{error}"
+        );
+        assert!(!transport.poisoned);
+        for frame in frames {
+            let event = transport
+                .poll_event(Duration::from_millis(1))
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.sequence, frame["sequence"].as_u64().unwrap());
+            assert_eq!(event.payload, frame["payload"]);
+        }
+        assert!(transport.buffered_events.is_empty());
+        // Delayed stderr must not regress the stage learned from sequenced stdout.
+        transport.record_stderr("[paperclip-acpx-sidecar] admission_binding: elapsedMs=0");
+        assert_eq!(transport.admission_diagnostic, Some(("handshake", 24)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_diagnostic_sequence_cannot_update_admission_progress() {
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 2".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(10),
+        };
+        let mut transport = AcpxSidecarTransport::start(&config).unwrap();
+        let error = transport
+            .buffer_event(AcpxSidecarEvent {
+                sequence: 2,
+                event_type: GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
+                run_id: None,
+                turn_id: None,
+                payload: json!({"code":"admission_ready", "message":"elapsedMs=25"}),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("sequence has a gap"));
+        assert_eq!(transport.admission_diagnostic, None);
+        assert!(transport.buffered_events.is_empty());
+    }
+
     #[test]
     fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
         assert!(pi_credential_environment_keys(None).unwrap().is_empty());
@@ -1059,6 +1339,98 @@ mod tests {
             assert!(!classification.contains("canary"));
             assert!(!classification.contains("secret"));
         }
+    }
+
+    #[test]
+    fn pinned_sidecar_admission_failures_expose_only_closed_categories() {
+        for (message, expected) in [
+            (
+                "ACP agent directory overlaps protected runtime state",
+                "agent_directory_overlap",
+            ),
+            (
+                "ACPX recovery workspace record is invalid",
+                "recovery_workspace_record_invalid",
+            ),
+            (
+                "ACPX agent home permissions are unsafe",
+                "provider_home_permissions",
+            ),
+            (
+                "assigned native MCP launch binding is unavailable",
+                "native_mcp_binding_unavailable",
+            ),
+            (
+                "runtime context skills home must be a fresh destination",
+                "runtime_skills_destination_exists",
+            ),
+            (
+                "runtime context asset contains a symlink: /private-token-canary",
+                "runtime_asset_symlink",
+            ),
+            (
+                "runtime context asset contains an unsupported file: /private-token-canary",
+                "runtime_asset_type_invalid",
+            ),
+            (
+                "ENOENT: no such file or directory, open '/private-token-canary'",
+                "filesystem_entry_missing",
+            ),
+            (
+                "EACCES: permission denied, open '/private-token-canary'",
+                "filesystem_permission_denied",
+            ),
+            (
+                "EPERM: operation not permitted '/private-token-canary'",
+                "filesystem_permission_denied",
+            ),
+            (
+                "ELOOP: too many symbolic links '/private-token-canary'",
+                "filesystem_link_rejected",
+            ),
+            (
+                "ENOTDIR: not a directory '/private-token-canary'",
+                "filesystem_not_directory",
+            ),
+            (
+                "EROFS: read-only filesystem '/private-token-canary'",
+                "filesystem_read_only",
+            ),
+            (
+                "ENOSPC: no space left '/private-token-canary'",
+                "filesystem_full",
+            ),
+            ("private-token-canary ENOENT: missing", "unclassified"),
+            ("ENOENT_EXTRA: private-token-canary", "unclassified"),
+            (
+                "ACP agent directory overlaps protected runtime state private-token-canary",
+                "unclassified",
+            ),
+            (
+                "unknown failure https://user:private-token-canary@example.invalid",
+                "unclassified",
+            ),
+        ] {
+            let error = ResponseError {
+                code: "acpx_sidecar_command_failed".to_owned(),
+                message: message.to_owned(),
+                retryable: false,
+            };
+            let classification = response_error_classification(&error);
+            assert_eq!(classification, expected);
+            assert!(!classification.contains("private-token-canary"));
+            assert!(!classification.contains('/'));
+        }
+        // An established stable code keeps precedence over incidental text.
+        let error = ResponseError {
+            code: "AUTH_REQUIRED".to_owned(),
+            message: "ENOENT: private-token-canary".to_owned(),
+            retryable: true,
+        };
+        assert_eq!(
+            response_error_classification(&error),
+            "authentication_required"
+        );
     }
 
     #[test]

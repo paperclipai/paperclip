@@ -743,6 +743,13 @@ const recoveryFakeCodex = resolve(
       runnerDiagnostics.push(chunk.slice(-4_096));
       if (runnerDiagnostics.length > 32) runnerDiagnostics.shift();
     };
+    // The production resolver prefers installed Codex over PATH. Explicitly
+    // bind this disposable fixture so it can never invoke a real provider.
+    const codexCommandResolver = await vi.importActual<{ resolveCodexCommand: () => string }>(
+      "../../../../packages/paperclip-runner/src/drivers/codex/codex-command.js",
+    );
+    const resolveFixtureCodex = vi.spyOn(codexCommandResolver, "resolveCodexCommand")
+      .mockReturnValue(join(bin, "codex"));
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     try {
       await Promise.all(
@@ -1227,6 +1234,7 @@ const recoveryFakeCodex = resolve(
         Promise.resolve().then(() => session.close({ reason: "Recovery fixture cleanup" })),
       ));
       const closeFailures = closed.filter((result) => result.status === "rejected");
+      resolveFixtureCodex.mockRestore();
       runnerPrpWebSocketInternals.resetForTests();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));

@@ -1,3 +1,6 @@
+import { computerService } from "../../modules/computers/index.js";
+import { readNativeComputerWorkspaceReference } from "./native-workspace-sync.js";
+import { adapterExecutionTargetIsCommandBacked, type AdapterComputerExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { agents } from "@paperclipai/db";
 import { isCloudManagedInstance } from "../cloud-instance.js";
@@ -39,6 +42,7 @@ import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
+import { verifyRemoteProviderPackArtifacts, assertRemoteProviderPackVerificationResult, computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -48,9 +52,10 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
+  createReadStream,
   copyFileSync,
   closeSync,
   constants,
@@ -441,6 +446,8 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  computerTarget?: AdapterComputerExecutionTarget;
+  runId: string;
   instructionWorkingCopy?: NativeInstructionWorkingCopy;
   // Keep the admitted physical root independent of the per-run collection
   // capability, which instruction preparation adopts before final admission.
@@ -467,20 +474,51 @@ type WarmNativeSession = {
   lastActivityAt: string;
 };
 
+/** A scoped preparation failure is retryable only after exact retirement fences
+ * queued commands. A process claim or invoked launcher keeps normal recovery. */
+export async function retireUnlaunchedComputerAttempt(
+  target: AdapterExecutionTarget | null | undefined,
+  launchAttempted: boolean,
+): Promise<void> {
+  if (target?.kind !== "remote" || target.transport !== "computer" || launchAttempted) return;
+  const process = await target.inspectProcess();
+  if (process.running || process.claim !== null) return;
+  if (!(await target.retire())) throw new NativeSessionCleanupQuarantinedError();
+}
+
+class ComputerOwnerSupersededError extends Error {
+  constructor() { super("computer_owner_retirement_superseded"); }
+}
+
 async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, preserveInstructionsForRunId?: string) {
-  // Revoke before awaiting process retirement/checkpoint IO.
+  let closeFailure: unknown;
+  let closeCompleted = false;
+  const close = async () => {
+    try { await entry.session.close({ reason }); closeCompleted = true; }
+    catch (error) { closeFailure = error; throw error; }
+  };
+  // Reserve the exact generation before protocol close. A winning admission
+  // must never receive a stale controller's suspend/kill command. The module
+  // always hard-retires descendants after the bounded graceful window.
+  if (entry.computerTarget && !(await entry.computerTarget.retire({ beforeStop: close }))) {
+    throw new ComputerOwnerSupersededError();
+  }
   const stopping = entry.githubAccess?.stop();
   try {
-    try { await entry.session.close({ reason }); }
-    catch (error) {
+    try {
+      if (!entry.computerTarget) await close();
+      if (closeFailure || !closeCompleted) {
+        await entry.session.detachControllerForRestart?.();
+        throw closeFailure ?? new NativeSessionCleanupQuarantinedError();
+      }
+    } catch (error) {
       try { await entry.instructionWorkingCopy?.retirementFailed?.(); }
       catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
       throw error;
     }
     await entry.instructionWorkingCopy?.collectStopped();
     if (entry.instructionCopy?.runId !== preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
-  }
-  finally { await stopping; }
+  } finally { await stopping; }
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -550,7 +588,7 @@ export async function claimWarmNativeInstructionCopy(input: {
 function instructionTargetIdentity(target?: AdapterExecutionTarget | null): string {
   return JSON.stringify(target?.kind === "remote" ? {
     environmentId: target.environmentId, cwd: target.remoteCwd,
-    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.spec,
+    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.transport === "computer" ? [target.resourceAuthority.computerId, target.resourceAuthority.ownerId] : target.spec,
   } : { kind: "local", environmentId: target?.environmentId });
 }
 
@@ -563,6 +601,12 @@ export async function reserveWarmNativeInstructionDirectory(input: {
   for (const [id, entry] of warmNativeSessions) {
     if (entry.companyId !== input.companyId || entry.agentId !== input.agentId || entry.instructionCopy?.runId !== input.previousRunId) continue;
     if (entry.busy || entry.preparingRunId) throw new Error("native_session_supervisor_busy");
+    if (input.target?.kind === "remote" && input.target.transport === "computer" &&
+        entry.computerTarget?.resourceAuthority.computerId === input.target.resourceAuthority.computerId &&
+        entry.computerTarget.resourceAuthority.ownerId === input.target.resourceAuthority.ownerId &&
+        entry.computerTarget.resourceAuthority.generation < input.target.resourceAuthority.generation) {
+      entry.computerTarget = input.target;
+    }
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
     entry.preparingRunId = input.runId;
@@ -611,6 +655,11 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
+/** Cancel one attempt without closing other agents on its computer. */
+export async function closeWarmNativeSessionsForRun(input: { runId: string; reason: string }) {
+  return closeIdleWarmNativeSessions(input);
+}
+
 /** Suspend idle owners and persist their remote backup before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
@@ -624,6 +673,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
 
 async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
+  runId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
@@ -631,6 +681,7 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.runId !== undefined && entry.runId !== input.runId) continue;
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
@@ -1663,6 +1714,18 @@ function nativeSessionKey(execution: NativeExecutionInput): string {
     execution.session.normalizedSessionId ??
     `session-${execution.binding.runId}`
   );
+}
+
+/** Persistent computer artifacts belong to an agent session, independent of a shared repo cwd. */
+export function remoteRunnerStorageRoots(
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>,
+  sessionKey: string,
+) {
+  const home = target.transport === "computer" ? target.fileAuthority?.agentHome : target.remoteCwd;
+  if (!home || !posix.isAbsolute(home)) throw new Error("runner_remote_storage_home_missing");
+  const base = posix.join(home, ".paperclip-runtime", "paperclip-runner");
+  const sessionRoot = posix.join(base, "sessions", createHash("sha256").update(sessionKey).digest("hex"));
+  return { runtimeRoot: target.transport === "computer" ? sessionRoot : base, sessionRoot };
 }
 
 export function nativeSessionWorkspaceScope(execution: { binding: Pick<NativeExecutionInput["binding"], "runId" | "executionWorkspaceId">; workspace: NativeExecutionInput["workspace"] }) {
@@ -4243,13 +4306,15 @@ export function nativePreProviderRetryAfterCleanupStateIsSafe(input: {
   }
 }
 
-async function verifyPriorRunnerdStateForSessionScope(input: {
+export async function verifyPriorRunnerdStateForSessionScope(input: {
   db: Db;
   root: string;
   identity: RunnerdDurableIdentity;
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
   allowRetainedWarmRunner: boolean;
+  remoteRunnerState?: boolean;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -4303,9 +4368,98 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
         // there is intentionally no suspended failover backup yet. The exact
         // idle in-memory session owner is the authority for this one case;
         // after a restart that owner is absent and this remains fail-closed.
-        (input.allowVerifiedBackup && directLifecycle === "absent"))
+        ((input.allowVerifiedBackup || input.remoteRunnerState) && directLifecycle === "absent"))
     ) {
       return "retained_warm_runner";
+    }
+    const target = input.runnerExecutionTarget;
+    if (input.remoteRunnerState && directLifecycle === "absent" &&
+        target?.kind === "remote" && target.transport === "computer" && target.environmentId) {
+      const descriptor = record(priorRun.runnerProfileJson).nativeComputerWorkspace;
+      const priorWorkspace = readNativeComputerWorkspaceReference(descriptor);
+      if (!priorWorkspace || priorWorkspace.computerOwner.computerId !== target.resourceAuthority.computerId ||
+          priorWorkspace.remoteCwd !== target.remoteCwd ||
+          record(descriptor).placementId !== target.fileAuthority.placementId) return "scope_mismatch";
+      // Persistent runners keep their state remotely. Once the exact prior
+      // owner has completed retirement, its terminal run and fenced process
+      // are authoritative even though no local runner-state.json exists.
+      // This read cannot retire a live owner or accept a newer generation.
+      try {
+        // PRP historically calls the immutable execution-workspace coordinate
+        // environmentLeaseId. Resolve its recorded placement lease separately
+        // from the latest process owner: workspace identity survives warm turns
+        // and idle replacement. Explicit physical leases retain their own lineage.
+        let workspaceRunId: string | null = input.identity.environmentLeaseId ===
+          priorExecution.binding.executionWorkspaceId ? input.identity.runId : null;
+        let leaseWorkspace = priorWorkspace;
+        let physicalLeaseId = workspaceRunId ? priorWorkspace.leaseId : input.identity.environmentLeaseId;
+        if (!workspaceRunId) {
+          // Warm attachment advances runId while retaining the process's original
+          // workspace coordinate. Resolve that recorded origin, never an arbitrary
+          // run ID, before checking the physical lease and latest retirement.
+          const origins = await input.db.select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+            runnerProfileJson: heartbeatRuns.runnerProfileJson,
+          }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+            eq(sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->>'executionWorkspaceId'`,
+              input.identity.environmentLeaseId),
+          )).limit(2);
+          if (origins.length > 1) return "scope_mismatch";
+          if (origins.length === 1) {
+            const origin = origins[0]!;
+            const originProfile = record(origin.runnerProfileJson);
+            const originExecution = parseNativeExecutionInput(originProfile.nativeExecutionInput);
+            const originWorkspace = readNativeComputerWorkspaceReference(originProfile.nativeComputerWorkspace);
+            if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(origin.status) ||
+                originExecution.binding.runId !== origin.id ||
+                originExecution.binding.executionWorkspaceId !== input.identity.environmentLeaseId ||
+                nativeSessionScopeKey(originExecution) !== nativeSessionScopeKey(priorExecution) ||
+                !originWorkspace || originWorkspace.remoteCwd !== priorWorkspace.remoteCwd ||
+                record(originProfile.nativeComputerWorkspace).placementId !== record(descriptor).placementId ||
+                originWorkspace.computerOwner.computerId !== priorWorkspace.computerOwner.computerId ||
+                (originWorkspace.computerOwner.ownerId === priorWorkspace.computerOwner.ownerId &&
+                  originWorkspace.computerOwner.generation > priorWorkspace.computerOwner.generation)) return "scope_mismatch";
+            // This coordinate outlives physical runner replacements. Its lease
+            // proves the recorded workspace origin, not ownership of the latest
+            // process. The latest exact generation is verified independently below.
+            workspaceRunId = originExecution.binding.runId;
+            leaseWorkspace = originWorkspace;
+            physicalLeaseId = originWorkspace.leaseId;
+          }
+        }
+        const [physicalLease] = await input.db.select({
+          providerLeaseId: environmentLeases.providerLeaseId,
+          heartbeatRunId: environmentLeases.heartbeatRunId,
+          metadata: environmentLeases.metadata,
+        }).from(environmentLeases).where(and(
+          eq(environmentLeases.id, physicalLeaseId),
+          eq(environmentLeases.companyId, input.execution.binding.companyId),
+          eq(environmentLeases.environmentId, target.environmentId),
+        )).limit(1);
+        const leaseMetadata = record(physicalLease?.metadata);
+        const leaseOwner = record(leaseMetadata.computerOwner);
+        if ((workspaceRunId && physicalLease?.heartbeatRunId !== workspaceRunId) ||
+            physicalLease?.providerLeaseId !== leaseWorkspace.computerOwner.ownerId ||
+            leaseMetadata.agentId !== input.execution.binding.agentId ||
+            leaseOwner.computerId !== leaseWorkspace.computerOwner.computerId ||
+            leaseOwner.ownerId !== leaseWorkspace.computerOwner.ownerId ||
+            !Number.isSafeInteger(leaseOwner.generation) || Number(leaseOwner.generation) < 1 ||
+            (workspaceRunId
+              ? Number(leaseOwner.generation) !== leaseWorkspace.computerOwner.generation
+              : Number(leaseOwner.generation) > leaseWorkspace.computerOwner.generation)) return "scope_mismatch";
+        if (await computerService(input.db).isRetired({
+          companyId: input.execution.binding.companyId,
+          environmentId: target.environmentId,
+          agentId: input.execution.binding.agentId,
+          runId: input.identity.runId,
+          owner: priorWorkspace.computerOwner,
+        })) return "verified";
+      } catch {
+        return "unavailable";
+      }
     }
     return "terminal_state_indeterminate";
   } catch {
@@ -4849,6 +5003,9 @@ async function migrateRunnerdStateRootForExecution(input: {
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+        remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "computer",
+        runnerExecutionTarget: input.runnerExecutionTarget,
       });
       if (
         verification !== "verified" &&
@@ -4891,6 +5048,9 @@ async function migrateRunnerdStateRootForExecution(input: {
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+        remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "computer",
+        runnerExecutionTarget: input.runnerExecutionTarget,
       });
       if (
         verification !== "verified" &&
@@ -5393,6 +5553,7 @@ function nativeSessionConfigDigest(
         provider: execution.provider,
         driverKind: execution.session.driverKind,
         lifecyclePolicy: execution.session.lifecyclePolicy,
+        workMode: execution.task.workMode,
         executionMode:
           "executionMode" in execution ? execution.executionMode : "default",
         runtimeContextDigest:
@@ -6165,6 +6326,8 @@ async function releaseWarmNativeSession(
     } finally { entry.busy = false; }
     return;
   }
+  // Durable shared-computer ownership must be retained before completion is acknowledged.
+  await entry.computerTarget?.retainWarm(idleTimeoutMs);
   entry.idleTimer = setTimeout(() => {
     const current = warmNativeSessions.get(sessionId);
     if (current !== entry || current.busy) return;
@@ -6172,7 +6335,16 @@ async function releaseWarmNativeSession(
     current.closeOnReleaseReason = "warm native session idle timeout";
     void closeWarmNativeSession(current, current.closeOnReleaseReason)
       .then(() => { if (warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
-      .catch(() => { if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
+      .catch((error) => {
+        if (error instanceof ComputerOwnerSupersededError) {
+          // Admission owns the next generation. Leave this transport available
+          // for its imminent warm reservation instead of closing or deleting it.
+          current.closeOnReleaseReason = undefined;
+          current.idleTimer = null;
+          return;
+        }
+        if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId);
+      })
       .finally(() => { current.busy = false; });
   }, idleTimeoutMs);
   entry.idleTimer.unref();
@@ -6201,6 +6373,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
+    sourceFailureCode === "runner_remote_artifact_platform_mismatch" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === "native_current_wake_comments_unread" ||
     sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
@@ -6257,6 +6430,8 @@ export function nativeSessionFailureSourceCode(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_provider_verification_unavailable"
+  | "runner_remote_artifact_platform_mismatch"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -6297,8 +6472,14 @@ export function nativeSessionFailureSourceCode(
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
     return "native_adopted_runner_authentication_timeout";
   }
+  if (/^runner_remote_artifact_platform_mismatch(?::|$)/.test(message)) {
+    return "runner_remote_artifact_platform_mismatch";
+  }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
+  }
+  if (/^runner_remote_provider_verification_unavailable(?::|$)/.test(message)) {
+    return "runner_remote_provider_verification_unavailable";
   }
   if (/provider_process_exited/i.test(message)) {
     return "provider_process_exited";
@@ -6424,6 +6605,8 @@ export async function nativeProviderRecoveryEvidence(input: {
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
     "runner_remote_provider_artifact_incompatible",
+    "runner_remote_provider_verification_unavailable",
+    "runner_remote_artifact_platform_mismatch",
     "provider_process_exited",
     "provider_stdout_closed",
     "provider_process_output_closed",
@@ -7380,6 +7563,19 @@ export async function renewNativeSessionExecutionLease(input: {
     )
     .returning({ runId: nativeRunFinalizations.runId });
   if (!updated) throw new Error("native_session_lease_lost");
+}
+
+/** Computer ACPX cold starts stage the complete qualified Linux provider pack.
+ * Measured 1.1 GiB transfers plus compression/verification need about 24 minutes;
+ * this finite admission budget does not extend warm leases or turn execution.
+ */
+export function nativeSessionBootstrapTimeoutMs(
+  providerKind: NativeExecutionInput["provider"]["kind"],
+  target?: Pick<Extract<AdapterExecutionTarget, { kind: "remote" }>, "kind" | "transport"> | { kind: "local" } | null,
+): number | undefined {
+  return providerKind === "acpx" && target?.kind === "remote" && target.transport === "computer"
+    ? 30 * 60 * 1_000
+    : undefined;
 }
 
 function startNativeSessionExecutionLeaseRenewal(input: {
@@ -8450,6 +8646,9 @@ async function executePaperclipNativeSessionWithinScope(
           entry.credentialRunId !== input.execution.binding.runId);
       if (
         input.refreshTools === true ||
+        (input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" &&
+          (entry.computerTarget?.resourceAuthority.computerId !== input.runnerExecutionTarget.resourceAuthority.computerId ||
+           entry.computerTarget?.resourceAuthority.ownerId !== input.runnerExecutionTarget.resourceAuthority.ownerId)) ||
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         entry.configuredEnvironmentDigest !== configuredEnvironmentDigest ||
@@ -8495,6 +8694,8 @@ async function executePaperclipNativeSessionWithinScope(
         entry.instructionPreparationRunId = undefined;
         entry.instructionWorkingCopy = input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy;
         entry.busy = true;
+        entry.runId = input.execution.binding.runId;
+        entry.computerTarget = input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined;
         entry.ownerToken = warmSessionOwnerToken;
         entry.environmentId =
           input.runnerExecutionTarget?.environmentId ?? null;
@@ -8605,6 +8806,8 @@ async function executePaperclipNativeSessionWithinScope(
           },
         }
       : input.execution;
+  let remoteLaunchAttempted = false;
+  let remoteBackendPreparationStarted = false;
   const leaseRenewal = startNativeSessionExecutionLeaseRenewal({
     db: input.db,
     runId: input.execution.binding.runId,
@@ -8632,6 +8835,7 @@ async function executePaperclipNativeSessionWithinScope(
       input.db,
       input.execution.binding,
     );
+    remoteBackendPreparationStarted = input.useRunnerd === true && input.backend === undefined;
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
@@ -8642,12 +8846,14 @@ async function executePaperclipNativeSessionWithinScope(
             execution: input.execution,
             runnerInstanceId: effectiveRunnerInstanceId,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+            onRemoteLaunchAttempt: () => { remoteLaunchAttempted = true; },
             trace,
             toolTrace,
           })
         : null;
     const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
-        input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
+        (input.runnerExecutionTarget.transport === "sandbox" || input.runnerExecutionTarget.transport === "computer") &&
+        input.runnerExecutionTarget.leaseId
       ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
           .from(environmentLeases).where(and(
             eq(environmentLeases.companyId, input.execution.binding.companyId),
@@ -8682,6 +8888,7 @@ async function executePaperclipNativeSessionWithinScope(
             input: runnerExecution,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
             turnTimeoutMs: input.turnTimeoutMs,
+            bootstrapTimeoutMs: nativeSessionBootstrapTimeoutMs(input.execution.provider.kind, input.runnerExecutionTarget),
             backend:
               input.backend ??
               runnerdBackend ??
@@ -8861,6 +9068,8 @@ async function executePaperclipNativeSessionWithinScope(
                       ? input.execution.binding.runId
                       : undefined,
                     session,
+                    runId: input.execution.binding.runId,
+                    computerTarget: input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined,
                     ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
                     configuredEnvironmentDigest,
@@ -8875,6 +9084,10 @@ async function executePaperclipNativeSessionWithinScope(
                     lastActivityAt: new Date().toISOString(),
                   });
                 const owner = warmNativeSessions.get(warmSessionId);
+                if (owner) {
+                  owner.runId = input.execution.binding.runId;
+                  owner.computerTarget = input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined;
+                }
                 if (owner && input.instructionWorkingCopy?.runId && input.instructionWorkingCopy.checkpointWarm) owner.instructionCopy = {
                   runId: input.instructionWorkingCopy.runId, root: input.instructionWorkingCopy.root, targetIdentity: instructionTargetIdentity(input.runnerExecutionTarget),
                   collectStopped: input.instructionWorkingCopy.collectStopped,
@@ -9019,6 +9232,15 @@ async function executePaperclipNativeSessionWithinScope(
       // provider failure and must not overwrite the shutdown adoption record
       // with a retry or release the still-live runner's lease.
       throw new NativeControllerDetachedForRestartError();
+    }
+    if (remoteBackendPreparationStarted) {
+      try {
+        await retireUnlaunchedComputerAttempt(input.runnerExecutionTarget, remoteLaunchAttempted);
+      } catch {
+        // Failure to establish the exact tombstone leaves queued commands or
+        // a lost launch acknowledgement ambiguous. Never retry that owner.
+        error = new NativeSessionCleanupQuarantinedError();
+      }
     }
     const protocolIntegrityFailure =
       error instanceof NativeSessionProtocolIntegrityError ? error : null;
@@ -10013,13 +10235,37 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
       { cause: error },
     );
   }
+  return validateRemoteProviderPackIdentity(manifest, packRoot, verifyControllerFiles);
+}
+
+export function validateRemoteProviderPackIdentity(
+  manifest: RemoteProviderPackManifest,
+  packRoot = "",
+  verifyControllerFiles = false,
+  retainedAuthority?: { digest: string; agent: string },
+): RemoteProviderPackManifest {
   const payload = manifest?.payload;
+  // A retained session may outlive unrelated bundled-provider upgrades. Its
+  // active provider must still satisfy this release's qualified ACPX contract.
+  const retainedAgent = retainedAuthority?.agent;
+  const retainedProfile = retainedAgent === "claude" || retainedAgent === "codex" || retainedAgent === "grok"
+    ? retainedAgent : null;
+  const activePins = retainedProfile === "claude" ? ["acpx", "claudeAcp"] as const
+    : retainedProfile === "codex" ? ["acpx", "codex", "codexAcp"] as const
+    : ["acpx", "grok"] as const;
+  const pinsMatch = retainedProfile
+    ? canonicalJson(Object.keys(payload?.pins ?? {}).sort()) === canonicalJson(Object.keys(REMOTE_PROVIDER_PACK_PINS).sort())
+      && Object.values(payload?.pins ?? {}).every(value => typeof value === "string" && value.length > 0 && value.length <= 120)
+      && activePins.every(key => payload?.pins?.[key] === REMOTE_PROVIDER_PACK_PINS[key])
+      && canonicalJson(Object.keys(payload?.acpxProfileDigests ?? {}).sort()) === canonicalJson(Object.keys(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS).sort())
+      && Object.values(payload?.acpxProfileDigests ?? {}).every(value => /^sha256:[0-9a-f]{64}$/.test(value))
+      && payload?.acpxProfileDigests?.[retainedProfile] === REMOTE_PROVIDER_PACK_PROFILE_DIGESTS[retainedProfile]
+    : canonicalJson(payload?.pins) === canonicalJson(REMOTE_PROVIDER_PACK_PINS)
+      && canonicalJson(payload?.acpxProfileDigests) === canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS);
   if (
     manifest?.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
     !payload ||
-    canonicalJson(payload.pins) !== canonicalJson(REMOTE_PROVIDER_PACK_PINS) ||
-    canonicalJson(payload.acpxProfileDigests) !==
-      canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS) ||
+    !pinsMatch ||
     typeof payload.target?.platform !== "string" ||
     typeof payload.target?.architecture !== "string" ||
     !/^[0-9a-f]{40}(?:-dirty)?$/.test(payload.runnerSourceRevision) ||
@@ -10032,7 +10278,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
   const digest = `sha256:${createHash("sha256")
     .update(canonicalJson(payload))
     .digest("hex")}`;
-  if (manifest.digest !== digest) {
+  if (manifest.digest !== digest || (retainedAuthority && digest !== retainedAuthority.digest)) {
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider pack manifest digest mismatch",
     );
@@ -10112,7 +10358,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
         throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
       }
       const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
-      if (provider === "cursor") {
+      if (provider === "cursor" && !retainedProfile) {
         const target = `${payload.target.platform}-${payload.target.architecture}`;
         const distribution = Object.hasOwn(CURSOR_DISTRIBUTION_PINS, target)
           ? CURSOR_DISTRIBUTION_PINS[target as keyof typeof CURSOR_DISTRIBUTION_PINS] : undefined;
@@ -10184,7 +10430,17 @@ export function assertRemoteRunnerBuildMetadata(
   }
 }
 
-async function stageRemoteRunnerFile(input: {
+export function nativeComputerToolForExecution(
+  execution: NativeExecutionInput,
+  target: AdapterExecutionTarget | null | undefined,
+): AdapterComputerExecutionTarget["computerTool"] | undefined {
+  if (target?.kind !== "remote" || target.transport !== "computer" ||
+      execution.task.workMode !== "standard" ||
+      ("executionMode" in execution && execution.executionMode === "plan")) return undefined;
+  return target.computerTool;
+}
+
+export async function stageRemoteRunnerFile(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
   sourcePath: string;
@@ -10208,20 +10464,97 @@ async function stageRemoteRunnerFile(input: {
     ]);
     return;
   }
-  const bytes = readFileSync(input.sourcePath);
-  const directory = posix.dirname(input.targetPath);
-  const script =
-    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
-    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
-    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: bytes.toString("base64"),
-    bypassSession: true,
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const run = async (script: string, stdin?: string) => {
+    const result = await runner.execute({
+      command: "sh", args: ["-c", script], stdin,
+      bypassSession: true, timeoutMs: 180_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error(`runner_remote_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
+    }
+  };
+  if (lstatSync(input.sourcePath).size <= 4 * 1024 * 1024) {
+    await run(`umask 077; mkdir -p ${quote(posix.dirname(input.targetPath))} && ` +
+      `base64 -d > ${quote(input.targetPath)} && chmod ${input.mode.toString(8)} ${quote(input.targetPath)}`,
+      readFileSync(input.sourcePath).toString("base64"));
+    return;
+  }
+  const remoteUpload = `${input.targetPath}.upload-${randomUUID()}`;
+  try {
+    await uploadRemoteRunnerFileChunks({ sourcePath: input.sourcePath, remotePath: remoteUpload, run });
+    await run(`chmod ${input.mode.toString(8)} ${quote(remoteUpload)} && mv -f ${quote(remoteUpload)} ${quote(input.targetPath)}`);
+  } finally {
+    await run(`rm -f ${quote(remoteUpload)}`).catch(() => undefined);
+  }
+}
+
+const REMOTE_ARTIFACT_UPLOAD_CONCURRENCY = 8;
+let activeRemoteArtifactUploads = 0;
+const remoteArtifactUploadWaiters: Array<() => void> = [];
+
+async function withRemoteArtifactUploadSlot(operation: () => Promise<void>): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (activeRemoteArtifactUploads < REMOTE_ARTIFACT_UPLOAD_CONCURRENCY) {
+      activeRemoteArtifactUploads++;
+      resolve();
+    } else remoteArtifactUploadWaiters.push(resolve);
   });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_staging_failed");
+  try { await operation(); }
+  finally {
+    const next = remoteArtifactUploadWaiters.shift();
+    if (next) next();
+    else activeRemoteArtifactUploads--;
+  }
+}
+
+async function uploadRemoteRunnerFileChunks(input: {
+  sourcePath: string;
+  remotePath: string;
+  run: (script: string, stdin?: string) => Promise<void>;
+  onProgress?: (completedBytes: number, totalBytes: number) => Promise<void>;
+}): Promise<void> {
+  const { run, remotePath } = input;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const pending: Promise<void>[] = [];
+  let uploadError: unknown;
+  try {
+    await run(`umask 077; mkdir -p ${quote(posix.dirname(remotePath))} && : > ${quote(remotePath)}`);
+    const digest = createHash("sha256");
+    const totalBytes = lstatSync(input.sourcePath).size;
+    let completedBytes = 0;
+    let progressAt = Date.now();
+    await input.onProgress?.(0, totalBytes);
+    let chunkIndex = 0;
+    const stream = createReadStream(input.sourcePath, { highWaterMark: 4 * 1024 * 1024 });
+    for await (const bytes of stream) {
+      const chunk = bytes as Buffer;
+      digest.update(chunk);
+      completedBytes += chunk.length;
+      // Disjoint fixed offsets permit bounded parallel upload and idempotent
+      // writes. The final digest rejects missing, duplicated, or partial bytes.
+      const offset = chunkIndex++;
+      pending.push(withRemoteArtifactUploadSlot(() => run(
+        `base64 -d | dd of=${quote(remotePath)} bs=4194304 seek=${offset} conv=notrunc 2>/dev/null`,
+        chunk.toString("base64"))).catch((error) => { uploadError ??= error; }));
+      if (pending.length === REMOTE_ARTIFACT_UPLOAD_CONCURRENCY) {
+        await Promise.all(pending);
+        pending.length = 0;
+        if (uploadError) throw uploadError;
+        if (Date.now() - progressAt >= 15_000) {
+          await input.onProgress?.(completedBytes, totalBytes);
+          progressAt = Date.now();
+        }
+      }
+    }
+    await Promise.all(pending);
+    if (uploadError) throw uploadError;
+    await input.onProgress?.(totalBytes, totalBytes);
+    const expectedDigest = digest.digest("hex");
+    await run(`test "$(if command -v sha256sum >/dev/null 2>&1; then sha256sum ${quote(remotePath)}; else shasum -a 256 ${quote(remotePath)}; fi | cut -d ' ' -f 1)" = ${quote(expectedDigest)}`);
+  } finally {
+    // Do not remove or rename the upload while another offset write is active.
+    await Promise.all(pending);
   }
 }
 
@@ -10252,6 +10585,7 @@ export async function stageRemoteRunnerDirectory(input: {
   targetPath: string;
   mode: number;
   excludeEntries?: readonly string[];
+  onProgress?: (completedBytes: number, totalBytes: number) => Promise<void>;
 }): Promise<void> {
   const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
   if (input.runner.syncIn) {
@@ -10289,24 +10623,35 @@ export async function stageRemoteRunnerDirectory(input: {
     }
     return;
   }
-  const archive = execFileSync(
-    "tar",
-    [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
-  );
-  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
-  const script =
-    `umask 077; mkdir -p '${escapedTarget}' && ` +
-    `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
-    `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
-  const result = await input.runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: archive.toString("base64"),
-    bypassSession: true,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_directory_staging_failed");
+  const stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-upload-"));
+  const archivePath = join(stagingRoot, "payload.tar.gz");
+  const remoteArchive = `${input.targetPath}.upload-${randomUUID()}.tar.gz`;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const run = async (script: string, stdin?: string) => {
+    const result = await input.runner.execute({
+      command: "sh", args: ["-c", script], stdin,
+      bypassSession: true, timeoutMs: 180_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error(`runner_remote_directory_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
+    }
+  };
+  try {
+    // Provider packs can exceed a gigabyte. Keep compression off the event loop
+    // and transfer from disk in bounded chunks instead of buffering the archive.
+    await new Promise<void>((resolve, reject) => {
+      execFile("tar", [...excludeArgs, "-czf", archivePath, "-C", input.sourcePath, "."],
+        { maxBuffer: 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } },
+        (error) => error ? reject(error) : resolve());
+    });
+    await uploadRemoteRunnerFileChunks({
+      sourcePath: archivePath, remotePath: remoteArchive, run, onProgress: input.onProgress,
+    });
+    await run(`umask 077 && mkdir -p ${quote(input.targetPath)} && ` +
+      `tar -xzf ${quote(remoteArchive)} -C ${quote(input.targetPath)} && chmod ${input.mode.toString(8)} ${quote(input.targetPath)}`);
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    await run(`rm -f ${quote(remoteArchive)}`).catch(() => undefined);
   }
 }
 
@@ -10576,6 +10921,177 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   }
 }
 
+type RetiredComputerCheckpointInput = {
+  execution: NativeExecutionInput;
+  priorExecution: NativeExecutionInput;
+  identity: RunnerdDurableIdentity;
+  runner: Record<string, unknown>;
+  control: Record<string, unknown>;
+  provider: Record<string, unknown>;
+  checkpoint: Record<string, unknown>;
+  currentCheckpoint: Record<string, unknown>;
+};
+
+type RetiredComputerCheckpointUnsettledReason =
+  | "provider_kind"
+  | "runner_schema"
+  | "runner_lifecycle"
+  | "runner_identity"
+  | "controller_identity"
+  | "runner_outbox"
+  | "runner_terminal_delivery"
+  | "controller_commands"
+  | "controller_terminal_event"
+  | "controller_terminal_identity"
+  | "provider_terminal_authority"
+  | "prior_run_identity"
+  | "issue_scope"
+  | "session_scope"
+  | "session_config"
+  | "provider_session_identity"
+  | `${"prior" | "current"}_checkpoint_${"provider_session" | "driver" | "active_turn" | "runtime_requests" | "run_identity" | "session_identity" | "company_identity" | "agent_identity" | "issue_identity"}`;
+
+/** Fixed reason codes are safe to surface in run logs; never include checkpoint
+ * values, provider configuration, prompts, paths, or credentials in diagnostics. */
+export function retiredComputerCheckpointUnsettledReason(
+  input: RetiredComputerCheckpointInput,
+): RetiredComputerCheckpointUnsettledReason | null {
+  const { execution, priorExecution, identity, runner, control, provider, checkpoint, currentCheckpoint } = input;
+  if (execution.provider.kind !== "codex" || priorExecution.provider.kind !== "codex") return "provider_kind";
+  const events = control.committedEvents;
+  const commands = control.commands;
+  const terminal = record(record(Array.isArray(events) ? events.at(-1) : null).envelope);
+  const fields = ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"] as const;
+  if (runner.schema !== RUNNERD_STATE_SCHEMA) return "runner_schema";
+  if (runner.lifecycle !== "ready") return "runner_lifecycle";
+  if (fields.some(key => runner[key] !== identity[key])) return "runner_identity";
+  if (fields.some(key => record(control.identity)[key] !== identity[key])) return "controller_identity";
+  if (!Array.isArray(runner.outbox) || runner.outbox.length !== 0) return "runner_outbox";
+  if (runner.pendingTerminalDelivery !== null) return "runner_terminal_delivery";
+  if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed")) return "controller_commands";
+  if (!Array.isArray(events) || record(events.at(-1)).eventType !== "run.terminal") return "controller_terminal_event";
+  if (terminal.runId !== identity.runId || terminal.normalizedSessionId !== identity.normalizedSessionId) return "controller_terminal_identity";
+  if (provider.completedTurnAuthoritative !== true) return "provider_terminal_authority";
+  if (priorExecution.binding.runId !== identity.runId) return "prior_run_identity";
+  if (priorExecution.binding.issueId !== execution.binding.issueId) return "issue_scope";
+  if (nativeSessionScopeKey(priorExecution) !== nativeSessionScopeKey(execution)) return "session_scope";
+  if (nativeSessionConfigDigest(priorExecution) !== nativeSessionConfigDigest(execution)) return "session_config";
+  const providerIdentity = providerSessionIdentityFromDurableProviderState({ execution: priorExecution, providerState: provider });
+  if (!providerIdentity.providerSessionId) return "provider_session_identity";
+  for (const [source, value, expectedRunId] of [
+    ["prior", checkpoint, identity.runId],
+    ["current", currentCheckpoint, execution.binding.runId],
+  ] as const) {
+    const binding = record(value.identity);
+    if (value.providerSessionId !== providerIdentity.providerSessionId) return `${source}_checkpoint_provider_session`;
+    if (value.driverKind !== priorExecution.session.driverKind) return `${source}_checkpoint_driver`;
+    if (value.activeTurnId !== null) return `${source}_checkpoint_active_turn`;
+    if (!Array.isArray(value.pendingRuntimeRequests) || value.pendingRuntimeRequests.length !== 0) return `${source}_checkpoint_runtime_requests`;
+    if (binding.runId !== expectedRunId) return `${source}_checkpoint_run_identity`;
+    if (binding.sessionId !== identity.normalizedSessionId) return `${source}_checkpoint_session_identity`;
+    if (binding.companyId !== execution.binding.companyId) return `${source}_checkpoint_company_identity`;
+    if (binding.agentId !== execution.binding.agentId) return `${source}_checkpoint_agent_identity`;
+    if (binding.issueId !== execution.binding.issueId) return `${source}_checkpoint_issue_identity`;
+  }
+  return null;
+}
+
+/** A dead computer runner may retain a ready checkpoint after controller loss.
+ * Match the local quiescent-recovery proof before sealing it for normal rotation.
+ */
+export function retiredComputerCheckpointIsSettled(input: RetiredComputerCheckpointInput): boolean {
+  return retiredComputerCheckpointUnsettledReason(input) === null;
+}
+
+async function sealRetiredComputerRunnerState(input: {
+  db: Db; execution: NativeExecutionInput; root: string;
+  target: Extract<AdapterExecutionTarget, { transport: "computer" }>;
+  runner: CommandManagedRuntimeRunner; stateDirectory: string;
+}): Promise<void> {
+  const identity = readRunnerdDurableIdentity(input.root);
+  if (!identity || identity.runId === input.execution.binding.runId || input.execution.provider.kind !== "codex") return;
+  if (!durableIdentityMatchesSession(identity, input.execution)) throw new Error("runner_remote_retirement_scope_mismatch");
+  const controlPath = resolve(input.root, "control-plane", "control-plane-state.json");
+  const controlBytes = readBoundedNativeFile(controlPath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "recovery_state_too_large");
+  const runnerPath = posix.join(input.stateDirectory, "runner-state.json");
+  const providerPath = posix.join(input.stateDirectory, runnerProviderStateFilename(input.execution));
+  const read = await input.runner.execute({ command: "python3", args: ["-c", String.raw`
+import sys,os,stat,json,base64
+rows=[]
+for p in sys.argv[1:]:
+ s=os.lstat(p)
+ if not stat.S_ISREG(s.st_mode) or s.st_size>16777216:raise RuntimeError('unsafe recovery state')
+ with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:data=f.read(16777217)
+ if len(data)>16777216:raise RuntimeError('unsafe recovery state')
+ rows.append(base64.b64encode(data).decode())
+print(json.dumps(rows))`, runnerPath, providerPath], bypassSession: true, timeoutMs: 10_000 });
+  if (read.exitCode !== 0 || read.timedOut) throw new Error("runner_remote_retirement_state_unavailable");
+  const [runnerBytes, providerBytes] = (JSON.parse(read.stdout) as string[]).map(value => Buffer.from(value, "base64"));
+  const runner = record(JSON.parse(runnerBytes!.toString("utf8")));
+  if (runner.lifecycle === "suspended") return;
+  const runs = await input.db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+      eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+      inArray(heartbeatRuns.id, [identity.runId, input.execution.binding.runId])));
+  const prior = runs.find(run => run.id === identity.runId);
+  const current = runs.find(run => run.id === input.execution.binding.runId);
+  if (!prior || !current || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.status))
+    throw new Error("runner_remote_retirement_authority_unverified");
+  const profile = record(prior.runnerProfileJson);
+  const previous = parseNativeExecutionInput(profile.nativeExecutionInput);
+  const unsettledReason = retiredComputerCheckpointUnsettledReason({ execution: input.execution, priorExecution: previous, identity, runner,
+    control: record(JSON.parse(controlBytes.toString("utf8"))), provider: record(JSON.parse(providerBytes!.toString("utf8"))),
+    checkpoint: record(profile.sessionCheckpoint), currentCheckpoint: record(record(current.runnerProfileJson).sessionCheckpoint) });
+  if (unsettledReason !== null)
+    throw new Error(`runner_remote_retirement_checkpoint_unsettled: ${unsettledReason}`);
+  const priorAuthority = await verifyPriorRunnerdStateForSessionScope({ db: input.db, root: input.root, identity, execution: input.execution,
+    allowVerifiedBackup: false, allowRetainedWarmRunner: false, remoteRunnerState: true, runnerExecutionTarget: input.target });
+  if (priorAuthority !== "verified")
+    throw new Error(`runner_remote_retirement_checkpoint_unsettled: prior_authority_${priorAuthority}`);
+  // Recheck exact durable retirement after all awaited reads; never infer death
+  // from a missing PID or turn status. The compare-and-swap preserves ambiguity.
+  const workspace = readNativeComputerWorkspaceReference(profile.nativeComputerWorkspace);
+  if (!workspace || !input.target.environmentId || !(await computerService(input.db).isRetired({
+    companyId: input.execution.binding.companyId, environmentId: input.target.environmentId,
+    owner: workspace.computerOwner, agentId: input.execution.binding.agentId, runId: identity.runId,
+  })) || !controlBytes.equals(readBoundedNativeFile(controlPath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "recovery_state_too_large")))
+    throw new Error("runner_remote_retirement_evidence_changed");
+  await compareAndSealRetiredComputerCheckpoint({ runner: input.runner, runnerPath, providerPath,
+    runnerBytes: runnerBytes!, providerBytes: providerBytes! });
+}
+
+/** Exact retirement is checked by the caller; publication must still compare
+ * the complete bytes so a changed or interrupted checkpoint is never rotated. */
+export async function compareAndSealRetiredComputerCheckpoint(input: {
+  runner: CommandManagedRuntimeRunner; runnerPath: string; providerPath: string;
+  runnerBytes: Buffer; providerBytes: Buffer;
+}): Promise<void> {
+  const result = await input.runner.execute({ command: "python3", args: ["-c", String.raw`
+import sys,os,stat,json,hashlib,tempfile
+runner,provider,expected_runner,expected_provider=sys.argv[1:]
+for p,digest in [(runner,expected_runner),(provider,expected_provider)]:
+ s=os.lstat(p)
+ if not stat.S_ISREG(s.st_mode) or s.st_size>16777216:raise RuntimeError('unsafe recovery state')
+ with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:data=f.read(16777217)
+ if len(data)>16777216:raise RuntimeError('unsafe recovery state')
+ if hashlib.sha256(data).hexdigest()!=digest:raise RuntimeError('recovery evidence changed')
+ if p==runner:state=json.loads(data)
+state['lifecycle']='suspended'
+fd,tmp=tempfile.mkstemp(prefix='.retired-checkpoint-',dir=os.path.dirname(runner))
+try:
+ with os.fdopen(fd,'w') as f:json.dump(state,f,separators=(',',':'));f.flush();os.fsync(f.fileno())
+ # Recheck immediately before publication, including the provider checkpoint.
+ for p,digest in [(runner,expected_runner),(provider,expected_provider)]:
+  with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW),'rb') as f:current=f.read(16777217)
+  if hashlib.sha256(current).hexdigest()!=digest:raise RuntimeError('recovery evidence changed')
+ os.replace(tmp,runner)
+finally:
+ if os.path.exists(tmp):os.unlink(tmp)
+`, input.runnerPath, input.providerPath, createHash("sha256").update(input.runnerBytes).digest("hex"), createHash("sha256").update(input.providerBytes).digest("hex")],
+    bypassSession: true, timeoutMs: 10_000 });
+  if (result.exitCode !== 0 || result.timedOut) throw new Error("runner_remote_retirement_checkpoint_cas_failed");
+}
+
 async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
@@ -10681,26 +11197,26 @@ export async function verifyRemoteRunnerReattachment(input: {
 }) {
   const { claim, target, identity } = input;
   if (
-    target?.kind !== "remote" ||
-    target.transport !== "sandbox" ||
+    !adapterExecutionTargetIsCommandBacked(target) ||
     !target.runner ||
     claim.runId !== input.runId ||
     identity.runId !== input.runId ||
     identity.normalizedSessionId !== input.normalizedSessionId ||
-    claim.remote.providerLeaseId !==
-      target.sandboxLeaseAcquisition?.providerLeaseId ||
-    target.sandboxLeaseAcquisition.outcome === "replacement" ||
+    claim.remote.providerLeaseId !== (target.transport === "computer" ? target.resourceAuthority.ownerId : target.sandboxLeaseAcquisition?.providerLeaseId) ||
+    (target.transport === "sandbox" && target.sandboxLeaseAcquisition?.outcome === "replacement") ||
     claim.remote.remoteCwd !== target.remoteCwd
   ) {
     throw new Error("native_remote_recovery_lease_mismatch");
   }
+  if (target.transport === "computer") {
+    const owner = claim.remote.computerOwner;
+    if (!owner || owner.computerId !== target.resourceAuthority.computerId || owner.ownerId !== target.resourceAuthority.ownerId ||
+        owner.generation !== target.resourceAuthority.generation || owner.listenerPort !== target.listenerPort ||
+        !(await target.inspectProcess()).running) throw new Error("computer_process_recovery_mismatch");
+  }
   const runner = target.runner;
   const stateDirectory = posix.join(
-    target.remoteCwd,
-    ".paperclip-runtime",
-    "paperclip-runner",
-    "sessions",
-    createHash("sha256").update(input.normalizedSessionId).digest("hex"),
+    remoteRunnerStorageRoots(target, input.normalizedSessionId).sessionRoot,
     "runner",
   );
   const runnerState = await readRemoteRunnerState({ runner, stateDirectory });
@@ -10795,7 +11311,10 @@ async function waitForRemoteRunnerProcessIdentity(input: {
           input.identityPath,
         ],
         bypassSession: true,
-        timeoutMs: 2_000,
+        // An owned remote command includes SSH and supervisor admission before
+        // reading this tiny file. Its normal roundtrip can exceed two seconds.
+        // Give the RPC room while preserving the total identity-wait deadline.
+        timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())),
       })
       .catch(() => null);
     const identity =
@@ -10850,6 +11369,7 @@ export function createRemoteRunnerProcessLauncher(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   trace?: NativeRunTrace;
   onRunnerProcessSpawned?: () => void;
+  onLaunchAttempt?: () => void;
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
   return (spec) => {
@@ -10943,7 +11463,16 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
-      const launchResult = await runner.execute({
+      // From this exact boundary onward, a lost RPC acknowledgement may mean
+      // a live process. Asset preparation failures above prove no dispatch.
+      input.onLaunchAttempt?.();
+      const launchResult = input.target.transport === "computer"
+        ? await input.target.launch({ command: "sh", args: ["-c", 'mkdir -p -- "$(dirname -- "$1")"; ' + REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+            "paperclip-runner-child", input.processIdentityPath, identityNonce, input.runnerInstanceId,
+            input.diagnosticsDirectory, input.remoteBinary, ...remoteArgs],
+            cwd: input.target.remoteCwd, env: processEnvironment(spec.environment) })
+            .then(() => ({ exitCode: 0, timedOut: false }))
+        : await runner.execute({
         command: "sh",
         args: [
           "-c",
@@ -11016,6 +11545,7 @@ export function createRemoteRunnerProcessLauncher(input: {
         attributes: { identitySource: "remote_marker", detached: true },
       });
 
+      let consecutiveUnknownObservations = 0;
       while (true) {
         const observed = await runner.execute({
           command: "sh",
@@ -11030,8 +11560,18 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
-        });
-        if (observed.exitCode === 0 && !observed.timedOut) {
+        }).catch(() => null);
+        const identityConfirmed = observed?.exitCode === 0 && !observed.timedOut;
+        const identityLost = observed !== null && !observed.timedOut
+          && (observed.exitCode === 3 || observed.exitCode === 4);
+        if (!identityLost) {
+          // SSH/provider failures do not prove that runnerd exited. In particular,
+          // concurrent artifact uploads can delay a monitor RPC while PRP stays
+          // healthy. Retry unknown observations without allocating another runner.
+          consecutiveUnknownObservations = identityConfirmed ? 0 : consecutiveUnknownObservations + 1;
+          if (consecutiveUnknownObservations >= 3) {
+            throw new Error(`runner_remote_process_monitor_unavailable exitCode=${observed?.exitCode ?? "unknown"} timedOut=${observed?.timedOut ?? "unknown"}`);
+          }
           await new Promise<void>((resolve) =>
             setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
           );
@@ -11104,7 +11644,7 @@ export function resolveRemoteRunnerTransportMode(input: {
     throw new Error("runner_transport_ineligible: remote target is required");
   }
   const requiredMode =
-    input.target.transport === "sandbox" &&
+    adapterExecutionTargetIsCommandBacked(input.target) &&
     input.target.effectiveCapabilities?.runnerWebSocketIngress === true
       ? "listen_ws"
       : "dial_wss";
@@ -11137,6 +11677,7 @@ export async function createRunnerdBackend(input: {
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   restartRecovery?: NativeRestartRecoveryClaim;
   durableEnvironmentLeaseId?: string;
+  onRemoteLaunchAttempt?: () => void;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -11228,10 +11769,10 @@ async function prepareRemoteDotRunner({ input, target, runner, root, identity }:
   identity: NonNullable<NonNullable<Parameters<typeof createNativeSessionBackend>[1]>["dotRunnerOptions"]>["identity"];
 }) {
   const runnerBinary = input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary();
-  const remoteRoot = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner");
+  const storage = remoteRunnerStorageRoots(target, identity.normalizedSessionId);
+  const remoteRoot = storage.runtimeRoot;
   const remoteBinary = posix.join(remoteRoot, "bin", "paperclip-runnerd");
-  const runnerStateDirectory = posix.join(remoteRoot, "sessions",
-    createHash("sha256").update(identity.normalizedSessionId).digest("hex"), "runner");
+  const runnerStateDirectory = posix.join(storage.sessionRoot, "runner");
   const requiredMode = resolveRemoteRunnerTransportMode({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true });
   const artifact = readRunnerdArtifactBinding(runnerBinary);
   const prepare = async () => {
@@ -11355,7 +11896,7 @@ async function createRunnerdBackendWithinSessionClaim(
           spec: remoteTarget.spec,
           defaultCwd: remoteTarget.remoteCwd,
         })
-      : remoteTarget.runner
+      : remoteTarget.transport === "computer" ? remoteTarget.processRunner : remoteTarget.runner
     : null;
   if (remoteTarget && !remoteCommandRunner) {
     throw new Error(
@@ -11498,13 +12039,10 @@ async function createRunnerdBackendWithinSessionClaim(
     return { ...backend, descriptor: () => backend.descriptor(), openSession: input => backend.openSession(input),
       recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options), bindManagedSession: session => session };
   }
-  const remoteRuntimeRoot = remoteTarget
-    ? posix.join(
-        remoteTarget.remoteCwd,
-        ".paperclip-runtime",
-        "paperclip-runner",
-      )
+  const remoteStorage = remoteTarget
+    ? remoteRunnerStorageRoots(remoteTarget, nativeSessionKey(input.execution))
     : null;
+  const remoteRuntimeRoot = remoteStorage?.runtimeRoot ?? null;
   const requiresRemoteProviderPack =
     remoteTarget !== null &&
     (input.execution.provider.kind === "opencode" ||
@@ -11523,7 +12061,32 @@ async function createRunnerdBackendWithinSessionClaim(
   const useBundledRemoteImageAssets = requiresRemoteProviderPack && !configuredProviderPackRoot &&
     (input.execution.provider.kind === "opencode" ||
       (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor"));
-  if (useBundledRemoteImageAssets) {
+  const retainedComputerPack = remoteTarget?.transport === "computer" &&
+    input.execution.provider.kind === "acpx" && durableBinding && durableIdentity && remoteCommandRunner && remoteStorage
+    ? pinnedComputerProviderPack({
+        agentHome: remoteTarget.fileAuthority.agentHome, identity: durableIdentity,
+        provider: input.execution.provider,
+        control: JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")),
+      }) : null;
+  if (retainedComputerPack && remoteCommandRunner && remoteStorage && input.execution.provider.kind === "acpx") {
+    // The local attachment template chooses the digest. Remote content cannot
+    // authorize a newer pack or rewrite the existing provider's launch identity.
+    const [manifest, state] = await readPinnedComputerProviderMetadata({ runner: remoteCommandRunner,
+      packRoot: retainedComputerPack.root, stateDirectory: posix.join(remoteStorage.sessionRoot, "runner") });
+    expectedProviderPackManifest = validateRemoteProviderPackIdentity(manifest as RemoteProviderPackManifest, "", false,
+      { digest: retainedComputerPack.digest, agent: input.execution.provider.agent });
+    if (expectedProviderPackManifest.digest !== retainedComputerPack.digest ||
+        expectedProviderPackManifest.payload.target.platform !== "linux" ||
+        expectedProviderPackManifest.payload.target.architecture !== "x64")
+      throw new Error("runner_remote_provider_pack_provenance_mismatch");
+    const launchDigest = computerAcpxLaunchProfileDigest({ authorityDigest: retainedComputerPack.digest,
+      command: retainedComputerPack.command, sidecar: retainedComputerPack.sidecar,
+      commandSha256: expectedProviderPackManifest.payload.artifacts.nodeCommand.sha256,
+      sidecarSha256: expectedProviderPackManifest.payload.artifacts.acpxSidecar.sha256 });
+    assertPinnedComputerProviderState({ state, launchProfileDigest: launchDigest,
+      normalizedSessionId: nativeSessionKey(input.execution), command: retainedComputerPack.command, sidecar: retainedComputerPack.sidecar });
+  } else if (useBundledRemoteImageAssets) {
     expectedProviderPackManifest = readBundledRemoteProviderPackManifest();
   } else if (requiresRemoteProviderPack) {
     if (
@@ -11539,9 +12102,9 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredProviderPackRoot,
     );
   }
-  const stagedRemoteProviderPackRoot = remoteRuntimeRoot
-    ? posix.join(remoteRuntimeRoot, "provider-pack")
-    : null;
+  const stagedRemoteProviderPackRoot = remoteTarget?.transport === "computer" && expectedProviderPackManifest
+    ? computerProviderPackCachePath(remoteTarget.fileAuthority.agentHome, expectedProviderPackManifest.digest)
+    : remoteRuntimeRoot ? posix.join(remoteRuntimeRoot, "provider-pack") : null;
   let activeRemoteProviderPackRoot: string | null = null;
   const remoteBinary = remoteRuntimeRoot
     ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
@@ -11555,7 +12118,10 @@ async function createRunnerdBackendWithinSessionClaim(
     ? input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
     : resolvePaperclipRunnerBinary();
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
-  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
+  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() ||
+    (remoteTarget?.transport === "computer" && !explicitRemoteCodex
+      ? `@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`
+      : null);
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
     throw new Error("runner_remote_codex_source_conflict");
   }
@@ -11572,12 +12138,7 @@ async function createRunnerdBackendWithinSessionClaim(
           )
         : posix.join(remoteRuntimeRoot, "bin", "codex")
       : null;
-  const remoteSessionDigest = createHash("sha256")
-    .update(nativeSessionKey(input.execution))
-    .digest("hex");
-  const remoteSessionRoot = remoteRuntimeRoot
-    ? posix.join(remoteRuntimeRoot, "sessions", remoteSessionDigest)
-    : null;
+  const remoteSessionRoot = remoteStorage?.sessionRoot ?? null;
   const remoteStateDirectory = remoteSessionRoot
     ? posix.join(remoteSessionRoot, "runner")
     : undefined;
@@ -11601,17 +12162,26 @@ async function createRunnerdBackendWithinSessionClaim(
         : null;
   const sourceRuntimeContext =
     "runtimeContext" in input.execution ? input.execution.runtimeContext : null;
+  // Computer bundles are immutable. Each bootstrap attempt publishes new
+  // references instead of overlaying a previous read-only snapshot. Old
+  // snapshots remain until future bounded maintenance; provider HOME and user
+  // files never participate in this materialization.
+  const remoteContextRoot = remoteRunnerFilesystemRoot
+    ? posix.join(remoteRunnerFilesystemRoot, "context", ...(remoteTarget?.transport === "computer" ? ["snapshots", randomUUID()] : []))
+    : null;
   const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {
           ...sourceRuntimeContext,
+          ...(remoteTarget?.transport === "computer" ? {
+            persistentAgentHome: { rootPath: remoteTarget.fileAuthority.agentHome },
+          } : {}),
           instructions: {
             ...sourceRuntimeContext.instructions,
             bundle: {
               ...sourceRuntimeContext.instructions.bundle,
               rootPath: posix.join(
-                remoteRunnerFilesystemRoot,
-                "context",
+                remoteContextRoot!,
                 "instructions",
               ),
             },
@@ -11621,8 +12191,7 @@ async function createRunnerdBackendWithinSessionClaim(
             bundle: {
               ...skill.bundle,
               rootPath: posix.join(
-                remoteRunnerFilesystemRoot,
-                "context",
+                remoteContextRoot!,
                 "skills",
                 `${index}-${skill.bundle.digest.slice(0, 12)}`,
               ),
@@ -11731,33 +12300,29 @@ async function createRunnerdBackendWithinSessionClaim(
       "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
       "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
       "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+      "const fail=(reason)=>{fs.writeSync(2,'paperclip-provider-pack-verification:'+reason);process.exit(42)}",
       "const manifest=JSON.parse(actual)",
-      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
+      "if(canonical(manifest)!==expected)fail('manifest_mismatch')",
       "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
-      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
-      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
+      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)fail('artifact_digest_mismatch')}",
+      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)fail('dist_digest_mismatch')",
+      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest_mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
-      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
-      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
-      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+      `const minimums=[manifest.payload.pins.nodeMinimum,${JSON.stringify(REMOTE_PROVIDER_PACK_PINS.nodeMinimum)}]`,
+      "for(const value of minimums){const minimum=value.split('.').map(Number);if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))fail('node_version_incompatible')}",
+      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)fail('target_mismatch')",
       "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
       "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
-      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)fail('package_version_mismatch')",
     ].join(";");
-    const verified = await remoteCommandRunner.execute({
+    await verifyRemoteProviderPackArtifacts({
+      runner: remoteCommandRunner,
       command: providerNodeCommand,
       args: ["-e", verifyScript, packRoot, expected],
       cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 30_000,
+      persistentComputer: remoteTarget.transport === "computer",
     });
-    if (verified.exitCode !== 0 || verified.timedOut) {
-      throw new Error(
-        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
-      );
-    }
     const opencodeCommand = posix.join(
       packRoot,
       expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
@@ -11769,15 +12334,7 @@ async function createRunnerdBackendWithinSessionClaim(
       bypassSession: true,
       timeoutMs: 30_000,
     });
-    if (
-      opencodeVersion.exitCode !== 0 ||
-      opencodeVersion.timedOut ||
-      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
-    ) {
-      throw new Error(
-        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
-      );
-    }
+    assertRemoteProviderPackVerificationResult(opencodeVersion, expectedProviderPackManifest.payload.pins.opencode);
   };
 
   const discoverPreinstalledProviderPack = async () => {
@@ -12042,7 +12599,7 @@ async function createRunnerdBackendWithinSessionClaim(
           timeoutMs: 180_000,
         });
         if (installResult.exitCode !== 0 || installResult.timedOut) {
-          throw new Error("runner_remote_codex_install_failed");
+          throw new Error(`runner_remote_codex_install_failed exitCode=${installResult.exitCode} timedOut=${installResult.timedOut}: ${redactSensitiveText(installResult.stderr).slice(-2_000).trim()}`);
         }
       }
       await measureNativeRunnerSpan(
@@ -12085,7 +12642,32 @@ async function createRunnerdBackendWithinSessionClaim(
       expectedProviderPackManifest &&
       stagedRemoteProviderPackRoot
     ) {
-      const packSource = await prepareVerifiedRemoteProviderPack({
+      const packSource = remoteTarget.transport === "computer"
+        ? await prepareComputerProviderPackCache({
+          cacheRoot: stagedRemoteProviderPackRoot,
+          sessionKey: nativeSessionKey(input.execution),
+          owner: remoteTarget.resourceAuthority,
+          runner: remoteCommandRunner,
+          verify: (root) => measureNativeRunnerSpan(input.trace, "provider_pack.verify", () => verifyRemoteProviderPack(root)),
+          stage: async (root, runner) => {
+            if (retainedComputerPack) throw new Error("runner_remote_provider_pack_retained_artifacts_unavailable");
+            if (!configuredProviderPackRoot) {
+              throw new Error("runner_remote_provider_artifact_incompatible: configure the build-owned provider pack for first use on this computer");
+            }
+            await input.onLog?.("stderr", "[paperclip-runner] Preparing the provider pack for first use.\n");
+            await stageRemoteRunnerDirectory({
+              target: remoteTarget,
+              runner,
+              sourcePath: configuredProviderPackRoot,
+              targetPath: root,
+              mode: 0o700,
+              onProgress: async (completed, total) => {
+                await input.onLog?.("stderr", `[paperclip-runner] Uploading provider pack: ${Math.round(completed / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MiB.\n`);
+              },
+            });
+          },
+        })
+        : await prepareVerifiedRemoteProviderPack({
         verifyStaged: () => measureNativeRunnerSpan(
           input.trace,
           "provider_pack.verify",
@@ -12141,11 +12723,6 @@ async function createRunnerdBackendWithinSessionClaim(
           if (!configuredProviderPackRoot) {
             throw new Error("runner_remote_provider_artifact_incompatible: install the matching Paperclip package and Daytona image; the image provider pack did not match the bundled release identity");
           }
-          if (!remoteCommandRunner.syncIn) {
-            throw new Error(
-              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
-            );
-          }
           const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
             "'",
             "'\\''",
@@ -12162,12 +12739,16 @@ async function createRunnerdBackendWithinSessionClaim(
               "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
             );
           }
+          await input.onLog?.("stderr", "[paperclip-runner] Preparing the provider pack for first use.\n");
           await stageRemoteRunnerDirectory({
             target: remoteTarget,
             runner: remoteCommandRunner,
             sourcePath: configuredProviderPackRoot,
             targetPath: stagedRemoteProviderPackRoot,
             mode: 0o700,
+            onProgress: async (completed, total) => {
+              await input.onLog?.("stderr", `[paperclip-runner] Uploading provider pack: ${Math.round(completed / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MiB.\n`);
+            },
           });
           await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
             verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
@@ -12176,7 +12757,7 @@ async function createRunnerdBackendWithinSessionClaim(
         },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-      if (packSource === "staged") {
+      if (packSource === "staged" || packSource === "reused") {
         await input.onLog?.(
           "stderr",
           "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
@@ -12467,7 +13048,7 @@ async function createRunnerdBackendWithinSessionClaim(
         timeoutMs: 10_000,
       });
       if (created.exitCode !== 0 || created.timedOut) {
-        throw new Error("runner_remote_directory_staging_failed");
+        throw new Error(`runner_remote_directory_staging_failed: exit=${created.exitCode} timedOut=${created.timedOut}${created.stderr.trim() ? ` ${redactSensitiveText(created.stderr).trim().slice(-512)}` : ""}`);
       }
 
       // Codex launch credentials are intentionally excluded from failover
@@ -12800,6 +13381,10 @@ async function createRunnerdBackendWithinSessionClaim(
       if (incompleteFailure) throw incompleteFailure;
       return;
     }
+    // The computer ledger and exact remote placement are the recovery authority.
+    // Its durable provider state stays on the persistent machine; importing the
+    // sandbox archive would create a second authority and delay bounded shutdown.
+    if (remoteTarget?.transport === "computer") return;
     const backupSpanAttributes = {
       provider: input.execution.provider.kind,
       harness: input.execution.session.driverKind,
@@ -12943,6 +13528,10 @@ async function createRunnerdBackendWithinSessionClaim(
             runnerIngressAuthorized: input.runnerIngressAuthorized === true,
           });
           await ensureRemoteRunner(false);
+          if (remoteTarget.transport === "computer" && remoteStateDirectory) {
+            await sealRetiredComputerRunnerState({ db: input.db, execution: input.execution, root,
+              target: remoteTarget, runner: remoteCommandRunner, stateDirectory: remoteStateDirectory });
+          }
         }
       : undefined;
   const archiveExternalRunnerState =
@@ -13013,6 +13602,7 @@ async function createRunnerdBackendWithinSessionClaim(
           onLog: input.onLog,
           trace: input.trace,
           onRunnerProcessSpawned: () => resolveRemoteRunnerProcessSpawned?.(),
+          onLaunchAttempt: input.onRemoteLaunchAttempt,
         })
       : undefined;
   const runnerExecution: NativeExecutionInput = remoteTarget
@@ -13056,7 +13646,7 @@ async function createRunnerdBackendWithinSessionClaim(
         HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         CODEX_HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
-        ...(remoteTarget!.transport === "sandbox"
+        ...(adapterExecutionTargetIsCommandBacked(remoteTarget)
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
           : {}),
       }
@@ -13305,7 +13895,9 @@ async function createRunnerdBackendWithinSessionClaim(
         baseInstructions: recoveryContext?.baseInstructions,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
-        externallySandboxed: remoteTarget?.transport === "sandbox",
+        externallySandboxed: adapterExecutionTargetIsCommandBacked(remoteTarget),
+        computerTool: nativeComputerToolForExecution(input.execution, remoteTarget),
+        persistentAgentHome: remoteTarget?.transport === "computer" ? remoteTarget.fileAuthority.agentHome : undefined,
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,

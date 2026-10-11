@@ -1,3 +1,5 @@
+import { computerFileAccess } from "./persistent-agent-files.js";
+import { computerService } from "../modules/computers/index.js";
 import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -45,6 +47,7 @@ export interface WorkspaceFileScanContext {
 const DENIED_SEGMENTS = new Set([
   ".git",
   ".paperclip",
+  ".paperclip-runtime",
   "node_modules",
   ".pnpm-store",
   ".yarn",
@@ -121,6 +124,7 @@ type WorkspaceCandidate = {
   label: string;
   rootPath: string | null;
   remote: boolean;
+  placement?: { companyId: string; environmentId: string; placementId: string };
 };
 
 type NormalizedPath = {
@@ -480,6 +484,13 @@ function candidateFromExecutionWorkspace(row: ExecutionWorkspaceRow): WorkspaceC
     label: row.name,
     rootPath,
     remote,
+    ...(row.metadata?.fileAuthority && typeof row.metadata.fileAuthority === "object" &&
+      (row.metadata.fileAuthority as Record<string, unknown>).kind === "remote-persistent" &&
+      typeof (row.metadata.fileAuthority as Record<string, unknown>).environmentId === "string" &&
+      typeof (row.metadata.fileAuthority as Record<string, unknown>).placementId === "string"
+      ? { placement: { companyId: row.companyId,
+          environmentId: (row.metadata.fileAuthority as Record<string, string>).environmentId!,
+          placementId: (row.metadata.fileAuthority as Record<string, string>).placementId! } } : {}),
   };
 }
 
@@ -1038,7 +1049,82 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor, options: { allowComputerAccess?: boolean } = {}) {
+  async function placementFiles(candidate: WorkspaceCandidate) {
+    // Computer reads acquire a bounded machine owner and may resume it. Pure
+    // inspection transactions must remain read-only, including provider effects.
+    if (options.allowComputerAccess === false) throw unprocessable("Computer access is unavailable in read-only inspection", { code: "remote_workspace" });
+    if (!candidate.placement) throw unprocessable("Workspace placement is unavailable", { code: "remote_workspace" });
+    return computerFileAccess(() => computerService(db).workspaceFiles(candidate.placement!));
+  }
+  async function statPersistentCandidate(candidate: WorkspaceCandidate, normalized: NormalizedPath, directory = false) {
+    throwIfDenied(normalized.segments);
+    const files = await placementFiles(candidate);
+    if (directory) {
+      if (normalized.relativePath) {
+        if ((await files.stat(normalized.relativePath)).kind !== "directory") throw notFound("Workspace directory not found");
+      } else {
+        await files.listPage("", { limit: 1 });
+      }
+      return directoryResource({ candidate, relativePath: normalized.relativePath });
+    }
+    const entry = await files.stat(normalized.relativePath);
+    if (entry.kind !== "file") throw notFound("Workspace file not found");
+    const item = listItemFromStat({ candidate, relativePath: normalized.relativePath,
+      stat: { size: entry.size, mtime: new Date(entry.mtimeMs) } })!;
+    const { relativePath: _relative, modifiedAt: _modified, ...resource } = item;
+    return { ...resource, denialReason: item.capabilities.preview ? null : entry.size > previewCapForKind(item.previewKind) ? "too_large" : "unsupported_content" } as ResolvedWorkspaceResource;
+  }
+  async function persistentContent(candidate: WorkspaceCandidate, normalized: NormalizedPath): Promise<WorkspaceFileContent> {
+    const resource = await statPersistentCandidate(candidate, normalized);
+    if (!resource.capabilities.preview) throw unprocessable("Workspace file cannot be previewed", { code: resource.denialReason ?? "unsupported_content" });
+    const { bytes } = await (await placementFiles(candidate)).readBytes(normalized.relativePath, previewCapForKind(resource.previewKind));
+    if (resource.previewKind === "text" && !looksLikeText(bytes.subarray(0, TEXT_SNIFF_BYTES))) throw unprocessable("Workspace file is not text", { code: "binary_content" });
+    return { resource, content: { encoding: resource.previewKind === "text" ? "utf8" : "base64", data: bytes.toString(resource.previewKind === "text" ? "utf8" : "base64") } };
+  }
+  async function persistentList(candidate: WorkspaceCandidate, options: {
+    selector: WorkspaceFileSelector; mode: WorkspaceFileListMode; normalizedPath: NormalizedPath | null;
+    q: string | null; normalizedQuery: string | null; limit: number; offset: number;
+  }): Promise<WorkspaceFileListResponse> {
+    const { selector, mode, normalizedPath, q, normalizedQuery, limit, offset } = options;
+    if (mode === "changed") return unavailableFileList({ selector, mode, path: normalizedPath?.relativePath ?? null, q, limit, offset, candidate, reason: "changed_unavailable" });
+    if (normalizedPath) throwIfDenied(normalizedPath.segments);
+    const files = await placementFiles(candidate);
+    const items: WorkspaceFileListItem[] = [];
+    let scannedCount = 0, truncated = false;
+    const recursive = mode === "recent" || Boolean(normalizedQuery);
+    async function walk(relative: string, depth: number) {
+      if (depth > MAX_LIST_DEPTH) { truncated = true; return; }
+      const remaining = WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES - scannedCount;
+      if (remaining <= 0) { truncated = true; return; }
+      const page = await files.listPage(relative || undefined, { limit: Math.min(1000, remaining) });
+      truncated ||= page.truncated;
+      for (const entry of page.entries) {
+        if (++scannedCount > WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES) { truncated = true; return; }
+        const name = relative ? `${relative}/${entry.name}` : entry.name;
+        const normalized = normalizeWorkspaceRelativePath(name);
+        if (shouldPruneSegments(normalized.segments)) continue;
+        if (entry.kind === "directory") {
+          if (recursive) {
+            try { await walk(name, depth + 1); }
+            catch (error) {
+              // A child may disappear during the scan. Only a missing starting
+              // directory should make automatic resolution try another workspace.
+              if (!isHttpStatus(error, 404)) throw error;
+            }
+          } else items.push(listItemFromDirectory({ candidate, relativePath: name, stat: { mtime: new Date(entry.mtimeMs) } }));
+        } else if (matchesSearch(name, normalizedQuery)) {
+          items.push(listItemFromStat({ candidate, relativePath: name, stat: { size: entry.size, mtime: new Date(entry.mtimeMs) } })!);
+        }
+        if (scannedCount >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES) { truncated = true; return; }
+      }
+    }
+    await walk(normalizedPath?.relativePath ?? "", 0);
+    items.sort((a, b) => mode === "recent" ? String(b.modifiedAt).localeCompare(String(a.modifiedAt)) :
+      (a.kind === b.kind ? a.relativePath.localeCompare(b.relativePath) : a.kind === "directory" ? -1 : 1));
+    return availableFileList({ selector, mode, path: normalizedPath?.relativePath ?? null, q, limit, offset, candidate,
+      items: items.slice(offset, offset + limit), scannedCount, truncated: truncated || items.length > offset + limit });
+  }
   async function visibleCandidates(candidates: WorkspaceCandidate[]) {
     if (!actor) return candidates;
     const visible: WorkspaceCandidate[] = [];
@@ -1305,13 +1391,14 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
           const hasExplicitTarget = Boolean(explicitTarget?.candidate);
           let lastNotFound: unknown = null;
           for (const candidate of candidates) {
-            if (candidate.remote) {
+            if (candidate.remote && !candidate.placement) {
               if (hasExplicitTarget || item.query.workspace !== "auto") {
                 return availabilityResult(item.query, remoteResource(candidate, item.normalizedPath.relativePath));
               }
               continue;
             }
             try {
+              if (candidate.placement) return availabilityResult(item.query, await statPersistentCandidate(candidate, item.normalizedPath, item.directory));
               const resource = item.directory
                 ? (await statLocalDirectory(candidate, item.normalizedPath)).resource
                 : (await statLocalCandidate(candidate, item.normalizedPath)).resource;
@@ -1373,11 +1460,12 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") return remoteResource(candidate, normalized.relativePath);
         continue;
       }
       try {
+        if (candidate.placement) return await statPersistentCandidate(candidate, normalized, isDirectoryRequest);
         return isDirectoryRequest
           ? (await statLocalDirectory(candidate, normalized)).resource
           : (await statLocalCandidate(candidate, normalized)).resource;
@@ -1431,6 +1519,17 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     let firstUnavailable: { candidate: WorkspaceCandidate; reason: string } | null = null;
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
+      if (candidate.placement) {
+        try {
+          return await persistentList(candidate, { selector, mode, normalizedPath, q, normalizedQuery, limit, offset });
+        } catch (error) {
+          if (normalizedPath && !explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
+            lastNotFound = error;
+            continue;
+          }
+          throw error;
+        }
+      }
       if (candidate.remote) {
         firstUnavailable ??= { candidate, reason: "remote_workspace" };
         if (explicitTarget || selector !== "auto") {
@@ -1637,7 +1736,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be previewed by the server", { code: "remote_workspace" });
         }
@@ -1645,6 +1744,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       }
       let resolved: LocalResolvedFile;
       try {
+        if (candidate.placement) return await persistentContent(candidate, normalized);
         resolved = await statLocalCandidate(candidate, normalized);
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
@@ -1709,7 +1809,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     workspace?: WorkspaceFileSelector | null;
     projectId?: string | null;
     workspaceId?: string | null;
-  }, opts: { issue?: IssueRow } = {}): Promise<LocalResolvedFile> {
+  }, opts: { issue?: IssueRow } = {}): Promise<LocalResolvedFile | { resource: ResolvedWorkspaceResource; bytes: Buffer }> {
     const issue = opts.issue ?? await getIssue(issueId);
     const selector = input.workspace ?? "auto";
     const explicitTarget = Boolean(input.projectId || input.workspaceId);
@@ -1721,13 +1821,18 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be downloaded by the server", { code: "remote_workspace" });
         }
         continue;
       }
       try {
+        if (candidate.placement) {
+          const resource = await statPersistentCandidate(candidate, normalized);
+          const { bytes } = await (await placementFiles(candidate)).readBytes(normalized.relativePath);
+          return { resource: { ...resource, byteSize: bytes.length }, bytes };
+        }
         return await statLocalCandidate(candidate, normalized);
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {

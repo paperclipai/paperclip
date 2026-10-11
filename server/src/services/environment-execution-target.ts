@@ -1,3 +1,5 @@
+import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
+import { computerExecutionTarget } from "./computer-environment-driver.js";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
@@ -246,6 +248,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // bridge, so the surface stays inert until the host injects a real recorder.
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
 }): Promise<AdapterExecutionTarget | null> {
+  if (input.environment.driver === "computer") {
+    if (!input.lease || input.lease.companyId !== input.companyId) throw new Error("computer_lease_required");
+    return computerExecutionTarget(input.db, input.lease, resolvePaperclipRunnerIdleTimeoutMs(input.environment.config?.runnerIdleTimeoutMs));
+  }
   if (input.environment.driver === "local") {
     return {
       kind: "local",
@@ -673,5 +679,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
 export async function resolveEnvironmentExecutionTransport(
   input: Parameters<typeof resolveEnvironmentExecutionTarget>[0],
 ): Promise<Record<string, unknown> | null> {
+  // Computer execution uses a live owner capability, resolved after workspace
+  // realization. It has no legacy serialized transport to resolve at acquire.
+  if (input.environment.driver === "computer") return null;
   return adapterExecutionTargetToRemoteSpec(await resolveEnvironmentExecutionTarget(input)) as Record<string, unknown> | null;
 }

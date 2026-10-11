@@ -1,3 +1,4 @@
+import { canRetryComputerAdmissionWait, isPausedComputerAdmissionRetryBeforeProvider } from "./cancelled-native-startup.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -203,7 +204,10 @@ export async function admitExplicitNativeContinuation(input: {
     if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) {
       return blocked("workspace_repair_required", "Verify safe workspace staging or repair before continuing. Your message is saved.");
     }
-    const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
+    const pausedComputerRetry = action.cause === "legacy_execution_requires_reconciliation" &&
+      action.fingerprint === `legacy-execution:${run.id}` && !retry && !queuedInterrupt && !input.queuedCommentInterruptId &&
+      authorizedAt > run.finishedAt! && await isPausedComputerAdmissionRetryBeforeProvider(db, run);
+    const cancelledStartup = pausedComputerRetry || await isCancelledNativeStartup(db, run, coordinator);
     if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup) return null;
     if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
         !(queuedRequest && run.runtimeMode === "native" &&
@@ -217,7 +221,7 @@ export async function admitExplicitNativeContinuation(input: {
         !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
       return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
-    if (cancelledStartup) cancelledStartupIds.add(run.id);
+    if (cancelledStartup && !pausedComputerRetry) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
     // A provider failure can finish the normal result/assessment commit path.
     // Its accepted failed result is immutable history, not a live controller.
@@ -358,7 +362,7 @@ export async function admitExplicitContinuationRetry(input: {
   )).for("update");
   if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
       ["done", "cancelled"].includes(task.status) || !parent ||
-      !["failed", "timed_out"].includes(parent.status) || !parent.finishedAt ||
+      (!["failed", "timed_out"].includes(parent.status) && !(await canRetryComputerAdmissionWait(db, parent))) || !parent.finishedAt ||
       parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
       (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
       adapterExecutionControls.has(parent.id) ||

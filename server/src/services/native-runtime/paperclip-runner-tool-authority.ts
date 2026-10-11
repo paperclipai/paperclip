@@ -919,6 +919,10 @@ export class PaperclipRunnerToolAuthority {
       return { bytes: Buffer.concat(chunks), filename: asset.originalFilename ?? "file", contentType: asset.contentType };
     }
     const resolved = await workspaceFileResourceService(this.db).prepareDownload(this.binding.issueId, { path: file.path!, workspace: "auto" });
+    if ("bytes" in resolved) {
+      if (resolved.bytes.length > RUNNER_API_MAX_BYTES) throw badRequest("Workspace file exceeds API transfer limit");
+      return { bytes: resolved.bytes, filename: resolved.resource.title, contentType: resolved.resource.contentType ?? "application/octet-stream" };
+    }
     const handle = await openRunnerApiWorkspaceFile(resolved.realPath);
     try {
       const stat = await handle.stat();
