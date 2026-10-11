@@ -858,7 +858,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       )).for("update");
       if (!current || current.status !== "cancelled" || current.errorCode !== "computer_admission_wait") return null;
       const alreadyStopped = current.resultJson?.computerAdmissionRetryOutcome === "aborted";
-      if (!alreadyStopped && !(await isComputerAdmissionWaitBeforeProvider(tx, current))) return null;
+      // A scheduler may have suppressed its successor but not released the
+      // task yet. Stop can still claim this exact verified pre-provider wait;
+      // removing only that disposition for proof does not authorize a retry.
+      const beforeSuppression = current.resultJson?.computerAdmissionRetryOutcome === "suppressed"
+        ? { ...current, resultJson: { ...current.resultJson, computerAdmissionRetryOutcome: undefined } }
+        : current;
+      if (!alreadyStopped && !(await isComputerAdmissionWaitBeforeProvider(tx, beforeSuppression))) return null;
       const [stopped] = alreadyStopped ? [current] : await tx.update(heartbeatRuns).set({
         error: reason, updatedAt: new Date(),
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
@@ -893,11 +899,12 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // The executor's finally block owns this acknowledgement while cleanup is
     // live. Until then retain the task lock and do not drain queued messages.
     if (!activeRunExecutions.has(run.id) && hasSettledComputerAdmissionPreparation(outcome.stopped)) {
-      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+      const [acknowledged] = await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
         ${JSON.stringify({ executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } })}::jsonb`,
-      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
-        sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' = 'aborted'`));
-      await releaseIssueExecutionAndPromote(outcome.stopped, { suppressImmediateRecovery: true });
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "cancelled"),
+        sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' = 'aborted'`)).returning();
+      if (!acknowledged) return getRun(run.id);
+      await releaseIssueExecutionAndPromote(acknowledged, { suppressImmediateRecovery: true });
       await finalizeAgentStatus(run.agentId, "cancelled", undefined, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
     }
     return getRun(run.id);

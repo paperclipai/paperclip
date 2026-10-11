@@ -1426,16 +1426,20 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       retry.errorCode === "continuation_user_authorization_missing";
     if (retry.outcome !== "scheduled") {
       const reason = "reason" in retry ? retry.reason : "The retry limit was reached.";
-      await db.update(heartbeatRuns).set({
+      const [suppressed] = await db.update(heartbeatRuns).set({
         ...(authorizationLost ? { status: "failed", errorCode: "computer_admission_retry_unavailable" } : {}),
         error: `Computer admission retry was not scheduled: ${reason}`,
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
         ${JSON.stringify({ computerAdmissionRetryOutcome: "suppressed" })}::jsonb`,
-      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
-        eq(heartbeatRuns.errorCode, COMPUTER_ADMISSION_WAIT_RETRY_REASON)));
-      await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: authorizationLost ? "warn" : "info",
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, COMPUTER_ADMISSION_WAIT_RETRY_REASON),
+        sql`${heartbeatRuns.resultJson}->>'computerAdmissionRetryOutcome' is null`)).returning();
+      // Stop or another terminal owner won. Its acknowledgement and release
+      // must not be replaced by this scheduler's stale suppression outcome.
+      if (!suppressed) return;
+      await appendRunEvent(suppressed, { eventType: "lifecycle", stream: "system", level: authorizationLost ? "warn" : "info",
         message: `Computer admission retry was not scheduled: ${reason}`, payload: { retryScheduled: false } });
-      await releaseIssueExecutionAndPromote(run);
+      await releaseIssueExecutionAndPromote(suppressed);
     }
     await finalizeAgentStatus(run.agentId, authorizationLost ? "failed" : "cancelled", null,
       { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
