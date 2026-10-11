@@ -5457,6 +5457,7 @@ function leaseDb(
   runnerProfileJson: Record<string, unknown> = {},
   runStatus = "running",
   priorAccountingEvents: PrpEvent[] = [],
+  remoteCleanupLease?: { provider: string; providerLeaseId: string },
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -5517,7 +5518,9 @@ function leaseDb(
                 ]
               : table === heartbeatRunEvents
                 ? priorAccountingEvents.map((event, seq) => ({ seq, eventType: event.eventType, sourceSeq: event.sourceSeq, payload: { prpEvent: event } }))
-                : [];
+                : table === environmentLeases && remoteCleanupLease
+                  ? [remoteCleanupLease]
+                  : [];
       const query = {
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
         where: () => query,
@@ -7703,7 +7706,7 @@ describe("native warm session supervision", () => {
     expect(canonicalNote).toBe("before shutdown\nafter shutdown");
   });
 
-  it("retains durable computer owners before ack and closes only the requested run", async () => {
+  it("scopes computer cleanup to each remote owner, retains before ack, and closes only the requested run", async () => {
     const owners: Array<{ runId: string; close: ReturnType<typeof vi.fn>; retainWarm: ReturnType<typeof vi.fn>; retire: ReturnType<typeof vi.fn> }> = [];
     for (const suffix of ["a", "b"]) {
       const name = `computer-owner-${suffix}`;
@@ -7711,6 +7714,7 @@ describe("native warm session supervision", () => {
         session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
       const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async (options?: { beforeStop?: () => Promise<void> }) => { await options?.beforeStop?.(); return true; });
       const target = { kind: "remote" as const, transport: "computer" as const, environmentId: "shared-computer",
+        leaseId: `lease-${name}`,
         remoteCwd: `/home/user/${name}`, listenerPort: suffix === "a" ? 45001 : 45002,
         resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: name, generation: 1 },
         fileAuthority: { kind: "remote-persistent", placementId: name, root: `/home/user/${name}`, agentHome: `/home/user/${name}/home` },
@@ -7722,7 +7726,13 @@ describe("native warm session supervision", () => {
           normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
           nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
       });
-      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+      await executePaperclipNativeSession({
+        db: leaseDb(current, {}, {}, [], {}, "running", [], { provider: "boat", providerLeaseId: name }),
+        execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never,
+      });
+      // Termination receipts use this same exact owner scope. A company-wide
+      // cleanup domain would strand this quarantine and block sibling agents.
+      expect(state.execute.mock.calls.at(-1)?.[0].remoteCleanupScope).toBe(JSON.stringify(["boat", name]));
       expect(retainWarm).toHaveBeenCalledWith(60_000);
       expect(retire).not.toHaveBeenCalled();
       owners.push({ runId: name, close, retainWarm, retire });
