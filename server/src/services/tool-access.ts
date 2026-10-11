@@ -26,6 +26,7 @@ import {
 } from "./connector-telemetry.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
+import { authorizationService } from "./authorization.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -16301,7 +16302,17 @@ export function toolAccessService(
                 )
                 .limit(1)
                 .for("update");
-          if (!roleCanManage && !explicitManagerGrant) {
+          const managerDecision = explicitManagerGrant
+            ? await authorizationService(tx).decidePrincipalGrant({
+                companyId: connection.companyId,
+                principalType: "user",
+                principalId: authorizingUserId,
+                permissionKey: "tools:manage_connections",
+                action: "tools:manage_connections",
+                scope: { targetAgentId: subjectAgentId! },
+              })
+            : null;
+          if (!roleCanManage && !managerDecision?.allowed) {
             throw forbidden(
               "Only a connection manager can authorize a dedicated agent identity.",
             );
