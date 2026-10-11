@@ -537,6 +537,15 @@
       "darkAsset": "/brands/apps/openrouter-dark.svg"
     },
     {
+      "slug": "litellm",
+      "provider": "LiteLLM",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/litellm.svg",
+      "darkAsset": "/brands/apps/litellm-dark.svg",
+      "sourceUrl": "https://github.com/BerriAI/litellm/blob/main/ui/litellm-dashboard/public/assets/logos/litellm_monogram.svg",
+      "retrievedAt": "2026-10-11"
+    },
+    {
       "slug": "xai",
       "provider": "Grok",
       "catalogVisible": true,

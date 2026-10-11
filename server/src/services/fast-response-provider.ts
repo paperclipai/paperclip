@@ -13,6 +13,7 @@ import {
   FAST_RESPONSE_MAX_CHARACTERS,
   unitsToCents,
   usdToUnits,
+  aiRoutingBaseUrl,
   type AiConnectionMetadata,
 } from "@paperclipai/shared";
 import { priceCodexReceipt } from "./codex-pricing.js";
@@ -114,10 +115,7 @@ export function fastResponseModel(
       redirect: "error",
     });
   };
-  const baseURL =
-    route?.kind === "openrouter"
-      ? "https://openrouter.ai/api/v1"
-      : route?.baseUrl?.replace(/\/+$/, "");
+  const baseURL = route ? aiRoutingBaseUrl(route, "fast_response") : undefined;
   const common = { fetch: guardedFetch, ...(baseURL ? { baseURL } : {}) };
   if (route?.kind === "bedrock")
     return createAmazonBedrock({

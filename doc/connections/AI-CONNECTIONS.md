@@ -636,7 +636,7 @@ fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 
-Use the regular rows on **Connectors** to add OpenRouter, Amazon Bedrock,
+Use the regular rows on **Connectors** to add OpenRouter, LiteLLM, Amazon Bedrock,
 Google Gemini, a Responses API, Messages API, Chat Completions API, or local
 endpoint connection. Each row has its own Connect action and saved accounts.
 The catalog tags these entries `model-provider`; no category UI is shown.
@@ -657,11 +657,11 @@ credentials belong to the connection; the model belongs to the agent.
 
 | Harness | Implemented managed routes |
 | --- | --- |
-| Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints |
-| Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
-| OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
+| Codex legacy and Codex New Runner (app-server) | OpenRouter; LiteLLM; custom/local OpenAI Responses endpoints |
+| Claude legacy and Claude New Runner (ACPX) | OpenRouter; LiteLLM; custom/local Anthropic Messages; Bedrock API key |
+| OpenCode legacy and New Runner | OpenRouter; LiteLLM; custom/local Chat Completions |
 | Pi legacy and New Runner | OpenRouter; native OpenAI, Anthropic, and Google API keys with a matching `provider/model` |
-| Hermes local | OpenRouter; custom/local Chat Completions |
+| Hermes local | OpenRouter; LiteLLM; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
 Migration `0306` adds Google to both account-default provider constraints. Local
@@ -673,6 +673,30 @@ and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
 catalog discovery for custom gateways are not part of this implementation.
+
+### LiteLLM proxy (2026-10-11)
+
+A LiteLLM connection stores the proxy URL, for example `http://localhost:4000`
+or `https://litellm.example.com`. A trailing `/v1` is optional. The URL rules
+are the same as for a custom gateway. Authentication is a LiteLLM virtual key
+sent as a bearer token, or none when the proxy has no master key. Like
+OpenRouter, one connection serves all four harnesses; each harness uses the
+LiteLLM API that it supports:
+
+| Harness | LiteLLM endpoint |
+| --- | --- |
+| Codex | `<proxy>/v1/responses` |
+| Claude | `<proxy>/v1/messages` (`ANTHROPIC_BASE_URL` is the proxy root) |
+| OpenCode, Hermes | `<proxy>/v1/chat/completions` |
+| Fast responses | `<proxy>/v1/chat/completions` |
+
+Model IDs are the `model_name` aliases in the proxy configuration. Paperclip
+does not call the proxy from the control plane, so saving the connection does
+not validate the key; use **Run test**. Usage billing shows as unknown, because
+LiteLLM tracks spend per virtual key. References:
+[LiteLLM proxy quick start](https://docs.litellm.ai/docs/proxy/quick_start),
+[virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys), and
+[Anthropic `/v1/messages`](https://docs.litellm.ai/docs/anthropic_unified).
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),

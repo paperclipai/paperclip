@@ -47,6 +47,12 @@ const providers = [
     advanced: true,
   },
   {
+    id: "litellm",
+    name: "LiteLLM",
+    description: "100+ providers through your LiteLLM proxy",
+    advanced: true,
+  },
+  {
     id: "bedrock",
     name: "Amazon Bedrock",
     description: "Bedrock API key and AWS region",
@@ -98,7 +104,8 @@ export function AiProviderSetup({
     reconnect
       ? reconnect.routing?.kind === "gateway" ||
         reconnect.routing?.kind === "local" ||
-        reconnect.routing?.kind === "bedrock"
+        reconnect.routing?.kind === "bedrock" ||
+        reconnect.routing?.kind === "litellm"
         ? reconnect.routing.kind
         : reconnect.provider
       : initialProvider,
@@ -138,11 +145,13 @@ export function AiProviderSetup({
   });
   const agentsView = useQueryView(agents);
   const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : "provider");
-  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
+  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "litellm", "bedrock", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
       ? "anthropic"
-      : provider === "gateway" || provider === "local"
+      : provider === "litellm"
+        ? "openai"
+        : provider === "gateway" || provider === "local"
         ? protocol === "messages"
           ? "anthropic"
           : "openai"
@@ -180,11 +189,16 @@ export function AiProviderSetup({
         reconnect?.routing ??
         aiProviderRoutingSchema.parse({
           kind: provider,
-          protocol: provider === "bedrock" ? "bedrock" : protocol,
+          protocol:
+            provider === "bedrock"
+              ? "bedrock"
+              : provider === "litellm"
+                ? "chat"
+                : protocol,
           auth: provider === "openrouter" ? "bearer" : auth,
           ...(provider === "bedrock"
             ? { region }
-            : provider === "gateway" || provider === "local"
+            : provider === "gateway" || provider === "local" || provider === "litellm"
               ? { baseUrl }
               : {}),
           models: models
@@ -251,8 +265,10 @@ export function AiProviderSetup({
         disabled={Boolean(reconnect)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {provider === "litellm"
+          ? "Use the model names from your LiteLLM proxy config."
+          : "Use the provider’s model ID or your gateway’s alias."}{" "}
+        You can also enter one on the agent.
       </span>
     </label>
   );
@@ -374,6 +390,22 @@ export function AiProviderSetup({
               </label>
             </>
           )}
+          {provider === "litellm" && (
+            <label className="block space-y-2 text-xs text-muted-foreground">
+              Proxy URL
+              <Input
+                aria-label="Proxy URL"
+                placeholder="http://localhost:4000"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                disabled={Boolean(reconnect)}
+              />
+              <span className="block">
+                Each harness uses the matching LiteLLM API: Responses for Codex,
+                Messages for Claude, and Chat Completions for OpenCode and Hermes.
+              </span>
+            </label>
+          )}
           {provider === "bedrock" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               AWS region
@@ -400,11 +432,13 @@ export function AiProviderSetup({
                   <SelectItem value="bearer">
                     {provider === "bedrock"
                       ? "Bedrock API key"
-                      : "Bearer token"}
+                      : provider === "litellm"
+                        ? "Virtual key · Bearer"
+                        : "Bearer token"}
                   </SelectItem>
                   {provider !== "bedrock" && (
                     <>
-                      {protocol === "messages" && (
+                      {protocol === "messages" && provider !== "litellm" && (
                         <SelectItem value="api_key">
                           API key · x-api-key
                         </SelectItem>
