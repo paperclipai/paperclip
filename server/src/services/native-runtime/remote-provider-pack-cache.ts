@@ -2,6 +2,94 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 
+/** The controller's retained attachment template pins content-addressed paths.
+ * Remote manifests may supply bytes, but cannot choose a new code authority. */
+export function pinnedComputerProviderPack(input: {
+  agentHome: string; identity: Record<string, unknown>; control: unknown;
+  provider: { agent: string; model: string };
+}): { digest: string; root: string; command: string; sidecar: string } {
+  const object = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const control = object(input.control);
+  const identity = object(control.identity);
+  const provider = object(object(control.runAttachTemplate).provider);
+  const fail = (): never => { throw new Error("runner_remote_provider_pack_provenance_unavailable"); };
+  if (control.schema !== "paperclip.runner.durable.control-plane-state.v1" ||
+      ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId"].some(key =>
+        typeof input.identity[key] !== "string" || !input.identity[key] || identity[key] !== input.identity[key]) ||
+      provider.kind !== "acpx" || provider.provider !== "acpx" || provider.driver !== "acpx_runtime" ||
+      provider.agent !== input.provider.agent || provider.model !== input.provider.model ||
+      provider.normalizedSessionId !== identity.normalizedSessionId || typeof provider.sidecarCommand !== "string" ||
+      !Array.isArray(provider.sidecarArgs) || provider.sidecarArgs.length !== 1) return fail();
+  const match = provider.sidecarCommand.match(/\/provider-packs\/([a-f0-9]{64})\/node_modules\/node\/bin\/node$/);
+  if (!match) return fail();
+  const digest = `sha256:${match[1]}`;
+  const root = computerProviderPackCachePath(input.agentHome, digest);
+  const command = `${root}/node_modules/node/bin/node`;
+  const sidecar = `${root}/dist/cli/acpx-runtime-sidecar.cjs`;
+  if (provider.sidecarCommand !== command || provider.sidecarArgs[0] !== sidecar) return fail();
+  return { digest, root, command, sidecar };
+}
+
+/** Mirrors the runner's length-prefixed ACPX launch profile v1 digest. */
+export function computerAcpxLaunchProfileDigest(input: {
+  authorityDigest: string; command: string; commandSha256: string; sidecar: string; sidecarSha256: string;
+}): string {
+  const digest = createHash("sha256");
+  const integer = (n: number) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64BE(BigInt(n)); return bytes; };
+  const update = (value: string | Buffer) => { const bytes = typeof value === "string" ? Buffer.from(value) : value; digest.update(integer(bytes.length)); digest.update(bytes); };
+  update("paperclip.runner.acpx-launch-profile.v1");
+  update(input.authorityDigest); update(input.command); update(integer(1)); update(input.sidecar); update(integer(2));
+  for (const [path, sha256] of [[input.command, input.commandSha256], [input.sidecar, input.sidecarSha256]].sort(([a], [b]) => a! < b! ? -1 : a! > b! ? 1 : 0)) {
+    update(path!); update(sha256!);
+  }
+  return `sha256:${digest.digest("hex")}`;
+}
+
+export async function readPinnedComputerProviderMetadata(input: {
+  runner: CommandManagedRuntimeRunner; packRoot: string; stateDirectory: string;
+}): Promise<[unknown, unknown]> {
+  for (const path of [input.packRoot, input.stateDirectory]) {
+    if (!posix.isAbsolute(path) || posix.normalize(path) !== path)
+      throw new Error("runner_remote_provider_pack_provenance_unavailable");
+  }
+  const result = await input.runner.execute({ command: "python3", args: ["-c", String.raw`
+import os,sys,json,stat
+values=[]
+for path in sys.argv[1:]:
+ parts=path.split('/')[1:];parent=os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+ try:
+  for part in parts[:-1]:
+   child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+   os.close(parent);parent=child
+  source=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent)
+  with os.fdopen(source,'rb') as f:
+   info=os.fstat(f.fileno())
+   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>16777216:raise RuntimeError('invalid retained provider metadata')
+   data=f.read(16777217)
+   if len(data)>16777216:raise RuntimeError('invalid retained provider metadata')
+   values.append(json.loads(data))
+ finally:os.close(parent)
+print(json.dumps(values))`, posix.join(input.packRoot, "provider-pack.json"),
+    posix.join(input.stateDirectory, "acpx-provider-state.json")], bypassSession: true, timeoutMs: 10_000 });
+  if (result.exitCode !== 0 || result.timedOut) throw new Error("runner_remote_provider_pack_provenance_unavailable");
+  const value: unknown = JSON.parse(result.stdout);
+  if (!Array.isArray(value) || value.length !== 2) throw new Error("runner_remote_provider_pack_provenance_unavailable");
+  return [value[0], value[1]];
+}
+
+export function assertPinnedComputerProviderState(input: {
+  state: unknown; normalizedSessionId: string; launchProfileDigest: string; command: string; sidecar: string;
+}): void {
+  const object = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const state = object(input.state); const descriptor = object(state.descriptor);
+  if (state.schema !== "paperclip.runner.acpx-provider-state.v3" || state.launchProfileDigest !== input.launchProfileDigest ||
+      descriptor.normalizedSessionId !== input.normalizedSessionId || descriptor.sidecarCommand !== input.command ||
+      !Array.isArray(descriptor.sidecarArgs) || descriptor.sidecarArgs.length !== 1 || descriptor.sidecarArgs[0] !== input.sidecar)
+    throw new Error("runner_remote_provider_pack_provenance_mismatch");
+}
+
 export function computerProviderPackCachePath(agentHome: string, digest: string): string {
   if (!posix.isAbsolute(agentHome) || posix.normalize(agentHome) !== agentHome || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
     throw new Error("runner_remote_provider_cache_identity_invalid");

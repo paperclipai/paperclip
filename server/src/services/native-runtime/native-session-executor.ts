@@ -42,7 +42,7 @@ import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
-import { computerProviderPackCachePath, prepareComputerProviderPackCache } from "./remote-provider-pack-cache.js";
+import { computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -10230,6 +10230,10 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
       { cause: error },
     );
   }
+  return validateRemoteProviderPackIdentity(manifest, packRoot, verifyControllerFiles);
+}
+
+export function validateRemoteProviderPackIdentity(manifest: RemoteProviderPackManifest, packRoot = "", verifyControllerFiles = false): RemoteProviderPackManifest {
   const payload = manifest?.payload;
   if (
     manifest?.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
@@ -12032,7 +12036,31 @@ async function createRunnerdBackendWithinSessionClaim(
   const useBundledRemoteImageAssets = requiresRemoteProviderPack && !configuredProviderPackRoot &&
     (input.execution.provider.kind === "opencode" ||
       (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor"));
-  if (useBundledRemoteImageAssets) {
+  const retainedComputerPack = remoteTarget?.transport === "computer" &&
+    input.execution.provider.kind === "acpx" && durableBinding && durableIdentity && remoteCommandRunner && remoteStorage
+    ? pinnedComputerProviderPack({
+        agentHome: remoteTarget.fileAuthority.agentHome, identity: durableIdentity,
+        provider: input.execution.provider,
+        control: JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")),
+      }) : null;
+  if (retainedComputerPack && remoteCommandRunner && remoteStorage) {
+    // The local attachment template chooses the digest. Remote content cannot
+    // authorize a newer pack or rewrite the existing provider's launch identity.
+    const [manifest, state] = await readPinnedComputerProviderMetadata({ runner: remoteCommandRunner,
+      packRoot: retainedComputerPack.root, stateDirectory: posix.join(remoteStorage.sessionRoot, "runner") });
+    expectedProviderPackManifest = validateRemoteProviderPackIdentity(manifest as RemoteProviderPackManifest);
+    if (expectedProviderPackManifest.digest !== retainedComputerPack.digest ||
+        expectedProviderPackManifest.payload.target.platform !== "linux" ||
+        expectedProviderPackManifest.payload.target.architecture !== "x64")
+      throw new Error("runner_remote_provider_pack_provenance_mismatch");
+    const launchDigest = computerAcpxLaunchProfileDigest({ authorityDigest: retainedComputerPack.digest,
+      command: retainedComputerPack.command, sidecar: retainedComputerPack.sidecar,
+      commandSha256: expectedProviderPackManifest.payload.artifacts.nodeCommand.sha256,
+      sidecarSha256: expectedProviderPackManifest.payload.artifacts.acpxSidecar.sha256 });
+    assertPinnedComputerProviderState({ state, launchProfileDigest: launchDigest,
+      normalizedSessionId: nativeSessionKey(input.execution), command: retainedComputerPack.command, sidecar: retainedComputerPack.sidecar });
+  } else if (useBundledRemoteImageAssets) {
     expectedProviderPackManifest = readBundledRemoteProviderPackManifest();
   } else if (requiresRemoteProviderPack) {
     if (
@@ -12608,6 +12636,7 @@ async function createRunnerdBackendWithinSessionClaim(
           runner: remoteCommandRunner,
           verify: (root) => measureNativeRunnerSpan(input.trace, "provider_pack.verify", () => verifyRemoteProviderPack(root)),
           stage: async (root, runner) => {
+            if (retainedComputerPack) throw new Error("runner_remote_provider_pack_retained_artifacts_unavailable");
             if (!configuredProviderPackRoot) {
               throw new Error("runner_remote_provider_artifact_incompatible: configure the build-owned provider pack for first use on this computer");
             }

@@ -4,10 +4,69 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import { computerProviderPackCachePath, prepareComputerProviderPackCache } from "./remote-provider-pack-cache.js";
+import { computerProviderPackCachePath, prepareComputerProviderPackCache, pinnedComputerProviderPack, computerAcpxLaunchProfileDigest, readPinnedComputerProviderMetadata, assertPinnedComputerProviderState } from "./remote-provider-pack-cache.js";
 
 const roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
+describe("controller-pinned computer provider pack", () => {
+  it("checks the retained provider's session and exact launch profile without rewriting it", () => {
+    const state = { schema: "paperclip.runner.acpx-provider-state.v3", launchProfileDigest: digest,
+      descriptor: { normalizedSessionId: "session", sidecarCommand: "/pack/node", sidecarArgs: ["/pack/sidecar"] } };
+    const input = { state, normalizedSessionId: "session", launchProfileDigest: digest, command: "/pack/node", sidecar: "/pack/sidecar" };
+    expect(() => assertPinnedComputerProviderState(input)).not.toThrow();
+    const before = JSON.stringify(state);
+    expect(() => assertPinnedComputerProviderState({ ...input, normalizedSessionId: "foreign" })).toThrow("provenance_mismatch");
+    expect(() => assertPinnedComputerProviderState({ ...input, launchProfileDigest: `sha256:${"b".repeat(64)}` })).toThrow("provenance_mismatch");
+    expect(JSON.stringify(state)).toBe(before);
+  });
+  it.each(["valid", "pack-parent-symlink", "state-parent-symlink", "hardlink"])("reads bounded metadata with %s", async (kind) => {
+    const home = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "provider-provenance-")));
+    roots.push(home);
+    let packRoot = join(home, "pack"); let stateDirectory = join(home, "runner");
+    await fs.mkdir(packRoot); await fs.mkdir(stateDirectory);
+    await fs.writeFile(join(packRoot, "provider-pack.json"), JSON.stringify({ digest }));
+    await fs.writeFile(join(stateDirectory, "acpx-provider-state.json"), JSON.stringify({ launchProfileDigest: digest }));
+    if (kind === "pack-parent-symlink") { await fs.symlink(packRoot, join(home, "pack-link")); packRoot = join(home, "pack-link"); }
+    if (kind === "state-parent-symlink") { await fs.symlink(stateDirectory, join(home, "runner-link")); stateDirectory = join(home, "runner-link"); }
+    if (kind === "hardlink") await fs.link(join(packRoot, "provider-pack.json"), join(home, "shared.json"));
+    const result = readPinnedComputerProviderMetadata({ runner, packRoot, stateDirectory });
+    if (kind === "valid") await expect(result).resolves.toEqual([{ digest }, { launchProfileDigest: digest }]);
+    else await expect(result).rejects.toThrow("provenance_unavailable");
+  });
+  it("matches the runner's length-prefixed launch profile contract", () => {
+    const profile = { authorityDigest: digest, command: "/pack/node", commandSha256: `sha256:${"b".repeat(64)}`,
+      sidecar: "/pack/sidecar", sidecarSha256: `sha256:${"c".repeat(64)}` };
+    const expected = "sha256:5d91648a1247fac8633317f80d39ad05e47961894bf8b631c47e10d031753233";
+    expect(computerAcpxLaunchProfileDigest(profile)).toBe(expected);
+    for (const key of Object.keys(profile) as Array<keyof typeof profile>) {
+      expect(computerAcpxLaunchProfileDigest({ ...profile, [key]: `${profile[key]}-changed` })).not.toBe(expected);
+    }
+  });
+  function pinned() {
+    const identity = { runId: "prior", normalizedSessionId: "session", runnerInstanceId: "runner", environmentLeaseId: "lease" };
+    const root = computerProviderPackCachePath("/agents/a", digest);
+    return { agentHome: "/agents/a", identity, provider: { agent: "claude", model: "model" },
+      control: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: { ...identity }, runAttachTemplate: { provider: {
+        kind: "acpx", provider: "acpx", driver: "acpx_runtime", agent: "claude", model: "model", normalizedSessionId: "session",
+        sidecarCommand: `${root}/node_modules/node/bin/node`, sidecarArgs: [`${root}/dist/cli/acpx-runtime-sidecar.cjs`],
+      } } } };
+  }
+  it("retains pack A when the next controller deploys pack B", () => {
+    const selected = pinnedComputerProviderPack(pinned());
+    expect(selected.digest).toBe(digest);
+    expect(selected.root).not.toBe(computerProviderPackCachePath("/agents/a", `sha256:${"b".repeat(64)}`));
+  });
+  it.each(["missing", "identity", "foreign-home", "sidecar", "arguments", "provider"])("rejects %s provenance", (kind) => {
+    const input = pinned();
+    if (kind === "missing") delete (input.control as { runAttachTemplate?: unknown }).runAttachTemplate;
+    if (kind === "identity") input.control.identity.environmentLeaseId = "foreign";
+    if (kind === "foreign-home") input.agentHome = "/agents/b";
+    if (kind === "sidecar") input.control.runAttachTemplate.provider.sidecarArgs[0] += "/../evil";
+    if (kind === "arguments") input.control.runAttachTemplate.provider.sidecarArgs.push("--evil");
+    if (kind === "provider") input.provider.agent = "codex";
+    expect(() => pinnedComputerProviderPack(input)).toThrow("runner_remote_provider_pack_provenance_unavailable");
+  });
+});
 const runner: CommandManagedRuntimeRunner = {
   execute: (input) => new Promise((resolve, reject) => {
     const child = spawn(input.command, input.args, { cwd: input.cwd, env: { ...process.env, ...input.env } });

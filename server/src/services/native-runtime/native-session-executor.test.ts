@@ -355,6 +355,7 @@ import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
+  validateRemoteProviderPackIdentity,
   readBundledRemoteProviderPackManifest,
   providerSessionIdentityFromDurableProviderState,
   durableProviderCheckpointFailureReason,
@@ -1468,6 +1469,13 @@ describe("remote provider pack manifest", () => {
         }),
       );
     await writeManifest();
+    const retainedManifest = readRemoteProviderPackManifest(root);
+    expect(validateRemoteProviderPackIdentity(retainedManifest).digest).toBe(retainedManifest.digest);
+    expect(() => validateRemoteProviderPackIdentity({ ...retainedManifest, digest: `sha256:${"0".repeat(64)}` }))
+      .toThrow("manifest digest mismatch");
+    const changedPins = structuredClone(retainedManifest);
+    changedPins.payload.pins = { ...changedPins.payload.pins, nodeMinimum: "0.0.0" as typeof changedPins.payload.pins.nodeMinimum };
+    expect(() => validateRemoteProviderPackIdentity(changedPins)).toThrow("pins or source revision");
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.34",
     );
