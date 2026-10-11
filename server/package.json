@@ -50,7 +50,7 @@
     "@ai-sdk/google": "4.0.93",
     "@ai-sdk/openai": "4.0.86",
     "@ai-sdk/xai": "5.0.20",
-    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/client-s3": "^3.1147.0",
     "@chat-adapter/discord": "4.39.0",
     "@chat-adapter/github": "4.39.0",
     "@chat-adapter/slack": "4.39.0",
