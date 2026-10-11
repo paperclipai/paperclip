@@ -2915,7 +2915,9 @@ export type EffectiveRunToolConnectionsInput = {
  *   `updateConnectionHealth` rewrites these on every health poll, so
  *   fingerprinting them would rotate every session on a routine poll.
  *   `healthStatus` is reduced to the `attentionHealth` boolean the attachment
- *   filter tests, which only moves when attachment would actually change.
+ *   filter tests, which only moves when attachment would actually change, and
+ *   is dropped entirely for `per_user` connections, which attach whatever
+ *   their health says.
  * - `config` / `transportConfig` — connection tools are delivered through one
  *   aggregate gateway server, so per-connection config does not change the
  *   server set, and these carry rotating OAuth material.
@@ -2937,7 +2939,15 @@ export function buildEffectiveRunToolConnectionsConfigValue(
       enabled: connection.enabled,
       transport: connection.transport,
       credentialPolicy: connection.credentialPolicy ?? null,
-      attentionHealth: isToolConnectionAttentionHealth(connection.healthStatus),
+      // The attachment filter tests attention health only when health gates
+      // attachment at all. A `per_user` connection attaches regardless, so
+      // folding its health in here would reset the session twice — once when a
+      // health check fails and again when it recovers — without the tool set
+      // ever changing. `null` records "health does not apply" distinctly from
+      // `false` ("healthy, and health matters").
+      attentionHealth: connection.credentialPolicy === "per_user"
+        ? null
+        : isToolConnectionAttentionHealth(connection.healthStatus),
       permitted: permitted.has(connection.id),
       installScopes: [
         ...new Set((connection.installs ?? []).map((install) => install.targetType)),
