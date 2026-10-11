@@ -93,6 +93,11 @@ import {
   SANDBOX_STARTUP_SPAN_ATTRS,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
+import {
+  executeAcceptedSecretProposalInteraction,
+  readSecretProposalContinuationContext,
+  readSecretProposalInteractionContext,
+} from "./governed-interaction-side-effects.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -1030,7 +1035,7 @@ export function buildHostServices(
     companyId: string,
     userId: string,
     { allowViewer = false }: { allowViewer?: boolean } = {},
-  ): Promise<void> => {
+  ) => {
     const [membership] = await db
       .select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
       .from(companyMemberships)
@@ -1047,6 +1052,7 @@ export function buildHostServices(
     if (!allowViewer && membership.membershipRole === "viewer") {
       throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
     }
+    return membership;
   };
 
   /**
@@ -1061,7 +1067,7 @@ export function buildHostServices(
    * cards never produce. Failure-tolerant: a wake failure is logged, never
    * thrown back to the plugin (the decision itself already applied).
    */
-  const queuePluginInteractionContinuationWakeup = (args: {
+  const queuePluginInteractionContinuationWakeup = async (args: {
     issue: { id: string; assigneeAgentId: string | null; status: string };
     interaction: {
       id: string;
@@ -1071,10 +1077,11 @@ export function buildHostServices(
       sourceCommentId?: string | null;
       sourceRunId?: string | null;
       payload?: unknown;
+      result?: unknown;
     };
     actorUserId: string;
     source: string;
-  }): void => {
+  }): Promise<void> => {
     const { interaction, issue } = args;
     if (
       interaction.continuationPolicy !== "wake_assignee"
@@ -1106,8 +1113,9 @@ export function buildHostServices(
         };
       }
     }
+    const secretProposal = readSecretProposalContinuationContext(interaction);
 
-    void heartbeat.wakeup(issue.assigneeAgentId, {
+    await heartbeat.wakeup(issue.assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -1119,8 +1127,10 @@ export function buildHostServices(
         sourceCommentId: interaction.sourceCommentId ?? null,
         sourceRunId: interaction.sourceRunId ?? null,
         ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
         mutation: "interaction",
       },
+      ...(secretProposal ? { idempotencyKey: `interaction:${interaction.id}:${interaction.status}` } : {}),
       requestedByActorType: "user",
       requestedByActorId: args.actorUserId,
       contextSnapshot: {
@@ -1130,6 +1140,7 @@ export function buildHostServices(
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
         wakeReason: "issue_commented",
         source: `plugin:${pluginKey}`,
       },
@@ -2716,15 +2727,75 @@ export function buildHostServices(
         if (!params.actorUserId) {
           throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
         }
-        await requireActiveHumanMember(companyId, params.actorUserId);
+        const membership = await requireActiveHumanMember(companyId, params.actorUserId);
+        const authorizationActor: AuthorizationActor = {
+          type: "board",
+          userId: params.actorUserId,
+          companyIds: [companyId],
+          memberships: [{
+            companyId,
+            membershipRole: membership.membershipRole,
+            status: "active",
+          }],
+          // Gateway pairing proves active company membership, not instance
+          // administration. Ignore persisted instance-admin rows so a stale
+          // role cannot bypass the normal agents:configure grant check.
+          isInstanceAdmin: false,
+          ignoreInstanceAdmin: true,
+          source: "session",
+        };
 
         const current = await interactions.getById(params.interactionId);
         if (!current || current.issueId !== issue.id || current.companyId !== companyId) {
           throw new Error(`Interaction "${params.interactionId}" not found for this issue`);
         }
         // Idempotent replay: an already-resolved interaction converges without
-        // re-applying, so a duplicate button tap from chat is a safe no-op.
+        // re-resolving it. Accepted secret-binding cards still pass through the
+        // shared governed-effect executor so a prior accept/effect crash can be
+        // reconciled without another human decision.
         if (current.status !== "pending") {
+          if (
+            params.action === "accept"
+            && current.status === "accepted"
+            && readSecretProposalInteractionContext(current)
+          ) {
+            const replay = await executeAcceptedSecretProposalInteraction({
+              db,
+              issue,
+              interaction: current,
+              authorizationActor,
+              resolvedByUserId: params.actorUserId,
+              actor: { userId: params.actorUserId },
+              interactions,
+              issues,
+              heartbeat,
+            });
+            if (replay.disposition !== "already_terminal") {
+              await logPluginActivity({
+                companyId,
+                action: "issue.thread_interaction_side_effect_reconciled",
+                entityType: "issue",
+                entityId: issue.id,
+                actor: { actorUserId: params.actorUserId },
+                details: {
+                  identifier: issue.identifier,
+                  interactionId: current.id,
+                  interactionKind: current.kind,
+                  sideEffect: "secret_proposal",
+                  executionDisposition: replay.disposition,
+                },
+              });
+            }
+            // A terminal receipt does not prove its continuation was queued.
+            // Use the same durable interaction key as REST for safe replay.
+            await queuePluginInteractionContinuationWakeup({
+              issue,
+              interaction: replay.interaction as typeof current,
+              actorUserId: params.actorUserId,
+              source: `plugin:${pluginKey}:interaction.accept.reconcile`,
+            });
+            return { interaction: replay.interaction as any, applied: false };
+          }
           return { interaction: current as any, applied: false };
         }
 
@@ -2749,6 +2820,18 @@ export function buildHostServices(
             actor,
           );
           resolved = result.interaction as typeof current;
+          const secretProposalExecution = await executeAcceptedSecretProposalInteraction({
+            db,
+            issue,
+            interaction: resolved,
+            authorizationActor,
+            resolvedByUserId: params.actorUserId,
+            actor: { userId: params.actorUserId },
+            interactions,
+            issues,
+            heartbeat,
+          });
+          resolved = secretProposalExecution.interaction as typeof current;
           if (result.continuationIssue) {
             continuationTarget = {
               id: result.continuationIssue.id,
@@ -2781,7 +2864,7 @@ export function buildHostServices(
           },
         });
 
-        queuePluginInteractionContinuationWakeup({
+        await queuePluginInteractionContinuationWakeup({
           issue: continuationTarget,
           interaction: resolved,
           actorUserId: params.actorUserId,
