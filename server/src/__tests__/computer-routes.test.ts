@@ -190,7 +190,7 @@ function fixture(
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.experimental.mockResolvedValue({ enableBoatEnvironments: true });
-  mocks.settings.mockResolvedValue({ defaultEnvironmentId: null });
+  mocks.settings.mockResolvedValue({ defaultEnvironmentId: environmentId });
   mocks.owner.mockReturnValue(owner);
 });
 
