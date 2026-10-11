@@ -51,6 +51,7 @@ import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { AuditFeed } from "./audit/AuditFeed.production";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
@@ -795,11 +796,13 @@ export function AgentDetail() {
     return confirmAgentConfigNavigation(configDirty);
   }, [configDirty]);
 
-  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
+  const agentQuery = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  const { data: agent, isLoading, error } = agentQuery;
+  const agentView = useQueryView(agentQuery);
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
@@ -1193,8 +1196,10 @@ export function AgentDetail() {
     return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty, prepareAgentNavigation]);
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (agentView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
+  }
   if (!agent) return null;
   if (!urlRunId && !urlTab) {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
@@ -3254,7 +3259,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
     queryFn: () => accessApi.listUserDirectory(run.companyId),
     enabled: Boolean(run.companyId && run.responsibleUserId),
-    retry: false,
   });
   const responsibleUserName = useMemo(() => {
     if (!run.responsibleUserId) return null;
@@ -3466,12 +3470,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </span>
               </div>
             )}
-            {resumeRun.isError && (
+            {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
               </div>
             )}
-            {retryRun.isError && (
+            {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
@@ -3511,7 +3515,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 >
                   {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
                 </Button>
-                {runClaudeLogin.isError && (
+                {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
@@ -3652,7 +3656,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                         ? "clearing session..."
                         : "clear session for these tasks"}
                     </button>
-                    {clearSessionsForTouchedIssues.isError && (
+                    {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
