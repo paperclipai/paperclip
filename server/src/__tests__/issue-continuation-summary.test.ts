@@ -120,6 +120,54 @@ describe("issue continuation summaries", () => {
     expect(body).not.toContain(providerText);
   });
 
+  it("stops parking the executor once the issue is back in progress", () => {
+    const previousSummaryBody = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Wait for reviewer feedback or approval before continuing executor work.",
+    ].join("\n");
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Review loop",
+        description: null, status: "in_progress", priority: "medium",
+      },
+      run: { id: "run-2", status: "succeeded", error: null, resultJson: null },
+      agent: { id: "agent-1", name: "Agent", adapterType: "claude_local" },
+      previousSummaryBody,
+    });
+
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Resume implementation from the acceptance criteria, latest comments, and this summary.",
+    );
+  });
+
+  it("keeps carrying a waiting next action other than the one generated for in_review", () => {
+    const previousSummaryBody = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Wait for the board to approve the release plan before deploying.",
+    ].join("\n");
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Release",
+        description: null, status: "in_progress", priority: "medium",
+      },
+      run: { id: "run-2", status: "succeeded", error: null, resultJson: null },
+      agent: { id: "agent-1", name: "Agent", adapterType: "claude_local" },
+      previousSummaryBody,
+    });
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Wait for the board to approve the release plan before deploying.",
+    );
+    expect(continuationSummaryParksExecutor(body)).toBe(true);
+  });
+
   it("does not park executor work when the next action is still runnable", () => {
     const body = [
       "# Continuation Summary",
