@@ -2057,6 +2057,26 @@ it("does not bind ambient candidate credentials from an inherited or caller-supp
   } finally { vi.unstubAllEnvs(); }
 });
 
+it("requires actual Codex plan confirmation from current daemon snapshots", () => {
+  const preset = runnerdLaunchProfileInternals.confirmedCodexPlanPreset;
+  const settings = { model: "resolved-model", reasoning_effort: null, developer_instructions: null };
+  const confirmed = { provider: "codex", collaborationMode: { mode: "plan", settings } };
+  expect(preset(confirmed)).toEqual({ name: "Plan", mode: "plan", model: "resolved-model", reasoning_effort: null });
+  expect(preset({ ...confirmed, collaborationMode: { mode: "plan", settings: { ...settings, reasoning_effort: "high" } } }))
+    .toMatchObject({ reasoning_effort: "high" });
+  for (const snapshot of [
+    { provider: "codex" }, // Older daemon: no confirmation.
+    { provider: "codex", collaborationMode: null },
+    { ...confirmed, provider: "opencode" },
+    { ...confirmed, collaborationMode: { mode: "default", settings } },
+    ...[
+      { model: "runner-managed" }, { model: "" }, { model: "x".repeat(257) },
+      { reasoning_effort: undefined }, { reasoning_effort: "" }, { reasoning_effort: 42 },
+      { developer_instructions: "custom plan prompt" },
+    ].map(override => ({ ...confirmed, collaborationMode: { mode: "plan", settings: { ...settings, ...override } } })),
+  ]) expect(preset(snapshot)).toBeNull();
+});
+
 it.each(["opencode", "acpx"] as const)(
   "advertises runner-managed planning through the %s provider boundary",
   async (provider) => {
@@ -2705,6 +2725,91 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
     ...args,
   ];
 }
+
+it.each(["plan", "default"] as const)(
+  "sends actual Codex %s settings through the driver, runnerd and app-server on every turn",
+  async (mode) => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-native-plan-"));
+    const requestsPath = join(stateDirectory, "requests.ndjson");
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--request-log", requestsPath,
+        "--effective-model", "resolved-model", "--durable-turn-ids"),
+      stateDirectory,
+    });
+    const driver = new CodexAppServerDriver({
+      taskEnvelope: createCodexTaskEnvelope({ objective: "Prepare the requested plan." }),
+      conversationMode: "direct",
+      model: "configured-alias",
+      requestedCollaborationMode: mode,
+      reasoningEffort: "medium",
+      transportFactory: () => bundle.transport,
+    });
+    try {
+      const session = await driver.openSession({
+        runId: `run-native-${mode}`, normalizedSessionId: `session-native-${mode}`,
+        workingDirectory: stateDirectory,
+      });
+      for (const text of ["Prepare the plan", "Refine the plan"]) {
+        await session.startTurn({ message: { role: "user", text } });
+        let completed = false;
+        for await (const event of session.events()) {
+          if (event.eventType === "turn.completed") { completed = true; break; }
+          if (event.eventType === "turn.failed" || event.eventType === "session.failed") {
+            throw new Error(`native ${mode} turn failed: ${JSON.stringify(event)}`);
+          }
+        }
+        expect(completed).toBe(true);
+      }
+      const frames = (await readFile(requestsPath, "utf8")).trim().split(/\r?\n/)
+        .map(line => JSON.parse(line));
+      expect(frames.filter(frame => frame.method === "collaborationMode/list"))
+        .toHaveLength(mode === "plan" ? 1 : 0);
+      const turns = frames.filter(frame => frame.method === "turn/start");
+      expect(turns).toHaveLength(2);
+      for (const turn of turns) {
+        expect(turn.params.effort).toBe("medium");
+        if (mode === "plan") {
+          expect(turn.params.collaborationMode).toEqual({ mode: "plan", settings: {
+            model: "resolved-model", reasoning_effort: "medium", developer_instructions: null,
+          } });
+          expect(turn.params.permissions).toBe("paperclip-runner-workspace-read-only");
+        } else {
+          expect(turn.params).not.toHaveProperty("collaborationMode");
+          expect(turn.params.permissions).toBe("paperclip-runner-workspace-only");
+        }
+      }
+    } finally {
+      await bundle.transport.close();
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  }, 30_000,
+);
+
+it.each(["--plan-unsupported", "--plan-preset-missing"])(
+  "fails native planning explicitly when the actual app-server uses %s",
+  async (switchName) => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-native-plan-unsupported-"));
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, switchName), stateDirectory,
+    });
+    const driver = new CodexAppServerDriver({
+      taskEnvelope: createCodexTaskEnvelope({ objective: "Plan only" }),
+      requestedCollaborationMode: "plan", transportFactory: () => bundle.transport,
+    });
+    try {
+      await expect(driver.openSession({
+        runId: "run-unsupported-plan", normalizedSessionId: "session-unsupported-plan",
+        workingDirectory: stateDirectory,
+      })).rejects.toThrow("planning_mode_unsupported");
+    } finally {
+      await bundle.transport.close().catch(() => undefined);
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  }, 30_000,
+);
 
 function assignedRuntimeContext(
   skillRoot: string,
@@ -6344,12 +6449,14 @@ it.each([
   30_000,
 );
 
-it("rotates PRP authority in place for a warm cross-run attachment", async () => {
+it.each(["default", "plan"] as const)("rotates PRP authority in place for a warm cross-run attachment (%s)", async (mode) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-attach-"));
+  const requestsPath = join(stateDirectory, "requests.ndjson");
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory),
+    codexArgs: fakeCodexArgs(stateDirectory, "--request-log", requestsPath,
+      "--effective-model", "warm-resolved-model"),
     stateDirectory,
     lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
   });
@@ -6370,6 +6477,9 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
       "thread start",
       bundle.transport.request("thread/start", {
         cwd: tmpdir(),
+        permissions: mode === "plan"
+          ? "paperclip-runner-workspace-read-only"
+          : "paperclip-runner-workspace-only",
         dynamicTools: [
           {
             name: "get_task_context",
@@ -6389,6 +6499,13 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
     );
     const runnerPid = bundle.evidence().runnerPid;
     const providerPid = bundle.evidence().codexPid;
+    const confirmPlan = async () => {
+      expect(await bundle.transport.request("collaborationMode/list", {})).toEqual({
+        data: mode === "plan" ? [{ name: "Plan", mode: "plan",
+          model: "warm-resolved-model", reasoning_effort: "high" }] : [],
+      });
+    };
+    await confirmPlan();
     const notifications = bundle.transport
       .notifications()
       [Symbol.asyncIterator]();
@@ -6431,6 +6548,7 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
       }),
     );
     await waitForCompletion("second run");
+    await confirmPlan();
 
     await within(
       "second warm attach",
@@ -6447,12 +6565,28 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
       }),
     );
     await waitForCompletion("third run");
+    await confirmPlan();
 
     expect(bundle.evidence()).toMatchObject({
       runnerPid,
       codexPid: providerPid,
       runnerExited: false,
     });
+    const frames = (await readFile(requestsPath, "utf8")).trim().split(/\r?\n/)
+      .map(line => JSON.parse(line));
+    expect(frames.filter(frame => frame.method === "collaborationMode/list"))
+      .toHaveLength(mode === "plan" ? 1 : 0);
+    const turns = frames.filter(frame => frame.method === "turn/start");
+    expect(turns).toHaveLength(3);
+    for (const turn of turns) {
+      if (mode === "plan") {
+        expect(turn.params.collaborationMode).toEqual({ mode: "plan", settings: {
+          model: "warm-resolved-model", reasoning_effort: "high", developer_instructions: null,
+        } });
+      } else {
+        expect(turn.params).not.toHaveProperty("collaborationMode");
+      }
+    }
   } finally {
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });

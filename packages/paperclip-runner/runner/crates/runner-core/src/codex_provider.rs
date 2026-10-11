@@ -370,6 +370,10 @@ pub struct CodexProviderConfig {
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_collaboration_mode_instructions: Option<bool>,
     // Older sessions retain their standalone task envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_mode: Option<String>,
@@ -391,6 +395,14 @@ pub struct CodexSkillInput {
 pub struct CodexTurnOptions<'a> {
     pub skills: &'a [CodexSkillInput],
     pub reasoning_mode: Option<&'a str>,
+    pub effort: Option<&'a str>,
+}
+
+pub fn validate_codex_effort(effort: &str) -> Result<(), LocalRunnerError> {
+    if effort.trim().is_empty() || effort.len() > 128 || effort.contains('\0') {
+        return Err(LocalRunnerError::invalid("invalid turn.effort"));
+    }
+    Ok(())
 }
 
 impl CodexSkillInput {
@@ -415,14 +427,30 @@ impl CodexSkillInput {
 }
 
 impl CodexProviderConfig {
-    fn skill_instructions_config(&self) -> Option<Value> {
-        (self.provider == "codex")
-            .then_some(self.include_skill_instructions)
-            .flatten()
-            .map(|include| json!({"skills.include_instructions": include}))
+    fn thread_config(&self) -> Option<Value> {
+        if self.provider != "codex" {
+            return None;
+        }
+        let mut config = serde_json::Map::new();
+        if let Some(include) = self.include_skill_instructions {
+            config.insert("skills.include_instructions".to_owned(), json!(include));
+        }
+        if let Some(include) = self.include_collaboration_mode_instructions {
+            config.insert(
+                "include_collaboration_mode_instructions".to_owned(),
+                json!(include),
+            );
+        }
+        (!config.is_empty()).then_some(Value::Object(config))
     }
 
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
+        if !matches!(
+            self.collaboration_mode.as_deref(),
+            None | Some("default" | "plan")
+        ) {
+            return Err(LocalRunnerError::invalid("unsupported collaborationMode"));
+        }
         if !matches!(
             self.conversation_mode.as_deref(),
             None | Some("task" | "prepared")
@@ -669,6 +697,7 @@ pub struct CodexProvider {
     next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
+    collaboration_mode: Option<Value>,
     active_provider_turn_id: Option<String>,
     pending_messages: VecDeque<BufferedProviderMessage>,
     deferred_ambiguous_messages: VecDeque<BufferedProviderMessage>,
@@ -823,8 +852,14 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
 ];
 
-fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
-    if provider == "codex" && external_sandbox {
+fn codex_permission_profile(
+    provider: &str,
+    external_sandbox: bool,
+    planning: bool,
+) -> &'static str {
+    if provider == "codex" && planning {
+        "paperclip-runner-workspace-read-only"
+    } else if provider == "codex" && external_sandbox {
         "paperclip-runner-external-sandbox"
     } else {
         "paperclip-runner-workspace-only"
@@ -908,6 +943,7 @@ impl CodexProvider {
             &config.provider,
             config.externally_sandboxed
                 || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+            config.collaboration_mode.as_deref() == Some("plan"),
         );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
@@ -1003,6 +1039,7 @@ impl CodexProvider {
             next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
+            collaboration_mode: None,
             active_provider_turn_id: None,
             pending_messages: VecDeque::new(),
             deferred_ambiguous_messages: VecDeque::new(),
@@ -1098,8 +1135,8 @@ impl CodexProvider {
                     );
                 }
             }
-            if let Some(skill_config) = config.skill_instructions_config() {
-                params_object.insert("config".to_owned(), skill_config);
+            if let Some(thread_config) = config.thread_config() {
+                params_object.insert("config".to_owned(), thread_config);
             }
             let method = if let Some(thread_id) = resume_thread_id {
                 params_object.insert("threadId".to_owned(), json!(thread_id));
@@ -1134,6 +1171,10 @@ impl CodexProvider {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
 
+            if config.provider == "codex" && config.collaboration_mode.as_deref() == Some("plan") {
+                provider.collaboration_mode = Some(provider.negotiate_plan_mode(&opened)?);
+            }
+
             if resume_thread_id.is_some() {
                 stage = ProviderStartupStage::ThreadRead;
                 let snapshot = provider.read_thread()?;
@@ -1149,6 +1190,57 @@ impl CodexProvider {
             return Err(error);
         }
         Ok(provider)
+    }
+
+    pub fn collaboration_mode(&self) -> Option<&Value> {
+        self.collaboration_mode.as_ref()
+    }
+
+    fn negotiate_plan_mode(&mut self, opened: &Value) -> Result<Value, LocalRunnerError> {
+        let unsupported = |reason: &str| {
+            LocalRunnerError::invalid(format!("planning_mode_unsupported: {reason}"))
+        };
+        let response = self
+            .request("collaborationMode/list", json!({}))
+            .map_err(|error| unsupported(&error.to_string()))?;
+        let preset = response
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|presets| {
+                presets
+                    .iter()
+                    .find(|preset| preset.get("mode") == Some(&json!("plan")))
+            })
+            .ok_or_else(|| unsupported("Codex app-server omitted the plan preset"))?;
+        let models = [opened.get("model"), opened.pointer("/thread/model")];
+        // Thread responses contain the effective model after app-server resolves aliases.
+        let model = models
+            .iter()
+            .filter_map(|value| value.and_then(Value::as_str))
+            .chain(self.config.model.as_deref())
+            .chain(preset.get("model").and_then(Value::as_str))
+            .find(|model| {
+                !model.trim().is_empty()
+                    && model.len() <= 256
+                    && !model.contains('\0')
+                    && *model != "runner-managed"
+            })
+            .ok_or_else(|| unsupported("plan preset did not resolve a usable model"))?;
+        let effort = preset
+            .get("reasoning_effort")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if !effort.is_null() {
+            validate_codex_effort(
+                effort
+                    .as_str()
+                    .ok_or_else(|| unsupported("invalid preset effort"))?,
+            )
+            .map_err(|_| unsupported("invalid preset effort"))?;
+        }
+        Ok(json!({"mode": "plan", "settings": {
+            "model": model, "reasoning_effort": effort, "developer_instructions": null
+        }}))
     }
 
     pub(crate) fn retire_failed_startup(&mut self) -> Option<ProcessExitFact> {
@@ -1689,7 +1781,14 @@ impl CodexProvider {
         let CodexTurnOptions {
             skills,
             reasoning_mode,
+            effort,
         } = options;
+        if let Some(effort) = effort {
+            validate_codex_effort(effort)?;
+            if self.config.provider != "codex" {
+                return Err(LocalRunnerError::invalid("turn.effort requires Codex"));
+            }
+        }
         if reasoning_mode.is_some_and(|mode| {
             self.config.provider != "opencode" || !matches!(mode, "default" | "disabled")
         }) {
@@ -1747,6 +1846,16 @@ impl CodexProvider {
             .expect("Codex turn parameters are an object");
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
+        }
+        if let Some(effort) = effort {
+            turn_params_object.insert("effort".to_owned(), json!(effort));
+        }
+        if let Some(mode) = self.collaboration_mode.as_ref() {
+            let mut mode = mode.clone();
+            if let Some(effort) = effort {
+                mode["settings"]["reasoning_effort"] = json!(effort);
+            }
+            turn_params_object.insert("collaborationMode".to_owned(), mode);
         }
         if self.permission_profile == "paperclip-runner-external-sandbox" {
             turn_params_object.insert(
@@ -4095,6 +4204,8 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            collaboration_mode: None,
+            include_collaboration_mode_instructions: None,
             conversation_mode: None,
         };
         let mut provider = CodexProvider::start(&config, None).unwrap();
@@ -4482,6 +4593,8 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            collaboration_mode: None,
+            include_collaboration_mode_instructions: None,
             conversation_mode: None,
         };
         let mut spawned = None;
@@ -4602,11 +4715,13 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             include_skill_instructions: None,
+            collaboration_mode: None,
+            include_collaboration_mode_instructions: None,
             conversation_mode: None,
         };
         config.include_skill_instructions = Some(true);
         assert_eq!(
-            config.skill_instructions_config(),
+            config.thread_config(),
             None,
             "OpenCode must not receive Codex skill settings"
         );
@@ -4667,15 +4782,15 @@ done
         assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_RUNNER_EXTERNAL_SANDBOX"));
         assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
         assert_eq!(
-            codex_permission_profile("codex", true),
+            codex_permission_profile("codex", true, false),
             "paperclip-runner-external-sandbox"
         );
         assert_eq!(
-            codex_permission_profile("codex", false),
+            codex_permission_profile("codex", false, false),
             "paperclip-runner-workspace-only"
         );
         assert_eq!(
-            codex_permission_profile("opencode", true),
+            codex_permission_profile("opencode", true, false),
             "paperclip-runner-workspace-only"
         );
     }

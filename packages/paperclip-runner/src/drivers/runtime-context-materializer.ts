@@ -307,27 +307,56 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
-/** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
-async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
-  if (!sourceHome?.trim()) return "";
+/** Keep the selected provider paired with its auth without importing host tools or hooks. */
+async function selectedCodexProviderConfig(sourceHome?: string | null): Promise<{
+  config: string;
+  useLoginCache: boolean;
+}> {
+  const defaultProvider = { config: "", useLoginCache: true };
+  if (!sourceHome?.trim()) return defaultProvider;
   const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
-  if (!source) return "";
+  if (!source) return defaultProvider;
   let parsed;
-  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
-  if (parsed.model_provider !== "paperclip") return "";
+  try { parsed = parseToml(source.toString("utf8")); } catch {
+    throw new Error("Invalid source Codex provider configuration");
+  }
+  const selected = parsed.model_provider;
+  if (selected === undefined) return defaultProvider;
+  if (typeof selected !== "string" || !selected.trim()) {
+    throw new Error("Invalid selected Codex provider configuration");
+  }
   const providers = parsed.model_providers as Record<string, unknown> | undefined;
-  const provider = providers?.paperclip as Record<string, unknown> | undefined;
-  if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
-    || provider.requires_openai_auth !== false
-    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
-    throw new Error("Invalid managed Codex provider configuration");
+  const provider = providers?.[selected] as Record<string, unknown> | undefined;
+  if (selected === "openai" && provider === undefined) return defaultProvider;
+  const managed = selected === "paperclip";
+  if (!provider || typeof provider.base_url !== "string"
+    || (provider.wire_api !== undefined && provider.wire_api !== "responses")
+    || (provider.requires_openai_auth !== undefined && typeof provider.requires_openai_auth !== "boolean")
+    || (managed && (provider.wire_api !== "responses" || provider.requires_openai_auth !== false
+      || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")))) {
+    throw new Error("Invalid selected Codex provider configuration");
   }
-  const url = new URL(provider.base_url);
+  const useLoginCache = provider.requires_openai_auth === true;
+  // Codex ignores env_key when requires_openai_auth is true. Other providers
+  // may reference only credentials already admitted by the runner environment.
+  const envKey = useLoginCache ? undefined : provider.env_key;
+  if (envKey !== undefined && (typeof envKey !== "string"
+    || !["OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY"].includes(envKey))) {
+    throw new Error("Unsupported Codex provider authentication configuration");
+  }
+  let url;
+  try { url = new URL(provider.base_url); } catch {
+    throw new Error("Invalid selected Codex provider URL");
+  }
   if (url.username || url.password || url.search || url.hash
-    || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
-    throw new Error("Invalid managed Codex provider URL");
+    || !["http:", "https:"].includes(url.protocol)
+    || (managed && url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) {
+    throw new Error("Invalid selected Codex provider URL");
   }
-  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}`;
+  return {
+    config: `model_provider = ${JSON.stringify(selected)}\n[model_providers.${JSON.stringify(selected)}]\nname = ${JSON.stringify(managed ? "Paperclip connection" : "Local Codex provider")}\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = ${useLoginCache}\n${envKey ? `env_key = ${JSON.stringify(envKey)}\n` : ""}`,
+    useLoginCache,
+  };
 }
 
 export async function prepareIsolatedCodexHome(input: {
@@ -342,11 +371,11 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
-  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
+  const provider = await selectedCodexProviderConfig(input.sourceCodexHome);
   const configPath = join(input.codexHome, "config.toml");
   await rm(configPath, { force: true });
   await writeFile(configPath, [
-    providerConfig,
+    provider.config,
     // Codex shell snapshots serialize the provider process environment. The
     // native runner injects short-lived provider and MCP bindings, so a
     // snapshot would turn ephemeral credentials into durable session state.
@@ -369,7 +398,7 @@ export async function prepareIsolatedCodexHome(input: {
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
-  if (providerConfig) return;
+  if (!provider.useLoginCache) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its

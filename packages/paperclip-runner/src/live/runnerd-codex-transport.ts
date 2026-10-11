@@ -3694,13 +3694,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (method === "initialize") return { user: {} };
     if (method === "thread/start") return this.#start(params);
     if (method === "collaborationMode/list") {
-      // runnerd negotiates the real Codex preset or the provider-proxy-owned
-      // planning contract during session.open. This transport-level mask
-      // confirms that closed boundary; turn/start remains runner-managed and
-      // never forwards this sentinel to the outer TypeScript driver.
-      return this.options.provider === undefined ||
-        this.options.provider === "codex" ||
-        this.options.provider === "opencode" ||
+      if ((this.options.provider ?? "codex") === "codex") {
+        // A fresh authenticated snapshot proves the current provider process
+        // negotiated plan, including warm attachment and daemon recovery.
+        // Older daemons omit this field and cannot claim native plan support.
+        const snapshot = await this.#commandResult("session.snapshot", {});
+        const preset = confirmedCodexPlanPreset(snapshot);
+        return { data: preset ? [preset] : [] };
+      }
+      // These facades own their planning contract independently of Codex.
+      return this.options.provider === "opencode" ||
         this.options.provider === "acpx"
         ? {
             data: [
@@ -5898,6 +5901,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .map((item) => (typeof item.text === "string" ? item.text : ""))
       .join("\n");
     const reasoningMode = params.reasoningMode;
+    const effort = (this.options.provider ?? "codex") === "codex"
+      ? params.effort : undefined;
+    if (effort !== undefined && (
+      typeof effort !== "string" || !effort.trim() ||
+      effort.length > 128 || effort.includes("\0")
+    )) {
+      throw new Error("turn.effort requires Codex and a non-empty bounded effort");
+    }
     if (reasoningMode !== undefined && (
       !this.supportsTurnReasoning()
       || (reasoningMode !== "default" && reasoningMode !== "disabled")
@@ -5936,6 +5947,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         {
           text: message,
           ...(reasoningMode === undefined ? {} : { reasoningMode }),
+          ...(effort === undefined ? {} : { effort }),
           ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },
@@ -7062,7 +7074,32 @@ function openedThreadModelProvider(
   return "openai";
 }
 
+function confirmedCodexPlanPreset(
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const mode = record(snapshot.collaborationMode);
+  const settings = record(mode.settings);
+  if (
+    snapshot.provider !== "codex" || mode.mode !== "plan" ||
+    typeof settings.model !== "string" || !settings.model.trim() ||
+    settings.model.length > 256 || settings.model.includes("\0") ||
+    settings.model === "runner-managed" ||
+    (settings.reasoning_effort !== null && (
+      typeof settings.reasoning_effort !== "string" || !settings.reasoning_effort.trim() ||
+      settings.reasoning_effort.length > 128 || settings.reasoning_effort.includes("\0")
+    )) ||
+    settings.developer_instructions !== null
+  ) {
+    return null;
+  }
+  return {
+    name: "Plan", mode: "plan", model: settings.model,
+    reasoning_effort: settings.reasoning_effort,
+  };
+}
+
 export const runnerdLaunchProfileInternals = Object.freeze({
+  confirmedCodexPlanPreset,
   openedThreadModelProvider,
   acpxProviderPackageAuthority,
   acpxRunnerLaunchProfile,

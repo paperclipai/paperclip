@@ -1033,6 +1033,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "initialized" => {}
+            "collaborationMode/list" => {
+                if args.iter().any(|arg| arg == "--plan-unsupported") {
+                    send(
+                        json!({"id": id, "error": {"code": -32601, "message": "unknown method"}}),
+                    )?;
+                } else if args.iter().any(|arg| arg == "--plan-preset-missing") {
+                    send(json!({"id": id, "result": {"data": []}}))?;
+                } else {
+                    send(json!({"id": id, "result": {"data": [{
+                        "name": "Plan", "mode": "plan", "model": "preset-model",
+                        "reasoning_effort": if args.iter().any(|arg| arg == "--plan-effort-null") {
+                            Value::Null
+                        } else { json!("high") }
+                    }]}}))?;
+                }
+            }
             "thread/start" => {
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
@@ -1076,7 +1092,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"model": argument(&args, "--effective-model"), "thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
                 if agent_created_goal {
                     send(json!({
@@ -1126,7 +1142,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"model": argument(&args, "--effective-model"), "thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
                 if args.iter().any(|arg| arg == "--resume-usage-snapshot")
                     && state.active_turn_id.is_none()

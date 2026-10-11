@@ -66,6 +66,8 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
         include_skill_instructions: None,
+        collaboration_mode: None,
+        include_collaboration_mode_instructions: None,
         conversation_mode: None,
     }
 }
@@ -6364,6 +6366,358 @@ fn skill_wire_requests(directory: &Path) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn native_plan_negotiates_settings_on_start_resume_and_every_turn() {
+    use paperclip_runner_core::codex_provider::CodexTurnOptions;
+    let directory = temporary_directory("native-plan-wire");
+    let log = directory.join("requests.ndjson");
+    let mut config = provider_config(
+        &directory,
+        &[
+            "--request-log",
+            log.to_str().unwrap(),
+            "--effective-model",
+            "resolved-model",
+            "--durable-turn-ids",
+        ],
+    );
+    config.collaboration_mode = Some("plan".to_owned());
+    config.include_collaboration_mode_instructions = Some(true);
+    config.include_skill_instructions = Some(false);
+    config.externally_sandboxed = true;
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    let expected = json!({"mode":"plan", "settings":{
+        "model":"resolved-model", "reasoning_effort":"high", "developer_instructions":null
+    }});
+    assert_eq!(provider.collaboration_mode(), Some(&expected));
+    let thread_id = provider.thread_id().to_owned();
+    provider
+        .start_turn_with_options(
+            "Plan first",
+            &config.cwd,
+            CodexTurnOptions {
+                effort: Some("medium"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    wait_for_notification(&mut provider, "turn/completed");
+    provider.shutdown().unwrap();
+    let mut resumed = CodexProvider::start(&config, Some(&thread_id)).unwrap();
+    assert_eq!(resumed.collaboration_mode(), Some(&expected));
+    resumed
+        .start_turn("Continue the plan", &config.cwd)
+        .unwrap();
+    wait_for_notification(&mut resumed, "turn/completed");
+    resumed.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["method"] == "collaborationMode/list")
+            .count(),
+        2
+    );
+    for method in ["thread/start", "thread/resume"] {
+        let frame = frames.iter().find(|f| f["method"] == method).unwrap();
+        assert_eq!(
+            frame["params"]["permissions"],
+            "paperclip-runner-workspace-read-only"
+        );
+        assert_eq!(
+            frame["params"]["config"],
+            json!({
+                "skills.include_instructions":false, "include_collaboration_mode_instructions":true
+            })
+        );
+        assert!(frame["params"].get("sandbox").is_none());
+    }
+    let turns: Vec<_> = frames
+        .iter()
+        .filter(|f| f["method"] == "turn/start")
+        .collect();
+    assert_eq!(turns.len(), 2);
+    let mut explicit = expected.clone();
+    explicit["settings"]["reasoning_effort"] = json!("medium");
+    assert_eq!(turns[0]["params"]["collaborationMode"], explicit);
+    assert_eq!(turns[0]["params"]["effort"], "medium");
+    assert_eq!(turns[1]["params"]["collaborationMode"], expected);
+    for turn in turns {
+        assert_eq!(
+            turn["params"]["permissions"],
+            "paperclip-runner-workspace-read-only"
+        );
+        assert!(turn["params"].get("sandboxPolicy").is_none());
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_plan_capability_failures_retire_startup_and_default_does_not_probe() {
+    for switch in ["--plan-unsupported", "--plan-preset-missing"] {
+        let directory = temporary_directory("native-plan-unsupported");
+        let log = directory.join("requests.ndjson");
+        let mut config = provider_config(
+            &directory,
+            &["--request-log", log.to_str().unwrap(), switch],
+        );
+        config.collaboration_mode = Some("plan".to_owned());
+        let runner_config = durable_config(&directory);
+        let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider":config}),
+            ))
+            .unwrap();
+        let error = executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap_err();
+        assert!(error.to_string().contains("planning_mode_unsupported"));
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            persisted["startupAttempt"]["phase"],
+            "initialization_failed"
+        );
+        assert_eq!(persisted["startupAttempt"]["directChildExitObserved"], true);
+        assert!(!skill_wire_requests(&directory)
+            .iter()
+            .any(|f| f["method"] == "turn/start"));
+        drop(executor);
+        config.collaboration_mode = None;
+        let mut provider = CodexProvider::start(&config, None).unwrap();
+        assert_eq!(provider.collaboration_mode(), None);
+        provider
+            .start_turn_with_options(
+                "Standard work",
+                &config.cwd,
+                paperclip_runner_core::codex_provider::CodexTurnOptions {
+                    effort: Some("low"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        provider.shutdown().unwrap();
+        assert_eq!(
+            skill_wire_requests(&directory)
+                .iter()
+                .filter(|f| f["method"] == "collaborationMode/list")
+                .count(),
+            1
+        );
+        let frames = skill_wire_requests(&directory);
+        let turn = frames.iter().find(|f| f["method"] == "turn/start").unwrap();
+        assert_eq!(turn["params"]["effort"], "low");
+        assert!(turn["params"].get("collaborationMode").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn native_plan_confirmation_survives_restore_and_warm_attach_with_immutable_mode() {
+    let directory = temporary_directory("native-plan-durable");
+    let log = directory.join("requests.ndjson");
+    let mut config = provider_config(
+        &directory,
+        &["--request-log", log.to_str().unwrap(), "--plan-effort-null"],
+    );
+    config.model = None;
+    config.collaboration_mode = Some("plan".to_owned());
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    let opened = executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    let mode = json!({"mode":"plan", "settings":{
+        "model":"preset-model", "reasoning_effort":null, "developer_instructions":null
+    }});
+    assert_eq!(opened.result["collaborationMode"], mode);
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let snapshot = restored
+        .execute(&command("snapshot", 3, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["collaborationMode"], mode);
+    for _ in 0..8 {
+        poll_and_ack(&mut restored).unwrap();
+    }
+    restored
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    let snapshot = restored
+        .execute(&command("warm-snapshot", 5, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["collaborationMode"], mode);
+    for _ in 0..8 {
+        poll_and_ack(&mut restored).unwrap();
+    }
+    config.collaboration_mode = Some("default".to_owned());
+    assert!(restored
+        .execute(&command(
+            "incompatible",
+            6,
+            "run.attach",
+            json!({"provider":config})
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("durable Codex provider profile"));
+    restored
+        .execute(&command(
+            "turn",
+            7,
+            "turn.start",
+            json!({"text":"Continue planning", "effort":"low"}),
+        ))
+        .unwrap();
+    restored.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["method"] == "collaborationMode/list")
+            .count(),
+        2
+    );
+    let turn = frames.iter().find(|f| f["method"] == "turn/start").unwrap();
+    assert_eq!(
+        turn["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+        "low"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_plan_legacy_default_profile_remains_compatible_without_mode_upgrade() {
+    let directory = temporary_directory("native-plan-legacy-default");
+    let log = directory.join("requests.ndjson");
+    let mut config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
+    let mut legacy = serde_json::to_value(&config).unwrap();
+    for key in ["collaborationMode", "includeCollaborationModeInstructions"] {
+        legacy.as_object_mut().unwrap().remove(key);
+    }
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":legacy}),
+        ))
+        .unwrap();
+    let opened = executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    assert!(opened.result["collaborationMode"].is_null());
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    config.collaboration_mode = Some("default".to_owned());
+    executor
+        .execute(&command(
+            "attach",
+            3,
+            "run.attach",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    config.include_collaboration_mode_instructions = Some(false);
+    executor
+        .execute(&command(
+            "attach-instructions",
+            4,
+            "run.attach",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    let mut changed_instructions = config.clone();
+    changed_instructions.include_collaboration_mode_instructions = Some(true);
+    assert!(executor
+        .execute(&command(
+            "invalid-instructions",
+            5,
+            "run.attach",
+            json!({"provider":changed_instructions})
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("durable Codex provider profile"));
+    config.collaboration_mode = Some("plan".to_owned());
+    assert!(executor
+        .execute(&command(
+            "invalid-mode",
+            6,
+            "run.attach",
+            json!({"provider":config})
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("durable Codex provider profile"));
+    for (index, effort) in [
+        json!(""),
+        json!(" "),
+        json!("x".repeat(129)),
+        json!("low\0"),
+        json!(null),
+        json!(42),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(executor
+            .execute(&command(
+                &format!("invalid-effort-{index}"),
+                7 + index as u64,
+                "turn.start",
+                json!({"text":"Do work", "effort":effort})
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("invalid turn.effort"));
+    }
+    executor.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    let resumed: Vec<_> = frames
+        .iter()
+        .filter(|frame| frame["method"] == "thread/resume")
+        .collect();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(
+        resumed[0]["params"]["config"]["include_collaboration_mode_instructions"],
+        false
+    );
+    assert!(!frames.iter().any(|frame| matches!(
+        frame["method"].as_str(),
+        Some("collaborationMode/list" | "turn/start")
+    )));
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

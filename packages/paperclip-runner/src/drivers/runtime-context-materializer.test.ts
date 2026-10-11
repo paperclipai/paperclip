@@ -195,6 +195,82 @@ command = "untrusted-command"
     await expect(stat(join(target, "auth.json"))).rejects.toThrow();
   });
 
+  it.each(["http://gateway.example:3000/v1/", "https://gateway.example/v1"])(
+    "keeps the selected local gateway %s paired with its login cache",
+    async (baseUrl) => {
+      const root = await mkdtemp(join(tmpdir(), "paperclip-local-routing-"));
+      roots.push(root);
+      const source = join(root, "source");
+      const target = join(root, "isolated");
+      await mkdir(source);
+      await writeFile(join(source, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "gateway-key" }));
+      await writeFile(join(source, "config.toml"), `model_provider = "OpenAI"
+model = "host-model"
+[model_providers.OpenAI]
+name = "Local gateway"
+base_url = ${JSON.stringify(baseUrl)}
+wire_api = "responses"
+requires_openai_auth = true
+[model_providers.unselected]
+base_url = "https://unselected.example/v1"
+[features]
+shell_snapshot = true
+[mcp_servers.unassigned]
+command = "untrusted-command"
+`);
+      await prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source });
+      const config = await readFile(join(target, "config.toml"), "utf8");
+      expect(config).toContain('model_provider = "OpenAI"');
+      expect(config).toContain(`base_url = ${JSON.stringify(baseUrl)}`);
+      expect(config).toContain("requires_openai_auth = true");
+      expect(config).toContain("shell_snapshot = false");
+      expect(config).not.toMatch(/host-model|unselected|unassigned|untrusted/);
+      expect(JSON.parse(await readFile(join(target, "auth.json"), "utf8")))
+        .toEqual({ OPENAI_API_KEY: "gateway-key" });
+      expect((await stat(join(target, "auth.json"))).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it("does not copy unrelated login credentials into a local provider with environment authentication", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-local-env-routing-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const target = join(root, "isolated");
+    await mkdir(source);
+    await writeFile(join(source, "auth.json"), '{"OPENAI_API_KEY":"unrelated-key"}');
+    await writeFile(join(source, "config.toml"), `model_provider = "gateway"
+[model_providers.gateway]
+base_url = "https://gateway.example/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+`);
+    await prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source, apiKey: "unrelated-key" });
+    expect(await readFile(join(target, "config.toml"), "utf8"))
+      .toContain('env_key = "OPENAI_API_KEY"');
+    await expect(stat(join(target, "auth.json"))).rejects.toThrow();
+  });
+
+  it.each([
+    'model_provider = "missing"',
+    'model_provider = "gateway"\n[model_providers.gateway]\nbase_url = "file:///tmp/provider"',
+    'model_provider = "gateway"\n[model_providers.gateway]\nbase_url = "https://user:password@gateway.example/v1"',
+    'model_provider = "gateway"\n[model_providers.gateway]\nbase_url = "https://gateway.example/v1"\nwire_api = "chat"',
+    'model_provider = "gateway"\n[model_providers.gateway]\nbase_url = "https://gateway.example/v1"\nenv_key = "NODE_OPTIONS"',
+    'model_provider = "paperclip"\n[model_providers.paperclip]\nbase_url = "http://gateway.example/v1"\nwire_api = "responses"\nrequires_openai_auth = false',
+    'model_provider = "gateway"\n[broken',
+  ])("rejects invalid selected provider settings instead of sending their credentials to OpenAI", async (config) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-invalid-routing-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const target = join(root, "isolated");
+    await mkdir(source);
+    await writeFile(join(source, "config.toml"), config);
+    await writeFile(join(source, "auth.json"), '{"OPENAI_API_KEY":"gateway-key"}');
+    await expect(prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source }))
+      .rejects.toThrow(/Codex.*configuration|Codex.*URL/);
+    await expect(stat(join(target, "auth.json"))).rejects.toThrow();
+  });
+
   it("rejects repeated assignments without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-repeat-"));
     roots.push(root);
