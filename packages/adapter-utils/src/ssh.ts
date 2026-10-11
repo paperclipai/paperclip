@@ -220,6 +220,25 @@ async function execFileText(
   });
 }
 
+function processExitError(
+  command: string,
+  code: number | null | undefined,
+  signal: NodeJS.Signals | null | undefined,
+  stderr: string,
+) {
+  const status = signal
+    ? `terminated by signal ${signal}`
+    : code == null
+      ? "exited without an exit code"
+      : `exited with code ${code}`;
+  const detail = stderr.trim();
+  return Object.assign(new Error(`${command} ${status}${detail ? `: ${detail}` : ""}`), {
+    code: code ?? null,
+    signal: signal ?? null,
+    stderr,
+  });
+}
+
 async function spawnText(
   file: string,
   args: string[],
@@ -308,15 +327,13 @@ async function spawnText(
       clearTimers();
       if (settled) return;
       settled = true;
-      if (code === 0) {
+      if (code === 0 && !signal) {
         resolve({ stdout, stderr });
         return;
       }
-      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+      reject(Object.assign(processExitError(file, code, signal, stderr || stdout), {
         stdout,
         stderr,
-        code,
-        signal,
         killed: timedOut,
       }));
     });
@@ -691,11 +708,11 @@ async function streamLocalFileToSsh(input: {
     } else {
       source.pipe(ssh.stdin ?? null);
     }
-    ssh.on("close", (code) => {
+    ssh.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
-      if ((code ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+      if (code !== 0 || signal) {
+        reject(processExitError("ssh", code, signal, sshStderr));
         return;
       }
       resolve();
@@ -746,12 +763,12 @@ async function streamSshToLocalFile(input: {
     });
     ssh.on("error", fail);
     sink.on("error", fail);
-    ssh.on("close", (code) => {
+    ssh.on("close", (code, signal) => {
       sink.end(() => {
         if (settled) return;
         settled = true;
-        if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        if (code !== 0 || signal) {
+          reject(processExitError("ssh", code, signal, sshStderr));
           return;
         }
         resolve();
@@ -1462,18 +1479,20 @@ export async function syncDirectoryToSsh(input: {
     let sshExited = false;
     let tarExitCode: number | null = null;
     let sshExitCode: number | null = null;
+    let tarExitSignal: NodeJS.Signals | null = null;
+    let sshExitSignal: NodeJS.Signals | null = null;
 
     const maybeFinish = () => {
       if (settled || !tarExited || !sshExited) {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
-        reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+      if (tarExitCode !== 0 || tarExitSignal) {
+        reject(processExitError("tar", tarExitCode, tarExitSignal, tarStderr));
         return;
       }
-      if ((sshExitCode ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+      if (sshExitCode !== 0 || sshExitSignal) {
+        reject(processExitError("ssh", sshExitCode, sshExitSignal, sshStderr));
         return;
       }
       resolve();
@@ -1504,14 +1523,16 @@ export async function syncDirectoryToSsh(input: {
 
     tar.on("error", fail);
     ssh.on("error", fail);
-    tar.on("close", (code) => {
+    tar.on("close", (code, signal) => {
       tarExited = true;
       tarExitCode = code;
+      tarExitSignal = signal;
       maybeFinish();
     });
-    ssh.on("close", (code) => {
+    ssh.on("close", (code, signal) => {
       sshExited = true;
       sshExitCode = code;
+      sshExitSignal = signal;
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1577,16 +1598,18 @@ export async function syncDirectoryFromSsh(input: {
       let tarExited = false;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
+      let sshExitSignal: NodeJS.Signals | null = null;
+      let tarExitSignal: NodeJS.Signals | null = null;
 
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        if (sshExitCode !== 0 || sshExitSignal) {
+          reject(processExitError("ssh", sshExitCode, sshExitSignal, sshStderr));
           return;
         }
-        if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+        if (tarExitCode !== 0 || tarExitSignal) {
+          reject(processExitError("tar", tarExitCode, tarExitSignal, tarStderr));
           return;
         }
         resolve();
@@ -1615,14 +1638,16 @@ export async function syncDirectoryFromSsh(input: {
 
       ssh.on("error", fail);
       tar.on("error", fail);
-      ssh.on("close", (code) => {
+      ssh.on("close", (code, signal) => {
         sshExited = true;
         sshExitCode = code;
+        sshExitSignal = signal;
         maybeFinish();
       });
-      tar.on("close", (code) => {
+      tar.on("close", (code, signal) => {
         tarExited = true;
         tarExitCode = code;
+        tarExitSignal = signal;
         maybeFinish();
       });
     });
