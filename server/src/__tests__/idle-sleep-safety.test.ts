@@ -5,7 +5,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agentInstructionWorkingCopies, agents, agentApiKeys, agentWakeupRequests, companies, companySecretProposals, createDb,
   adapterAuthSessions, environments, environmentLeases, executionWorkspaces,
-  heartbeatRuns, issues, issueWatchdogs, projects, routines, type Db,
+  heartbeatRuns, issues, issueWatchdogs, issueThreadInteractions, issueQuestionResponseDeliveries,
+  projects, routines, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
@@ -183,6 +184,123 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
     return { companyId, agentId, runId };
   }
+
+  async function seedQuestionDelivery(change: Partial<typeof issueQuestionResponseDeliveries.$inferInsert> = {}) {
+    const seeded = await seed();
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(now) }).where(eq(heartbeatRuns.id, seeded.runId));
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Finished question", status: "done" });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: seeded.companyId, issueId,
+      kind: "ask_user_questions", status: "answered", payload: {},
+    });
+    await db.insert(issueQuestionResponseDeliveries).values({
+      companyId: seeded.companyId, issueId, interactionId, sourceRunId: seeded.runId,
+      targetRunId: seeded.runId, correlationId: randomUUID(), payloadSha256: "fixture",
+      status: "fallback_queued", deliveryMode: "wake_fallback", acknowledgedAt: new Date(now), ...change,
+    });
+    return { ...seeded, issueId, interactionId };
+  }
+
+  async function seedQuestionWake(
+    delivery: Awaited<ReturnType<typeof seedQuestionDelivery>>,
+    change: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+  ) {
+    await db.insert(agentWakeupRequests).values({
+      companyId: delivery.companyId, agentId: delivery.agentId, source: "automation",
+      idempotencyKey: `question-response:${delivery.interactionId}`,
+      status: "completed", finishedAt: new Date(now), ...change,
+    });
+  }
+
+  it.each(["pending", "delivering"])("keeps a %s question delivery awake", async status => {
+    await seedQuestionDelivery({ status, acknowledgedAt: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it.each(["delivered", "fallback_queued"])("permits acknowledged %s history after its target run finishes", async status => {
+    await seedQuestionDelivery({ status });
+    expect(await read()).toEqual(none);
+  });
+
+  it.each(["delivered", "fallback_queued"])("keeps an unacknowledged %s question delivery awake", async status => {
+    await seedQuestionDelivery({ status, acknowledgedAt: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it.each([
+    ["queued", { status: "queued", finishedAt: null }],
+    ["running", { status: "running", finishedAt: null }],
+    ["unfinished", { finishedAt: null }],
+    ["retry", { scheduledRetryAt: new Date(now + 1000) }],
+    ["accounting", { costAccountingPending: true }],
+  ] as const)("keeps an acknowledged question delivery awake with %s target evidence", async (_name, change) => {
+    const { runId } = await seedQuestionDelivery();
+    await db.update(heartbeatRuns).set(change).where(eq(heartbeatRuns.id, runId));
+    expect(await read()).toEqual(present);
+  });
+
+  it("does not accept a foreign company's finished question target", async () => {
+    const foreign = await seedQuestionDelivery({ status: "failed", targetRunId: null });
+    await seedQuestionDelivery({ targetRunId: foreign.runId });
+    expect(await read()).toEqual(present);
+  });
+
+  it("keeps delivered history with a missing target awake", async () => {
+    await seedQuestionDelivery({ status: "delivered", targetRunId: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it("keeps fallback history without a durable wake receipt awake", async () => {
+    await seedQuestionDelivery({ targetRunId: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it.each(["completed", "failed", "cancelled", "skipped", "timed_out"])(
+    "permits fallback history after its exact durable wake is %s and finished", async status => {
+      const delivery = await seedQuestionDelivery({ targetRunId: null });
+      await seedQuestionWake(delivery, { status });
+      expect(await read()).toEqual(none);
+    },
+  );
+
+  it.each(["queued", "deferred_issue_execution", "coalesced"])("keeps an unresolved %s question wake awake", async status => {
+    const delivery = await seedQuestionDelivery({ targetRunId: null });
+    await seedQuestionWake(delivery, { status, finishedAt: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it("keeps a terminal question wake without completion evidence awake", async () => {
+    const delivery = await seedQuestionDelivery({ targetRunId: null });
+    await seedQuestionWake(delivery, { finishedAt: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it("does not accept another interaction's or company's question wake receipt", async () => {
+    const delivery = await seedQuestionDelivery({ targetRunId: null });
+    await seedQuestionWake(delivery, { idempotencyKey: `question-response:${randomUUID()}` });
+    const foreign = await seedQuestionDelivery({ status: "failed", targetRunId: null });
+    await seedQuestionWake(delivery, { companyId: foreign.companyId, agentId: foreign.agentId });
+    expect(await read()).toEqual(present);
+  });
+
+  it("permits failed question-delivery history without a pending target", async () => {
+    await seedQuestionDelivery({ status: "failed", targetRunId: null, acknowledgedAt: null });
+    expect(await read()).toEqual(none);
+  });
+
+  it("still blocks other work after a question handoff finishes", async () => {
+    const { issueId } = await seedQuestionDelivery();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+    expect(await read()).toEqual(present);
+  });
+
+  it("requires a current quiet owner even with completed question history", async () => {
+    await seedQuestionDelivery();
+    expect(await readIdleSleepSafety(db, owned, () => now, "stale-owner", emptyLocal)).toEqual(unknown);
+    expect(await readIdleSleepSafety(db, owned, () => now + 60_001, ownerId, emptyLocal)).toEqual(unknown);
+  });
 
   it("keeps saved agent files awake until deferred cleanup completes", async () => {
     const { companyId, agentId, runId } = await seed();

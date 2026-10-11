@@ -93,13 +93,31 @@ const WORK_CHECKS = [
           THEN s.provider_lease_id::uuid END)
         AND (l.status IN ('released', 'expired') AND l.cleanup_status = 'success'
           AND l.released_at IS NOT NULL) IS NOT TRUE))`,
+  // Answer delivery history is not work once its acknowledged handoff has
+  // finished. Keep pending deliveries, unfinished target runs, and missing or
+  // unfinished fallback wake receipts awake. Other work checks still apply.
+  `SELECT 1 FROM issue_question_response_deliveries d WHERE
+    d.status NOT IN ('delivered', 'fallback_queued', 'failed')
+    OR (d.status IN ('delivered', 'fallback_queued') AND d.acknowledged_at IS NULL)
+    OR (d.status = 'delivered' AND d.target_run_id IS NULL)
+    OR (d.target_run_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM heartbeat_runs r WHERE r.id = d.target_run_id
+        AND r.company_id = d.company_id
+        AND r.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
+        AND r.finished_at IS NOT NULL AND r.scheduled_retry_at IS NULL
+        AND r.cost_accounting_pending = false))
+    OR (d.status = 'fallback_queued' AND d.target_run_id IS NULL AND NOT EXISTS (
+      SELECT 1 FROM agent_wakeup_requests w WHERE w.company_id = d.company_id
+        AND w.idempotency_key = 'question-response:' || d.interaction_id::text
+        AND w.status IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')
+        AND w.finished_at IS NOT NULL))`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[
     "chat_endpoints", "chat_deliveries", "chat_publications", "chat_actions",
     "chat_completion_deliveries", "connection_event_deliveries",
     "connection_intent_deliveries", "tool_action_requests", "tool_action_deliveries",
-    "issue_question_response_deliveries", "workspace_runtime_services",
+    "workspace_runtime_services",
     "execution_workspace_runtime_leases", "pipeline_automation_executions",
     "native_run_finalizations", "company_transfer_runs", "decisions", "decision_effect_executions",
     "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
