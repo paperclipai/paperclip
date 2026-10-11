@@ -193,6 +193,46 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// The exemption above is satisfied by any assignee comment in the window, and
+// the comment a run leaves to record its own outcome is the most common one.
+// An assignee that honours the execution contract therefore stays exempt
+// indefinitely: every sweep re-enqueues `issue_continuation_needed`, the next
+// run reports that there is nothing left to do, that report refreshes the
+// exemption, and the issue pays a full adapter session per sweep until a human
+// notices. The rewake throttle does not catch it either, because
+// `issue.comment_added` counts as issue-visible progress there, so the
+// no-progress streak it needs never forms.
+//
+// Keep the exemption — a batch workflow really does advance every heartbeat —
+// but bound it: once this many automatic productive-terminal continuations
+// have run back to back, fall back to the normal escalation so the issue
+// becomes visible for intervention instead of looping forever.
+//
+// The default trades the longest unattended batch against the most sessions a
+// loop can waste. Without the exemption this path escalated on the second
+// productive heartbeat, which is what GGU-809 was raised to fix, so the
+// default is deliberately well clear of it rather than one step above it.
+//
+// The value reaches a `.limit()`, so a fraction or a non-finite override would
+// break the history query rather than retune it. Normalize to a finite integer
+// and keep an explicit `0` at the advertised floor instead of silently
+// restoring the default.
+export function resolveStrandedExemptionStreakCap(
+  raw: string | undefined,
+  fallback = 8,
+) {
+  const parsed = Number(raw);
+  if (raw === undefined || raw.trim() === "" || !Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+
+export const STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK =
+  resolveStrandedExemptionStreakCap(
+    process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK,
+  );
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -898,15 +938,25 @@ function isProductiveContinuationRun(latestRun: LatestIssueRun) {
   );
 }
 
+/**
+ * Whether a run was started by the automatic productive-terminal continuation
+ * path, judged from its wake context alone. Shared with the streak counter
+ * that bounds the recent-progress exemption so the two cannot drift.
+ */
+function isAutomaticContinuationRecoveryContext(contextSnapshot: unknown) {
+  const context = parseObject(contextSnapshot);
+  return (
+    readNonEmptyString(context.retryReason) === "issue_continuation_needed" &&
+    readNonEmptyString(context.source) ===
+      "issue.productive_terminal_continuation_recovery"
+  );
+}
+
 function isRepeatedProductiveContinuationRecovery(
   latestRun: SuccessfulLatestIssueRun,
 ) {
-  const latestContext = parseObject(latestRun.contextSnapshot);
   return (
-    readNonEmptyString(latestContext.retryReason) ===
-      "issue_continuation_needed" &&
-    readNonEmptyString(latestContext.source) ===
-      "issue.productive_terminal_continuation_recovery" &&
+    isAutomaticContinuationRecoveryContext(latestRun.contextSnapshot) &&
     isProductiveContinuationRun(latestRun)
   );
 }
@@ -1077,9 +1127,12 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId?: string | null,
+    // Pass the transaction when the caller holds one, so these reads do not
+    // wait for a second pool connection while the transaction holds the first.
+    executor: Db = db,
   ) {
     const [run, deferredWake, nativeRecovery] = await Promise.all([
-      db
+      executor
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
         .where(
@@ -1094,7 +1147,7 @@ export function recoveryService(
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
-      db
+      executor
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(
@@ -1107,7 +1160,7 @@ export function recoveryService(
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
-      db
+      executor
         .select({ id: nativeRunFinalizations.runId })
         .from(nativeRunFinalizations)
         .innerJoin(
@@ -1892,6 +1945,69 @@ export function recoveryService(
         .then((rows) => rows[0] ?? null),
     ]);
     return Boolean(comment || attachment);
+  }
+
+  // Bounds `hasRecentVisibleProgress`: how many of the issue's most recent runs
+  // by this assignee were themselves automatic productive-terminal
+  // continuations, counted back from the newest and stopping at the first run
+  // that was not one. Stopping there makes the count consecutive and recent by
+  // construction, so a loop that was interrupted and resumed days ago does not
+  // hold a grudge against work happening now.
+  async function countConsecutiveAutomaticContinuations(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+    limit: number,
+  ) {
+    const rows = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, assigneeAgentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(limit);
+    let streak = 0;
+    for (const row of rows) {
+      if (!isAutomaticContinuationRecoveryContext(row.contextSnapshot)) break;
+      streak += 1;
+    }
+    return streak;
+  }
+
+  // Re-reads the issue immediately before a `blocked` write. The sweep's row is
+  // several queries old by the time an escalation decision is made, so a
+  // person or a fresh run can have moved the issue on since: completing it,
+  // handing it to someone else, or starting another attempt. Writing `blocked`
+  // from the stale snapshot would then clear execution links that belong to
+  // newer work. This is the same live-path re-read the spent-retry lane uses,
+  // plus the status and assignee the sweep selected the issue on.
+  async function strandedEscalationStillApplies(
+    issue: typeof issues.$inferSelect,
+    expectedStatus: StrandedPreviousStatus,
+  ) {
+    const [current] = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+      .limit(1);
+    if (
+      !current ||
+      current.status !== expectedStatus ||
+      current.assigneeAgentId !== issue.assigneeAgentId ||
+      current.assigneeUserId !== issue.assigneeUserId
+    ) {
+      return false;
+    }
+    return !(await hasActiveExecutionPath(issue.companyId, issue.id, null));
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -3928,6 +4044,62 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  // Writes `blocked` only if the issue is still in `expectedStatus` with the
+  // same assignee and no live execution path, checked while holding the row
+  // lock that the update itself takes. A run enqueue or a human edit needs the
+  // same lock, so it either lands before the check (and is seen) or after the
+  // write (and sees `blocked`).
+  async function blockStrandedIssueIfUnchanged(
+    issue: typeof issues.$inferSelect,
+    expectedStatus: StrandedPreviousStatus,
+    blockerIds: string[],
+  ) {
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const updated = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)),
+        )
+        .for("update")
+        .limit(1);
+      if (
+        !current ||
+        current.status !== expectedStatus ||
+        current.assigneeAgentId !== issue.assigneeAgentId ||
+        current.assigneeUserId !== issue.assigneeUserId
+      )
+        return null;
+      if (
+        await hasActiveExecutionPath(
+          issue.companyId,
+          issue.id,
+          null,
+          tx as unknown as Db,
+        )
+      )
+        return null;
+      return issuesSvc.update(
+        issue.id,
+        { status: "blocked", blockedByIssueIds: blockerIds },
+        tx,
+        publications,
+        postCommitActions,
+      );
+    });
+    if (updated) {
+      for (const publication of publications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitActions);
+    }
+    return updated;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -3936,6 +4108,12 @@ export function recoveryService(
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    /**
+     * Re-check, under the issue row lock that the `blocked` write takes, that
+     * the issue still has this status, the same assignee and no live
+     * execution path. The write is skipped (null) when any of them moved.
+     */
+    requireUnchangedStatus?: StrandedPreviousStatus;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -3972,10 +4150,16 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
-    });
+    const updated = input.requireUnchangedStatus
+      ? await blockStrandedIssueIfUnchanged(
+          input.issue,
+          input.requireUnchangedStatus,
+          blockerIds,
+        )
+      : await issuesSvc.update(input.issue.id, {
+          status: "blocked",
+          blockedByIssueIds: blockerIds,
+        });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
@@ -4392,6 +4576,7 @@ export function recoveryService(
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      recentProgressExemptionCapped: 0,
       operatorCancelExempted: 0,
       onboardingFirstTaskExempted: 0,
       skipped: 0,
@@ -5378,21 +5563,50 @@ export function recoveryService(
             agentId,
             STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
           );
-          if (!exempted) {
+          // The exemption is bounded: a run's own outcome comment keeps
+          // renewing it, so without a cap a productive-looking continuation
+          // loop never escalates. See
+          // STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK.
+          const exemptionStreak = exempted
+            ? await countConsecutiveAutomaticContinuations(
+                issue.companyId,
+                issue.id,
+                agentId,
+                STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK,
+              )
+            : 0;
+          const exemptionCapped =
+            exemptionStreak >= STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK;
+          if (
+            (!exempted || exemptionCapped) &&
+            (await strandedEscalationStillApplies(issue, "in_progress"))
+          ) {
             const updated = await escalateStrandedAssignedIssue({
               issue,
               previousStatus: "in_progress",
               latestRun: successfulRun,
-              comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              requireUnchangedStatus: "in_progress",
+              comment: exemptionCapped
+                ? "Paperclip automatically retried continuation for this assigned `in_progress` issue " +
+                  `${exemptionStreak} time(s) in a row and it still has no live execution path. ` +
+                  "Recent assignee activity suppressed the earlier escalations, but repeating the retry is no longer " +
+                  "producing a durable disposition. Moving it to `blocked` so it is visible for intervention."
+                : "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+                  "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
             });
             if (updated) {
               result.escalated += 1;
+              if (exemptionCapped) result.recentProgressExemptionCapped += 1;
               result.issueIds.push(issue.id);
             } else {
               result.skipped += 1;
             }
+            continue;
+          }
+          if (!exempted || exemptionCapped) {
+            // The escalation applied, but the issue moved on while this sweep
+            // was reading. Leave it to whoever owns it now.
+            result.skipped += 1;
             continue;
           }
           result.recentProgressExempted += 1;
