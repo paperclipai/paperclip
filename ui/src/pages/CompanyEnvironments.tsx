@@ -103,19 +103,21 @@ function environmentEditPath(environmentId: string) {
 // the server enforces these gates with a 409; this copy lets the modal explain
 // the block before the user hits it.
 function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius, isComputer = false): string | null {
+  if (isComputer) {
+    return impact.staticReferences.isInstanceDefault
+      ? "Choose another default environment before disconnecting this computer."
+      : null;
+  }
   if (impact.staticReferences.isManagedLocal) {
     return "Cannot delete the managed local environment.";
   }
   if (impact.staticReferences.isInstanceDefault) {
-    if (isComputer) return "Choose another default environment before disconnecting this computer.";
     return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
   }
   if (impact.pendingCleanupLeaseCount > 0) {
-    if (isComputer) return "Computer cleanup is pending. Wait for it to finish, then retry disconnecting. Its files will remain on Boat.";
     return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
   }
   if (impact.reusableSandboxLeaseCount > 0) {
-    if (isComputer) return "This computer still has saved runner connections. Disconnecting stops its runners and retains its files on Boat.";
     return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
   }
   return null;

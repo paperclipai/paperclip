@@ -1871,6 +1871,48 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { driver: "computer", instanceDefault: false, allowed: true },
+    { driver: "computer", instanceDefault: true, allowed: false },
+    { driver: "sandbox", instanceDefault: false, allowed: false },
+  ])("matches pending-cleanup removal policy for $driver (instance default=$instanceDefault)", async ({ driver, instanceDefault, allowed }) => {
+    mockEnvironmentsApi.list.mockResolvedValue([{
+      id: "env-1", name: "Cleanup environment", driver, status: "active",
+      config: driver === "computer" ? { provider: "boat", sandboxId: "bx_existing" } : { provider: "daytona" },
+    }]);
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      canDelete: false,
+      deleteBlockedReasons: instanceDefault ? ["instance_default", "pending_cleanup"] : ["pending_cleanup"],
+      staticReferences: { isInstanceDefault: instanceDefault },
+      pendingCleanupLeaseCount: 1,
+    }));
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
+    });
+    await waitForAssertion(() => {
+      expect(document.body.querySelector("[data-testid='environment-delete-button']")).not.toBeNull();
+    });
+    await act(async () => click(document.body.querySelector("[data-testid='environment-delete-button']")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.deleteBlastRadius).toHaveBeenCalledWith("env-1");
+      const confirm = document.body.querySelector<HTMLButtonElement>("[data-testid='environment-delete-confirm']");
+      expect(confirm).not.toBeNull();
+      expect(confirm!.disabled).toBe(!allowed);
+    });
+    if (allowed) {
+      expect(document.body.textContent).toContain("Disconnect computer");
+      await act(async () => click(document.body.querySelector("[data-testid='environment-delete-confirm']")));
+      await waitForAssertion(() => expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1"));
+    } else {
+      expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(instanceDefault
+        ? "Choose another default environment before disconnecting this computer."
+        : "Cannot delete this environment while a sandbox cleanup is pending.");
+    }
+  });
+
   it("links the workspaces holding blocking sandbox leases in the delete dialog", async () => {
     mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue(
       createDeleteBlastRadius({
