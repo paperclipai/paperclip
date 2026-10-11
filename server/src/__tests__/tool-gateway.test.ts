@@ -718,6 +718,30 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("allows remote MCP calls to outlast the default timeout", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(() => ({ delayMs: 10_100 }));
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        url: remote.url, toolName: "slow_read", riskLevel: "read",
+        connectionConfig: { timeoutMs: 12_000 },
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token))
+        .find((candidate) => candidate.providerType === "mcp_remote_http");
+      expect(tool).toBeTruthy();
+      await expect(gateway.executeTool({
+        sessionToken: session.token, tool: tool!.name, parameters: {},
+      })).resolves.toMatchObject({ status: "completed" });
+    } finally {
+      await remote.close();
+    }
+  }, 30_000);
+
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async ({ body }) => ({
