@@ -8463,6 +8463,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it("preserves terminal success and the durable CI monitor after controlled Claude cleanup", async () => {
+    const { runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", adapterType: "claude_local", agentStatus: "idle", runStatus: "queued" });
+    const nextCheckAt = new Date(Date.now() + 300_000);
+    await db.update(issues).set({ status: "in_progress", monitorNextCheckAt: nextCheckAt,
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: {
+        nextCheckAt: nextCheckAt.toISOString(), scheduledBy: "assignee", notes: "Check the exact saved PR commit; do not publish.",
+        maxAttempts: 3, timeoutAt: new Date(Date.now() + 900_000).toISOString(), recoveryPolicy: "escalate_to_board",
+      } } }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce({ exitCode: 143, signal: null, timedOut: false, errorMessage: null,
+      summary: "Draft saved; CI monitor is persisted.", provider: "test", model: "test-model",
+      resultJson: { type: "result", subtype: "success", is_error: false,
+        unmanagedBackgroundTask: { kind: "terminal_result_cleanup", stopped: true, terminalResultSeen: true, signal: "SIGTERM", forceKilled: false } },
+    } as Awaited<ReturnType<typeof mockAdapterExecute>>);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "succeeded", exitCode: 143, errorCode: null });
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]);
+    expect(issue).toMatchObject({ status: "in_progress", monitorNextCheckAt: nextCheckAt });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
   it.each([{}, { command: "/nonexistent-paperclip-bootstrap-command" }])("releases holds for real process bootstrap failures: %j", async (config) => {
     const { execute } = await import("../adapters/process/execute.js");
     mockAdapterExecute.mockImplementationOnce(execute);

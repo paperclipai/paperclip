@@ -19,6 +19,7 @@ import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-r
 import { parseObject } from "../../adapters/utils.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
+import { isSuccessfulClaudeTerminalCleanup } from "../heartbeat-terminal-cleanup.js";
 import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { logActivity } from "../activity-log.js";
 import { isUnresolvedWorkspaceBaseRefError, readUnresolvedWorkspaceBaseRefDiagnostic, type UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
@@ -384,10 +385,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     } else if (adapterResult.resultJson?.status === "cancelled") {
       outcome = "cancelled";
     } else if (
-      (adapterResult.exitCode ?? 0) === 0 &&
-      !adapterResult.errorMessage &&
-      !adapterResult.signal &&
-      !processCancellation?.failed
+      isSuccessfulClaudeTerminalCleanup(agent.adapterType, adapterResult, processCancellation?.failed) || (
+        (adapterResult.exitCode ?? 0) === 0 &&
+        !adapterResult.errorMessage &&
+        !adapterResult.signal &&
+        !processCancellation?.failed
+      )
     ) {
       outcome = "succeeded";
     } else {
