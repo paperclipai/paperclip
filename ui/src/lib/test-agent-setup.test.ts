@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { testAgentSetup } from "./test-agent-setup";
+import { describeSetupFailure, testAgentSetup } from "./test-agent-setup";
 const testEnvironment = vi.hoisted(() => vi.fn());
 vi.mock("../api/agents", () => ({ agentsApi: { testEnvironment } }));
 const input = {
@@ -97,4 +97,53 @@ it("preserves runtime warnings after a successful provider request", async () =>
     .mockResolvedValueOnce({ ...ready, status: "warn" })
     .mockResolvedValueOnce(ready);
   expect((await testAgentSetup(input)).status).toBe("warn");
+});
+it("adds the provider's JSON error message to a failed probe", () => {
+  expect(
+    describeSetupFailure([
+      { code: "runtime", level: "info", message: "Ready" },
+      {
+        code: "codex_hello_probe_failed",
+        level: "error",
+        message: "Codex hello probe failed.",
+        detail:
+          '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"Upgrade Codex to use this model."}}',
+      },
+    ]),
+  ).toBe("Codex hello probe failed. Upgrade Codex to use this model.");
+});
+it("uses plain-text detail and falls back to the message without one", () => {
+  expect(
+    describeSetupFailure([
+      {
+        code: "claude_hello_probe_auth_required",
+        level: "warn",
+        message: "Claude is not signed in.",
+        detail: "Run claude auth login.",
+      },
+    ]),
+  ).toBe("Claude is not signed in. Run claude auth login.");
+  expect(
+    describeSetupFailure([
+      { code: "codex_hello_probe_failed", level: "error", message: "Failed." },
+    ]),
+  ).toBe("Failed.");
+  expect(describeSetupFailure([])).toBeUndefined();
+});
+it("truncates long details", () => {
+  const message = describeSetupFailure([
+    { code: "x_hello_probe_failed", level: "error", message: "Failed.", detail: "a".repeat(500) },
+  ]);
+  expect(message).toBe(`Failed. ${"a".repeat(300)}…`);
+});
+it("redacts credential material in probe details", () => {
+  const message = describeSetupFailure([
+    {
+      code: "codex_hello_probe_failed",
+      level: "error",
+      message: "Failed.",
+      detail: "request failed: Authorization: Bearer sk-fixture-secret-value-1234567890",
+    },
+  ]);
+  expect(message).not.toContain("sk-fixture-secret-value-1234567890");
 });
