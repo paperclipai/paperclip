@@ -179,6 +179,7 @@ import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.j
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+const MAX_REMOTE_MCP_TIMEOUT_MS = 10 * 60_000;
 
 export function resolveCredentialGrantKind(
   policy: "shared" | "per_user" | "per_user_with_fallback" | "per_agent",
@@ -5950,6 +5951,12 @@ export function createToolGatewayService(
     // Recheck immediately before dispatch, including previously approved calls
     // and connections whose stored grant/catalog predates scope reduction.
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
+    if (useDefaultTimeout && connection.transport === "mcp_remote") {
+      const configured = asRecord(connection.config)?.timeoutMs;
+      if (typeof configured === "number" && Number.isSafeInteger(configured) && configured > 0) {
+        ms = Math.min(configured, MAX_REMOTE_MCP_TIMEOUT_MS);
+      }
+    }
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
