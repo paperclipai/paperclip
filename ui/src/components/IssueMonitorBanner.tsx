@@ -62,6 +62,7 @@ export interface MonitorSurfaceCopy {
   /** `warning` (amber) once overdue, `info` (blue) while still on schedule. */
   tone: "info" | "warning";
   workspaceWait?: boolean;
+  computerWait?: boolean;
   pullRequestReview?: boolean;
 }
 
@@ -81,6 +82,17 @@ export function buildMonitorSurfaceCopy(
   pendingPullRequestReviews = 0,
 ): MonitorSurfaceCopy | null {
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
+
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "computer_admission_wait") {
+    return {
+      bannerTitle: "Connecting to computer",
+      stripTitle: "Connecting to computer",
+      bannerMeta: ["Work starts automatically when the computer is available."],
+      stripMeta: ["Work starts automatically when the computer is available."],
+      tone: "info",
+      computerWait: true,
+    };
+  }
 
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
     return {
@@ -262,7 +274,7 @@ export function IssueMonitorBanner({
       icon={Clock}
       title={copy.bannerTitle}
       className={cn("relative my-3", canCancel && "pr-12")}
-      actions={onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+      actions={onCheckNow && !copy.workspaceWait && !copy.computerWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
     >
       {canCancel ? <CancelMonitorButton key={issue.id} onCancel={onCancelMonitor} /> : null}
       <div className="flex flex-col gap-2">
@@ -306,12 +318,12 @@ export function IssueMonitorComposerStrip({
             <div className="text-xs text-muted-foreground">{copy.stripMeta.join(" · ")}</div>
           </div>
         </div>
-        {onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+        {onCheckNow && !copy.workspaceWait && !copy.computerWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">
         {copy.pullRequestReview
           ? "Review on GitHub, then check status to have the agent verify the result."
-          : copy.workspaceWait
+          : copy.workspaceWait || copy.computerWait
           ? "You can keep sending instructions while the agent waits."
           : "Sending a reply wakes the agent now — before the scheduled check."}
       </p>
