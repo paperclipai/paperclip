@@ -134,7 +134,7 @@
     "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.2",
     "cross-env": "^10.1.0",
-    "supertest": "^7.0.0",
+    "supertest": "^7.3.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
