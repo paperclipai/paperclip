@@ -1,7 +1,6 @@
 {
   "recordedAt": "2026-10-11T04:22:52.309Z",
   "servingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
-  "configuredDiagnosticRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
   "taskId": "1f3d567e-ce93-42e4-b0cb-f785f6fa2e4c",
   "outcome": "FAILED: new Claude task timed out at PRP session.open before proof tools",
   "run": {
@@ -66,5 +65,7 @@
       "file": "retry-local40-boa17-failure-events.json",
       "sha256": "11ea657a883da2bdbd8a60f9175f0f91a72cb817ed4b93efbc697775ff810cf2"
     }
-  ]
+  ],
+  "requestedOuterEnvironmentRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
+  "artifactSelectionCorrection": "Later inspection proved test-drive discards inherited PAPERCLIP_* overrides; unchanged saved fixture config selected the old runner and pack. The requested diagnostic runner SHA is not evidence of the executed artifact. See local-artifact-selection-correction.json."
 }

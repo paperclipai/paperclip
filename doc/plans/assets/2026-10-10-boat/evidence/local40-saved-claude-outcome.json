@@ -1,7 +1,6 @@
 {
   "checkedAt": "2026-10-11T04:19:17.906Z",
   "servingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
-  "configuredDiagnosticRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
   "outcome": "FAILED: historical saved session cannot resume from quarantined controller authority",
   "run": {
     "id": "6d3f8a42-a288-4c58-b3dd-309aef11a3d1",
@@ -71,5 +70,7 @@
       "file": "retry-local37-claude-local40final0419.json",
       "sha256": "c2cae51af8a1e36921d4102c20b16a7c350dc74fb9895a2a69f0c565b7ccd8cf"
     }
-  ]
+  ],
+  "requestedOuterEnvironmentRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
+  "artifactSelectionCorrection": "Later inspection proved test-drive discards inherited PAPERCLIP_* overrides; unchanged saved fixture config selected the old runner and pack. The requested diagnostic runner SHA is not evidence of the executed artifact. See local-artifact-selection-correction.json."
 }

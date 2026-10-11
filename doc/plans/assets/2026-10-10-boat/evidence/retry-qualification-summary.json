@@ -2179,5 +2179,26 @@
     "behavior": "Closed admission-stage names and bounded elapsed milliseconds use existing diagnostic channel; timeout retains last non-cleanup stage. No deadline or lifecycle changes.",
     "validation": "Rust10/10 real timeout/cleanup/privacy cases; host54/54 including observer failure isolation; TypeScript, entrypoint build and independent review passed.",
     "liveValidation": "Pending matched local artifact build and fresh task."
+  },
+  "localArtifactSelectionCorrection": {
+    "receipt": "local-artifact-selection-correction.json",
+    "scope": "Local40/local41 requests did not select the built diagnostics; failure outcomes remain valid for the old selected artifacts.",
+    "repair": "Changed exactly two saved test-drive .env paths; other bytes and DB preserved. Graceful local42 restart; fresh BOA19 now verifies actual selection.",
+    "requestedNewRunnerSha256": "366a0fe12a39a6be773540369cd577810590d1b0d03491e834b414575087a3c9",
+    "requestedNewPackDigest": "sha256:af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719"
+  },
+  "staging19LiveEvidence": {
+    "receipt": "staging19-live-evidence.json",
+    "nativeClaude": "fresh and warm passed; same recorded runner identity, child processes restart",
+    "nativeCodex": "saved-task continuation, computer use and warm HMR passed with exact process/session equality",
+    "browser": "Heading0450; draftkeep-this-unsaved-draft-boat-0449 and page-session1791694134833 retained; direct desktop mouse and keyboard input observed",
+    "source": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "limits": "Not legacy qualification or proof of old quarantined Claude recovery; see receipt."
+  },
+  "local41BroadChecks": {
+    "source": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "recursiveTypecheck": "passed with verified registry access after sandbox registry fetch failed",
+    "build": "passed",
+    "scope": "These are source/build checks, not proof of remote artifact selection."
   }
 }

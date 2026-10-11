@@ -6,7 +6,7 @@
 
 | Surface | Source and evidence |
 | --- | --- |
-| Combined branch | `b698f54966`: includes reviewed Stop, verification, legacy explicit-continuation and safe startup-stage diagnostics. Local40 serves `8ccfdd3dd2` with its matching diagnostic Linux runner and the compatible pinned provider pack. |
+| Combined branch | `b698f54966`: includes reviewed Stop, verification, legacy explicit-continuation and safe startup-stage diagnostics. Local40 served controller `8ccfdd3dd2`, but later inspection disproved the claimed diagnostic artifact selection: saved test-drive config still selected the old remote runner and pack. Local42 corrects those two fixture paths and is testing a fresh task. |
 | Core branch | `28d3fc1b65`; focused tests and independent reviews passed. Prior exact heads core9a31/combinedb68 passed all CI and Greptile5/5; those results exclude the new startup-stage diagnostics. |
 | Serving staging | Deployment 19 `05a1d1f2172261066ca53d3776f798c3073fc49f` verified at 04:34:10.638 UTC. It includes pause, verifier, Stop-race and safe rejection diagnostics; the latest legacy periodic-recovery correction is not yet deployed. |
 | Cancelled candidate | Deployment 17 `ca8ab88c78556c4711d59f71c6293619543a66a1` was cancelled during build before check/deploy. Fresh review found that Stop could leave a retry authorized and that premature terminalization could release the task lock. Corrections passed real cancellation/lifecycle-path tests and independent review; deployment18 of `bd86e22e72` is in progress. |
@@ -188,3 +188,11 @@ Receipts: [saved task](assets/2026-10-10-boat/evidence/local40-saved-claude-outc
 Deployment 19 verified serving `05a1d1f2172261066ca53d3776f798c3073fc49f` at 04:34:10.638 UTC. A new staging Claude task will compare fresh startup against the official deployed pack; it cannot recover or validate either old quarantined fixture.
 
 The startup-stage diagnostic patch (`28d3fc1b65` / combined `b698f54966`) preserves only closed stage names and bounded elapsed milliseconds. Its real timeout test retains the stalled stage across cleanup and excludes arbitrary error text. Rust 10/10, runtime-host 54/54, TypeScript, entrypoint build and independent review passed. This adds evidence for the next retry; it does not itself fix Claude startup. The matched local test artifact is building.
+
+## Artifact-selection correction and staging19 results (2026-10-11 04:55 UTC)
+
+**Correction:** Local40 and local41 did not select the diagnostic artifacts requested by their launch scripts. `test-drive` clears inherited `PAPERCLIP_*` variables and loads the saved instance environment, which still selected the old runner and pack. BOA18's persisted attachment template proves that selection. The reported failures remain failures, but they do not qualify the new diagnostics. Only the two fixture artifact paths were corrected; the database and old sessions were preserved. Local42 restarted normally, and fresh BOA19 will verify the actual selected artifacts. [Selection evidence](assets/2026-10-10-boat/evidence/local-artifact-selection-correction.json).
+
+**Staging19 passed native Claude fresh and warm jobs, native Codex saved-task continuation, actual computer use, direct browser desktop input, and warm HMR.** Claude retained the recorded runner/session/owner identity, while its provider subprocesses restarted. Codex retained runner, provider, Vite, owner and saved-session identities. The heading changed to `Boat staging warm HMR confirmed 0450` while unsaved input `keep-this-unsaved-draft-boat-0449` and page-session `1791694134833` survived. Proof hashes remained unchanged. The desktop viewer closed normally after inspection. These results do not validate the older quarantined Claude fixture or legacy jobs on deployment19.
+
+Evidence: [consolidated receipts](assets/2026-10-10-boat/evidence/staging19-live-evidence.json), [Claude warm result](assets/2026-10-10-boat/staging-19-claude-warm-proof.png), [HMR before](assets/2026-10-10-boat/staging-19-hmr-before.png), [HMR after](assets/2026-10-10-boat/staging-19-hmr-after.png), [direct desktop input](assets/2026-10-10-boat/staging-19-direct-desktop-input.png).

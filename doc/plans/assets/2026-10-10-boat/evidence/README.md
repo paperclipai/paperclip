@@ -58,3 +58,5 @@ Local38 pending admission and Pause work passed; later normal continuation remai
 [Local40 saved Claude](local40-saved-claude-outcome.json) remains quarantined; [fresh Claude](local40-fresh-claude-outcome.json) reached the runner but timed out opening the provider session. Both cleaned up successfully. No current-source simple Claude or warm-follow-up success is claimed.
 
 [Fresh Claude diagnosis](local40-fresh-claude-diagnosis.json) confirms settled checkpoints and present inputs without identifying the stalled startup step. [CI and review receipt](core9a31-ui-b68-ci-review.json) records both previous exact heads green; it excludes the later startup-stage diagnostic patch.
+
+**Artifact-selection correction:** the requested local40/41 diagnostic paths were ignored by test-drive; see [corrected provenance](local-artifact-selection-correction.json). Those failures do not establish execution of the new diagnostics. [Staging19 live receipts](staging19-live-evidence.json) establish fresh/warm Claude, saved Codex, desktop and HMR passes on the verified deployed source.
