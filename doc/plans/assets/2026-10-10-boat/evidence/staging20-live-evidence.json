@@ -1,0 +1,197 @@
+{
+  "schema": "boat.staging.qualification.evidence.v1",
+  "recordedAt": "2026-10-11T05:52:48.242139+00:00",
+  "status": "partial_current_source_qualification",
+  "source": {
+    "deployment": 20,
+    "commit": "d50dd0f49befcbe53875ad3acad9a39381f4a89b",
+    "servingVerifiedAt": "2026-10-11T05:29:33.577Z",
+    "verification": "verified"
+  },
+  "scope": {
+    "sandboxId": "bx_b8sawfyp",
+    "companyId": "76e38a59-75e7-5ff8-a4bf-ebb78a7b8ebe",
+    "environmentId": "8c78970d-76b4-42e5-b45e-eca4deb85a67"
+  },
+  "transientAvailability": {
+    "result": "recovered_through_normal_browser_retry",
+    "parentObserved": "Tenant unavailable immediately after rollout; normal browser reload/Try again recovered before tasks were submitted.",
+    "publicCheckAt": "2026-10-11T05:31:29.903423Z",
+    "publicRootStatus": 200,
+    "unauthenticatedHealthStatus": 401,
+    "unauthenticatedHealthCode": "tenant_session_required",
+    "limit": "Public response proved edge availability only. A tenant crash or underlying cause was not established."
+  },
+  "legacyClaude": {
+    "agentId": "644df48a-6c38-4bfb-8f8e-1dec3253ee55",
+    "taskId": "8a437e8b-3a17-4ec6-8bda-9aab1c067c29",
+    "runId": "13dfc336-45de-41c3-9909-4f276a0b6a7b",
+    "sessionId": "36c9f2e2-86fa-4a79-9b17-9ebc07f271de",
+    "startedAt": "2026-10-11T05:32:31Z",
+    "finishedAt": "2026-10-11T05:34:52Z",
+    "status": "succeeded",
+    "taskStatus": "done",
+    "workspaceFinalize": "succeeded",
+    "proofSha256": "ec9169f87b99329a3a24fe194d2cff1a43fb29ef8374d1317ccc28bb83be0ddc",
+    "proofObservedAt": "2026-10-11T05:33:08.003383Z",
+    "proofUnchanged": true,
+    "agentInstructionsReadObserved": true,
+    "paperclipSkillLoadedObserved": true,
+    "recoveryRunRequired": false,
+    "helperEvidence": {
+      "initialPathAttemptFailed": true,
+      "correctedToInstalledSkillRelativeHelperInSameRun": true,
+      "toolCardLabel": "stopped",
+      "exitCode": null,
+      "limit": "The tool card label is ambiguous; overall run and task completion passed without a separate Claude recovery run."
+    }
+  },
+  "legacyCodex": {
+    "agentId": "d227579b-7543-4c8c-94aa-9dfea261fa16",
+    "taskId": "612d0551-2947-435e-9b7d-d64dc584a41a",
+    "initialFailedRunIdPrefix": "2b0176be",
+    "automaticRecoveryRunIdPrefix": "f090825c",
+    "automaticRecoveryResponseLiteral": "$comment",
+    "passingRunId": "80abe3ed-5d63-4971-a94c-86f6ce0b166d",
+    "startedAt": "2026-10-11T05:37:47Z",
+    "finishedAt": "2026-10-11T05:39:40Z",
+    "status": "guided_followup_succeeded",
+    "taskStatus": "done",
+    "workspaceFinalize": "succeeded",
+    "providerSessionChanged": true,
+    "proofSha256": "ff52207bcf705181af4a476c243d121f2e95d011f172899c19b08758695c4627",
+    "proofObservedAt": "2026-10-11T05:33:08.003383Z",
+    "proofUnchanged": true,
+    "helperEvidence": {
+      "initialIncorrectAgentHomeRelativePathFailed": true,
+      "guidedFollowupReadInstalledSkillAndResolvedHelperRelativeToIt": true,
+      "toolCardLabel": "Running a command \u00b7 stopped",
+      "exitCode": null,
+      "overallRunSucceeded": true,
+      "limit": "Expanded command resolved the actual owner-scoped installed skill helper. The tool card does not establish a helper exit code."
+    },
+    "limits": [
+      "Passing attempt was an explicit guided followup; the initial completion failure and automatic recovery remain recorded.",
+      "Provider session changed, so no saved-provider-session equality claim."
+    ]
+  },
+  "nativeCodex": {
+    "agentId": "d7a6fbcf-b0aa-4449-bdc0-875cbdf2a246",
+    "taskId": "7d3472d4-461f-44ce-90ed-139e878df200",
+    "runId": "eaf9f507-61fd-4ca3-9dc9-a5af24804d01",
+    "parentSubmissionAtApprox": "2026-10-11T05:41:00Z",
+    "parentReportedCompletedAtApprox": "2026-10-11T05:44:00Z",
+    "taskDisposition": "blocked_for_browser_check",
+    "checkpointObservedAt": "2026-10-11T05:48:00.358633+00:00",
+    "checkpoint": {
+      "runnerLifecycle": "ready",
+      "providerLifecycle": "session_open",
+      "outboxCount": 0,
+      "pendingTerminalDeliveryIsNull": true,
+      "completedTurnAuthoritative": true,
+      "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+      "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+      "providerThreadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1"
+    },
+    "savedSessionRetained": true,
+    "ownerId": "51f56658-94a9-4600-a6c8-25d0cfc694ee",
+    "bootId": "c6a9890c-b025-4ae1-837f-148704d2d7b5",
+    "processes": [
+      {
+        "role": "runner",
+        "pid": 29661,
+        "startTicks": 24260
+      },
+      {
+        "role": "codex",
+        "pid": 29877,
+        "startTicks": 24424
+      },
+      {
+        "role": "computer_use_driver",
+        "pid": 29947,
+        "startTicks": 24434
+      },
+      {
+        "role": "vite",
+        "pid": 30319,
+        "startTicks": 25461
+      }
+    ],
+    "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+    "proofUnchanged": true,
+    "vitePort": 5173,
+    "providerPackDigest": null,
+    "providerPackLimit": "No provider-package digest was exposed by the bounded native process-path observation.",
+    "computerUse": {
+      "actualToolsObserved": [
+        "launch_app",
+        "bring_to_front",
+        "click",
+        "hotkey",
+        "type_text",
+        "press_key",
+        "get_window_state"
+      ],
+      "desktopVisualResult": "PASS",
+      "visualObservedAtApprox": "2026-10-11T05:49:00Z",
+      "parentObservation": "Normal Computer Connect showed Chrome displaying example.com; parent captured a screenshot."
+    },
+    "preview": {
+      "result": "NOT_PASSED",
+      "parentObservedAtApprox": "2026-10-11T05:50:00Z",
+      "error": "Preview owner is not live",
+      "parentInterpretation": "The five-minute warm interval had expired before the preview click.",
+      "limit": "No live preview or hot-reload pass is claimed on deployment20."
+    },
+    "ordinaryFollowup": {
+      "submittedAtApprox": "2026-10-11T05:50:00Z",
+      "purpose": "Restart existing Vite server within normal bounded runner lifetime.",
+      "lastParentObservedStatus": "running",
+      "runId": null,
+      "result": "pending"
+    }
+  },
+  "evidenceSemantics": {
+    "browserAndRunAudit": "Parent observed the normal UI; guest observer independently read scoped proof hashes and checkpoint/process metadata.",
+    "runAuditTimePrecision": "Nearest second as shown by the run audit. Times marked Approx come from parent observations.",
+    "observerActions": "Read-only; no lifecycle extension, wake, mutation, or manual fixture changes.",
+    "legacyProcessObserverCorrection": "Initial native-service-only matching omitted legacy command services. Corrected owner-slice matching observed the legacy Codex owner; initial empty process samples are inconclusive."
+  },
+  "remainingLimits": [
+    "Deployment20 native preview/HMR has not passed.",
+    "Native Claude fresh/warm evidence remains on deployment19, not repeated here.",
+    "Sibling-stop isolation is not proved by this receipt.",
+    "Deployment21 work is a separate source boundary."
+  ],
+  "receipts": [
+    {
+      "name": "staging-deploy-20-result.json",
+      "sha256": "d9ca59f8c8c625470ae5dae954e3f75ae331ec30e754da2f4dc5b2e6930c7928"
+    },
+    {
+      "name": "retry-staging-20-public-health.json",
+      "sha256": "12c2e103c2e8049224aa7d0cffd0007f8a941fe7b4b0239efbe5bcc1a4d2b270"
+    },
+    {
+      "name": "retry-staging-20-legacy-active.json",
+      "sha256": "af1e012913a431335c061ead3887850496aae5142f78700d83d53475e50beba8"
+    },
+    {
+      "name": "retry-staging-20-legacy-helpers.json",
+      "sha256": "c7bb40393194f746d06f00032e6f58723c4a35c2ee1b38c2273cb41a750eb81b"
+    },
+    {
+      "name": "retry-staging-20-legacy-helpers-corrected.json",
+      "sha256": "415ce14bc9e064e1564af9648d79e7e9f7688a07e8fcfbd187ce4ccd3aca5a0b"
+    },
+    {
+      "name": "retry-staging-20-nativecodex-active.json",
+      "sha256": "2db5abefc52ffe68a4fb33c2cce3370f4a9fbe6a85703b0479db04a33ebd0e30"
+    },
+    {
+      "name": "retry-staging-20-nativecodex-settled.json",
+      "sha256": "0d5884671ec2c6068995f34489cf7e9f3236bb6cf62461a479ea6efead5bcd34"
+    }
+  ]
+}
