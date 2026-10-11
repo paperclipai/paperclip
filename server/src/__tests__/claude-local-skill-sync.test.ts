@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   listClaudeSkills,
   syncClaudeSkills,
@@ -23,7 +23,13 @@ describe("claude local skill sync", () => {
   const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
   const cleanupDirs = new Set<string>();
 
+  beforeEach(() => {
+    // Keep an inherited shell value from changing which directory a test reads.
+    vi.stubEnv("CLAUDE_CONFIG_DIR", undefined);
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.all(Array.from(cleanupDirs).map((dir) => fs.rm(dir, { recursive: true, force: true })));
     cleanupDirs.clear();
   });
@@ -105,6 +111,84 @@ describe("claude local skill sync", () => {
       locationLabel: "~/.claude/skills",
       readOnly: true,
       detail: "Installed outside Paperclip management in the Claude skills home.",
+    }));
+  });
+
+  it("prefers CLAUDE_CONFIG_DIR in the agent env over the host value", async () => {
+    const home = await makeTempDir("paperclip-claude-home-");
+    const configDir = await makeTempDir("paperclip-claude-config-dir-");
+    cleanupDirs.add(home);
+    cleanupDirs.add(configDir);
+    const hostConfigDir = await makeTempDir("paperclip-claude-host-config-dir-");
+    cleanupDirs.add(hostConfigDir);
+    await createSkillDir(path.join(home, ".claude", "skills"), "home-only-skill");
+    await createSkillDir(path.join(configDir, "skills"), "config-dir-skill");
+    await createSkillDir(path.join(hostConfigDir, "skills"), "host-only-skill");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", hostConfigDir);
+
+    const snapshot = await listClaudeSkills({
+      agentId: "agent-5",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        env: {
+          HOME: home,
+          CLAUDE_CONFIG_DIR: configDir,
+        },
+      },
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "config-dir-skill",
+      state: "external",
+      origin: "user_installed",
+      locationLabel: path.join(configDir, "skills"),
+    }));
+    expect(snapshot.entries.find((entry) => entry.key === "home-only-skill")).toBeUndefined();
+    expect(snapshot.entries.find((entry) => entry.key === "host-only-skill")).toBeUndefined();
+  });
+
+  it("resolves a relative CLAUDE_CONFIG_DIR against the configured cwd", async () => {
+    const cwd = await makeTempDir("paperclip-claude-cwd-");
+    cleanupDirs.add(cwd);
+    await createSkillDir(path.join(cwd, "claude-config", "skills"), "relative-config-dir-skill");
+
+    const snapshot = await listClaudeSkills({
+      agentId: "agent-7",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        cwd,
+        env: {
+          CLAUDE_CONFIG_DIR: "./claude-config",
+        },
+      },
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "relative-config-dir-skill",
+      state: "external",
+      locationLabel: path.join(cwd, "claude-config", "skills"),
+    }));
+  });
+
+  it("reads user-installed Claude skills from the host CLAUDE_CONFIG_DIR", async () => {
+    const configDir = await makeTempDir("paperclip-claude-host-config-dir-");
+    cleanupDirs.add(configDir);
+    await createSkillDir(path.join(configDir, "skills"), "host-config-dir-skill");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+
+    const snapshot = await listClaudeSkills({
+      agentId: "agent-6",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {},
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "host-config-dir-skill",
+      state: "external",
+      locationLabel: path.join(configDir, "skills"),
     }));
   });
 });
