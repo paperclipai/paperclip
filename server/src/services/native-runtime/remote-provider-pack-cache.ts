@@ -37,6 +37,23 @@ export function assertRemoteProviderPackVerificationResult(
   throw new RemoteProviderPackVerificationError("unavailable", "command_failed", result);
 }
 
+/** Persistent computers can restore a large pack lazily. Give the complete
+ * hash walk a bounded cold-read budget; the owner's runner still fences and
+ * cancels the command. Version probes keep their separate short deadline. */
+export async function verifyRemoteProviderPackArtifacts(input: {
+  runner: CommandManagedRuntimeRunner; command: string; args: string[]; cwd: string;
+  persistentComputer: boolean;
+}): Promise<void> {
+  let result;
+  try {
+    result = await input.runner.execute({ command: input.command, args: input.args, cwd: input.cwd,
+      bypassSession: true, timeoutMs: input.persistentComputer ? 120_000 : 30_000 });
+  } catch (cause) {
+    throw new RemoteProviderPackVerificationError("unavailable", "transport_error", cause);
+  }
+  assertRemoteProviderPackVerificationResult(result);
+}
+
 /** The controller's retained attachment template pins content-addressed paths.
  * Remote manifests may supply bytes, but cannot choose a new code authority. */
 export function pinnedComputerProviderPack(input: {
