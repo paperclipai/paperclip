@@ -8,10 +8,11 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import { describe, expect, it, vi } from "vitest";
 import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js";
 
+const computerTarget = { kind: "remote", transport: "computer", remoteCwd: "/workspace" } as Parameters<typeof prepareHeartbeatGitHubLaunchers>[0]["target"];
 const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: "/workspace" };
 
 describe("heartbeat GitHub launcher lifetime", () => {
-  it.each([target, null])("defers native managed authorization/staging to the session owner (%j)", async (target) => {
+  it.each([target, computerTarget, null])("defers native managed authorization/staging to the session owner (%j)", async (target) => {
     const prepare = vi.fn();
     const mint = vi.fn();
     const result = await prepareHeartbeatGitHubLaunchers({
@@ -23,7 +24,7 @@ describe("heartbeat GitHub launcher lifetime", () => {
     expect(result.cleanupLocation).toBeNull();
     expect(result.env).toMatchObject({ GH_TOKEN: "", PAPERCLIP_GITHUB_BROKER_TOKEN: "" });
   });
-  it("keeps anonymous native sandbox launchers stable without issuing a run capability", async () => {
+  it.each([target, computerTarget])("keeps anonymous native launchers stable without issuing a run capability (%j)", async (target) => {
     const createBrokerToken = vi.fn(() => "run-secret");
     const prepareLaunchers = vi.fn(async (input) => input.env);
     const inputs = { native: true, githubConfigured: false, agentId: "agent-a", target,
@@ -50,7 +51,7 @@ describe("heartbeat GitHub launcher lifetime", () => {
     expect(cleanupLaunchers).toHaveBeenCalledExactlyOnceWith({ runId: "failed-run", target });
   });
 
-  it("does not remove shared anonymous wrappers when staging a later run fails", async () => {
+  it.each([target, computerTarget])("does not remove shared anonymous wrappers when staging a later run fails (%j)", async (target) => {
     const stagingError = new Error("remote launcher staging failed");
     const cleanupLaunchers = vi.fn(async () => undefined);
     await expect(prepareHeartbeatGitHubLaunchers({
@@ -64,6 +65,7 @@ describe("heartbeat GitHub launcher lifetime", () => {
   it.each([
     { native: false, githubConfigured: true, target },
     { native: false, githubConfigured: false, target },
+    { native: false, githubConfigured: false, target: computerTarget },
     { native: true, githubConfigured: false, target: null },
   ])("preserves run-scoped managed capabilities outside anonymous native sandboxes: %j", async (mode) => {
     const createBrokerToken = vi.fn(() => "current-run-secret");

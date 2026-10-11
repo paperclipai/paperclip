@@ -1,0 +1,53 @@
+{
+  "recordedAt": "2026-10-11T04:29:51.333942+00:00",
+  "servingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
+  "runId": "62f9fedb-b3de-40fb-8f8d-ee8f3b2b30a6",
+  "normalizedSessionId": "62610d06-b944-4af3-98aa-f77b83912b96",
+  "providerPackDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+  "runnerLifecycle": "suspended",
+  "providerLifecycle": "prepared",
+  "providerActiveTurnId": null,
+  "checkedAbsolutePathCount": 6,
+  "allCheckedPathsExist": true,
+  "checkedSymlinkCount": 0,
+  "configuredSkillCount": 0,
+  "skillCountProvenance": "Exact local controller runAttachTemplate.provider.runtimeContext.skills is an empty list",
+  "runtimeInventory": {
+    "depthLimit": 7,
+    "totalSessionAndRuntimeFiles": 10,
+    "acpxRuntimeFileCount": 2,
+    "acpxSessionJsonPresent": false,
+    "claudeLogPresent": false,
+    "onlyRuntimeFiles": [
+      "workspace",
+      "claude-home/settings.json"
+    ],
+    "runtimeFileModifiedAt": "2026-10-11T04:21:49Z"
+  },
+  "journal": {
+    "failedRunBootId": "4a7587c9-e811-41d5-893f-6e61d4f58bbe",
+    "inspectionBootId": "9f75fb92-a50c-4c2d-90b0-6f4046f6342a",
+    "entryCount": 0,
+    "classification": "Failed-owner journal unavailable after provider archival and normal viewer reconnection into a new boot"
+  },
+  "conclusion": "Fresh provider remained prepared and has no persisted ACPX session JSON; exact pre-session failure step is not proven",
+  "scope": "Read-only diagnosis after normal operator Computer Connect resumed the Boat; no separate observer wake, provider launch, cache write, checkpoint edit, or root reset",
+  "evidence": [
+    {
+      "file": "retry-local40-boa17-controller-diagnostics.json",
+      "sha256": "9f44e3e005167268701f2b61d47439d1b4810df8e94ade8acb81ada1820d6ffd"
+    },
+    {
+      "file": "retry-local40-boa17-spans.json",
+      "sha256": "0b358bbd53079ddea99e8bc02328fec14580a3a96b62560c213961636490174e"
+    },
+    {
+      "file": "retry-local40-boa17-guest-diagnostics0429.json",
+      "sha256": "db1b8383174cabdf0f1d2ab4b13d8aecd4616409e9439ed256f6d2d304c5253d"
+    },
+    {
+      "file": "retry-local40-boa17-runtime-inventory0430.json",
+      "sha256": "43c5c61ccf85c88a4045e42ecf4bc376d601109290247ed683f7f03ef4f2ed1e"
+    }
+  ]
+}

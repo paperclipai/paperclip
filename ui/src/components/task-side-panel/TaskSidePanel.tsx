@@ -2,6 +2,8 @@ import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
+import { TaskComputerPanel } from "./TaskComputerPanel";
+import { computersApi } from "@/api/computers";
 import {
   useCallback,
   useEffect,
@@ -19,6 +21,7 @@ import {
 } from "@paperclipai/shared";
 import {
   Globe,
+  Monitor,
   Box,
   FileCode2,
   FileText,
@@ -72,6 +75,7 @@ import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelBrowserTab,
+  taskPanelComputerTab,
   taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
   taskPanelAttachmentTab,
@@ -129,6 +133,7 @@ const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
 function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
   switch (tab.payload.kind) {
     case "browser": return <Globe />;
+    case "computer": return <Monitor />;
     case "properties": return <SlidersHorizontal />;
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
@@ -338,6 +343,8 @@ export function TaskSidePanel({
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
   const browsersQuery = useTaskBrowsers(issue.id);
+  const computerQuery = useQuery({ queryKey: ["task-computer", issue.id],
+    queryFn: () => computersApi.get(issue.id), refetchInterval: 30_000 });
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
     if (!openBrowserId) return;
@@ -584,6 +591,9 @@ export function TaskSidePanel({
     for (const [index, browser] of (browsersQuery.data ?? []).entries()) {
       primary.push({ id: `browser:${browser.id}`, label: (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${index + 1}` : "Browser", description: browser.status, icon: <Globe />, alreadyOpen: controller.tabs.some(tab => tab.id === `browser:${browser.id}`) });
     }
+    if (computerQuery.data) primary.push({ id: `computer:${computerQuery.data.environmentId}`,
+      label: "Computer", description: computerQuery.data.name, icon: <Monitor />,
+      alreadyOpen: controller.tabs.some(tab => tab.id === `computer:${computerQuery.data!.environmentId}`) });
     if (fileTabsEnabled) {
       primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
@@ -609,6 +619,15 @@ export function TaskSidePanel({
     const sections: SidePanelLauncherSection[] = [
       { id: "open", label: "Open", items: primary },
     ];
+    if (computerQuery.isError) {
+      sections.push({
+        id: "computer-error",
+        label: "Computer",
+        error: "Could not load the computer.",
+        items: [{ id: "retry-computer", label: "Retry", searchText: "computer", icon: <Monitor />,
+          disabled: computerQuery.isFetching }],
+      });
+    }
     if (documentItems.length > 0) {
       sections.push({ id: "documents", label: "Task documents", items: documentItems });
     }
@@ -631,11 +650,13 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [browsersQuery.data, computerQuery.data, computerQuery.isError, computerQuery.isFetching, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
-    if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
+    if (item.id === "retry-computer") void computerQuery.refetch();
+    else if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
+    else if (item.id.startsWith("computer:")) controller.openTab(taskPanelComputerTab(item.id.slice(9)));
     else if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
     else if (item.id === "subtasks") {
       subtasksDismissedRef.current = false;
@@ -720,6 +741,8 @@ export function TaskSidePanel({
   let content: ReactNode;
   if (!activeTab) {
     content = <SidePanelLauncher sections={launcherSections} onSelect={selectLauncherItem} />;
+  } else if (activeTab.payload.kind === "computer") {
+    content = null;
   } else if (activeTab.payload.kind === "browser") {
     content = null; // Mounted below independently of the selected tab.
   } else if (activeTab.payload.kind === "properties") {
@@ -843,6 +866,25 @@ export function TaskSidePanel({
           contentMode === "padded" && "p-4",
         )}
       >
+        {controller.tabs.map(tab => tab.payload.kind === "computer" ? (
+          <div key={tab.id} hidden={tab.id !== controller.activeTabId} className={cn("h-full min-h-0", tab.id !== controller.activeTabId && "hidden")}>
+            {computerQuery.data !== undefined && computerQuery.data?.environmentId !== tab.payload.environmentId ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {computerQuery.data ? "This task now uses a different computer." : "This task no longer has a computer."}
+                </p>
+                {computerQuery.data && (
+                  <Button onClick={() => {
+                    controller.closeTab(tab.id);
+                    controller.openTab(taskPanelComputerTab(computerQuery.data!.environmentId));
+                  }}>Open current computer</Button>
+                )}
+              </div>
+            ) : (
+              <TaskComputerPanel active={tab.id === controller.activeTabId} issueId={issue.id} environmentId={tab.payload.environmentId} />
+            )}
+          </div>
+        ) : null)}
         {controller.tabs.map(tab => tab.payload.kind === "browser" ? (
           <div key={tab.id} hidden={tab.id !== controller.activeTabId} className={cn("h-full min-h-0", tab.id !== controller.activeTabId && "hidden")}>
             <TaskBrowserPanel active={tab.id === controller.activeTabId} issueId={issue.id} browser={browsersQuery.data?.find(b => tab.payload.kind === "browser" && (b.id === tab.payload.browserId || b.sessionId === tab.payload.browserId))} accessError={browsersQuery.isError} onOpenActiveBrowser={newestLiveBrowser ? () => controller.openTab(taskPanelBrowserTab(newestLiveBrowser.id)) : undefined} />

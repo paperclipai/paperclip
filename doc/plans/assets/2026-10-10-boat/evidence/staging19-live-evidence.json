@@ -1,0 +1,278 @@
+{
+  "schema": "boat.staging.qualification.evidence.v1",
+  "recordedAt": "2026-10-11T04:53:42.241714+00:00",
+  "source": {
+    "deployment": 19,
+    "commit": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "servingVerifiedAt": "2026-10-11T04:34:10.638Z",
+    "servingEvidence": "parent deployment verification"
+  },
+  "method": "Read-only guarded provider GET and checkpoint/process/proof inspection through existing product-authorized live transport; browser observations supplied by parent UI owner.",
+  "sandboxId": "bx_b8sawfyp",
+  "nativeClaude": {
+    "freshRunId": "fccc253e-ae3c-40d1-9950-f5702d17369b",
+    "warmRunId": "d2a655c3-d063-4d14-8cef-bffddc9dc4e8",
+    "freshResult": "parent observed Done and expected proof hash",
+    "warmResult": "parent observed Done and expected proof hash",
+    "normalizedSessionId": "a0a4daec-b1c7-46b5-bf46-5ee135c7a89f",
+    "runnerInstanceId": "08aecb64-98cb-45d2-934a-b5c01e02843a",
+    "samePhysicalRunnerAcrossTurns": true,
+    "physicalRunner": {
+      "pid": 56659,
+      "startTicks": 89960,
+      "ownerId": "b27a94e1-6ce9-4520-baff-7841391dc3cc"
+    },
+    "bootId": "741e97d8-a0c8-42e1-9993-22c923586a2b",
+    "providerKind": "acpx",
+    "providerAgent": "claude",
+    "providerPack": {
+      "descriptorDigest": "sha256:b882ca8a8abfa51f3977d1aa6f4f2e5028ba1fd947a5df520e180ac41ce4ea35",
+      "manifestDigest": "sha256:b882ca8a8abfa51f3977d1aa6f4f2e5028ba1fd947a5df520e180ac41ce4ea35",
+      "manifestMtime": 1791692348,
+      "matchesDescriptor": true
+    },
+    "warmProviderIdentity": {
+      "normalizedSessionId": "a0a4daec-b1c7-46b5-bf46-5ee135c7a89f",
+      "agentSessionId": "a4575f37-96c3-4539-ae13-e61e48072cc1"
+    },
+    "settlement": {
+      "at": "2026-10-11T04:50:07.640012+00:00",
+      "runner": {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "d2a655c3-d063-4d14-8cef-bffddc9dc4e8",
+        "normalizedSessionId": "a0a4daec-b1c7-46b5-bf46-5ee135c7a89f",
+        "runnerInstanceId": "08aecb64-98cb-45d2-934a-b5c01e02843a",
+        "environmentLeaseId": "fccc253e-ae3c-40d1-9950-f5702d17369b",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true
+      },
+      "providerLifecycle": "session_open"
+    },
+    "proof": {
+      "relativeName": "boat-final-proof.txt",
+      "exists": true,
+      "bytes": 25,
+      "sha256": "e646d151756f1efdb9e19d99a2a0971810468087c457fa458f1311c42ef07424"
+    },
+    "proofUnchanged": true,
+    "limits": [
+      "Fresh receipt did not capture provider agentSessionId; no fresh-to-warm provider-ID equality claim.",
+      "Claude child processes restarted between turns, while the same runner process persisted.",
+      "Existing old quarantined Claude session recovery remains unproven; this is a new task fresh/warm qualification."
+    ],
+    "configuredWarmPolicy": {
+      "mode": "warm_session",
+      "idleTimeoutMs": 300000,
+      "source": "Parent read staging Claude Harness / Runtime \u2192 Advanced Run Policy in browser; Save disabled and no edits.",
+      "observedAtApprox": "2026-10-11T04:58:00Z",
+      "limit": "Configured duration observed; exact per-owner retirement timestamp not observed."
+    }
+  },
+  "nativeCodex": {
+    "baselineRunId": "2c82ba9f-4057-4980-9bb7-ae2b57537cbb",
+    "warmRunId": "681a1e2d-9222-4329-951f-e47402b92f4d",
+    "sameSavedNormalizedSession": true,
+    "sameSavedProviderThread": true,
+    "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+    "providerThreadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1",
+    "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+    "sameBoot": true,
+    "beforeAt": "2026-10-11T04:50:17.279304+00:00",
+    "afterAt": "2026-10-11T04:52:55.640187+00:00",
+    "beforeProcesses": [
+      {
+        "pid": 71407,
+        "startTicks": 111251,
+        "name": "paperclip-runne",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71618,
+        "startTicks": 111380,
+        "name": "MainThread",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71630,
+        "startTicks": 111382,
+        "name": "codex",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71703,
+        "startTicks": 111394,
+        "name": "cua-driver",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72707,
+        "startTicks": 112522,
+        "name": "npm run dev",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72723,
+        "startTicks": 112531,
+        "name": "sh",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72724,
+        "startTicks": 112531,
+        "name": "MainThread",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72741,
+        "startTicks": 112542,
+        "name": "esbuild",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      }
+    ],
+    "afterProcesses": [
+      {
+        "pid": 71407,
+        "startTicks": 111251,
+        "name": "paperclip-runne",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71618,
+        "startTicks": 111380,
+        "name": "MainThread",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71630,
+        "startTicks": 111382,
+        "name": "codex",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 71703,
+        "startTicks": 111394,
+        "name": "cua-driver",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72707,
+        "startTicks": 112522,
+        "name": "npm run dev",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72723,
+        "startTicks": 112531,
+        "name": "sh",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72724,
+        "startTicks": 112531,
+        "name": "MainThread",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      },
+      {
+        "pid": 72741,
+        "startTicks": 112542,
+        "name": "esbuild",
+        "ownerId": "5c5cab5b-2b91-4c10-825c-6138323b2d9e"
+      }
+    ],
+    "sameRunnerCodexVitePidStartTicks": true,
+    "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+    "proofUnchanged": true,
+    "settlement": {
+      "sessionDirectory": "0cde904493e0fc88dd1a6d75bf64f68a9fe5a800a1636273861bb7c13bfcd0e4",
+      "runnerMtime": 1791694285.527042,
+      "runner": {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "681a1e2d-9222-4329-951f-e47402b92f4d",
+        "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+        "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+        "environmentLeaseId": "5957cc86-4533-49e5-a2af-0edbc79a472f",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true
+      },
+      "providerMtime": 1791694284.8010337,
+      "provider": {
+        "schema": "paperclip.runner.codex-provider-state.v1",
+        "lifecycle": "session_open",
+        "threadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1",
+        "activeProviderTurnId": null,
+        "completedTurnAuthoritative": true
+      }
+    },
+    "vitePort": 5173,
+    "vitePid": 72724
+  },
+  "browserObservations": {
+    "source": "parent direct UI observations, not inferred from agent claims",
+    "hmr": {
+      "result": "PASS",
+      "headingBefore": "Boat staging warm HMR confirmed 0216",
+      "headingAfterMarker": "0450",
+      "draftBeforeAndAfter": "keep-this-unsaved-draft-boat-0449",
+      "pageSessionBeforeAndAfter": "1791694134833",
+      "noPageReloadObserved": true
+    },
+    "agentComputerUse": {
+      "result": "PASS",
+      "observation": "Parent full-size provider desktop viewer visually confirmed actual example.com page after native Codex computer use. Narrow embedded scaling initially appeared misleading."
+    },
+    "humanDesktopInput": {
+      "result": "PASS",
+      "observation": "Parent direct desktop viewer used mouse and keyboard; entered text was aboat.",
+      "limits": "Ctrl+A selection behavior not proven; this does not establish embedded-frame keyboard focus behavior."
+    }
+  },
+  "limits": [
+    "This receipt does not qualify legacy Claude or legacy Codex on deployment19.",
+    "Sibling-stop isolation remains unproven by this receipt.",
+    "No source edits or lifecycle mutations were performed by the evidence observer."
+  ],
+  "evidence": [
+    {
+      "file": "retry-staging-19-nativeclaude-live.json",
+      "sha256": "2362dd0b0a726c1c0338705a746212a3cd2f63ed7d88b7058ed39cdf3f97e997"
+    },
+    {
+      "file": "retry-staging-19-nativeclaude-warm.json",
+      "sha256": "56c680e55cd45a29a6a61962c7ca4bb37b5ac407708fa570d399399d6aab76f2"
+    },
+    {
+      "file": "retry-staging-19-nativeclaude-settled.json",
+      "sha256": "07643a3f181ec2ae0478d5d0ea7a02abe419b3baae4dc228308e1327b17611aa"
+    },
+    {
+      "file": "retry-staging-19-nativecodex-baseline.json",
+      "sha256": "25177d4d52e35820633ebcc0a0ca23b47816f6651d9a45410c3309a683d10281"
+    },
+    {
+      "file": "retry-staging-19-nativecodex-hmr-settled.json",
+      "sha256": "199fb3f8c9814c00314f7dca7f4fc74fbff62d56ed803f8795d29d49da4c8090"
+    },
+    {
+      "file": "retry-staging-19-postviewer-status.json",
+      "sha256": "338fa665c8abcf5c4a2ed1d52c82b56e8ac9da1f7bfa069ccafcaa6feee76528"
+    },
+    {
+      "file": "retry-staging-19-postviewer-owners.json",
+      "sha256": "04bac3dacc8ed1f777cd3462f391a31c6e6fe64a00a64f8eb2ef87430a14bf93"
+    }
+  ],
+  "postViewerCleanup": {
+    "viewerClosedAtApprox": "2026-10-11T04:53:00Z",
+    "viewerClosureSource": "parent normal UI action",
+    "providerArchivedObservedAt": "2026-10-11T04:57:18.185Z",
+    "stopId": "stop_5213e39a6e6a9578",
+    "stopCompletedAt": "2026-10-11T04:56:59.592Z",
+    "guestReadSkippedAfterArchive": true,
+    "limits": [
+      "Exact separate Claude and Codex owner retirement timestamps were not observed.",
+      "Do not infer Codex timeout from the Claude configuration."
+    ]
+  }
+}

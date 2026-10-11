@@ -16,6 +16,7 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
+import { ClaudeLocalConfigFields } from "../adapters/claude-local/config-fields";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
@@ -111,8 +112,13 @@ vi.mock("../adapters", () => ({
     // adapter, so a test can assert the plumbing without rendering a real
     // adapter's fields.
     ConfigFields: (props: AdapterConfigFieldsProps) => {
-      if (type === "paperclip_runner") return <CodexLocalConfigFields {...props} />;
-      const { adapterType, hideInstructionsFile, managedSandboxOnly } = props;
+      if (type === "paperclip_runner" || (type === "codex_local" && props.allowExecutionEngineSelection)) return <CodexLocalConfigFields {...props} />;
+      if (type === "claude_local" && props.allowExecutionEngineSelection) return (
+        <div data-testid="adapter-config-fields" data-managed-sandbox-only={String(props.managedSandboxOnly === true)} data-allow-execution-engine="true">
+          <ClaudeLocalConfigFields {...props} />
+        </div>
+      );
+      const { adapterType, hideInstructionsFile, managedSandboxOnly, allowExecutionEngineSelection } = props;
       return adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
         : (
@@ -120,6 +126,7 @@ vi.mock("../adapters", () => ({
             data-testid="adapter-config-fields"
             data-hide-instructions-file={String(hideInstructionsFile === true)}
             data-managed-sandbox-only={String(managedSandboxOnly === true)}
+            data-allow-execution-engine={String(allowExecutionEngineSelection === true)}
           />
         );
     },
@@ -3875,6 +3882,94 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     // The stored values stay untouched: hiding is presentation, and an import
     // that carries adapter configuration from another instance must still save.
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it.each([
+    ["codex_local", "Codex", "acp"], ["codex_local", "Codex", undefined],
+    ["claude_local", "Claude", "acp"], ["claude_local", "Claude", undefined],
+  ])("requires explicit CLI repair before saving an unsupported Boat %s engine (%s, %s)", async (adapterType, label, engine) => {
+    setManagedSandboxOnly(true);
+    const saveActions = vi.fn();
+    const result = await renderForm(
+      [makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } })],
+      { adapterType: adapterType as Agent["adapterType"], defaultEnvironmentId: "boat-1", adapterConfig: { engine } },
+      { onSaveActionChange: saveActions, showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    expect(result.container.textContent).toContain(`Choose ${label} CLI before saving or testing`);
+    expect(saveActions.mock.lastCall?.[0]).toBeNull();
+    expect(findButton(result.container, "Test")?.disabled).toBe(true);
+    expect(result.onSave).not.toHaveBeenCalled();
+    const engineSelect = Array.from(result.container.querySelectorAll("select")).find(select =>
+      Array.from(select.options).some(option => option.textContent === `${label} CLI`),
+    )!;
+    expect(engineSelect.value).toBe(engine ?? "auto");
+    expect(engineSelect.selectedOptions[0].disabled).toBe(true);
+    expect(Array.from(engineSelect.options).filter(option => !option.disabled).map(option => option.value)).toEqual(["cli"]);
+    await act(async () => {
+      engineSelect.value = "cli";
+      engineSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(result.container.textContent).not.toContain(`Choose ${label} CLI before saving or testing`);
+    expect(findButton(result.container, "Test")?.disabled).toBe(false);
+    expect(saveActions.mock.lastCall?.[0]).toEqual(expect.any(Function));
+    await act(async () => saveActions.mock.lastCall![0]());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ engine: "cli" }) }));
+  });
+
+  it.each(["codex_local", "claude_local"] as const)("does not apply Boat engine restrictions when Kubernetes overrides %s execution", async adapterType => {
+    setManagedSandboxOnly(true);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "kubernetes" });
+    const saveActions = vi.fn();
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } }),
+        makeEnvironment({ id: "kubernetes-1", name: "Kubernetes", driver: "sandbox", status: "active", config: { provider: "kubernetes" } }),
+      ],
+      { adapterType, defaultEnvironmentId: "boat-1", adapterConfig: { engine: "acp" } },
+      { onSaveActionChange: saveActions, showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    expect(result.container.textContent).not.toContain("CLI before saving or testing");
+    expect(fieldLabels(result.container)).not.toContain("Execution engine");
+    expect(findButton(result.container, "Test")?.disabled).toBe(false);
+    expect(saveActions.mock.lastCall?.[0]).toEqual(expect.any(Function));
+  });
+
+  it.each(["active", "archived"] as const)("only exposes the engine for a resolved active Boat, keeping managed host paths hidden (%s)", async status => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status, config: { provider: "boat" } })],
+      { adapterType: "claude_local", defaultEnvironmentId: "boat-1", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels.includes("Execution engine")).toBe(status === "active");
+    for (const label of ["Working directory (deprecated)", "Command", "ACP server command", "ACP state directory"]) {
+      expect(labels).not.toContain(label);
+    }
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
+    expect(adapterFields?.getAttribute("data-allow-execution-engine")).toBe(String(status === "active"));
   });
 
   it("keeps the non-path ACP controls visible when the policy hides the engine choice", async () => {

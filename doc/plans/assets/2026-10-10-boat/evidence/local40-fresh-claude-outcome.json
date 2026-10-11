@@ -1,0 +1,71 @@
+{
+  "recordedAt": "2026-10-11T04:22:52.309Z",
+  "servingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
+  "taskId": "1f3d567e-ce93-42e4-b0cb-f785f6fa2e4c",
+  "outcome": "FAILED: new Claude task timed out at PRP session.open before proof tools",
+  "run": {
+    "id": "62f9fedb-b3de-40fb-8f8d-ee8f3b2b30a6",
+    "status": "failed",
+    "created_at": "2026-10-11T04:19:43.150Z",
+    "started_at": "2026-10-11T04:19:43.189Z",
+    "finished_at": "2026-10-11T04:22:31.788Z",
+    "error_code": "native_session_interrupted",
+    "error": "runner_ingress_unavailable: PRP command session.open timed out",
+    "native_session_id": "62610d06-b944-4af3-98aa-f77b83912b96",
+    "runner_instance_id": "6649c475-f600-4067-9e34-f13081d935d5",
+    "session_id_before": null,
+    "session_id_after": null,
+    "execution_stage": "preparing",
+    "controller_lease_expires_at": "2026-10-11T04:21:41.442Z",
+    "resultKeys": [],
+    "forceFreshSession": false,
+    "executionRecovery": null,
+    "providerPackDigest": null
+  },
+  "latestLease": {
+    "id": "3b6b742b-64fd-4625-8219-faee6a6ef0dd",
+    "status": "released",
+    "heartbeat_run_id": "62f9fedb-b3de-40fb-8f8d-ee8f3b2b30a6",
+    "acquired_at": "2026-10-11T04:20:02.216Z",
+    "released_at": "2026-10-11T04:22:34.597Z",
+    "cleanup_status": "success"
+  },
+  "latestOwner": {
+    "id": "03480f75-1b45-4c0f-917b-a2e8a85561a4",
+    "phase": "retired",
+    "generation": 1,
+    "runId": "62f9fedb-b3de-40fb-8f8d-ee8f3b2b30a6",
+    "sessionKey": "a72f640017d9be75ebc150a2536dcc040452c5bb146746774cf9e68983f5cc0f",
+    "deadline": null,
+    "process": {
+      "nonce": "45855a9b-3ee6-46ee-b8c5-7f0ee985f256",
+      "bootId": "4a7587c9-e811-41d5-893f-6e61d4f58bbe",
+      "unitName": "paperclip-03480f75-1b45-4c0f-917b-a2e8a85561a4.service",
+      "launchGeneration": 1
+    }
+  },
+  "proofFilesVerifiedThisAttempt": false,
+  "warmFollowupQualified": false,
+  "oldQuarantinedTaskChanged": false,
+  "guestReadsPerformed": false,
+  "evidence": [
+    {
+      "file": "retry-local40-boa17-baseline.json",
+      "sha256": "70140293f82a0da08b0ba5026377eaa83d8a5c93fadba8b10168c013056ed088"
+    },
+    {
+      "file": "retry-local40-boa17-progress0421.json",
+      "sha256": "0f5c76c7989f8b77847b590ce090ded53cfd28a8d4d6486add43942e9a0b8311"
+    },
+    {
+      "file": "retry-local40-boa17-progress0422.json",
+      "sha256": "0aa6ebd408dd3f2d30e5d9d88a93bb3836a5acdc91030cfbafe1ac4153884179"
+    },
+    {
+      "file": "retry-local40-boa17-failure-events.json",
+      "sha256": "11ea657a883da2bdbd8a60f9175f0f91a72cb817ed4b93efbc697775ff810cf2"
+    }
+  ],
+  "requestedOuterEnvironmentRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
+  "artifactSelectionCorrection": "Later inspection proved test-drive discards inherited PAPERCLIP_* overrides; unchanged saved fixture config selected the old runner and pack. The requested diagnostic runner SHA is not evidence of the executed artifact. See local-artifact-selection-correction.json."
+}

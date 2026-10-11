@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-10-10T19:30:59.762Z",
+  "schemaEqual": true,
+  "mismatchedSections": [],
+  "sectionCounts": {
+    "columns": 3883,
+    "constraints": 3742,
+    "enums": 0,
+    "extensions": 3,
+    "functions": 49,
+    "indexes": 1134,
+    "policies": 0,
+    "relations": 283,
+    "sequences": 5,
+    "triggers": 7,
+    "views": 0
+  },
+  "schemaSha256": "8ab1335c13dd976757f66586f7cd943a4ae5a6ed6de041c39bf29da902c072ec",
+  "migrationHashCountsEqual": true,
+  "boatMigrationCount": 1,
+  "upstreamMigrationCount": 1
+}

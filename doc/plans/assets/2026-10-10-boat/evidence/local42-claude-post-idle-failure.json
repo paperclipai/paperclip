@@ -1,0 +1,53 @@
+{
+  "source": "7c7c35b1ca2c82d378f49afdbb2d06bb8af5c673",
+  "artifactSource": "28d3fc1b6580ed2088f7c91b7bd61b8348ff1de7",
+  "naturalArchive": {
+    "checkedAt": "2026-10-11T05:14:37.554Z",
+    "id": "bx_ndnggjad",
+    "state": "archived",
+    "health": "ok",
+    "hydrated": true,
+    "stop": {
+      "id": "stop_e8b5186d69fc09f0",
+      "status": "completed",
+      "requestedAt": null,
+      "lastAttemptAt": "2026-10-11T05:13:32.291Z",
+      "endedAt": "2026-10-11T05:13:32.291Z",
+      "error": null
+    }
+  },
+  "postIdleFailure": {
+    "at": "2026-10-11T05:19:01.255936+00:00",
+    "identity": {
+      "runnerInstanceId": "13a06b89-735f-45d0-97cb-e41b4ff757cd",
+      "environmentLeaseId": "ab152fcf-ea0a-4f74-b83b-24d0242bbe55",
+      "runId": "27aae78f-bf75-4c06-ba80-7d2f01b7df49",
+      "normalizedSessionId": "438f844d-05d6-4ce2-ba3e-edbd97abca66",
+      "turnId": "turn-27aae78f-bf75-4c06-ba80-7d2f01b7df49",
+      "itemId": "item-27aae78f-bf75-4c06-ba80-7d2f01b7df49"
+    },
+    "providerPackDigests": [
+      "af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719",
+      "af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719"
+    ],
+    "connectionCount": 1,
+    "events": 0,
+    "commands": [
+      {
+        "type": "run.attach",
+        "status": "failed",
+        "result": {
+          "commandId": "command_prp_00000001",
+          "commandType": "run.attach",
+          "controllerSeq": 1,
+          "result": {
+            "code": "command_execution_failed",
+            "message": "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=unclassified)"
+          },
+          "status": "failed"
+        }
+      }
+    ]
+  },
+  "interpretation": "Cold and warm passed; ordinary post-idle continuation failed before provider work. The new runner connected, then the saved session.open was rejected. No proof-file read occurred and no reset or manual stop was used."
+}

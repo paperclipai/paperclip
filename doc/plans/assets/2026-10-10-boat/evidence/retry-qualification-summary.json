@@ -1,0 +1,2204 @@
+{
+  "schema": "paperclip.boat.validation-retry-summary.v1",
+  "recordedAt": "2026-10-11T01:47:47.596826+00:00",
+  "scope": "Source-specific retry observations; not complete acceptance.",
+  "source": {
+    "canonical": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+    "core": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+    "servingStaging": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "diagnosticCandidate": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "candidateRuntimeEquivalentTo": "d50268c932",
+    "candidateBuildId": 38099244581,
+    "candidateBuildState": "succeeded; deployment13 verified"
+  },
+  "deployment12": {
+    "checkedAt": "2026-10-10T22:14:02.236Z",
+    "requestedSha": "1830beb0c26a7ba9d5e21460426936936ffc8db4",
+    "servingSha": "1830beb0c26a7ba9d5e21460426936936ffc8db4",
+    "status": "succeeded",
+    "verification": "verified"
+  },
+  "stagingRetries": {
+    "codex": {
+      "runIdPrefix": "20c69872",
+      "result": "failed",
+      "errorCode": "native_session_recovery_failed",
+      "causeCode": "runner_remote_retirement_checkpoint_unsettled",
+      "sameRunAttempts": 3,
+      "newRunnerLaunchObserved": false,
+      "remoteCheckpoint": {
+        "lifecycle": "ready",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true,
+        "completedTurnAuthoritative": true,
+        "activeProviderTurnId": null
+      },
+      "conclusion": "Remote lifecycle was ready, runner outbox was empty, and pending terminal delivery was null; the exact old controller settlement/authority rejection remains unknown. Deployment 13 UI Retry created a fresh session, so it did not exercise the old recovery path."
+    },
+    "claude": {
+      "runIdPrefix": "3a34",
+      "result": "setup_failed",
+      "timing": "Failed before the planned idle/sibling experiment.",
+      "rootCause": "not established",
+      "siblingIsolationProved": false
+    },
+    "desktop": {
+      "observedUtc": [
+        "2026-10-11T00:43Z",
+        "2026-10-11T00:50Z"
+      ],
+      "streamVisible": true,
+      "inputVerified": false,
+      "inputLimit": "Iframe key/native click attempts produced no observable change; a frame-body input attempt timed out before sending input.",
+      "closedThroughProductUi": true
+    },
+    "viewerCleanup": {
+      "observedAt": "2026-10-11T00:51:49.916111+00:00",
+      "state": "archived",
+      "snapshots": true,
+      "stop": {
+        "id": "stop_74ba7b3408c7739e",
+        "status": "completed",
+        "endedAt": "2026-10-11T00:50:43.150Z",
+        "error": null
+      },
+      "manualProviderLifecycleActions": false
+    },
+    "diagnosticCodex": {
+      "runId": "5957cc86-4533-49e5-a2af-0edbc79a472f",
+      "submittedAt": "2026-10-11T01:06:33Z",
+      "method": "One ordinary Retry through the product UI",
+      "retriesRunIdPrefix": "20c69872",
+      "lastObservedStatus": "succeeded",
+      "outcome": "fresh session passed; old failed session recovery not tested",
+      "forceFreshSession": true,
+      "resumeSkipped": true,
+      "scope": "Normal UI Retry requests a fresh session. This run cannot diagnose saved-session recovery.",
+      "uiLogObservedAt": "2026-10-11T01:07:39Z",
+      "plannedQualification": "Fresh and ordinary warm same-task turns passed. Later configuration turn 2ac97bd2 was cancelled unexpectedly; subsequent repair attempts failed before provider work. Saved-session continuation after natural idle remains unverified.",
+      "finishedAt": "2026-10-11T01:09:46Z",
+      "reportedDurationSeconds": 193,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46"
+    },
+    "warmCodex": {
+      "runId": "1b882646-db75-4009-9915-6175e22c1724",
+      "status": "succeeded",
+      "reportedFinishedAtApproximate": "2026-10-11T01:12:14Z",
+      "freshObservedAt": "2026-10-11T01:10:10.278830+00:00",
+      "warmObservedAt": "2026-10-11T01:13:28.977661+00:00",
+      "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+      "providerSessionId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1",
+      "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+      "sameNormalizedSession": true,
+      "sameProviderSession": true,
+      "sameRunnerInstance": true,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "proofHashUnchanged": true,
+      "preservedProcesses": [
+        {
+          "role": "runner",
+          "pid": 30466,
+          "startTicks": 30188,
+          "sameIdentity": true
+        },
+        {
+          "role": "codex",
+          "pid": 30570,
+          "startTicks": 30308,
+          "sameIdentity": true
+        },
+        {
+          "role": "vite",
+          "pid": 31093,
+          "startTicks": 31238,
+          "sameIdentity": true
+        }
+      ]
+    },
+    "preview": {
+      "rendered": true,
+      "method": "Normal product-generated preview link in the in-app browser; no blocked-URL workaround",
+      "pageSessionValue": "1791680976579",
+      "draftValue": "keep-this-unsaved-draft-boat-0110",
+      "hotReloadVerified": false,
+      "observation": "The normal generated link rendered. A reported heading edit did not appear in the browser despite Vite reporting connected. The preview later became upstream-unavailable after the runner owner retired.",
+      "pollingConfig": {
+        "observedAt": "2026-10-11T01:18:35.720747+00:00",
+        "presentOnDisk": true,
+        "pollIntervalMs": 1000,
+        "loadedByRunningViteProved": false
+      },
+      "reactFixture": {
+        "reactPluginInstalled": false,
+        "reactPluginImported": false,
+        "statePreservingHmrContractProved": false,
+        "repairExecuted": false
+      },
+      "fileViews": {
+        "observedAt": "2026-10-11T01:16:21.230982+00:00",
+        "sameBytes": true,
+        "sameMountNamespace": true,
+        "publishedDeviceAndInodeDifferFromViteCwd": true,
+        "rootCauseEstablished": false
+      },
+      "limitation": "On-disk polling configuration does not prove that the running Vite process loaded it. The proposed React fixture repair never executed because both follow-ups failed before provider work."
+    },
+    "siblingCancellation": {
+      "stopClickedAtApproximate": "2026-10-11T01:14:44Z",
+      "uiStatus": "Stopped",
+      "scope": "Active automatic continuation cancelled through normal Stop; task blocked.",
+      "foregroundSleeperVerifiedBeforeStop": false,
+      "independentReadAt": "2026-10-11T01:13:58.401450+00:00",
+      "liveChildSleepCancellationProved": false,
+      "siblingIsolationProved": false
+    },
+    "codexConfigurationTurn": {
+      "runId": "2ac97bd2-9f7c-4d9b-bca5-78637e354422",
+      "status": "cancelled",
+      "exitCode": 0,
+      "lifecycleEventSequence": 340,
+      "terminalAt": "2026-10-11T01:19:01.499Z",
+      "cancellation": {
+        "reason": "Execution stopped without a recorded cancellation request",
+        "source": "unknown",
+        "expected": false
+      },
+      "isSuccessfulWarmTurn": false,
+      "limit": "A ready remote checkpoint and authoritative completed provider turn do not override the controller run outcome of cancelled."
+    },
+    "codexRepairAttempts": {
+      "runs": [
+        {
+          "runId": "139092c0-64d2-46e1-8906-9e69c00c081b",
+          "status": "failed"
+        },
+        {
+          "runId": "d33c8290-8e16-44a6-8bb1-58164ea5c754",
+          "status": "failed"
+        }
+      ],
+      "errorCode": "native_session_cleanup_quarantined",
+      "providerWorkStarted": false,
+      "fixtureRepairExecuted": false,
+      "quarantinePreserved": true
+    },
+    "postCancellationSettlement": {
+      "observedAt": "2026-10-11T01:28:58.739454+00:00",
+      "ownerId": "f298be2e-3cc1-4e9c-957e-4931aad9a503",
+      "retired": true,
+      "retiredAt": "2026-10-11T01:19:05.647102+00:00",
+      "ownerGeneration": 3,
+      "ownedProcessCount": 0,
+      "ownedListenerCount": 0,
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "proofHashUnchanged": true,
+      "proofBytes": 24,
+      "sameBootAsWarmRun": true,
+      "checkpoint": {
+        "observedAt": "2026-10-11T01:28:31.217794+00:00",
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "2ac97bd2-9f7c-4d9b-bca5-78637e354422",
+        "normalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+        "runnerInstanceId": "0005a613-101d-475f-9409-8b8e8b87e9ce",
+        "environmentLeaseId": "5957cc86-4533-49e5-a2af-0edbc79a472f",
+        "turnId": "turn_attachment_dc251dc322254e15b62b1af28d7e9819",
+        "itemId": "item_attachment_625fc1793a804d6e914dc74f0741d39f",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": true,
+        "provider": {
+          "schema": "paperclip.runner.codex-provider-state.v1",
+          "lifecycle": "session_open",
+          "completedTurnAuthoritative": true,
+          "activeProviderTurnId": null,
+          "threadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1"
+        }
+      },
+      "provider": {
+        "at": "2026-10-11T01:27:43.251027+00:00",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "error": null,
+        "snapshots": true,
+        "stop": {
+          "id": "stop_74ba7b3408c7739e",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T00:50:43.150Z",
+          "error": null,
+          "endedAt": "2026-10-11T00:50:43.150Z"
+        }
+      },
+      "systemdLimit": "Unit was collected. Manager messages reported missing paths during collection; these do not establish a process crash.",
+      "manualLifecycleOrGuestFileMutations": false,
+      "scope": "Snapshot after an unexpected cancellation, not a successful natural warm-timeout or post-idle continuation test."
+    },
+    "diagnosticClaude": {
+      "runId": "a38070b3-6c87-435c-8d60-f01ac9fac4b7",
+      "status": "failed",
+      "errorCode": "setup_failed",
+      "startedAt": "2026-10-11T01:18:44Z",
+      "finishedAt": "2026-10-11T01:31:25Z",
+      "reportedDurationSeconds": 762,
+      "acquireLeaseError": "Computer is connecting or settling a previous stop",
+      "executionRecoveryStage": "bootstrap",
+      "providerWorkStarted": false,
+      "stageSyncDurationMs": 473763,
+      "runnerTransportConnectedAt": "2026-10-11T01:27:47Z",
+      "remoteCheckpoint": {
+        "observedAt": "2026-10-11T01:29:48.453917+00:00",
+        "lifecycle": "suspended",
+        "outboxCount": 0,
+        "pendingTerminalDeliveryIsNull": false,
+        "modifiedAt": "2026-10-11T01:28:06.792491+00:00"
+      },
+      "scope": "This latest retry failed; earlier source-specific Claude successes remain valid but do not establish success here.",
+      "firstFailure": {
+        "kind": "acpx_durable_launch_profile_digest_mismatch",
+        "observation": "Expanded run log identifies a durable ACPX launch-profile digest mismatch after approximately990MiB provider-pack upload.",
+        "providerPackUploadApproximateMiB": 990,
+        "leaseDeadlineCauseProved": false
+      },
+      "acquireLeaseErrorScope": "Later recovery-stage error; not the first failure or a proved root cause.",
+      "candidateCorrection": {
+        "status": "under review; not a deployed pass",
+        "behavior": "Reuse the provider pack pinned by bound controller state for durable ACPX resume."
+      }
+    },
+    "finalProviderObservation": {
+      "at": "2026-10-11T01:33:52.216884+00:00",
+      "state": "archived",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "stop": {
+        "id": "stop_18563d80fd0ee488",
+        "status": "completed",
+        "requestedAt": null,
+        "lastAttemptAt": "2026-10-11T01:32:48.421Z",
+        "error": null,
+        "endedAt": "2026-10-11T01:32:48.421Z"
+      },
+      "manualStopOrWakePerformed": false,
+      "furtherGuestReadAttempted": false,
+      "limit": "Latest read-only provider state; no post-archive guest checkpoint read was attempted.",
+      "scopeAfterLaterWork": "Historical01:33:52 archived observation. Normal task Computer Connect later resumed the fixture. Both viewers closed normally before the01:47:06 provider read; exact close time was not captured."
+    },
+    "desktopComparison": {
+      "servingSource": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+      "deployment": 13,
+      "connectAtApproximate": "2026-10-11T01:35:00Z",
+      "connectedFromArchived": true,
+      "method": "Normal task Computer Connect; then the same provider viewer was opened directly in a browser tab for comparison. Private viewer URL omitted.",
+      "streamVisibleAtApproximate": "2026-10-11T01:38:00Z",
+      "directBrowserInput": {
+        "mouse": "passed: native click opened Chrome",
+        "keyboard": "passed: native key events visibly entered the complete marker",
+        "visibleMarker": "boatlive0141",
+        "evidenceFile": "staging-13-direct-desktop-input.png",
+        "timestampInferredFromMarker": false
+      },
+      "embeddedViewer": {
+        "streamVisible": true,
+        "secondStreamFrozeOriginalFrame": true,
+        "updatedDesktopVisibleAfterCloseAndReconnect": true,
+        "keyboardInputVerified": false,
+        "mouseInputVerified": false,
+        "automationTargetingLimit": "The embedded Ctrl+A attempt selected the outer Paperclip page; this does not establish an embedded product input failure."
+      },
+      "archiveAfterThisCloseVerified": false,
+      "scope": "Direct browser desktop keyboard and mouse passed. Embedded input remains unverified; the comparison revealed one-stream interference.",
+      "bothViewersClosedNormally": true,
+      "exactCloseTimeCaptured": false,
+      "closedBeforeProviderReadAt": "2026-10-11T01:47:06.987010+00:00",
+      "closeArchiveCausalityVerified": false,
+      "markerEncodesTimestamp": false
+    },
+    "latestProviderObservation": {
+      "at": "2026-10-11T01:47:06.987010+00:00",
+      "state": "archived",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "snapshots": true,
+      "stop": {
+        "id": "stop_6f2a2286a84c0d41",
+        "status": "completed",
+        "requestedAt": null,
+        "lastAttemptAt": "2026-10-11T01:42:11.287Z",
+        "error": null,
+        "endedAt": "2026-10-11T01:42:11.287Z"
+      },
+      "guestReadAfterArchive": false,
+      "manualStopOrWakePerformed": false,
+      "exactViewerCloseTimeCaptured": false,
+      "closeArchiveCausalityVerified": false,
+      "scope": "Confirmed archived provider state at the timestamp shown, with snapshots retained and latest stop complete. Exact viewer-close time was not captured, so stop ordering relative to the close is not established."
+    }
+  },
+  "localRestart": {
+    "source": "817d6a8ebb4a04552639d923ec965a9ab8716d84",
+    "result": "inconclusive_host_sleep",
+    "firstRun": {
+      "id": "3681473c-b5a5-48c3-b96d-0a24e9306a07",
+      "status": "succeeded",
+      "started_at": "2026-10-10T22:21:28.283Z",
+      "finished_at": "2026-10-10T22:25:04.557Z"
+    },
+    "continuation": {
+      "id": "f5f361a7-ea1e-46fe-90d6-46bdd5674f0a",
+      "status": "failed",
+      "started_at": "2026-10-10T22:26:50.928Z",
+      "finished_at": "2026-10-10T22:48:12.932Z",
+      "error_code": "native_session_cleanup_quarantined"
+    },
+    "originalOwnerRetired": true,
+    "continuationOwnerRetired": true,
+    "newOwnerProcessClaim": null,
+    "priorCheckpointLifecycle": "suspended",
+    "priorOwnerDescendants": 0,
+    "retainedMarker": {
+      "exists": true,
+      "lineCount": 1,
+      "sha256": "584372be7d247a859749d79e9979f9c775a2cc17e54a4ac6b762f0d48ecfb714"
+    },
+    "hostSleepUtc": [
+      {
+        "at": "2026-10-10T22:30:26Z",
+        "event": "Idle Sleep"
+      },
+      {
+        "at": "2026-10-10T22:31:15Z",
+        "event": "Maintenance Sleep",
+        "durationSeconds": 1017
+      },
+      {
+        "at": "2026-10-10T22:48:12Z",
+        "event": "DarkWake; simultaneous run timeout and onboarding provider error"
+      },
+      {
+        "at": "2026-10-10T22:49:16Z",
+        "event": "Dark Wake Thermal Emergency Sleep"
+      }
+    ],
+    "quarantinePreserved": true,
+    "notProved": [
+      "successful post-restart provider turn",
+      "active-crash recovery"
+    ]
+  },
+  "localFreshTask": {
+    "firstAttempt": {
+      "runId": "de63e6ba-43b6-43d6-ad6e-4167eb2f4712",
+      "status": "setup_failed",
+      "confoundedByHostSleep": true
+    },
+    "ordinaryRetry": {
+      "id": "e8c52459-2dc1-428c-b5d7-30d33141ff0b",
+      "status": "succeeded",
+      "started_at": "2026-10-11T00:42:00.094Z",
+      "finished_at": "2026-10-11T00:45:27.883Z",
+      "marker": {
+        "exists": true,
+        "lineCount": 1,
+        "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+      },
+      "markerIndependentlyRead": true
+    },
+    "controllerRestartPerformed": false,
+    "source": "817d6a8ebb4a04552639d923ec965a9ab8716d84",
+    "cleanup": {
+      "checkedAt": "2026-10-11T00:53:46.805859+00:00",
+      "owner": {
+        "id": "e3426be1-0d0b-4a48-a5f7-21d4d0f3ffa6",
+        "generation": 1,
+        "phase": "retired"
+      },
+      "provider": {
+        "checkedAt": "2026-10-11T00:53:24.446Z",
+        "state": "archived",
+        "snapshots": true,
+        "stop": {
+          "id": "stop_60bcbe837fe4681c",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T00:52:14.179Z",
+          "error": null,
+          "endedAt": "2026-10-11T00:52:14.179Z"
+        }
+      },
+      "processStopEvidence": "Exact owner retired in controller ledger and physical provider archive completed; no post-archive SSH process inventory attempted",
+      "postIdleCheckpointRead": "not_observed_archived",
+      "controllerRestartPerformedForThisTask": false,
+      "followupSubmitted": false,
+      "quarantinedBOA15Unchanged": true
+    }
+  },
+  "localInstructionsSave": {
+    "checkedAt": "2026-10-11T00:12:50.440541+00:00",
+    "uiReportedSaveError": "Failed to fetch; unsaved edits retained",
+    "serverSaveHttp200At": [
+      "2026-10-10T22:28:59Z",
+      "2026-10-10T22:29:56Z"
+    ],
+    "subsequentCandidatesReadError": {
+      "at": "2026-10-10T22:48:12Z",
+      "status": 502,
+      "code": "provider_error",
+      "message": "Computer operation failed"
+    },
+    "persistentBytesIndependentlyVerified": false,
+    "manualProviderLifecycleActions": false,
+    "controllerRestartedDuringSave": false,
+    "hostSleepConfoundedObservation": true,
+    "conclusion": "Save requests returned HTTP200, but a fresh read failed with502 provider_error; durable bytes were not independently verified. This is not evidence of a missing file.",
+    "detachPerformed": false
+  },
+  "localBoundaryChecks": {
+    "checkedAt": "2026-10-10T22:22:17.844Z",
+    "agentForeignIssueReadStatus": 404,
+    "boardForeignTaskComputerConnectStatus": 404,
+    "computerOwnerLedgerUnchanged": true,
+    "foreignCompanyComputerRows": 0,
+    "temporaryCredentialsRevoked": true,
+    "scope": "Live local authorization denial; no staging company-denial journey claimed."
+  },
+  "diagnosticChecks": {
+    "source": "d50268c932",
+    "focusedTestsPassed": 54,
+    "serverTypecheck": "passed",
+    "semantics": "Fixed reason-code diagnostics only; all fail-closed gates retained.",
+    "earlierCiSnapshot": {
+      "observedAt": "2026-10-11T00:49:20.473390+00:00",
+      "heads": [
+        {
+          "head": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+          "checks": {
+            "SUCCESS": 26,
+            "IN_PROGRESS": 25
+          }
+        },
+        {
+          "head": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+          "checks": {
+            "SKIPPED": 2,
+            "SUCCESS": 47,
+            "IN_PROGRESS": 4
+          }
+        }
+      ]
+    },
+    "ci": [
+      {
+        "observedAt": "2026-10-11T00:52:12.095009+00:00",
+        "head": "ee2a01063e3efdd3ddd75de05ff8e831302045fd",
+        "checks": {
+          "SKIPPED": 2,
+          "SUCCESS": 52
+        },
+        "freshReview": true
+      },
+      {
+        "observedAt": "2026-10-11T00:58:18.658125+00:00",
+        "head": "d50268c932da9e03c304f6a48cdaa5ee477331f2",
+        "checks": {
+          "SUCCESS": 52
+        },
+        "reviewScore": 5,
+        "unresolvedThreads": 0,
+        "matchesExpected": true,
+        "mergeable": "MERGEABLE",
+        "freshReview": true
+      }
+    ]
+  },
+  "remaining": [
+    "Explain and resolve unexpected Codex cancellation and subsequent cleanup quarantine",
+    "Successful saved-session continuation on current staging source",
+    "Successful current-source native Claude retry",
+    "Staging state-preserving HMR after verifying loaded fixture configuration",
+    "Embedded desktop input verification; direct browser keyboard and mouse passed",
+    "Live sibling cancellation isolation",
+    "Detach with retained file verification",
+    "Live feature-off cleanup",
+    "Staging company denial",
+    "Successful controller restart continuation without duplicate execution"
+  ],
+  "provenance": [
+    {
+      "file": "staging-deploy-12-verified.json",
+      "sha256": "664d6a46b3259846fae329d38ba572311eb2129b4c6789dda67f9f9b2060ca3a"
+    },
+    {
+      "file": "retry-controller-restart-result.json",
+      "sha256": "734f73afa4990b26e538de717642ca631127f48e0f777d97b3f078dabfd65a6c"
+    },
+    {
+      "file": "retry-onboarding-save-failure.json",
+      "sha256": "ac57f59e1ef6cda246dc2ab8d042997e3c29e54674f12871c7692921a186d5a4"
+    },
+    {
+      "file": "retry-cross-company-denial.json",
+      "sha256": "c4e795bcd1f424202347cc912083d5b52341e3dc3a52ba64857bcbcba68f19b8"
+    },
+    {
+      "file": "retry-staging-viewer-natural-cleanup.json",
+      "sha256": "f6a5006d95126c726a7f089833e0dff71bb285c5043c3a93fb399997c27a0f12"
+    },
+    {
+      "file": "diagnostic-head-ci-fresh.json",
+      "sha256": "5b6c28b6d3421450112e22d61cc01b766bf197572e99a9456a04d775bfcfce57"
+    },
+    {
+      "file": "retry-diagnostic-source-proof.json",
+      "sha256": "91e3264c453a8fed34e9ed058303121903aaa3b91b2926d2e38ac7b17cfe5a67"
+    },
+    {
+      "file": "retry-staging-codex-failed-checkpoint.json",
+      "sha256": "8baf4299f94e0df9800be3ee04d1be519737713accd810d3fc21554cbccefd3a"
+    },
+    {
+      "file": "retry-staging-codex-failure-dom.txt",
+      "sha256": "445a8f27444c50ea19227d562b1f50659e4ab40282d247208c94a111681b1829"
+    },
+    {
+      "file": "retry-staging-claude-final-provider.json",
+      "sha256": "9d9a2b4e44ca91de03132c59bcb81b6025f71c2f3895a28caeaa3adbbd0fec63"
+    },
+    {
+      "file": "retry-awake-normal-retry.json",
+      "sha256": "9821029e3fd05f405f8157e2249ce98b55dfd1f8c60390fbe04b0d144d86ed89"
+    },
+    {
+      "file": "retry-awake-first-settlement.json",
+      "sha256": "30f2b722f9015fb3095572f2999aad4f568d8db5a2feaa2fef484174401e3b62"
+    },
+    {
+      "file": "retry-awake-process-baseline.json",
+      "sha256": "21fb1715ed5591691fa384f24a3a4ae7dadb70b5ae6796f376426b2244395acc"
+    },
+    {
+      "file": "retry-awake-final-cleanup.json",
+      "sha256": "98f4da9a511a1f920ccad6a0754c98e297eade1f6f00e907a7f140243942471a"
+    },
+    {
+      "file": "core-retry-current-gates.json",
+      "sha256": "91c8bc99017a1da024c89650a57a7aadb7d6a984b62582b825c5e9104a1cfab4"
+    },
+    {
+      "file": "parent-diagnostics-current-gates.json",
+      "sha256": "878b86aa6c6a86c4533dfcbd7b44b4de2b219f06e3d7b1ffe4236224a6af21bd"
+    },
+    {
+      "file": "staging-deploy-13-verified.json",
+      "sha256": "b3cea12a1d93e6e2edf6f45f6b1ba61c2a519bd21117abc48c5d180ea49a3a1c"
+    },
+    {
+      "file": "retry-staging-13-fresh-proof-processes.json",
+      "sha256": "f6f34afd19c0f38960050412279ae22bbf0742e6b7596b7215b2b2f17b2526a0"
+    },
+    {
+      "file": "retry-staging-13-warm-proof-processes.json",
+      "sha256": "79f5c5b5a888c43477d1765be28aa8f5b62a96248d6dea29b3ec2ad96986c3ec"
+    },
+    {
+      "file": "retry-staging-13-fresh-checkpoint.json",
+      "sha256": "4212bef4e1116c533b88bc2706aab832342c7c1c2add0df9ddb1e8f96aa11b0f"
+    },
+    {
+      "file": "retry-staging-13-warm-checkpoint.json",
+      "sha256": "79117a28838624b5e722e9a57f38bea8426ffad2fdeb4b10eacb5ac44791eed1"
+    },
+    {
+      "file": "retry-staging-13-before-cancel.json",
+      "sha256": "c6374912eeb93ece8747c90ba0e170a99d2f551acc9e1aa789ba9aa15d4624fb"
+    },
+    {
+      "file": "retry-staging-13-final-provider.json",
+      "sha256": "00192becac27fb4a7d9b6509da22e9db68e5c4f052b3a01ebaf74eccf8de7d1d"
+    },
+    {
+      "file": "retry-staging-13-final-processes.json",
+      "sha256": "2d2af6b458b504ee3c4d03a16d7a35422a50895d701f6040b029f0e53a0ee625"
+    },
+    {
+      "file": "retry-staging-13-final-checkpoint.json",
+      "sha256": "d0aab1946dc34af67e92c839b1b5836662037c2de90e84d694d6cf3ccf4375ef"
+    },
+    {
+      "file": "retry-staging-13-owner-settlement.json",
+      "sha256": "4fd54c2340706f1d6c6f9da1c28921d2262bfc4bf4ca5eed4b47d841cdc975af"
+    },
+    {
+      "file": "retry-staging-13-systemd-failure-details.json",
+      "sha256": "ca4370d62068e5a0b7026959658a466e054539d15a03e9d80e0ddd72aab3ca56"
+    },
+    {
+      "file": "retry-staging-13-hmr-file-views.json",
+      "sha256": "3dcefc238dd72d26019fb4be993f7c5cbaa0c6327bb7bf4c22bfa837b4e850e9"
+    },
+    {
+      "file": "retry-staging-13-hmr-mount-namespaces.json",
+      "sha256": "2eee6f2f0e4c45d260c6bc5ab3ba1bb494136aa58dd029d50517ce8e126ab14c"
+    },
+    {
+      "file": "retry-staging-13-test-config.json",
+      "sha256": "cecf3bd5f7b4a280da8adb1fa8fcd1f855e2b61e9734918768a3f9923128b98c"
+    },
+    {
+      "file": "staging-13-cancel-expanded-dom.txt",
+      "sha256": "4861ab723ded35336f5533d646a8f607110b3eaf5fe6cf8aff5bcd7785b66729"
+    },
+    {
+      "file": "staging-13-claude-retry-dom.txt",
+      "sha256": "8f4d8d57ba2842e70d5f49667513aa94fce4e6a6037b0ad7c2977fc5a1eb498c"
+    },
+    {
+      "file": "retry-staging-13-claude-terminal-provider-check.json",
+      "sha256": "8067d6bf0d8bee7da20526ab941ab79e23eb0becbc0e066fd0afea785e81fe09"
+    },
+    {
+      "file": "staging-13-direct-desktop-input.png",
+      "sha256": "02ab563a51e6597b41c0faca3468be0e925901bd46890e37facdaac51ddc67c7"
+    },
+    {
+      "file": "retry-staging-13-post-viewer-close-provider.json",
+      "sha256": "398825c89d9300c4d48a9bb46408c1f75016d1764c847cbbf830dfc36dc73a08"
+    }
+  ],
+  "deployment13": {
+    "checkedAt": "2026-10-11T01:05:58.740756+00:00",
+    "requestedSha": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "servingSha": "610c78a5ad97534380c61fa376c96c1b7a73a86a",
+    "status": "succeeded",
+    "verification": "verified",
+    "runId": 38100487034,
+    "verifiedAt": "2026-10-11T01:05:49Z"
+  },
+  "candidate14": {
+    "canonicalRuntime": "21deac0abfd2919525114f8cdc4a0d49f139665a",
+    "core": "66ac692e446bd2ce0175613787f82eeb048f2749",
+    "staging": "5cf388845902c88d0406116ed9b2c44f335d8bb2",
+    "deploymentRequestId": "f4e5af86-8ad0-4ebd-ad97-f2a9173015af",
+    "status": "dispatched; not verified serving",
+    "fixes": [
+      "exact remote owner cleanup scope",
+      "retain controller-pinned verified ACPX provider package",
+      "fixed-field cancellation source diagnostics"
+    ],
+    "targetedTests": {
+      "cleanup": 8,
+      "quarantineFences": 2,
+      "providerPack": 26,
+      "manifestBootstrap": 7,
+      "cancellationDiagnostics": 7
+    },
+    "serverTypecheck": "passed",
+    "independentProviderPackReview": "no remaining actionable findings",
+    "liveRecoveryRetest": "pending"
+  },
+  "candidate14VerificationFiles": [
+    {
+      "file": "boat-cleanup-scope-focused-tests.log",
+      "sha256": "9058d658e9605762a5a16e40ef2a4c2385a004546db111c337c6795545fd6dcb"
+    },
+    {
+      "file": "boat-cleanup-scope-runtime-tests.log",
+      "sha256": "89bccf74fe69f8cc6accbaff060a8aa6560d8dc935497e6d239f277acc031933"
+    },
+    {
+      "file": "boat-cleanup-scope-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "claude-pack-pin-green.log",
+      "sha256": "002a36696417b8f6f98546fa13e8d972f3b33b8d61fed0044b19a977cd9c3634"
+    },
+    {
+      "file": "claude-pack-pin-manifest-tests.log",
+      "sha256": "b21b2315081d5f8c2c1e615b1ed6cc55a4e91db41d10036c63092dfabdfca16c"
+    },
+    {
+      "file": "claude-pack-pin-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "native-cancellation-diagnostic-tests.log",
+      "sha256": "b86a444e63cbae19ebe709c79919cc405f7cfbef68aeccbf861e7afdd3c3feea"
+    }
+  ],
+  "followUp14": {
+    "recordedAt": "2026-10-11T02:23:00Z",
+    "servingSha": "5cf388845902c88d0406116ed9b2c44f335d8bb2",
+    "hmr": {
+      "result": "passed_after_rebaseline",
+      "runId": "9c13e199-845c-4bb1-a5a8-2118b1edfb93",
+      "beforeHeading": "Boat staging hot reload verified 0213",
+      "afterHeading": "Boat staging warm HMR confirmed 0216",
+      "preservedInput": "keep-this-unsaved-draft-boat-0213",
+      "preservedPageSession": "1791684735337",
+      "unchangedProcesses": [
+        {
+          "kind": "runner",
+          "pid": 35567,
+          "startTicks": 52230
+        },
+        {
+          "kind": "codex",
+          "pid": 35991,
+          "startTicks": 52541
+        },
+        {
+          "kind": "vite",
+          "pid": 37325,
+          "startTicks": 54717
+        }
+      ],
+      "session": "06496696-b312-4268-ac40-66770aaa6f1a",
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+      "checkpointReadyEmptyOutboxNoPendingTerminal": true,
+      "limit": "Initial 02:12 browser reconnect lost the first baseline before heading change; later rebaseline and complete second warm turn passed."
+    },
+    "localDetachRetention": {
+      "result": "passed",
+      "environmentId": "c528a21f-b893-4dd0-8be9-5f6e5e02e2b2",
+      "detachAt": "2026-10-11T01:56:32Z",
+      "priorStopCompletedAt": "2026-10-11T02:05:09.243Z",
+      "reconnectAt": "2026-10-11T02:05:35.745Z",
+      "retainedMarkerObservedBy": "2026-10-11T02:14:00Z",
+      "cleanup": "Original instruction text restored through UI and reread after full reload; both fixture agents reassigned to same Boat.",
+      "experience": "Slow provider stop and file read; transient settling error. Retention success does not imply smooth UX."
+    },
+    "claudeSavedResume": {
+      "result": "failed",
+      "runId": "d529d365-e999-4a38-a4d0-562812df83c8",
+      "error": "runner_remote_provider_pack_provenance_unavailable",
+      "fix": "29e2aa95d1",
+      "validation": "28 cache tests, 5 transport tests, both TypeScript checks, independent review passed; live validation pending."
+    },
+    "siblingStop": {
+      "result": "inconclusive_for_live_child_cancellation",
+      "reportedPid": 72165,
+      "pidAbsentBeforeStopAt": "2026-10-11T02:21:48Z",
+      "uiStopApproxAt": "2026-10-11T02:21:50Z",
+      "postStopAt": "2026-10-11T02:22:05Z",
+      "nativeProcessesUnchanged": true
+    },
+    "computerUse": {
+      "result": "passed_after_navigation_correction",
+      "correctedArtifactId": "6b8961f8-8c62-44aa-8232-8cf1ed0056f7",
+      "artifactViewedAfterDeployment15": true,
+      "visibleAddressBar": "example.com",
+      "tools": [
+        "launch_app",
+        "list_windows",
+        "bring_to_front",
+        "click",
+        "hotkey",
+        "type_text",
+        "press_key",
+        "get_window_state"
+      ],
+      "limits": [
+        "AT-SPI browser binding failed; desktop input tools succeeded.",
+        "Initial artifact had an appended path. Corrected screenshot and live desktop both showed the root domain.",
+        "Artifact registration required corrected final hash and size before succeeding.",
+        "Embedded human-input automation targeted the outer container; no new embedded human-input pass claimed."
+      ]
+    },
+    "claudeSiblingAttempt": {
+      "result": "inconclusive_isolation",
+      "marker": "BOAT_CLAUDE_SIBLING_0228",
+      "beforeAt": "2026-10-11T02:29:52.295Z",
+      "childPid": 114616,
+      "childStartTicks": 165984,
+      "claudeRetirementAt": "2026-10-11T02:30:20.494Z",
+      "nativeRetirementAt": "2026-10-11T02:30:32.551Z",
+      "afterAt": "2026-10-11T02:30:42.813Z",
+      "childAndNativeProcessesAbsent": true,
+      "limit": "Native retirement began 123 seconds after its checkpoint settlement, compatible with normal 120-second warm expiry. Rollout also overlapped. No causal attribution to sibling Stop or deployment."
+    }
+  },
+  "deployment15": {
+    "sha": "5575b36a8d826d0092466257a7b468af8e5330d5",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "requestId": "74e2d030-f3e8-457b-a228-1c049f60c27e",
+    "checkedAt": "2026-10-11T02:33:12.796Z",
+    "admissionFailures": {
+      "recordedAt": "2026-10-11T02:41:49.372691+00:00",
+      "servingSource": "5575b36",
+      "deployment": 15,
+      "source": "Parent captured expanded normal product UI recovery details",
+      "runs": [
+        {
+          "runId": "5913803a-1dd0-494c-8198-e2c6cac77231",
+          "runtime": "native Codex",
+          "status": "failed",
+          "errorCode": "setup_failed",
+          "error": "Failed to acquire lease for environment \"Boat staging qualification\" (computer): Computer is connecting or settling a previous stop"
+        },
+        {
+          "runId": "633e2852-aaf5-49ad-879f-9615a42d572d",
+          "runtime": "legacy Claude",
+          "status": "failed",
+          "errorCode": "setup_failed",
+          "error": "Failed to acquire lease for environment \"Boat staging qualification\" (computer): Computer is connecting or settling a previous stop"
+        }
+      ],
+      "exactRunStartFinishTimestampsCaptured": false,
+      "uiFailureObservedApproximate": "2026-10-11T02:38:00Z",
+      "providerObservation": {
+        "at": "2026-10-11T02:41:08.509628+00:00",
+        "sandboxId": "bx_b8sawfyp",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "error": null,
+        "snapshots": true,
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "pending",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": null,
+          "error": null,
+          "endedAt": null
+        },
+        "lastSnapshotAttemptAt": "2026-10-11T02:38:34.995Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z"
+      },
+      "conclusion": "Both run failures report lease admission waiting for provider stop settlement. Provider status independently remained archiving with pending stop and snapshot in progress; no guest execution or alternate failure cause is claimed.",
+      "manualLifecycleActions": false,
+      "retryIssuedByObserver": false
+    }
+  },
+  "local36Restart": {
+    "recordedAt": "2026-10-11T02:44:57.442431+00:00",
+    "result": "passed",
+    "scope": "Ordinary saved-session continuation after local controller restart and prior natural provider archive; no active-crash recovery claim.",
+    "controller": "local36",
+    "runtimeSourcePrefix": "193c2",
+    "originalRun": {
+      "id": "e8c52459-2dc1-428c-b5d7-30d33141ff0b",
+      "status": "succeeded",
+      "started_at": "2026-10-11T00:42:00.094Z",
+      "finished_at": "2026-10-11T00:45:27.883Z",
+      "native_session_id": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+      "runner_instance_id": "55f789fd-17d9-48ad-8f65-0f806782c436",
+      "session_id_before": null,
+      "session_id_after": "01a1286b-9338-7101-8ced-733e9b28ae99"
+    },
+    "continuationRun": {
+      "id": "6f31e383-8400-4675-acd2-11563007b66d",
+      "status": "succeeded",
+      "started_at": "2026-10-11T02:40:41.830Z",
+      "finished_at": "2026-10-11T02:43:37.252Z",
+      "native_session_id": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+      "runner_instance_id": "55f789fd-17d9-48ad-8f65-0f806782c436",
+      "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+      "session_id_after": "01a1286b-9338-7101-8ced-733e9b28ae99"
+    },
+    "sameNormalizedSession": true,
+    "sameProviderSession": true,
+    "sameLogicalRunner": true,
+    "independentProof": {
+      "at": "2026-10-11T02:44:26.082483+00:00",
+      "bootId": "7d0e87da-b3af-467b-bba2-facdbc4237d9",
+      "marker": {
+        "exists": true,
+        "lineCount": 1,
+        "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+      },
+      "checkpoints": [
+        {
+          "fileKind": "runner-state.json",
+          "mtime": 1791686617,
+          "runId": "6f31e383-8400-4675-acd2-11563007b66d",
+          "runnerInstanceId": "55f789fd-17d9-48ad-8f65-0f806782c436",
+          "normalizedSessionId": "994ca5b6-8d92-4c97-b14c-411aa0395caf",
+          "lifecycle": "ready"
+        },
+        {
+          "fileKind": "codex-provider-state.json",
+          "mtime": 1791686617,
+          "lifecycle": "session_open",
+          "threadId": "01a1286b-9338-7101-8ced-733e9b28ae99",
+          "activeProviderTurnId": null,
+          "completedTurnAuthoritative": true
+        }
+      ]
+    },
+    "markerUnchanged": true,
+    "priorQuarantinePreserved": true,
+    "noManualReset": true,
+    "provenance": [
+      {
+        "file": "retry-awake-local36-followup-d.json",
+        "sha256": "b58bcdb74a9c0b2636349fd09ab5c1694533d9a4f14f77817744a1545c2d1811"
+      },
+      {
+        "file": "retry-local-36-restart-proof.json",
+        "sha256": "563a32e1acb7946cc58504cc813377d14b2c2deca6131a3383c1fb8b93b7428f"
+      },
+      {
+        "file": "retry-awake-final-cleanup.json",
+        "sha256": "98f4da9a511a1f920ccad6a0754c98e297eade1f6f00e907a7f140243942471a"
+      }
+    ],
+    "postWarmExpiry": {
+      "ownerRetiredObservedAt": "2026-10-11T02:49:23Z",
+      "providerStateAt": "2026-10-11T02:49:24Z",
+      "providerState": "archiving",
+      "stopRequestedAt": "2026-10-11T02:49:01.985Z",
+      "physicalArchiveCompleted": false,
+      "noGuestReadOrManualLifecycleMutation": true
+    }
+  },
+  "deployment16": {
+    "sha": "2e8859ab762e5b2ce97f2ea774e385fd333f9cee",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "requestId": "66b7d1a0-ca8e-4c71-8e91-aef42fb66e35",
+    "checkedAt": "2026-10-11T02:59:15.776Z",
+    "providerBlocker": {
+      "at": "2026-10-11T02:56:29.333752+00:00",
+      "sandboxId": "bx_b8sawfyp",
+      "state": "idle",
+      "hydrated": true,
+      "health": "ok",
+      "error": null,
+      "snapshots": true,
+      "stop": {
+        "id": "stop_804de979b357c47a",
+        "status": "failing",
+        "requestedAt": "2026-10-11T02:34:21.063Z",
+        "lastAttemptAt": "2026-10-11T02:56:20.600Z",
+        "error": "Refusing archive/stop: Sandbox machine sandbox-node-defc0af28a6bec36 has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z).",
+        "endedAt": null
+      },
+      "lastSnapshotAttemptAt": "2026-10-11T02:54:41.003Z",
+      "lastSnapshotStatus": "in_progress",
+      "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+      "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+      "stopPendingSeconds": 1328.271,
+      "snapshotAttemptElapsedSeconds": 108.331
+    },
+    "providerFollowUp": {
+      "recordedAt": "2026-10-11T03:01:41.119836+00:00",
+      "scope": "Read-only provider status, no guest reads or lifecycle actions",
+      "fixtures": [
+        {
+          "fixture": "staging",
+          "sandboxId": "bx_b8sawfyp",
+          "observedAt": "2026-10-11T03:01:41.089449+00:00",
+          "state": "idle",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T02:54:41.003Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+          "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+          "stop": {
+            "id": "stop_804de979b357c47a",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:34:21.063Z",
+            "lastAttemptAt": "2026-10-11T03:01:20.448Z",
+            "endedAt": null,
+            "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+          },
+          "providerErrorPresent": false
+        },
+        {
+          "fixture": "local-main",
+          "sandboxId": "bx_ndnggjad",
+          "observedAt": "2026-10-11T03:01:41.119643+00:00",
+          "state": "archiving",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T02:54:23.415Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+          "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+          "stop": {
+            "id": "stop_e6158ef3a5ab49f1",
+            "status": "pending",
+            "requestedAt": "2026-10-11T02:49:01.985Z",
+            "lastAttemptAt": null,
+            "endedAt": null,
+            "error": null
+          },
+          "providerErrorPresent": false
+        }
+      ]
+    }
+  },
+  "resourceStatus0258": {
+    "recordedAt": "2026-10-11T02:58:00.008349+00:00",
+    "scope": "Read-only provider status; no guest reads, wake, stop, or lifecycle mutation",
+    "fixtures": [
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "observedAt": "2026-10-11T02:57:59.988360+00:00",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "in_progress",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "pending",
+          "requestedAt": "2026-10-11T02:49:01.985Z",
+          "lastAttemptAt": null,
+          "endedAt": null,
+          "error": null
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "local-onboarding",
+        "sandboxId": "bx_f3jvebwu",
+        "observedAt": "2026-10-11T02:58:00.008138+00:00",
+        "state": "archived",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "completed",
+        "stop": {
+          "id": "stop_4baaa2099e8c268d",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T02:21:09.133Z",
+          "endedAt": "2026-10-11T02:21:09.133Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "builder",
+        "sandboxId": "bx_3tp9d5uv",
+        "observedAt": "2026-10-11T02:57:59.997786+00:00",
+        "state": "archived",
+        "hydrated": false,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotStatus": "completed",
+        "stop": {
+          "id": "stop_192aadbc06d25d9f",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-10T16:04:23.914Z",
+          "endedAt": "2026-10-10T16:04:23.914Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      }
+    ]
+  },
+  "local37FailingStopCancellation": {
+    "classification": "operator cancellation while provider stop was failing; not a pending-wait qualification",
+    "checkedAt": "2026-10-11T03:10:53.835Z",
+    "run": {
+      "id": "b380b52e-12df-4231-9f79-7e38539050f1",
+      "status": "cancelled",
+      "created_at": "2026-10-11T03:08:39.968Z",
+      "started_at": "2026-10-11T03:08:40.002Z",
+      "finished_at": "2026-10-11T03:09:07.157Z",
+      "error_code": "cancelled",
+      "error": "Cancelled by a board operator",
+      "native_session_id": null,
+      "runner_instance_id": null,
+      "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+      "session_id_after": null,
+      "retry_of_run_id": null,
+      "scheduled_retry_at": null,
+      "scheduled_retry_attempt": 0,
+      "scheduled_retry_reason": null,
+      "execution_stage": "preparing",
+      "execution_recovery": null,
+      "computer_admission": null,
+      "cancellation": {
+        "reason": "Cancelled by a board operator",
+        "source": "operator",
+        "expected": true,
+        "initiator": {
+          "id": "local-board",
+          "type": "user"
+        },
+        "recordedAt": "2026-10-11T03:09:07.156Z"
+      }
+    },
+    "newOwnerIdsAfterFirstSample": [],
+    "ownersBoundToRun": [],
+    "leasesBoundToRun": [],
+    "subsequentTaskRuns": [],
+    "wakeRequestsAfter0306": [
+      {
+        "id": "dc6f6f64-fa09-4757-954f-dac920ffe185",
+        "run_id": "b380b52e-12df-4231-9f79-7e38539050f1",
+        "status": "cancelled",
+        "reason": "issue_reopened_via_comment",
+        "requested_at": "2026-10-11T03:08:39.968Z",
+        "claimed_at": "2026-10-11T03:08:40.002Z",
+        "finished_at": "2026-10-11T03:09:07.157Z"
+      }
+    ],
+    "runEventTypes": [
+      {
+        "event_type": "lifecycle",
+        "count": 2,
+        "first_at": "2026-10-11T03:09:07.165Z",
+        "last_at": "2026-10-11T03:09:07.694Z"
+      }
+    ],
+    "providerFailureBaseline": {
+      "recordedAt": "2026-10-11T03:06:37.292098+00:00",
+      "scope": "Read-only precondition for pending-wait cancellation; no guest reads or lifecycle actions",
+      "fixtures": [
+        {
+          "fixture": "local-main",
+          "sandboxId": "bx_ndnggjad",
+          "observedAt": "2026-10-11T03:06:37.280972+00:00",
+          "state": "archiving",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T03:02:42.113Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+          "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+          "stop": {
+            "id": "stop_e6158ef3a5ab49f1",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:49:01.985Z",
+            "lastAttemptAt": "2026-10-11T03:02:40.643Z",
+            "endedAt": null,
+            "error": "Final snapshot failed; stop aborted to protect unsaved data: archival snapshot 52656953-0970-44b4-b373-f9f29e5f3d50 did not complete (status=failed); machine kept alive"
+          },
+          "providerErrorPresent": false
+        },
+        {
+          "fixture": "staging",
+          "sandboxId": "bx_b8sawfyp",
+          "observedAt": "2026-10-11T03:06:37.291945+00:00",
+          "state": "idle",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T03:02:40.556Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+          "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+          "stop": {
+            "id": "stop_804de979b357c47a",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:34:21.063Z",
+            "lastAttemptAt": "2026-10-11T03:06:20.495Z",
+            "endedAt": null,
+            "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+          },
+          "providerErrorPresent": false
+        }
+      ]
+    },
+    "evidence": [
+      {
+        "file": "retry-local37-admission-first.json",
+        "sha256": "5cd9c10c0dc66d82e994e12fdfcbe80c818f17419da2ad7481c4de60379e2662"
+      },
+      {
+        "file": "retry-local37-admission-settled.json",
+        "sha256": "818e5e94330d2d80d0714522ea4ba2c3d4904a6fbd02b5ea5e8cd1f9dd6a9ce0"
+      },
+      {
+        "file": "retry-pending-wait-provider-baseline.json",
+        "sha256": "f575cd34f84655a99b35c2094ab9cb5e1fc0cdb5bb3e797f709cf8bd39c34879"
+      },
+      {
+        "file": "retry-local37-admission-cleanup0313.json",
+        "sha256": "d4e010b16335d01c4d8167e52e9c3cd62b1cf180e3ebc38150a24cc848e511bd"
+      }
+    ],
+    "limits": [
+      "No guest inspection was performed while the provider was archiving with a failing stop.",
+      "Absence of provider dispatch is supported by null runtime binding, preparing stage, no owner/lease, and lifecycle-only run events.",
+      "No durable computer_admission_wait record was produced in this run.",
+      "The 03:10:53 sample still showed preparing; executor cleanup is proven only by the 03:13:38 sample and its 03:11:16.987 settlement receipt."
+    ],
+    "cleanupVerifiedAt": "2026-10-11T03:13:38.297Z",
+    "finalCleanup": {
+      "checkedAt": "2026-10-11T03:13:38.297Z",
+      "run": {
+        "id": "b380b52e-12df-4231-9f79-7e38539050f1",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:08:39.968Z",
+        "started_at": "2026-10-11T03:08:40.002Z",
+        "finished_at": "2026-10-11T03:09:07.157Z",
+        "error_code": "cancelled",
+        "error": "Cancelled by a board operator",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": null,
+        "scheduled_retry_at": null,
+        "scheduled_retry_attempt": 0,
+        "scheduled_retry_reason": null,
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": "2026-10-11T03:11:16.987Z",
+        "computer_admission_preparation_settled_at": null,
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": null,
+        "computer_admission": null,
+        "cancellation": {
+          "reason": "Cancelled by a board operator",
+          "source": "operator",
+          "expected": true,
+          "initiator": {
+            "id": "local-board",
+            "type": "user"
+          },
+          "recordedAt": "2026-10-11T03:09:07.156Z"
+        }
+      },
+      "noOwnerOrLeaseBoundToRun": true,
+      "noScheduledRetryOrSuccessor": true,
+      "sourceFile": "retry-local37-admission-cleanup0313.json",
+      "sourceSha256": "d4e010b16335d01c4d8167e52e9c3cd62b1cf180e3ebc38150a24cc848e511bd"
+    },
+    "finalSuccessorRunIds": []
+  },
+  "providerSnapshotInvestigation": {
+    "recordedAt": "2026-10-11T03:11:36.970048+00:00",
+    "scope": "GET sandbox, GET exact stop, GET latest five completed snapshots only; no guest contact or mutations",
+    "fixtures": [
+      {
+        "fixture": "staging",
+        "sandboxId": "bx_b8sawfyp",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:02:40.556Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": "2026-10-11T03:11:20.544Z",
+          "endedAt": null,
+          "error": "Refusing archive/stop: Sandbox machine [redacted] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+        },
+        "completedSnapshots": [
+          {
+            "id": "257de6e4-c150-4c2b-b8e7-026831946617",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 93,
+            "createdAt": "2026-10-11T02:19:44.213Z",
+            "completedAt": "2026-10-11T02:19:59.759Z",
+            "sizeBytes": 445853,
+            "fileCount": 81,
+            "contentSizeBytes": 13367620,
+            "contentFileCount": 81
+          },
+          {
+            "id": "3bcf62e0-cc69-47e9-b493-1e294d74ea51",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 92,
+            "createdAt": "2026-10-11T02:18:44.210Z",
+            "completedAt": "2026-10-11T02:18:59.226Z",
+            "sizeBytes": 357418,
+            "fileCount": 71,
+            "contentSizeBytes": 12994481,
+            "contentFileCount": 71
+          },
+          {
+            "id": "e543237f-89dc-41fc-a1e4-0ad6ad7a7ac4",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 91,
+            "createdAt": "2026-10-11T02:17:44.226Z",
+            "completedAt": "2026-10-11T02:18:02.424Z",
+            "sizeBytes": 179011,
+            "fileCount": 54,
+            "contentSizeBytes": 4214826,
+            "contentFileCount": 54
+          },
+          {
+            "id": "987fbaf1-a3c9-485c-81b1-a3e6c0a687e9",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 90,
+            "createdAt": "2026-10-11T02:16:44.225Z",
+            "completedAt": "2026-10-11T02:17:02.668Z",
+            "sizeBytes": 272375,
+            "fileCount": 5,
+            "contentSizeBytes": 6254470,
+            "contentFileCount": 5
+          },
+          {
+            "id": "6e688e9c-ba76-4c76-9ffd-fa9c457ce3c5",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 89,
+            "createdAt": "2026-10-11T02:15:44.223Z",
+            "completedAt": "2026-10-11T02:16:02.697Z",
+            "sizeBytes": 207058,
+            "fileCount": 4,
+            "contentSizeBytes": 4214662,
+            "contentFileCount": 4
+          }
+        ],
+        "hasMoreCompletedSnapshots": true
+      },
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:02:42.113Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+        "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:49:01.985Z",
+          "lastAttemptAt": "2026-10-11T03:02:40.643Z",
+          "endedAt": null,
+          "error": "Final snapshot failed; stop aborted to protect unsaved data: archival snapshot 52656953-0970-44b4-b373-f9f29e5f3d50 did not complete (status=failed); machine kept alive"
+        },
+        "completedSnapshots": [
+          {
+            "id": "53e25365-31d5-4949-8913-121ea1d09a2c",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 279,
+            "createdAt": "2026-10-11T02:41:40.087Z",
+            "completedAt": "2026-10-11T02:41:45.984Z",
+            "sizeBytes": 48739,
+            "fileCount": 138,
+            "contentSizeBytes": 174240,
+            "contentFileCount": 138
+          },
+          {
+            "id": "64799060-7ed0-4a52-9b72-52dacb6f20c0",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 278,
+            "createdAt": "2026-10-11T02:40:43.045Z",
+            "completedAt": "2026-10-11T02:40:43.043Z",
+            "sizeBytes": 179245,
+            "fileCount": 28,
+            "contentSizeBytes": null,
+            "contentFileCount": null
+          },
+          {
+            "id": "983f8945-6e82-4f06-90d7-76b2ebb00ad4",
+            "status": "completed",
+            "kind": "noop",
+            "generation": null,
+            "createdAt": "2026-10-11T00:52:13.419Z",
+            "completedAt": "2026-10-11T00:52:14.041Z",
+            "sizeBytes": null,
+            "fileCount": null,
+            "contentSizeBytes": null,
+            "contentFileCount": null
+          },
+          {
+            "id": "35bf2230-1823-4517-99d6-440272916f9c",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 278,
+            "createdAt": "2026-10-11T00:50:15.044Z",
+            "completedAt": "2026-10-11T00:52:12.702Z",
+            "sizeBytes": 179245,
+            "fileCount": 28,
+            "contentSizeBytes": 6443682,
+            "contentFileCount": 28
+          },
+          {
+            "id": "fd62ed3a-723f-4545-8610-3109f6d02396",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 277,
+            "createdAt": "2026-10-11T00:46:33.572Z",
+            "completedAt": "2026-10-11T00:50:14.996Z",
+            "sizeBytes": 220697,
+            "fileCount": 496,
+            "contentSizeBytes": 6252535,
+            "contentFileCount": 496
+          }
+        ],
+        "hasMoreCompletedSnapshots": true
+      }
+    ]
+  },
+  "deployment17": {
+    "sourceCommit": "ca8ab88c78556c4711d59f71c6293619543a66a1",
+    "requestId": "f90ac5bb-503e-4f15-a56e-7ccd2509c187",
+    "prepareRunId": "38107501313",
+    "buildRunId": "38107534492",
+    "result": "Build cancelled before check/deploy after fresh review found admission lifecycle defects. No rollout occurred.",
+    "reviewFindings": [
+      "https://github.com/paperclipai/paperclip/pull/15813#discussion_r4240083053",
+      "https://github.com/paperclipai/paperclip/pull/15804#discussion_r4240095623"
+    ],
+    "correction": "In progress; fresh deployment required after correction."
+  },
+  "providerSelfRecovery0323": {
+    "recordedAt": "2026-10-11T03:23:54.960011+00:00",
+    "scope": "Single bounded provider status check; no guest reads or lifecycle actions",
+    "fixtures": [
+      {
+        "fixture": "staging",
+        "sandboxId": "bx_b8sawfyp",
+        "observedAt": "2026-10-11T03:23:54.959691+00:00",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:16:37.370Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": "2026-10-11T03:23:20.483Z",
+          "endedAt": null,
+          "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "observedAt": "2026-10-11T03:23:54.959875+00:00",
+        "state": "archived",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:16:03.007Z",
+        "lastSnapshotStatus": "completed",
+        "snapshotCompletedAt": "2026-10-11T03:16:03.591Z",
+        "snapshotVerifiedAt": "2026-10-11T03:16:03.591Z",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T03:16:03.734Z",
+          "endedAt": "2026-10-11T03:16:03.734Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      }
+    ],
+    "provenance": {
+      "file": "retry-provider-self-recovery-status.json",
+      "sha256": "8cfe3e2f31d50468a5d9503aa0ebebb6840b01c50edeed4d7fa109f704291b27"
+    }
+  },
+  "local37ClaudeResume": {
+    "checkedAt": "2026-10-11T03:29:05.086Z",
+    "outcome": "failed during saved-session recovery before independent proof-file verification",
+    "run": {
+      "id": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "status": "failed",
+      "created_at": "2026-10-11T03:26:24.365Z",
+      "started_at": "2026-10-11T03:26:24.393Z",
+      "finished_at": "2026-10-11T03:28:55.832Z",
+      "error_code": "native_session_interrupted",
+      "error": "native_session_recovery_failed: Error: runner_remote_provider_cache_corrupt: [exact agent provider-pack cache directory]; stop tasks using this pack and have an operator remove or quarantine this exact cache directory before retrying",
+      "native_session_id": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+      "runner_instance_id": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+      "session_id_before": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+      "session_id_after": null,
+      "execution_stage": "preparing",
+      "controller_lease_expires_at": "2026-10-11T03:28:22.877Z",
+      "resultKeys": [],
+      "forceFreshSession": false,
+      "executionRecovery": null,
+      "providerPackDigest": null
+    },
+    "providerPackDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+    "sameNormalizedSession": true,
+    "sameLogicalRunner": true,
+    "sameProviderThreadBefore": true,
+    "latestOwner": {
+      "id": "5ef4911d-a6a9-4d10-9eeb-dce1d02de041",
+      "phase": "retired",
+      "generation": 1,
+      "runId": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "sessionKey": "49e146ed7d44b43e9080ba7f0119315bc30625354fb5f70e132d4f1df35d1231",
+      "deadline": null,
+      "process": null
+    },
+    "latestLease": {
+      "id": "0354c41f-d8c2-48bb-889d-b2932082dfc8",
+      "status": "released",
+      "heartbeat_run_id": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "acquired_at": "2026-10-11T03:26:41.773Z",
+      "released_at": "2026-10-11T03:28:55.830Z",
+      "cleanup_status": "success"
+    },
+    "expectedProofHashes": [
+      "14fa23911a1a95ede22a93f43fc027934b20a1ba497f8e6120abc8769498e124",
+      "afaf525f4bf0c38614c5df0cf97140e7d1bf9cad96faa293e2317dc82116af4a"
+    ],
+    "proofFilesVerified": false,
+    "guestReadsPerformed": false,
+    "cacheMutationsPerformed": false,
+    "evidence": [
+      {
+        "file": "retry-local37-claude-baseline.json",
+        "sha256": "8b46b06284ea09fb29567df0296154b8ad18ccc5c26a1a935fd014035a6a48ff"
+      },
+      {
+        "file": "retry-local37-claude-progress0327.json",
+        "sha256": "575219156fe2e312c688d9a5f333387ddbe9426c302ef71e525c92491c89c78f"
+      },
+      {
+        "file": "retry-local37-claude-progress0329.json",
+        "sha256": "822cbec020ddec5f3d968200b9dbb8f383158c95423ebc95cccdb1260fb94fab"
+      }
+    ],
+    "sourceCommit": "04ce7eb2a8fddbb2a46c8ec99d3a748de53d7ae8",
+    "ui": "Ordinary follow-up in saved task; UI showed Run failed and Blocked. Screenshot local-37-claude-resume-failed.png."
+  },
+  "deployment18": {
+    "sourceCommit": "bd86e22e72578fa8a240160b6001802eb2cd40f1",
+    "requestId": "f8cb13bc-51c4-4639-9323-adc2560dda18",
+    "prepareRunId": "38108515304",
+    "status": "succeeded",
+    "verification": "verified",
+    "checkedAt": "2026-10-11T03:56:25.724Z",
+    "receiptSha256": "8007669d64280de064527faf2bf07a45ad1cd6099a9b693d4f3394847f1bc6b8"
+  },
+  "local38AdmissionPause": {
+    "checkedAt": "2026-10-11T03:36:05.053Z",
+    "servingSource": "949a1ce",
+    "outcome": "PASS: durable pending admission, automatic retry, and normal UI Pause work suppresses later dispatch",
+    "scope": "BOA16 existing native Codex task; pre-provider admission uses legacy controller bookkeeping",
+    "runs": [
+      {
+        "id": "63ba1874-a618-49de-af91-29a6ee3b2402",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:33:27.017Z",
+        "started_at": "2026-10-11T03:33:27.077Z",
+        "finished_at": "2026-10-11T03:33:27.615Z",
+        "error_code": "computer_admission_wait",
+        "error": "Computer is still saving its previous session. This task will retry automatically.",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": null,
+        "session_id_after": null,
+        "retry_of_run_id": null,
+        "scheduled_retry_at": null,
+        "scheduled_retry_attempt": 0,
+        "scheduled_retry_reason": null,
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": "2026-10-11T03:33:27.631Z",
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": {
+          "kind": "computer_admission_wait",
+          "providerWorkStarted": false
+        },
+        "computer_admission": {
+          "runId": "63ba1874-a618-49de-af91-29a6ee3b2402",
+          "stopId": "stop_1805dc75feffca6e",
+          "agentId": "30b7766c-107d-441f-ba45-506459cf2134",
+          "companyId": "3081dd54-008a-4a49-8cc3-9a63c1f2dda7",
+          "computerId": "1feffcc6-7014-4e35-9b1d-cb067fecb7a8",
+          "sessionKey": "b1726cdbdbb33061239c7763b6b7d630816ba4ba7f6a20915a8103c77a04f4e9",
+          "environmentId": "dcc7e124-e838-4458-a627-e7987366beaf",
+          "idleTimeoutMs": 300000,
+          "deferPendingStop": true
+        },
+        "cancellation": {
+          "reason": "Waiting for the computer to finish saving",
+          "source": "control_plane",
+          "expected": true,
+          "initiator": {
+            "type": "system"
+          },
+          "recordedAt": "2026-10-11T03:33:27.615Z"
+        }
+      },
+      {
+        "id": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:33:27.646Z",
+        "started_at": "2026-10-11T03:34:13.027Z",
+        "finished_at": "2026-10-11T03:34:13.354Z",
+        "error_code": "computer_admission_wait",
+        "error": "Computer is still saving its previous session. This task will retry automatically.",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": "63ba1874-a618-49de-af91-29a6ee3b2402",
+        "scheduled_retry_at": "2026-10-11T03:33:57.634Z",
+        "scheduled_retry_attempt": 1,
+        "scheduled_retry_reason": "computer_admission_wait",
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": "2026-10-11T03:34:13.370Z",
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": {
+          "kind": "computer_admission_wait",
+          "providerWorkStarted": false
+        },
+        "computer_admission": {
+          "runId": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+          "stopId": "stop_1805dc75feffca6e",
+          "agentId": "30b7766c-107d-441f-ba45-506459cf2134",
+          "companyId": "3081dd54-008a-4a49-8cc3-9a63c1f2dda7",
+          "computerId": "1feffcc6-7014-4e35-9b1d-cb067fecb7a8",
+          "sessionKey": "b1726cdbdbb33061239c7763b6b7d630816ba4ba7f6a20915a8103c77a04f4e9",
+          "environmentId": "dcc7e124-e838-4458-a627-e7987366beaf",
+          "idleTimeoutMs": 300000,
+          "deferPendingStop": true
+        },
+        "cancellation": {
+          "reason": "Waiting for the computer to finish saving",
+          "source": "control_plane",
+          "expected": true,
+          "initiator": {
+            "type": "system"
+          },
+          "recordedAt": "2026-10-11T03:34:13.354Z"
+        }
+      },
+      {
+        "id": "20edea90-04bc-4d84-b996-ce113d86db18",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:34:13.381Z",
+        "started_at": null,
+        "finished_at": "2026-10-11T03:35:13.025Z",
+        "error_code": "issue_paused",
+        "error": "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": "5b8ba4cd-b283-453a-895b-2517d44a6504",
+        "scheduled_retry_at": "2026-10-11T03:34:43.372Z",
+        "scheduled_retry_attempt": 2,
+        "scheduled_retry_reason": "computer_admission_wait",
+        "execution_stage": null,
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": null,
+        "computer_admission_preparation_settled_at": null,
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": null,
+        "computer_admission": null,
+        "cancellation": null
+      }
+    ],
+    "waitingIssueState": [
+      {
+        "id": "e125016a-d038-4550-b7d5-3707985fdee3",
+        "status": "in_progress",
+        "assignee_agent_id": "30b7766c-107d-441f-ba45-506459cf2134",
+        "execution_run_id": "20edea90-04bc-4d84-b996-ce113d86db18",
+        "execution_locked_at": "2026-10-11T03:34:13.372Z",
+        "execution_state_status": null
+      }
+    ],
+    "waitingActiveHolds": [],
+    "pausedIssueState": [
+      {
+        "id": "e125016a-d038-4550-b7d5-3707985fdee3",
+        "status": "in_progress",
+        "assignee_agent_id": "30b7766c-107d-441f-ba45-506459cf2134",
+        "execution_run_id": null,
+        "execution_locked_at": null,
+        "execution_state_status": null
+      }
+    ],
+    "pausedActiveHolds": [
+      {
+        "id": "4b419574-cc7e-41cf-a50d-9cf0e084a9d5",
+        "status": "active",
+        "mode": "pause",
+        "created_at": "2026-10-11T03:34:37.736Z"
+      }
+    ],
+    "newOwnerIds": [],
+    "leasesForAdmissionRuns": [],
+    "subsequentRunsAfterPausedSuccessor": [],
+    "eventTypes": [
+      {
+        "event_type": "lifecycle",
+        "count": 4,
+        "first_at": "2026-10-11T03:33:27.666Z",
+        "last_at": "2026-10-11T03:35:13.026Z"
+      }
+    ],
+    "limits": [
+      "UI action was More task actions \u2192 Pause work, not a Stop button.",
+      "This proves suppressed dispatch while paused, not recovery after provider archival completes.",
+      "No guest reads or provider lifecycle mutations were performed."
+    ],
+    "evidence": [
+      {
+        "file": "retry-local38-pending-provider-baseline.json",
+        "sha256": "dca4fd2e5f6db3f83f61eebbb7cbb08cefb2a4155f88ad2dbd149e1fa7ce4762"
+      },
+      {
+        "file": "retry-local37-admission-local38baseline.json",
+        "sha256": "ec5d0e95e66bbff9dbdf713b80f1de3d8d5946e79c94de8cdf5197cf60263e45"
+      },
+      {
+        "file": "retry-local38-admission-active0334.json",
+        "sha256": "ccb76860a44552a1b2fad76d80abff08c97ac8d3d09e0391f4e3fecd74399561"
+      },
+      {
+        "file": "retry-local38-admission-paused0335.json",
+        "sha256": "0444992c6065056e1873cb0a1d46d14c4ec95e76a62bf35e15f22d5ee74d365a"
+      },
+      {
+        "file": "retry-local38-admission-paused0336.json",
+        "sha256": "048cd41400771b9e8a2099270651d74d3b24a745770fb0dc87b67133d57ceddb"
+      }
+    ],
+    "source": "949a1ce18a",
+    "uiFollowup": "Paused display initially retained a misleading retry countdown. Reviewed UI correction a761054e6a hides waiting surfaces under active pause and uses neutral Connecting to computer copy for admission waits."
+  },
+  "local38ResumeLimit": {
+    "newMessageAt": "2026-10-11T03:38:24.380Z",
+    "observedAt": "2026-10-11T03:39:40Z",
+    "state": "deferred_issue_execution",
+    "reason": "execution_recovery",
+    "providerWorkStarted": false,
+    "next": "Investigate recovery gate without manually clearing it."
+  },
+  "providerRecovery0338": {
+    "recordedAt": "2026-10-11T03:38:43.839353+00:00",
+    "sandboxId": "bx_b8sawfyp",
+    "state": "archived",
+    "hydrated": true,
+    "health": "ok",
+    "lastSnapshotAttemptAt": "2026-10-11T03:30:04.372Z",
+    "lastSnapshotStatus": "completed",
+    "snapshotCompletedAt": "2026-10-11T03:30:13.427Z",
+    "snapshotVerifiedAt": "2026-10-11T03:30:13.427Z",
+    "stop": {
+      "id": "stop_804de979b357c47a",
+      "status": "completed",
+      "requestedAt": null,
+      "lastAttemptAt": "2026-10-11T03:30:20.703Z",
+      "endedAt": "2026-10-11T03:30:20.703Z",
+      "error": null
+    },
+    "scope": "Single read-only staging recovery check; no guest or lifecycle action"
+  },
+  "providerVerificationClassification": {
+    "core": "fd3ec56106",
+    "combined": "2f03982a47",
+    "observedVerifyMs": 30007,
+    "deadlineMs": 30000,
+    "result": "Classification corrected: timeout or transport failure is verification_unavailable, explicit verified mismatch alone is cache_corrupt. Full verification and deadline unchanged.",
+    "tests": {
+      "cache": 45,
+      "selectedRelated": 159,
+      "serverTypecheck": "passed",
+      "independentReview": "passed"
+    },
+    "limit": "No live Claude continuation success. Actual slow remote step is not yet identified."
+  },
+  "uiWaitingCorrection": {
+    "commit": "a761054e6a",
+    "tests": 159,
+    "typecheck": "passed",
+    "tokenGates": "passed",
+    "independentReview": "passed",
+    "provenance": [
+      {
+        "file": "boat-wait-ui-tests-direct.log",
+        "sha256": "0801cefc6ea9cce5c4e18e449a26bbc3fe4a5c1633e91cc2feb8406ebd38de0c"
+      },
+      {
+        "file": "boat-wait-ui-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "file": "boat-wait-ui-token-gates-direct.log",
+        "sha256": "452e64671e958c539290f6b327ac01ff5a76719e995430a599132863ed568516"
+      }
+    ]
+  },
+  "readOnlyPackDiagnosis": {
+    "recordedAt": "2026-10-11T03:42:51.260Z",
+    "providerObserved": {
+      "state": "idle",
+      "health": "ok",
+      "stopStatus": "completed"
+    },
+    "packDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+    "transportAndCommandElapsedMs": 25709,
+    "exitCode": 0,
+    "timedOut": false,
+    "stages": [
+      {
+        "stage": "manifest",
+        "elapsedMs": 2,
+        "pass": true,
+        "digest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+        "totalMs": 2
+      },
+      {
+        "stage": "artifact_nodeCommand",
+        "elapsedMs": 104,
+        "pass": true,
+        "totalMs": 106
+      },
+      {
+        "stage": "artifact_productionLock",
+        "elapsedMs": 2,
+        "pass": true,
+        "totalMs": 108
+      },
+      {
+        "stage": "artifact_opencodeCommand",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 108
+      },
+      {
+        "stage": "artifact_opencodeExecutable",
+        "elapsedMs": 170,
+        "pass": true,
+        "totalMs": 278
+      },
+      {
+        "stage": "artifact_opencodeProxy",
+        "elapsedMs": 3,
+        "pass": true,
+        "totalMs": 281
+      },
+      {
+        "stage": "artifact_acpxSidecar",
+        "elapsedMs": 8,
+        "pass": true,
+        "totalMs": 289
+      },
+      {
+        "stage": "artifact_grokLauncher",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 289
+      },
+      {
+        "stage": "dist_tree",
+        "elapsedMs": 118,
+        "pass": true,
+        "files": 1433,
+        "bytes": 24415028,
+        "totalMs": 407
+      },
+      {
+        "stage": "candidate_pi",
+        "elapsedMs": 12318,
+        "pass": true,
+        "files": 15673,
+        "bytes": 547621317,
+        "totalMs": 12725
+      },
+      {
+        "stage": "candidate_cursor",
+        "elapsedMs": 9127,
+        "pass": true,
+        "files": 455,
+        "bytes": 583208146,
+        "totalMs": 21853
+      },
+      {
+        "stage": "node_target_versions",
+        "elapsedMs": 0,
+        "pass": true,
+        "totalMs": 21853
+      },
+      {
+        "stage": "package_versions",
+        "elapsedMs": 1208,
+        "pass": true,
+        "totalMs": 23061
+      },
+      {
+        "stage": "complete",
+        "pass": true,
+        "totalMs": 23061
+      }
+    ],
+    "stderrPresent": false,
+    "scope": "Read-only verifier stages; no OpenCode version execution or cache mutation",
+    "provenance": {
+      "file": "retry-local38-pack-readonly-timing.json",
+      "sha256": "a586e5115202761f1e434e3331896d074eaf745878555d6949f461af8a6c3537"
+    }
+  },
+  "pausedAdmissionRecoveryCorrection": {
+    "core": "a5cc05d2c3",
+    "combined": "956f32fe23",
+    "staging": "b48ac8412f",
+    "tests": 318,
+    "files": 3,
+    "skipped": 0,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Exact scheduler pause receipt, positively settled matching parent and no execution evidence prove a cancelled scheduled retry did not start. Only unchanged NEW post-finish user input can use the existing explicit continuation path. Saved-message sweep is covered.",
+    "historicalRecoveryLimit": "Existing false recovery holds use the existing explicit continuation forceFreshSession contract. This does not prove saved native-session continuation after that historical hold.",
+    "provenance": [
+      {
+        "file": "computer-wait-pause-final-tests.log",
+        "sha256": "12055ea05cab80f5b2a4e0ffc2d085c213d1ed23e6b3ea65d67f2f93580e03fd"
+      },
+      {
+        "file": "computer-wait-pause-final-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "latestObservation": {
+    "recordedAt": "2026-10-11T04:29:00Z",
+    "canonical": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "core": "28d3fc1b65",
+    "stagingCandidate": "81108b27be3de129adcbc5e58522994ba514a19e",
+    "localServer": "local40",
+    "localServingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
+    "status": "Fresh Claude task failed at sidecar session.open; diagnosis continues. Saved Claude fixture remains quarantined. Deployment19 still pending; deployment20 not started.",
+    "originalSourceAndRemainingFields": "Historical at original recordedAt; later follow-ups supersede individual conditions without erasing original failures.",
+    "servingStaging": "05a1d1f2172261066ca53d3776f798c3073fc49f"
+  },
+  "boundedComputerPackVerification": {
+    "core": "c1273036d5",
+    "combined": "c4fd4d8c1a",
+    "staging": "2d8030417c",
+    "fullHashTimeoutMs": 120000,
+    "otherTransportAndVersionTimeoutMs": 30000,
+    "tests": 49,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "unchanged": [
+      "all integrity checks",
+      "owner retirement and cancellation fences",
+      "runner warm timeout",
+      "turn and recovery budgets"
+    ],
+    "liveOutcome": "pending"
+  },
+  "local39": {
+    "source": "c4fd4d8c1a44e6a062d8742a89eae850ce2ef0cc",
+    "pauseRecovery": {
+      "runId": "ed993c49",
+      "finishedAt": "2026-10-11T03:59:23.452Z",
+      "status": "succeeded",
+      "forceFreshSession": true,
+      "savedNativeSessionPass": false,
+      "markerLineCount": 1,
+      "markerSha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c",
+      "independentReadAt": "2026-10-11T03:59:55Z",
+      "screenshot": "../local39-pause-resume-proof.png"
+    },
+    "desktop": {
+      "normalConnectAt": "2026-10-11T04:00:00Z",
+      "directBrowserMouse": "passed; opened Chrome",
+      "directBrowserKeyboard": "passed; visible boat in address bar",
+      "embeddedInput": "unverified; automation rejected fractional iframe coordinates before input",
+      "typeTextAttempt": "no visible result; actual key events subsequently succeeded",
+      "screenshot": "../local39-direct-desktop-input.png",
+      "extraDirectTab": "closed normally; original viewer retained temporarily for bounded authorized diagnosis",
+      "normalConnectApproximate": true,
+      "originalViewer": "Closed normally around04:04; provider subsequently archived04:04:56.078 with verified snapshot and zero active owners."
+    },
+    "claude": {
+      "runId": "6c9d757f-c716-4d7c-b4d3-e0d4f00cf321",
+      "forceFreshSession": false,
+      "normalizedSessionId": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+      "providerThreadId": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+      "logicalRunnerId": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+      "outcome": "not passed; ACPX session.open rejected after successful pack verification; same-run recovery subsequently reported authority_indeterminate",
+      "firstFailureAt": "2026-10-11T03:58:50.828Z",
+      "uiFriction": "Run failed briefly appeared before automatic recovery returned the same run to Working.",
+      "proofFiles": "independent read confirms unchanged prior hashes; Claude did not execute the requested read",
+      "provenance": [
+        {
+          "file": "retry-local39-claude-checkpoint0359.json",
+          "sha256": "54bd757bf5d42219ff78f8873df6e0d2bb58cf28c40756f714c6e45a3c94a691"
+        },
+        {
+          "file": "retry-local39-claude-failure-events.json",
+          "sha256": "758dd96c05c1f63e91cad06b989b6bcbe7b95c4d3cfd23fbb99c270f5c691969"
+        }
+      ]
+    }
+  },
+  "stopWrapperRaceCorrection": {
+    "core": "280bad9d15",
+    "combined": "87694c9c3f",
+    "staging": "0a0ccbaac1",
+    "tests": 138,
+    "skipped": 0,
+    "finalAffectedCases": 3,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Suppression CAS preserves Stop; losing writes have no release effects. Wake queue re-reads source under task/run locks and retains claims and old input until aborted computer-wait acknowledgement. Both race orderings test the real wrapper, Stop and release with a barrier before acknowledgement.",
+    "provenance": [
+      {
+        "file": "computer-wait-wrapper-race-final-tests.log",
+        "sha256": "52d7d3543646188aeb19e2ec08043886646e99db9d4a9d1c1210b694abd595da"
+      },
+      {
+        "file": "computer-wait-wrapper-race-final-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "file": "computer-wait-wrapper-race-affected-tests.log",
+        "sha256": "c7a8c4a1c8b2a5afd4555738e62e091958ea1fb825d4b87c8730ce2f7e2659e7"
+      }
+    ]
+  },
+  "local39BroadChecks": {
+    "runtimeSource": "c4fd4d8c1a",
+    "documentationHeadAtBuild": "f43ee562a2",
+    "recursiveTypecheck": "passed",
+    "fullBuild": "passed",
+    "provenance": [
+      {
+        "file": "local39-recursive-typecheck.log",
+        "sha256": "38efb73dce2310a5a58e63f94d0f92d8b167d89f22804e75735fcf40cc88df38"
+      },
+      {
+        "file": "local39-build.log",
+        "sha256": "5de703cd3ccbf39a56d523f0ce7ddff235ce873d3b2f670ce9e450561f9a383d"
+      }
+    ]
+  },
+  "verificationRecoveryClassification": {
+    "core": "3e90f36fa7",
+    "combined": "121ec12299",
+    "staging": "ad27e0069c",
+    "tests": 13,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Preserves known verification-unavailable source classification. Only no-session/no-provider-evidence failures qualify for existing bounded bootstrap recovery; existing checkpoint identity and ambiguous-state protections remain."
+  },
+  "sidecarFailureDiagnostics": {
+    "core": "bb4536fb9a",
+    "combined": "8ccfdd3dd2",
+    "staging": "05a1d1f217",
+    "tests": 8,
+    "independentReview": "passed",
+    "behavior": "Closed categories for known pinned-sidecar admission errors; no arbitrary message/path output. Retryability, rejection and authority checks unchanged. Underlying live Claude cause not established."
+  },
+  "deployment19": {
+    "requestId": "3b28f246-540b-478a-b9d7-207686ae850e",
+    "sha": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "checkedAt": "2026-10-11T04:34:10.638Z"
+  },
+  "local40DiagnosticRetry": {
+    "outcome": "FAILED: saved controller authority remains quarantined; diagnostic sidecar opening not reached",
+    "receipt": "local40-saved-claude-outcome.json",
+    "quarantineBypassed": false
+  },
+  "local40FreshClaudeTask": {
+    "outcome": "FAILED: fresh session.open timed out before proof tools; no same-run automatic retry",
+    "receipt": "local40-fresh-claude-outcome.json",
+    "cleanup": "lease released successfully and owner retired",
+    "deeperEvidence": "Controller run.prepare, drain and suspend completed. Persisted session.open result identifies inner ACPX sidecar request timeout; no committed provider events or malformed frames.",
+    "packageCompatibility": "Source diff between pack source51e52d584 and runner8ccf shows unchanged ACPX sidecar/profiles/contracts/protocol and provider startup implementation; no package incompatibility found.",
+    "warmFollowupPassed": false,
+    "diagnosticReceipt": "local40-fresh-claude-diagnosis.json"
+  },
+  "legacyExplicitContinuationRaceCorrection": {
+    "core": "9a31fa2746",
+    "canonical": "b68c68566c",
+    "stagingCandidate": "e21a7ca1ba",
+    "cause": "Periodic legacy recovery recreated an explicitly resolved hold and cancelled its authorized successor before dispatch.",
+    "fix": "Honor exact explicit continuation receipts while preserving unsafe-workspace and multi-source holds.",
+    "validation": "329/329 affected tests; final8/8 focused regression cases; server TypeScript and independent review passed. Fresh browser CI pending.",
+    "browserCI": {
+      "checkedAt": "2026-10-11T04:30:44Z",
+      "exactCore": "9a31fa2746",
+      "exactCombined": "b68c68566c",
+      "e2e8": "passed on both heads",
+      "review": "5/5 and zero unresolved threads on both heads",
+      "otherCI": "pending, no failure observed"
+    }
+  },
+  "preDiagnosticPatchCI": {
+    "receipt": "core9a31-ui-b68-ci-review.json",
+    "status": "Both exact heads green, Greptile5/5 and zero unresolved threads; excludes later startup-stage diagnostics."
+  },
+  "staging19FreshClaude": {
+    "taskId": "c4aaef65-6d52-478d-9e1d-43a3acd0ab6a",
+    "runId": "fccc253e-ae3c-40d1-9950-f5702d17369b",
+    "startedAt": "2026-10-11T04:35:33Z",
+    "servingSource": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "status": "in progress: Preparing provider pack for first use",
+    "persistentProofIndependentRead": {
+      "at": "2026-10-11T04:37:13Z",
+      "size": 25,
+      "sha256": "e646d151756f1efdb9e19d99a2a0971810468087c457fa458f1311c42ef07424"
+    }
+  },
+  "startupStageDiagnostics": {
+    "core": "28d3fc1b65",
+    "combined": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "stagingCandidate": "81108b27be3de129adcbc5e58522994ba514a19e",
+    "behavior": "Closed admission-stage names and bounded elapsed milliseconds use existing diagnostic channel; timeout retains last non-cleanup stage. No deadline or lifecycle changes.",
+    "validation": "Rust10/10 real timeout/cleanup/privacy cases; host54/54 including observer failure isolation; TypeScript, entrypoint build and independent review passed.",
+    "liveValidation": "Pending matched local artifact build and fresh task."
+  },
+  "localArtifactSelectionCorrection": {
+    "receipt": "local-artifact-selection-correction.json",
+    "scope": "Local40/local41 requests did not select the built diagnostics; failure outcomes remain valid for the old selected artifacts.",
+    "repair": "Changed exactly two saved test-drive .env paths; other bytes and DB preserved. Graceful local42 restart; fresh BOA19 now verifies actual selection.",
+    "requestedNewRunnerSha256": "366a0fe12a39a6be773540369cd577810590d1b0d03491e834b414575087a3c9",
+    "requestedNewPackDigest": "sha256:af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719"
+  },
+  "staging19LiveEvidence": {
+    "receipt": "staging19-live-evidence.json",
+    "nativeClaude": "fresh and warm passed; same recorded runner identity, child processes restart",
+    "nativeCodex": "saved-task continuation, computer use and warm HMR passed with exact process/session equality",
+    "browser": "Heading0450; draftkeep-this-unsaved-draft-boat-0449 and page-session1791694134833 retained; direct desktop mouse and keyboard input observed",
+    "source": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "limits": "Not legacy qualification or proof of old quarantined Claude recovery; see receipt."
+  },
+  "local41BroadChecks": {
+    "source": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "recursiveTypecheck": "passed with verified registry access after sandbox registry fetch failed",
+    "build": "passed",
+    "scope": "These are source/build checks, not proof of remote artifact selection."
+  }
+}

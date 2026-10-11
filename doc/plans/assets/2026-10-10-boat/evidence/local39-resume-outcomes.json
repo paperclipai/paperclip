@@ -1,0 +1,178 @@
+{
+  "recordedAt": "2026-10-11T04:04:48.235Z",
+  "servingSource": "c4fd4d8c1a",
+  "boa16": {
+    "outcome": "PASS: previously deferred explicit message recovered; new native session by historical recovery contract",
+    "run": {
+      "id": "ed993c49-a10a-475d-9203-d20ff028f212",
+      "status": "succeeded",
+      "created_at": "2026-10-11T03:54:26.561Z",
+      "started_at": "2026-10-11T03:54:26.629Z",
+      "finished_at": "2026-10-11T03:59:23.452Z",
+      "error_code": null,
+      "error": null,
+      "native_session_id": "16a7482d-2944-471a-b2c5-ee77c7e783c0",
+      "runner_instance_id": "03fd094d-7626-41db-b3de-6ac44110dc34",
+      "session_id_before": null,
+      "session_id_after": "01a1291c-a10a-7b81-bb76-6190ca667282",
+      "retry_of_run_id": null,
+      "scheduled_retry_at": null,
+      "scheduled_retry_attempt": 0,
+      "scheduled_retry_reason": null,
+      "execution_stage": "preparing",
+      "runtime_mode": "native",
+      "force_fresh_session": "true",
+      "controller_lease_expires_at": "2026-10-11T03:56:49.292Z",
+      "startup_preparation_settled_at": null,
+      "computer_admission_preparation_settled_at": null,
+      "computer_admission_retry_outcome": null,
+      "execution_recovery": null,
+      "computer_admission": null,
+      "cancellation": null
+    },
+    "independentProof": {
+      "relativeName": "restart-proof-388b7035-e3dc-4806-b34e-5241d2bea8c4.txt",
+      "exists": true,
+      "bytes": 37,
+      "lines": 1,
+      "sha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c"
+    },
+    "savedSessionReuseClaim": false
+  },
+  "claude": {
+    "outcome": "FAILED: saved-session attach rejected, then same-run recovery authority guard stopped",
+    "run": {
+      "id": "6c9d757f-c716-4d7c-b4d3-e0d4f00cf321",
+      "status": "failed",
+      "created_at": "2026-10-11T03:54:56.942Z",
+      "started_at": "2026-10-11T03:54:57.003Z",
+      "finished_at": "2026-10-11T04:00:16.614Z",
+      "error_code": "adapter_failed",
+      "error": "runner_state_identity_mismatch: authority_indeterminate",
+      "native_session_id": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+      "runner_instance_id": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+      "session_id_before": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+      "session_id_after": null,
+      "execution_stage": "preparing",
+      "controller_lease_expires_at": "2026-10-11T03:56:49.602Z",
+      "resultKeys": [
+        "stopReason",
+        "timeoutFired",
+        "timeoutSource",
+        "timeoutConfigured",
+        "effectiveTimeoutSec"
+      ],
+      "forceFreshSession": false,
+      "executionRecovery": null,
+      "providerPackDigest": null
+    },
+    "firstFailure": {
+      "event_type": "lifecycle",
+      "stream": "system",
+      "level": "warn",
+      "message": "native session transport interrupted; same-run resume persisted",
+      "created_at": "2026-10-11T03:58:50.828Z",
+      "failure_detail": {
+        "message": "native_session_recovery_failed: Error: PRP command run.attach failed: {\"commandId\":\"command_prp_00000001\",\"commandType\":\"run.attach\",\"controllerSeq\":1,\"result\":{\"code\":\"command_execution_failed\",\"message\":\"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=unclassified)\"},\"status\":\"failed\"}",
+        "nextAction": "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
+        "recoverable": true,
+        "recoveryMode": "exact_checkpoint_resume",
+        "recoveryOwner": {
+          "kind": "agent",
+          "agentId": "2da214f3-6c27-4497-9d4f-4bd210a8f390"
+        },
+        "checkpointExists": true,
+        "originalFailureCode": "native_session_interrupted",
+        "providerEventsExist": false,
+        "providerSessionEstablished": true
+      },
+      "attempt": 1,
+      "next_attempt_at": "2026-10-11T03:59:20.799Z",
+      "retry_reason_code": "native_session_interrupted"
+    },
+    "independentProofFiles": [
+      {
+        "relativeName": "boat-final-claude.txt",
+        "exists": true,
+        "bytes": 21,
+        "sha256": "14fa23911a1a95ede22a93f43fc027934b20a1ba497f8e6120abc8769498e124"
+      },
+      {
+        "relativeName": "boat-claude-framing-proof.txt",
+        "exists": true,
+        "bytes": 23,
+        "sha256": "afaf525f4bf0c38614c5df0cf97140e7d1bf9cad96faa293e2317dc82116af4a"
+      }
+    ],
+    "proofFilesUnchanged": true,
+    "liveSavedSessionSuccess": false
+  },
+  "limits": [
+    "Claude session.open underlying message is lost by Rust transport; no exact first cause proven.",
+    "All inspected instruction/runtime root paths exist; deeper skill paths were not inspected.",
+    "Parent opened normal Computer viewer around04:00; later idle timing cannot be attributed to runner alone.",
+    "No cache/checkpoint edits, no reset/retry/wake by evidence worker."
+  ],
+  "evidence": [
+    {
+      "file": "retry-local38-admission-local39baseline.json",
+      "sha256": "e278d00572b6c88096c62104342c2a385e5e4c8c3556a3a699b5300371f94b76"
+    },
+    {
+      "file": "retry-local38-admission-local39progress0359.json",
+      "sha256": "f082881540a7722f395d40e8a188e28d070c078226ae57281fb171921ec626a5"
+    },
+    {
+      "file": "retry-local37-claude-local39final0404.json",
+      "sha256": "9982e01823ec9bcd1d5ecca07e1ef63cf65b67e8004553cbaadb8d41df554fab"
+    },
+    {
+      "file": "retry-local39-claude-checkpoint0359.json",
+      "sha256": "54bd757bf5d42219ff78f8873df6e0d2bb58cf28c40756f714c6e45a3c94a691"
+    },
+    {
+      "file": "retry-local39-claude-failure-events.json",
+      "sha256": "758dd96c05c1f63e91cad06b989b6bcbe7b95c4d3cfd23fbb99c270f5c691969"
+    },
+    {
+      "file": "retry-local39-claude-paths0404.json",
+      "sha256": "b7d54c2616646f22d47e0258bfb76c6ea71674310e2f13ff1dc6c909524e2eab"
+    },
+    {
+      "file": "retry-local39-claude-journal0404.json",
+      "sha256": "615692f144765b346e46f2a05bac63abc5f656fd41581356899203643faa55be"
+    },
+    {
+      "file": "retry-local39-final-provider-status.json",
+      "sha256": "f0d8b923f48782814a9c8c87b343951239a91be62b7aea23c10701f49f17dec2"
+    },
+    {
+      "file": "retry-local39-final-owner-status.json",
+      "sha256": "7fdc59310018c4b862b24fc1594cea767055df1ea60ca1f33b2b4be10eda9ad2"
+    }
+  ],
+  "finalProviderStatus": {
+    "recordedAt": "2026-10-11T04:05:43.275903+00:00",
+    "sandboxId": "bx_ndnggjad",
+    "state": "archived",
+    "hydrated": true,
+    "health": "ok",
+    "lastSnapshotAttemptAt": "2026-10-11T04:04:56.236Z",
+    "lastSnapshotStatus": "in_progress",
+    "snapshotCompletedAt": "2026-10-11T04:04:55.879Z",
+    "snapshotVerifiedAt": "2026-10-11T04:04:55.879Z",
+    "stop": {
+      "id": "stop_f079a252b66e91cf",
+      "status": "completed",
+      "requestedAt": null,
+      "lastAttemptAt": "2026-10-11T04:04:56.078Z",
+      "endedAt": "2026-10-11T04:04:56.078Z",
+      "error": null
+    },
+    "scope": "Final local39 status after normal Computer close; no guest or lifecycle action"
+  },
+  "finalActiveOwners": {
+    "checkedAt": "2026-10-11T04:05:43.370Z",
+    "owners": []
+  }
+}

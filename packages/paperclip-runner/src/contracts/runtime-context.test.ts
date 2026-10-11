@@ -37,6 +37,13 @@ function savedContext(revision: string, text: string) {
 }
 
 describe("persisted native execution prompts", () => {
+  it("preserves an authenticated persistent home independently of instruction copies", () => {
+    const context = { ...savedContext("saved", "Instructions"), persistentAgentHome: { rootPath: "/computer/agent" } };
+    expect(parseNativeRuntimeContext(context).persistentAgentHome).toEqual({ rootPath: "/computer/agent" });
+    expect(parseNativeRuntimeContext(context).instructions.workingCopy).toBeUndefined();
+    expect(() => parseNativeRuntimeContext({ ...context, persistentAgentHome: { rootPath: "" } })).toThrow();
+    expect(() => parseNativeRuntimeContext({ ...context, persistentAgentHome: { rootPath: "/computer/agent", untrusted: true } })).toThrow();
+  });
   it.each([
     ["snapshot-before-upgrade", "Saved instructions from before the upgrade."],
     ["future-prompt-fixture", "  Saved instructions absent from this release.\n"],

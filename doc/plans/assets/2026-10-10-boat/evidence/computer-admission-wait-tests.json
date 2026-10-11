@@ -1,0 +1,90 @@
+{
+  "coreCommit": "a4c864a062a685e40d92fb015496dad3b1ce0f1e",
+  "combinedCommit": "04ce7eb2a8",
+  "stagingCommit": "ca8ab88c78",
+  "focusedTests": {
+    "files": 6,
+    "passed": 437,
+    "skipped": 0
+  },
+  "afterWordingCorrection": {
+    "files": 2,
+    "passed": 84,
+    "skipped": 0
+  },
+  "typecheck": "server passed",
+  "independentReview": "Initial review found no actionable findings; later CI review found two P1 integration defects.",
+  "databaseMethod": "Unique disposable databases with actual migrations on the task-owned local PostgreSQL server via a temporary test harness override; product database untouched; all disposable databases removed. Native isolated-cluster bootstrap failed before this fallback.",
+  "automaticScope": "Verified pending provider stop, ordinary pre-provider turn or unchanged explicit user message; task lock, original session, cancellation and continuation authorization retained.",
+  "excluded": "Failing/superseded stops, existing owner conflicts, provider work already started, one-run Retry/Interrupt intents retain existing behavior.",
+  "provenance": [
+    {
+      "file": "computer-wait-final-focused.log",
+      "sha256": "128e037b10598d10b67452b0c59394f4da7d1fb2188355ac68d8d8b3c8ade863"
+    },
+    {
+      "file": "computer-wait-copy-focused.log",
+      "sha256": "4cba2c71ddd3e25dca11905ec4629845425d5ceb6c8189cb93846b2a1a1a68e7"
+    },
+    {
+      "file": "computer-wait-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "laterReview": {
+    "result": "P1 found after initial independent review",
+    "url": "https://github.com/paperclipai/paperclip/pull/15813#discussion_r4240083053",
+    "finding": "Actual Stop returns early for an already-cancelled admission-wait parent, so the accepted wait may still schedule a successor. Initial tests did not cover this real cancellation entry point.",
+    "deployment": "Candidate17 cancelled during build, before check/deploy.",
+    "fix": "Addressed by correction11ccf7b1a2; original findings and pre-fix CI retained.",
+    "secondFinding": {
+      "url": "https://github.com/paperclipai/paperclip/pull/15804#discussion_r4240095623",
+      "finding": "Actual run lifecycle terminalizes the wait before cleanup; the retry predicate then rejects the live control, releasing the task lock and creating a recovery hold. Initial dependency-stubbed tests missed this integration path."
+    },
+    "ci": {
+      "observedAt": "2026-10-11T03:25:56.089584+00:00",
+      "core": {
+        "head": "a4c864a062a685e40d92fb015496dad3b1ce0f1e",
+        "passed": 51,
+        "skipped": 2,
+        "failed": 1
+      },
+      "ui": {
+        "head": "f63eccc9ce6ef7440df30fcfe3c5ab79cded415a",
+        "passed": 51,
+        "failed": 1
+      },
+      "failure": "Each head has one Greptile review failure and one distinct unresolved P1; no checks pending."
+    }
+  },
+  "correction": {
+    "coreCommit": "11ccf7b1a2d8ad2921cff2a41ae2265e0896640b",
+    "combinedCommit": "3bd413a9b3",
+    "stagingCommit": "bd86e22e72578fa8a240160b6001802eb2cd40f1",
+    "behavior": [
+      "Retain task ownership on exact pre-provider wait evidence while requiring settled cleanup before scheduling.",
+      "Actual Stop suppresses retries under the scheduling locks and cancels only the exact successor chain.",
+      "Acknowledge cleanup before releasing ownership; retain old queued input and protect unrelated or reassigned work."
+    ],
+    "tests": {
+      "files": 4,
+      "passed": 338,
+      "skipped": 0,
+      "scope": "Actual heartbeatService Stop and real run-lifecycle finalization, scheduling races, queued/running successors, repeated Stop, remote unexpired cleanup, queued input and unrelated/reassigned work."
+    },
+    "typecheck": "server passed",
+    "independentReview": "No remaining actionable findings",
+    "databaseMethod": "Unique disposable real PostgreSQL databases; all removed. Product database and running controller untouched.",
+    "provenance": [
+      {
+        "file": "computer-wait-stop-final-tests.log",
+        "sha256": "e3b2c29d2bef7697546633ca7cb12db6413ad865a06b1464940d4cb77defd58f"
+      },
+      {
+        "file": "computer-wait-stop-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "liveAcceptance": "Not yet verified; deployment18 in progress."
+  }
+}

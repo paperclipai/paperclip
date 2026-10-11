@@ -1,0 +1,22 @@
+{
+  "candidateSource": "8f11a70b3347d289ea25df5ba2d5c151fc1d5256",
+  "candidateFullBuild": "8f11a70b33 passed",
+  "candidateFramingTests": {
+    "source": "8f11a70b3347d289ea25df5ba2d5c151fc1d5256",
+    "passed": 6
+  },
+  "earlierChecks": {
+    "fullTypecheck": "d238 passed; core delta eb804 server typecheck passed",
+    "tokenGates": "d238 passed",
+    "moduleBoundaries": "4e3cf6 passed; no module changes in857466",
+    "focusedPanelTests": 48,
+    "focusedCoreTests": 75,
+    "focusedEditorTests": 21,
+    "focusedPreviewTests": 10,
+    "focusedGuidanceTests": 2
+  },
+  "limitations": [
+    "Earlier checks retain their recorded source attribution; unlabelled counts are historical and do not establish exact candidate coverage.",
+    "No final-head full-suite pass or completed CI claim."
+  ]
+}

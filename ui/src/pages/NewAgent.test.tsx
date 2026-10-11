@@ -311,6 +311,51 @@ describe("New agent setup", () => {
     expect(api.hire).not.toHaveBeenCalled();
   });
   it.each([
+    ["codex_local", "OpenAI"], ["claude_local", "Claude"],
+  ])("only offers Boat CLI before connecting and saves it for %s (%s)", async (adapter, provider) => {
+    envApi.list.mockResolvedValue([
+      { id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } },
+    ]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "boat-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: true });
+    await render(adapter);
+    const engine = container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')!;
+    expect(engine).not.toBeNull();
+    expect(engine.value).toBe("cli");
+    expect(Array.from(engine.options).map(option => option.value)).toEqual(["cli"]);
+    expect(engine.selectedOptions[0].textContent).toBe(adapter === "codex_local" ? "Codex CLI" : "Claude CLI");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click(provider + "API key");
+    await fill("API key", "boat-test-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      environmentId: "boat-1", adapterConfig: { engine: "cli" },
+    });
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')?.value).toBe("cli");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      defaultEnvironmentId: "boat-1", adapterConfig: { engine: "cli" },
+      runtimeConfig: { heartbeat: { enabled: false } },
+    });
+  });
+
+  it.each(["codex_local", "claude_local"])("does not expose or inject a Boat engine on a managed sandbox for %s", async adapter => {
+    envApi.list.mockResolvedValue([
+      { id: "managed-1", name: "Managed", driver: "sandbox", status: "active", config: { provider: "daytona" } },
+    ]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: true });
+    await render(adapter);
+    expect(container.querySelector('[aria-label="Execution engine"]')).toBeNull();
+    await click((adapter === "codex_local" ? "OpenAI" : "Claude") + "API key");
+    await fill("API key", "sandbox-test-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.engine).toBeUndefined();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.engine).toBeUndefined();
+  });
+
+  it.each([
     ["grok_local", "subscription"], ["grok_local", "api_key"],
     ["paperclip_runner", "subscription"], ["paperclip_runner", "api_key"],
   ])("configures %s Grok on Cloud with an xAI %s connection", async (adapterType, method) => {
@@ -345,7 +390,9 @@ describe("New agent setup", () => {
     const model = adapterType === "paperclip_runner" ? "grok-4.7" : "grok-code-fast-1";
     await fill("Model", model);
     await click("Run test");
-    const binding = { provider: "xai", method, mode: "responsible_user" };
+    const binding = method === "api_key"
+      ? { provider: "xai", method, mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" }
+      : { provider: "xai", method, mode: "responsible_user" };
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", adapterType, expect.objectContaining({
       environmentId: "sandbox-1",
       adapterConfig: expect.objectContaining({ model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) }),
@@ -536,7 +583,7 @@ describe("New agent setup", () => {
     await click(provider + "API key");
     await fill("API key", "connection-key");
     await click("Connect");
-    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "responsible_user" };
+    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
     expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
     expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
@@ -634,7 +681,7 @@ describe("New agent setup", () => {
     await fill("API key", "new-api-credential");
     await click("Connect");
     await click("Finish setup");
-    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "api_key", mode: "responsible_user" });
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" });
   });
   it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",

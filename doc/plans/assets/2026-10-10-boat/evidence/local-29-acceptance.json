@@ -1,0 +1,19 @@
+{
+  "capturedAt": "2026-10-10T19:05:09.992767+00:00",
+  "source": "b375f4655706d89c816613a591ee366ba4e4d7ba",
+  "controllerStartedAt": "2026-10-10T19:03:16.767Z",
+  "checks": {
+    "fullBuild": "passed",
+    "persistentInstructionsBrowserRead": "passed",
+    "recursiveTypecheck": "passed"
+  },
+  "file": "AGENTS.md",
+  "screenshot": "local-29-persistent-instructions.jpg",
+  "cleanup": {
+    "state": "archived",
+    "liveOwners": 0,
+    "pendingAction": null,
+    "stopCompletedAt": "2026-10-10T19:06:10.833Z"
+  },
+  "limit": "Read-only browser acceptance and build/typecheck on this source. No task executed."
+}

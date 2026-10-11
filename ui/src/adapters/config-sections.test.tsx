@@ -58,6 +58,23 @@ async function renderSection(
 }
 
 describe("adapter configuration sections", () => {
+  it.each([
+    [CodexLocalConfigFields, "codex_local"], [ClaudeLocalAdvancedFields, "claude_local"],
+  ] as const)("exposes an attached computer engine without host-path fields: %s %s", async (Component, adapterType) => {
+    const html = await renderMarkup(<TooltipProvider><Component
+      mode="edit" isCreate={false} adapterType={adapterType} values={null} set={null}
+      config={{ engine: "acp", stateDir: "/private/host-state", agentCommand: "/private/host-command" }}
+      eff={(_group, _key, original) => original} mark={() => {}} models={[]}
+      managedSandboxOnly allowExecutionEngineSelection hideInstructionsFile
+    /></TooltipProvider>);
+    expect(html).toContain("Execution engine");
+    expect(html).toContain('value="cli"');
+    expect(html).not.toContain("/private/host-state");
+    expect(html).not.toContain("/private/host-command");
+    expect(html).not.toContain("ACP server command");
+    expect(html).not.toContain("ACP state directory");
+  });
+
   it("separates provider selection from lifecycle and hides fixed Codex permissions", async () => {
     const config = {
       provider: "codex",

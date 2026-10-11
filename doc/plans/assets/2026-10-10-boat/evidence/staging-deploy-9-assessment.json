@@ -1,0 +1,9 @@
+{
+  "recordedAt": "2026-10-10T19:28:18.914032+00:00",
+  "candidateSha": "b375f4655706d89c816613a591ee366ba4e4d7ba",
+  "result": "preflight_failed",
+  "providerDeploymentStarted": false,
+  "servingSha": "8f11a70b3347d289ea25df5ba2d5c151fc1d5256",
+  "reason": "Strict migration preflight rejected a changed applied prefix before provider deployment started.",
+  "recovery": "Separate source-only staging lineage preserves applied prefix and appends unchanged upstream SQL; no database history rewrite, reset, or guard bypass."
+}

@@ -643,6 +643,46 @@ it("retargets only composed instruction framing and retains legacy custom instru
 
 });
 
+it.each([false, true])("preserves ACPX asset framing across cold, warm, and post-idle attachment (guidance=%s)", (guidance) => {
+  const source = assignedRuntimeContext("/controller/skills", "/controller/bundle");
+  const cold = assignedRuntimeContext("/boat/skills", "/boat/context/cold");
+  const resumed = assignedRuntimeContext("/boat/skills", "/boat/context/resumed");
+  const custom = "Managed instructions with literal /controller/bundle example.";
+  const original = composeNativeSystemInstructions(source, custom);
+  const coldText = runnerdRecoveryInternals.retargetComposedInstructions(
+    runnerdRecoveryInternals.withComputerProcessInstructions(original, guidance, source),
+    source,
+    cold,
+  );
+  const suffix = (context: NativeRuntimeContextSnapshot) =>
+    composeNativeSystemInstructions(context, "").slice(context.prompt.text.length);
+  expect(coldText.endsWith(suffix(cold))).toBe(true);
+  const state = { runAttachTemplate: { provider: {
+    kind: "acpx", agent: "claude", runId: "cold-run", runtimeContext: cold, instructions: coldText,
+  } } };
+  const desired = {
+    runnerInstanceId: "runner", environmentLeaseId: "workspace", runId: "warm-run",
+    normalizedSessionId: "same-session", turnId: "turn", itemId: "item",
+  };
+  const warm = runnerdRecoveryInternals.rotatedRunAttachPayload(state, desired, null, undefined);
+  expect((warm.provider as { instructions: string }).instructions).toBe(coldText);
+  const recover = (text: string) => runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { runAttachTemplate: warm }, { ...desired, runId: "post-idle-run" }, null, undefined, resumed,
+    { text, context: source },
+  ).provider as { instructions: string; runtimeContext: NativeRuntimeContextSnapshot };
+  const recovered = recover(composeNativeSystemInstructions(source, custom));
+  expect(recovered.runtimeContext).toEqual(resumed);
+  expect(recovered.instructions.endsWith(suffix(resumed))).toBe(true);
+  // This is the immutable-prefix equality required by Claude's guest guard.
+  expect(recovered.instructions.slice(0, -suffix(resumed).length))
+    .toBe(coldText.slice(0, -suffix(cold).length));
+  expect(recovered.instructions).toContain(custom);
+  expect(recovered.instructions).not.toContain("Read-only instruction sibling root: /controller/");
+  // Never silently substitute old managed instructions for current grants.
+  expect(recover(composeNativeSystemInstructions(source, "Changed managed instructions")).instructions)
+    .toContain("Changed managed instructions");
+});
+
 it("replays the durable run attachment outcome and latest provider identity", () => {
   expect(
     runnerdRecoveryInternals.recoveredRunAttachment({
@@ -2156,6 +2196,32 @@ it.each(["installed", "explicit"] as const)("records the selected %s Codex comma
     await transport.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it.each([false, true])("binds detached-process guidance only for a trusted persistent computer (%s)", async (computer) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-computer-process-guidance-"));
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  let instructions = "";
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
+    codexCommand: "/qualified/codex", persistentAgentHome: computer ? "/agent/home" : undefined,
+    controlPlaneRegistration: async (authority) => {
+      instructions = String((authority.store.state.runAttachTemplate!.provider as { instructions: string }).instructions);
+      throw new Error("fixture_stop_before_runner_launch");
+    },
+    runnerProcessLauncher: () => { throw new Error("must not launch"); },
+  });
+  try {
+    await expect(transport.request("thread/start", { cwd: root, model: "gpt-6.1-sol", dynamicTools: [],
+      developerInstructions: "Preserve the task instructions." })).rejects.toThrow("fixture_stop_before_runner_launch");
+    expect(instructions).toContain("Preserve the task instructions.");
+    expect(instructions.includes("nohup setsid")).toBe(computer);
+    if (computer) {
+      expect(instructions).toContain("stop when its warm timeout expires");
+      expect(instructions).toContain("Do not create services or change runner ownership");
+    }
+  } finally { await transport.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 it("rejects remote Codex without a guest executable before resolving controller dependencies", async () => {

@@ -1,0 +1,43 @@
+{
+  "schema": "boat.staging.rollout-boundary.evidence.v1",
+  "recordedAt": "2026-10-11T05:53:53.206638+00:00",
+  "result": "NOT_PASSED",
+  "reason": "Live preview and heading-only warm HMR attempt overlapped deployment21 rollout and browser availability failure.",
+  "sourceBoundary": {
+    "lastVerifiedSource": "d50dd0f49befcbe53875ad3acad9a39381f4a89b",
+    "deployment21RolloutEnteredAt": "2026-10-11T05:51:52Z",
+    "deployment21ServingVerification": "pending"
+  },
+  "savedTaskId": "7d3472d4-461f-44ce-90ed-139e878df200",
+  "checkpointRunId": "07d05df1-1d0b-4bb9-8cb5-c174eb157f61",
+  "checkpointObservedAt": "2026-10-11T05:53:07.951839Z",
+  "checkpointLifecycle": "suspended",
+  "ownedNativeProcessCount": 0,
+  "ownedListenerCount": 0,
+  "savedNormalizedSessionId": "06496696-b312-4268-ac40-66770aaa6f1a",
+  "savedProviderThreadId": "01a12881-5d3b-72a0-b4c3-d993f5b089e1",
+  "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46",
+  "browserBaseline": {
+    "observedAtApprox": "2026-10-11T05:53:00Z",
+    "heading": "Boat staging warm HMR confirmed0450",
+    "unsavedDraft": "keep-this-unsaved-draft-boat-0553",
+    "pageSession": "1791697955761",
+    "reportedListenerPid": 57260,
+    "listenerPidIndependentlyObserved": false
+  },
+  "headingOnlyPromptTarget": "Boat warm HMR verified0553",
+  "browserFailure": {
+    "observedAtApprox": "2026-10-11T05:54:00Z",
+    "taskError": "Request failed: 404",
+    "previewError": "ERR_BLOCKED_BY_CLIENT"
+  },
+  "limits": [
+    "No warm HMR pass or same-process reuse is established.",
+    "Runner retirement cause is not independently established; temporal overlap with rollout is observed.",
+    "No manual wake, restart, or browser safety bypass was performed."
+  ],
+  "evidence": {
+    "name": "retry-staging-20-21-nativecodex-vite-baseline.json",
+    "sha256": "dc376b8a8374a9b4b58f0ff3f180143c7df64848e83231b5d748ebef739e9d9a"
+  }
+}

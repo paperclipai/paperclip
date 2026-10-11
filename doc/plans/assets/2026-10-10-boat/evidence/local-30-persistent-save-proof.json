@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-10-10T19:41:30.908698+00:00",
+  "source": "ac09d6ecce2809ed1ad6541d2908e713c543b39f",
+  "processStartedAt": "2026-10-10T19:34:24.514Z",
+  "file": "AGENTS.md",
+  "markerSavedAt": "2026-10-10T19:38:08Z",
+  "markerVisibleAfterBrowserReload": true,
+  "markerReadAt": "2026-10-10T19:40:03Z",
+  "restoreSavedAt": "2026-10-10T19:40:56Z",
+  "restoreReadAt": "2026-10-10T19:41:11Z",
+  "status": "passed",
+  "screenshots": [
+    "local-30-persistent-save.jpg",
+    "local-30-persistent-restore.jpg"
+  ],
+  "verifiedFlow": [
+    "Normal editor save",
+    "Full browser reload showed saved marker",
+    "Original content restored and reread through normal product flow"
+  ],
+  "limit": "Persistent editor acceptance only; no task or runtime launched."
+}

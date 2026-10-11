@@ -1,0 +1,15 @@
+{
+  "capturedAt": "2026-10-10T19:33:18.465632+00:00",
+  "head": "5e5fe7a708d2c87b5953ce29329248b932fc7b98",
+  "workflowRunId": 38079569509,
+  "jobId": 114293665240,
+  "jobConclusion": "success",
+  "suite": "server/src/__tests__/file-resources.test.ts",
+  "testsPassed": 44,
+  "testsSkipped": 0,
+  "regressions": {
+    "automaticPersistentWorkspaceFallback": 4,
+    "vanishedDescendantSearch": 3
+  },
+  "limit": "Clean CI result. Original local PostgreSQL bootstrap skips remain in their historical record."
+}

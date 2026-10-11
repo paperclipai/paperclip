@@ -1,0 +1,272 @@
+{
+  "controllerSource": "8f11a70b3347d289ea25df5ba2d5c151fc1d5256",
+  "coldRun": {
+    "id": "d02e937a-9773-40f7-bb2c-a92f14aaf4bf",
+    "status": "succeeded",
+    "startedAt": "2026-10-10T17:51:57.242Z",
+    "finishedAt": "2026-10-10T17:55:42.940Z",
+    "errorCode": null
+  },
+  "coldProcess": {
+    "runId": "d02e937a-9773-40f7-bb2c-a92f14aaf4bf",
+    "checkedAt": "2026-10-10T17:55:45.323253+00:00",
+    "ownerGeneration": "1",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "33242",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 33242,
+        "name": "paperclip-runne",
+        "startTicks": "38395"
+      },
+      {
+        "pid": 33332,
+        "name": "MainThread",
+        "startTicks": "38644"
+      },
+      {
+        "pid": 33347,
+        "name": "MainThread",
+        "startTicks": "38684"
+      },
+      {
+        "pid": 33354,
+        "name": "MainThread",
+        "startTicks": "38686"
+      },
+      {
+        "pid": 33369,
+        "name": "MainThread",
+        "startTicks": "38687"
+      },
+      {
+        "pid": 33380,
+        "name": "9",
+        "startTicks": "38703"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.acpx-provider-state.v3",
+        "lifecycle": "session_open",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "d02e937a-9773-40f7-bb2c-a92f14aaf4bf",
+        "normalizedSessionId": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "warmProcess": {
+    "runId": "af7e6999-7ff4-410f-b586-fdb5cc5d0300",
+    "checkedAt": "2026-10-10T17:57:52.609291+00:00",
+    "ownerGeneration": "2",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "33242",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 33242,
+        "name": "paperclip-runne",
+        "startTicks": "38395"
+      },
+      {
+        "pid": 39172,
+        "name": "MainThread",
+        "startTicks": "53984"
+      },
+      {
+        "pid": 39201,
+        "name": "MainThread",
+        "startTicks": "54176"
+      },
+      {
+        "pid": 39208,
+        "name": "MainThread",
+        "startTicks": "54177"
+      },
+      {
+        "pid": 39223,
+        "name": "MainThread",
+        "startTicks": "54179"
+      },
+      {
+        "pid": 39234,
+        "name": "9",
+        "startTicks": "54194"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.acpx-provider-state.v3",
+        "lifecycle": "session_open",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "af7e6999-7ff4-410f-b586-fdb5cc5d0300",
+        "normalizedSessionId": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "warmRun": {
+    "id": "af7e6999-7ff4-410f-b586-fdb5cc5d0300",
+    "status": "succeeded",
+    "startedAt": "2026-10-10T17:56:06.767Z",
+    "finishedAt": "2026-10-10T17:57:46.003Z",
+    "errorCode": null
+  },
+  "sameRunnerPid": true,
+  "sameLaunchGeneration": true,
+  "sameProviderHome": true,
+  "providerSubprocessesRestartBetweenTurns": true,
+  "providerPackVerifyMs": [
+    6887
+  ],
+  "instructionFraming": {
+    "checkedAt": "2026-10-10T18:00:40.404221+00:00",
+    "runId": "af7e6999-7ff4-410f-b586-fdb5cc5d0300",
+    "lifecycle": "session_open",
+    "instructionsSha256": "1537937adb1c0d2a612950468ec925f1cde610d52cbe0b1ddc3b15e257344488",
+    "bundleExists": true,
+    "bundleMode": "0o555",
+    "canonicalAssetSuffixLast": true,
+    "computerGuidanceBeforeAssetSuffix": true,
+    "containsControllerAssetRoot": false
+  },
+  "limitations": [
+    "Claude provider subprocess PIDs restart between turns.",
+    "Post-idle framing was sampled during turn_active; the separate completed run receipt establishes final success.",
+    "Staging qualification is not included."
+  ],
+  "scenario": "fresh Claude cold -> ordinary warm follow-up -> natural five-minute idle -> Boat archive -> ordinary follow-up",
+  "result": "passed",
+  "controllerRestartDuringCycle": false,
+  "postIdleRun": {
+    "id": "74c35da6-ebf8-41cd-a1f8-76f477f6148d",
+    "status": "succeeded",
+    "startedAt": "2026-10-10T18:04:00.960Z",
+    "finishedAt": "2026-10-10T18:07:39.538Z",
+    "errorCode": null
+  },
+  "postIdleProcess": {
+    "runId": "74c35da6-ebf8-41cd-a1f8-76f477f6148d",
+    "checkedAt": "2026-10-10T18:07:10.588383+00:00",
+    "ownerGeneration": "1",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "36297",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 36297,
+        "name": "paperclip-runne",
+        "startTicks": "36205"
+      },
+      {
+        "pid": 36313,
+        "name": "MainThread",
+        "startTicks": "36415"
+      },
+      {
+        "pid": 36384,
+        "name": "MainThread",
+        "startTicks": "36540"
+      },
+      {
+        "pid": 36399,
+        "name": "MainThread",
+        "startTicks": "36543"
+      },
+      {
+        "pid": 36415,
+        "name": "MainThread",
+        "startTicks": "36545"
+      },
+      {
+        "pid": 36443,
+        "name": "9",
+        "startTicks": "36571"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.acpx-provider-state.v3",
+        "lifecycle": "turn_active",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": "turn_lab_d6a39e1cbffb4220be576591f2fecb32",
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "74c35da6-ebf8-41cd-a1f8-76f477f6148d",
+        "normalizedSessionId": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "naturalIdle": {
+    "runnerAndProviderSuspendedAt": "2026-10-10T18:02:49.908839+00:00",
+    "runnerOutboxCount": 0,
+    "providerOutboxCount": 0,
+    "runnerPidAbsentAt": "2026-10-10T18:02:50.915171+00:00",
+    "ownerRetiredAt": "2026-10-10T18:03:05.995526+00:00",
+    "archive": {
+      "state": "archived",
+      "snapshots": true,
+      "stopStatus": "completed",
+      "stopCompletedAt": "2026-10-10T18:03:18.309Z"
+    }
+  },
+  "postIdleIdentity": {
+    "physicalRunnerReplaced": true,
+    "durableSessionAndRunnerIdRetained": true,
+    "differentGuestBoot": true,
+    "runnerIdBefore": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+    "runnerIdAfter": "f7c84a3a-b36d-4885-ba30-91441a5f94f8"
+  },
+  "postIdleInstructionFraming": {
+    "checkedAt": "2026-10-10T18:07:13.726597+00:00",
+    "runId": "74c35da6-ebf8-41cd-a1f8-76f477f6148d",
+    "lifecycle": "turn_active",
+    "instructionsSha256": "85f7f92871645067a90c5f345f68fcf4febd9eee463c24f07b8beb9595c94d7d",
+    "bundleExists": true,
+    "bundleMode": "0o555",
+    "canonicalAssetSuffixLast": true,
+    "computerGuidanceBeforeAssetSuffix": true,
+    "containsControllerAssetRoot": false
+  },
+  "persistentFiles": {
+    "bothProofHashesUnchanged": true,
+    "evidenceKind": "Coordinating agent browser observation of completed post-idle result",
+    "screenshotOriginal": "native-26-claude-postidle.jpg"
+  }
+}

@@ -201,8 +201,17 @@ export function AgentProviderConnection({
         connection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
       }
       if (connection.credentials) {
-        await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: `My ${provider} API`, ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
-        connection = { env: {}, aiConnection: { provider: aiProvider, method: "api_key", mode: "responsible_user" } };
+        const account = await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: `My ${provider} API`, ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
+        connection = {
+          env: {},
+          aiConnection: {
+            provider: aiProvider,
+            method: "api_key",
+            mode: "delegated",
+            connectionId: account.connectionId,
+            grantId: account.grantId,
+          },
+        };
       }
       if (run !== epoch.current) return;
       if (method === "api") {

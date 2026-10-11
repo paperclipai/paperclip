@@ -1,0 +1,56 @@
+{
+  "scope": "Local legacy CLI follow-up qualification only; staging requalification pending.",
+  "controller": 32,
+  "servingSource": "8b2a71c1e4a9029d5a8e96ce22c760fccaab4d9f",
+  "canonicalSource": "3673939bed4cb85f20d142f950547e3a60502bca",
+  "sourceRelationship": "Identical tracked trees, checked with git diff.",
+  "observedAt": "2026-10-10T20:37:08.832523+00:00",
+  "runs": [
+    {
+      "id": "ad66018a-5095-42e4-819f-c238797912a5",
+      "provider": "codex",
+      "status": "succeeded",
+      "startedAt": "2026-10-10T20:33:06.943Z",
+      "finishedAt": "2026-10-10T20:36:41.221Z",
+      "issueStatus": "done",
+      "proofSha256": [
+        "9f5343a6f2325ef20422b29bb842123101d185abf657e7a1b120224255ef182a"
+      ],
+      "matchesPriorProductFileEvidence": true,
+      "controllerInstructionPathPresentInPrompt": false,
+      "dispositionHelperSucceeded": true,
+      "persistentInstructions": {
+        "promptAdvertisesPersonalEntry": true,
+        "entryReadSucceeded": true
+      }
+    },
+    {
+      "id": "0b339eaf-07e3-46d2-8587-42e0f815c9a7",
+      "provider": "claude",
+      "status": "succeeded",
+      "startedAt": "2026-10-10T20:33:26.069Z",
+      "finishedAt": "2026-10-10T20:36:39.186Z",
+      "issueStatus": "done",
+      "proofSha256": [
+        "43ae6b04d5ec7ba1c77afe05b632c424ee267561157c662f08860e9c015c3b13"
+      ],
+      "matchesPriorProductFileEvidence": true,
+      "controllerInstructionPathPresentInPrompt": false,
+      "dispositionHelperSucceeded": true,
+      "operationalSkill": {
+        "name": "paperclip",
+        "invocationSucceeded": true,
+        "receipt": "Launching skill: paperclip"
+      },
+      "persistentInstructions": {
+        "configured": false,
+        "personalEntryRead": "not tested"
+      }
+    }
+  ],
+  "limits": [
+    "Claude fixture has no configured personal instructions; personal instruction mapping is not a live Claude claim.",
+    "The actual Codex run had one failed exploratory command before successful helper completion; no claim that every tool call succeeded.",
+    "These results do not establish staging acceptance or a full current-head test-suite pass."
+  ]
+}

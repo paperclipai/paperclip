@@ -1,0 +1,36 @@
+{
+  "checkedAt": "2026-10-10T20:33:07.166727+00:00",
+  "differentPaths": [
+    "packages/db/src/migrations/0331_next_emma_frost.sql",
+    "packages/db/src/migrations/0332_confused_doctor_strange.sql",
+    "packages/db/src/migrations/meta/0331_snapshot.json",
+    "packages/db/src/migrations/meta/0332_snapshot.json",
+    "packages/db/src/migrations/meta/_journal.json"
+  ],
+  "servingStagingSource": "2df40da4587725571f94b20806b0da154418d774",
+  "qualification": "Serving2df40da corrected legacy Claude/Codex follow-ups passed with unchanged proof hashes and helper disposition without recovery. Candidate1830beb contains current2ef1772/core754a4e isolated viewer fix; build in progress, deployment12 not yet performed. Staging HMR remains unverified.",
+  "previousCanonicalSource": "3673939bed4cb85f20d142f950547e3a60502bca",
+  "canonicalSource": "2ef177271ad703cef598b19b0d2219297c57ca6c",
+  "coreSource": "754a4e792e077999989b088a910ce9d846280fda",
+  "previousStagingCandidate": "2df40da4587725571f94b20806b0da154418d774",
+  "stagingCandidate": "1830beb0c26a7ba9d5e21460426936936ffc8db4",
+  "previousRuntimeTreeEquivalent": true,
+  "servingVerification": {
+    "deployment": 11,
+    "checkedAt": "2026-10-10T21:20:39.509Z",
+    "status": "succeeded",
+    "verification": "verified"
+  },
+  "runtimeTreeEquivalent": true,
+  "candidateBuild": {
+    "runId": 38087300389,
+    "status": "in_progress",
+    "scope": "Parent observed; no deployment12 claimed."
+  },
+  "previousCandidateArtifactBuild": {
+    "checkedAt": "2026-10-10T21:09:07.813798+00:00",
+    "status": "completed",
+    "conclusion": "success",
+    "sourceSha": "2df40da4587725571f94b20806b0da154418d774"
+  }
+}

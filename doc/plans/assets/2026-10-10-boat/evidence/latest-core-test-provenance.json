@@ -1,0 +1,36 @@
+{
+  "recordedAt": "2026-10-10T21:21:44Z",
+  "coreHead": "754a4e792e077999989b088a910ce9d846280fda",
+  "fullProofCommit": "246c28c03ab5e034d39c8e89c0e68033bca9d07d",
+  "focusedRun": {
+    "completedAt": "2026-10-10T21:17:21Z",
+    "command": "node node_modules/vitest/vitest.mjs run server/src/__tests__/computer-routes.test.ts server/src/modules/computers/application/service.test.ts",
+    "exitCode": 0,
+    "routeTestsPassed": 16,
+    "moduleTestsPassed": 44,
+    "totalPassed": 60,
+    "note": "Initial sandbox route run could not bind a Supertest listener (EPERM); identical authorized rerun passed. Receipt records observed tool output; no separate raw log was saved.",
+    "testedFileBlobs": {
+      "server/src/routes/computers.ts": "e00115136e68552efc598c5a1408b7927dde4e00",
+      "server/src/__tests__/computer-routes.test.ts": "b46d3583d03f60d0ec18b2f8c554aa2578d5bcc9",
+      "server/src/modules/computers/application/service.test.ts": "a576befd684549813583ca76ca330f5752f4329e"
+    }
+  },
+  "adapterRun": {
+    "sourceCommit": "1b53cdce8064aa8b0f0947906a7c9f9d6182487a",
+    "testsPassed": 48,
+    "exitCode": 0,
+    "filesUnchangedAtCurrentCore": {
+      "server/src/modules/computers/adapters/boat.ts": "1c2f077fd882fbde1183ba1640583fa69285ab6e",
+      "server/src/modules/computers/adapters/boat.test.ts": "725bf128b76289474ee16dfdc0258ab3ebeeed18"
+    }
+  },
+  "serverTypecheck": {
+    "command": "node node_modules/typescript/bin/tsc --noEmit -p server/tsconfig.json",
+    "exitCode": 0
+  },
+  "limitations": [
+    "Focused unit/integration coverage, not a new full-suite or live multi-agent acceptance run.",
+    "No new feature-off reconciliation test was added by this cleanup fix; existing route feature-off cleanup case remains."
+  ]
+}

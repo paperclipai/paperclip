@@ -1,0 +1,11 @@
+{
+  "observedAt": "2026-10-11T04:49:20.499228+00:00",
+  "runId": "299caa15-f3f9-47b7-8882-639eb7b2736b",
+  "rootCause": "test-drive deletes inherited PAPERCLIP_* variables before instance .env loading",
+  "source": "cli/src/commands/test-drive.ts:175",
+  "configuredRunnerSha256": "d42d0395b8d172912c5e57dc967e4b7e40f9218979c15b51fd0c71365ba06435",
+  "persistedTemplatePackDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+  "intendedDiagnosticPackDigest": "sha256:af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719",
+  "conclusion": "The diagnostic runner/pack was built but not selected by this run. Local40 diagnostic binary selection was also unproven/contradicted by the unchanged instance configuration.",
+  "mutations": "none"
+}

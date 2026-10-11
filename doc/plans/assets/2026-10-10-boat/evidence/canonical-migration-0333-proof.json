@@ -1,0 +1,29 @@
+{
+  "sqlByteIdentical": true,
+  "sqlSha256": "42787b7bd020429b61551af0e602d749dc763bb678fe9e716c994543aa1abe23",
+  "upstream0332Unchanged": true,
+  "upstreamJournalPrefixUnchanged": true,
+  "newJournal": {
+    "idx": 333,
+    "version": "7",
+    "when": 1791694491443,
+    "tag": "0333_smooth_mordo",
+    "breakpoints": true
+  },
+  "snapshotPrevId": "8dadd21e-8c02-4ada-b99a-55ba133e7f70",
+  "snapshotAddedTables": [
+    "public.computers"
+  ],
+  "questionHistoryIndexPreserved": true,
+  "commit": "d7d7808302f3bd8045ee3d7afff55a066635f463",
+  "worktreeClean": true,
+  "prunedSnapshot": "0322_snapshot.json",
+  "checks": {
+    "officialGenerate": true,
+    "numbering": true,
+    "safety": true,
+    "dbTypecheckDirect": true,
+    "snapshotDrift": "1 passed",
+    "upstreamConcurrentIndexDatabaseTest": "skipped: embedded PostgreSQL unavailable"
+  }
+}

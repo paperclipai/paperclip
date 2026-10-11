@@ -659,7 +659,7 @@ const TimelineList = memo(function TimelineList({
                           environment's name and the Provider entry below already
                           identify it; other drivers (ssh, local) remain useful. */}
                       {run.environment.driver !== "sandbox" ? (
-                        <span> · {run.environment.driver}</span>
+                        <span> · {run.environment.driver === "computer" ? "Boat" : run.environment.driver}</span>
                       ) : null}
                     </span>
                   ) : null}

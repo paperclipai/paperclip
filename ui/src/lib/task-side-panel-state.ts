@@ -30,6 +30,7 @@ export function openSkillPanelState(
 }
 
 export type TaskSidePanelTabPayload =
+  | { kind: "computer"; environmentId: string }
   | { kind: "browser"; browserId: string }
   | { kind: "properties" }
   | { kind: "subtasks" }
@@ -91,6 +92,8 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   const input = record(value);
   if (!input) return null;
   const kind = input.kind;
+  if (kind === "computer") return typeof input.environmentId === "string" && /^[0-9a-f-]{36}$/i.test(input.environmentId)
+    ? { kind, environmentId: input.environmentId } : null;
   if (kind === "browser") return typeof input.browserId === "string" && /^[0-9a-f-]{36}$/i.test(input.browserId) ? { kind, browserId: input.browserId } : null;
   if (kind === "properties") return { kind };
   if (kind === "subtasks") return { kind };
@@ -206,7 +209,14 @@ export function writeTaskSidePanelState(
   if (typeof window === "undefined") return;
   try {
     const store = readStore(accountScope, companyId);
-    const tasks = { ...store.tasks, [taskId]: entry };
+    // Persist only the tab contract, including when a caller accidentally mixes
+    // ephemeral viewer credentials into a payload. Sanitize retained old tasks
+    // too, so a later write removes unsupported fields already in storage.
+    const tasks = Object.fromEntries(Object.entries({ ...store.tasks, [taskId]: entry })
+      .flatMap(([id, value]) => {
+        const parsed = parseEntry(value, true);
+        return parsed ? [[id, parsed]] : [];
+      }));
     const retained = Object.entries(tasks)
       .sort((left, right) => (right[1].updatedAt ?? 0) - (left[1].updatedAt ?? 0))
       .slice(0, MAX_TASK_STATES);
@@ -294,6 +304,11 @@ export function taskPanelWorkspaceFileTab(input: {
 
 export function taskPanelAttachmentTab(attachmentId: string, title: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: `attachment:${attachmentId}`, type: "attachment", label: title, closable: true, contentMode: "full-bleed", payload: { kind: "attachment", attachmentId } };
+}
+
+export function taskPanelComputerTab(environmentId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `computer:${environmentId}`, type: "computer", label: "Computer", closable: true,
+    contentMode: "full-bleed", payload: { kind: "computer", environmentId } };
 }
 
 export function taskPanelBrowserTab(browserId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {

@@ -1,0 +1,67 @@
+{
+  "observedAt": "2026-10-11T05:08:59.461805+00:00",
+  "task": "BOA-19",
+  "source": "7c7c35b1ca2c82d378f49afdbb2d06bb8af5c673",
+  "runs": [
+    {
+      "id": "ab152fcf-ea0a-4f74-b83b-24d0242bbe55",
+      "status": "succeeded",
+      "started_at": "2026-10-11T04:54:12.655Z",
+      "finished_at": "2026-10-11T05:06:15.012Z",
+      "native_session_id": "438f844d-05d6-4ce2-ba3e-edbd97abca66",
+      "runner_instance_id": "13a06b89-735f-45d0-97cb-e41b4ff757cd",
+      "session_id_before": null,
+      "session_id_after": "1ef41bc8-eb7c-4d38-9b24-aa78b87de767",
+      "error_code": null
+    },
+    {
+      "id": "3c08b933-f8c6-455e-aadb-48c1a69c22ba",
+      "status": "succeeded",
+      "started_at": "2026-10-11T05:06:44.746Z",
+      "finished_at": "2026-10-11T05:08:05.635Z",
+      "native_session_id": "438f844d-05d6-4ce2-ba3e-edbd97abca66",
+      "runner_instance_id": "13a06b89-735f-45d0-97cb-e41b4ff757cd",
+      "session_id_before": "1ef41bc8-eb7c-4d38-9b24-aa78b87de767",
+      "session_id_after": "1ef41bc8-eb7c-4d38-9b24-aa78b87de767",
+      "error_code": null
+    }
+  ],
+  "sameNativeSession": true,
+  "sameRunnerInstance": true,
+  "sameProviderThreadAfterWarm": true,
+  "providerPackDigest": "sha256:af875f72dbce8bf9f1bb2cce962e8380d5b23dd72fb98c84d04e949d9665c719",
+  "liveExecutableProof": {
+    "checkedAt": "2026-10-11T05:08:12.695516+00:00",
+    "ownerId": "8a4e0587-1400-423d-90d4-467fc5316e64",
+    "bootId": "d4442d4d-66b7-4225-ab33-b1924fa0e575",
+    "launchGeneration": 1,
+    "pid": 61492,
+    "startTicks": "80999",
+    "runnerSha256": "366a0fe12a39a6be773540369cd577810590d1b0d03491e834b414575087a3c9",
+    "runnerBytes": 37535320,
+    "expectedHashMatches": true,
+    "admissionStages": [],
+    "journalExitCode": 0
+  },
+  "firstUseUpload": {
+    "totalMiB": 1166,
+    "completedAt": "2026-10-11T05:04:11.777Z"
+  },
+  "limitations": [
+    "Per-stage timing not captured on successful admission",
+    "Does not retroactively explain earlier timeouts",
+    "Post-idle archival/resume not yet observed"
+  ],
+  "guestReadsEndedAt": "2026-10-11T05:08:12.695516+00:00",
+  "artifactSource": "28d3fc1b6580ed2088f7c91b7bd61b8348ff1de7",
+  "proofFiles": [
+    {
+      "name": "boat-final-claude.txt",
+      "sha256": "14fa23911a1a95ede22a93f43fc027934b20a1ba497f8e6120abc8769498e124"
+    },
+    {
+      "name": "boat-claude-framing-proof.txt",
+      "sha256": "afaf525f4bf0c38614c5df0cf97140e7d1bf9cad96faa293e2317dc82116af4a"
+    }
+  ]
+}

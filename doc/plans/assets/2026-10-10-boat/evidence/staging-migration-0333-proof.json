@@ -1,0 +1,35 @@
+{
+  "stageJournalPrefixByteValuesUnchanged": true,
+  "appliedSqlAndSnapshotFilesUnchanged": true,
+  "prunedHistoricalSnapshot": [
+    "meta/0322_snapshot.json"
+  ],
+  "newJournal": {
+    "idx": 333,
+    "version": "7",
+    "when": 1791694801825,
+    "tag": "0333_furry_butterfly",
+    "breakpoints": true
+  },
+  "newSnapshotPrevId": "d863f835-b38f-4555-ba6c-2661a8ca05e7",
+  "onlySchemaDelta": [
+    "public.agent_wakeup_requests"
+  ],
+  "newIndex": "agent_wakeup_requests_question_response_history_idx",
+  "newSqlByteIdenticalToUpstream": true,
+  "commit": "d50dd0f49befcbe53875ad3acad9a39381f4a89b",
+  "worktreeClean": true,
+  "canonicalUiComparison": "0421a3b8c027c60af6b754980bf2eef02d895e8f",
+  "runtimeDifferencesExcludingMigrationHistory": [
+    "packages/db/src/client.ts: stage migration filename",
+    "packages/db/src/question-response-history-migration.test.ts: stage migration filename"
+  ],
+  "validation": {
+    "officialPnpmGenerate": true,
+    "numberingAndSafety": true,
+    "dbTypecheck": true,
+    "snapshotDrift": "1 passed",
+    "concurrentIndexDatabaseTest": "1 skipped: embedded PostgreSQL unavailable",
+    "noDatabaseApplied": true
+  }
+}
