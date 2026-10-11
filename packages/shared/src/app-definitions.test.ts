@@ -689,6 +689,13 @@ describe("AppDefinition catalog", () => {
       consoleLinks: { register: "https://app.asana.com/0/my-apps" },
     });
     expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
+    expect(method("sentry")).toMatchObject({
+      key: "mcp-oauth",
+      defaults: {
+        serverUrl: "https://mcp.sentry.dev/mcp",
+        discoveryUrl: "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+      },
+    });
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",

@@ -361,6 +361,25 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Attach verified canary source to local master
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REPOSITORY" != "paperclipai/paperclip" ] ||
+             [ "$GITHUB_EVENT_NAME" != "push" ] ||
+             [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "Error: canary branch attachment requires a trusted master push." >&2
+            exit 1
+          fi
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]; then
+            echo "Error: canary checkout does not match the pinned source SHA." >&2
+            exit 1
+          fi
+          git checkout -B master "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:

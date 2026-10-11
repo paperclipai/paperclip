@@ -12952,6 +12952,91 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each(["new", "saved"])("starts Sentry MCP sign-in for a %s connection without a manual OAuth app", async (state) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "sentry", connectionMethodKey: "mcp-oauth", name: "Sentry",
+    });
+    const redirectUri = "http://localhost:3200/api/tools/oauth/callback";
+    const issuer = "https://mcp.sentry.dev";
+    const resource = `${issuer}/mcp`;
+    const scopes = ["org:read", "project:write", "team:write", "event:write", "alerts:write"];
+    if (state === "saved") {
+      const [connection] = await db.select().from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      // An existing MCP registration must survive catalog changes. This is the
+      // state before a reconnect, with endpoints cached by successful discovery.
+      await db.update(toolConnections).set({ config: {
+        ...connection.config,
+        oauth: {
+          ...connection.config.oauth as Record<string, unknown>,
+          provider: "sentry", issuer, resource,
+          authorizationUrl: `${issuer}/oauth/authorize`, tokenUrl: `${issuer}/oauth/token`,
+          metadataUrl: `${issuer}/.well-known/oauth-authorization-server`,
+          clientId: "saved-sentry-client", clientRegistrationSource: "dcr",
+          clientIssuer: issuer, clientResource: resource,
+          clientCompanyId: company.id, clientRedirectUri: redirectUri,
+          clientTokenEndpointAuthMethod: "none",
+        },
+      } }).where(eq(toolConnections.id, connected.connectionId));
+    }
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      calls.push(href);
+      // Both hosts publish valid OAuth metadata. The web/API issuer cannot
+      // register an MCP client; discovery must select the resource's issuer.
+      if (href === "https://sentry.io/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://sentry.io", authorization_endpoint: "https://sentry.io/oauth/authorize/",
+          token_endpoint: "https://sentry.io/oauth/token/", code_challenge_methods_supported: ["S256"],
+        });
+      }
+      if (href === `${issuer}/.well-known/oauth-protected-resource/mcp`) {
+        return mcpHttpResponse({ resource, authorization_servers: [issuer], scopes_supported: scopes });
+      }
+      if (href === `${issuer}/.well-known/oauth-authorization-server`) {
+        return mcpHttpResponse({
+          issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`,
+          registration_endpoint: `${issuer}/oauth/register`, scopes_supported: scopes,
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+          client_id_metadata_document_supported: true,
+        });
+      }
+      if (href === `${issuer}/oauth/register`) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          redirect_uris: [redirectUri], token_endpoint_auth_method: "none",
+        });
+        return mcpHttpResponse({
+          client_id: "new-sentry-client", redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri, actor: { actorType: "user", actorId: "board" },
+    });
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.origin + authorization.pathname).toBe(`${issuer}/oauth/authorize`);
+    expect(authorization.searchParams.get("resource")).toBe(resource);
+    expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(scopes);
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorization.searchParams.get("client_id")).toBe(`${state}-sentry-client`);
+    expect(calls).not.toContain("https://sentry.io/.well-known/oauth-authorization-server");
+    expect(calls.filter((url) => url === `${issuer}/oauth/register`)).toHaveLength(state === "new" ? 1 : 0);
+    const [saved] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(saved.config.oauth).toMatchObject({
+      clientId: `${state}-sentry-client`, clientIssuer: issuer, clientResource: resource,
+      clientCompanyId: company.id, clientRedirectUri: redirectUri,
+    });
+  });
+
   it("uses Asana v2 metadata instead of stale v1 endpoints for a saved custom app", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

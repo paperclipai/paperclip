@@ -783,7 +783,7 @@ const apps = [
       {
         serverUrl: "https://mcp.sentry.dev/mcp",
         discoveryUrl:
-          "https://sentry.io/.well-known/oauth-authorization-server",
+          "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
       },
       "S2",
       "Connect the Sentry organization and projects agents need for incident work.",

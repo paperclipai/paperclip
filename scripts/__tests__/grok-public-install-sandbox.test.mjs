@@ -81,6 +81,35 @@ test('verification never elevates PR-controlled provisioning or cleanup on the h
   assert.ok(source.includes("const prerequisite = join(root, 'native/grok')"));
 });
 
+test('the image and Grok downloads start before staging and join without weakening the npm checks', () => {
+  const source = readFileSync(new URL('../verify-grok-npm-install.mjs', import.meta.url), 'utf8');
+  const position = fragment => { const index = source.indexOf(fragment); assert.notEqual(index, -1, `verifier must contain ${fragment}`); return index; };
+  // Exactly the pinned consumer image is pulled, for the platform the probes run on.
+  const imagePull = position("prefetch('image', 'docker', ['pull', '--platform', 'linux/amd64', GROK_PUBLIC_INSTALL_IMAGE])");
+  // Grok is provisioned into the prefetch directory, never straight into `native/grok`.
+  const grokProvision = position("prefetch('grok', process.execPath, [join(repo, 'packages/paperclip-runner/scripts/provision-grok.mjs'), stagedGrok])");
+  assert.ok(source.includes("const stagedGrok = join(prefetched, 'grok')"));
+  assert.doesNotMatch(source, /provision-grok\.mjs'\), prerequisite\]/);
+  // Both downloads start before any package is staged and before the first sandbox runs.
+  const staging = position("visit('@paperclipai/server')");
+  const firstSandbox = position("isolated(['npm', 'install', '--ignore-scripts', '--omit=dev'");
+  assert.ok(imagePull < staging && grokProvision < staging);
+  assert.ok(position("await awaited('image', imageReady)") < firstSandbox);
+  // The binary moves to the canonical host path only after npm is proven not to
+  // have provisioned it, after the negative probe, and before the positive probe.
+  const npmCheck = position("'npm must not provision Grok'");
+  const negativeProbe = position("isolated(['node', '/packages/probe.mjs', 'missing'])");
+  const grokJoin = position("await awaited('grok', grokReady)");
+  const move = position('renameSync(stagedGrok, prerequisite)');
+  const positiveProbe = position("isolated(['node', '/packages/probe.mjs', 'present'], { prerequisite })");
+  assert.ok(npmCheck < negativeProbe && negativeProbe < grokJoin && grokJoin < move && move < positiveProbe);
+  // The children run through the helper covered by prefetch-child.test.mjs, and
+  // cleanup waits for them before removing the directory they write into.
+  assert.ok(source.includes("import { startPrefetch, stopPrefetches } from './prefetch-child.mjs'"));
+  assert.ok(position('await stopPrefetches(prefetches)') < position('rmSync(root, { recursive: true, force: true })'));
+  assert.equal(source.match(/rmSync\(root/g).length, 1);
+});
+
 test('the installed Codex probe exercises the public export and rejects incomplete or mismatched packages', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'installed-codex-probe-')));
   try {
