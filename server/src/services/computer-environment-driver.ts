@@ -48,7 +48,7 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
       if (input.heartbeatRunId && !input.agentId) throw new Error("computer_agent_required");
       const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(input.environment.config.runnerIdleTimeoutMs);
       const binding = input.heartbeatRunId ? await computers.admit({ companyId: input.companyId, environmentId: input.environment.id,
-        agentId: input.agentId ?? undefined, runId: input.heartbeatRunId, idleTimeoutMs,
+        agentId: input.agentId ?? undefined, runId: input.heartbeatRunId, idleTimeoutMs, deferPendingStop: true,
         sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType, input.executionConfigurationKey])).digest("hex") })
         : await computers.admitProbe({ companyId: input.companyId, environmentId: input.environment.id,
           agentId: input.agentId ?? undefined, probeId: randomUUID(), idleTimeoutMs });

@@ -3,7 +3,7 @@ import { secretService } from "../../services/secrets.js";
 import { computerRepository } from "./adapters/repository.js";
 import { boatBackend } from "./adapters/boat.js";
 import { createComputerService } from "./application/service.js";
-export { ComputerError } from "./domain/ledger.js";
+export { ComputerError, ComputerStopPendingError } from "./domain/ledger.js";
 export type {
   OwnerRef as ComputerOwnerRef,
   ProcessClaim as ComputerProcessClaim,

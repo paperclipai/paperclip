@@ -1,6 +1,8 @@
+import { isComputerAdmissionWait } from "./execution-recovery-attempt.js";
+import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { computers, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -61,6 +63,39 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
       : !hasRemoteTerminationReceipt(lease))) return false;
   // Reject contradictory retained evidence, including a crash after a launch
   // request but before the PID callback. Provider events never certify a stop.
+  const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
+        "provider.event", "provider.rpc_result", "tool.execution.started"])),
+  )).limit(1);
+  return !execution;
+}
+
+/** Resource waiting is replayable only before any provider admission, independently of operator Stop. */
+export async function canRetryComputerAdmissionWait(db: Db, run: Run): Promise<boolean> {
+  if (!isComputerAdmissionWait(run) || !run.finishedAt || run.runtimeModeResolvedAt ||
+      run.nativeIssueId || run.nativeSessionId || run.processPid || run.processGroupId ||
+      run.processStartedAt || run.sessionIdAfter || adapterExecutionControls.has(run.id)) return false;
+  const settledAt = run.resultJson?.computerAdmissionPreparationSettledAt;
+  const settled = typeof settledAt === "string" && Number.isFinite(Date.parse(settledAt));
+  if (!settled && !(run.executionStage === "preparing" && run.controllerBootId &&
+      run.controllerBootId !== legacyControllerBootId && run.controllerLeaseExpiresAt &&
+      run.controllerLeaseExpiresAt <= new Date())) return false;
+  const admission = run.resultJson!.computerAdmission as Record<string, string>;
+  const [computer] = await db.select({ id: computers.id }).from(computers).where(and(
+    eq(computers.id, admission.computerId), eq(computers.companyId, run.companyId),
+    eq(computers.environmentId, admission.environmentId), eq(computers.provider, "boat"),
+  )).limit(1);
+  if (!computer) return false;
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  )).limit(1);
+  const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+  )).limit(1);
+  if (lease || coordinator) return false;
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     or(isNotNull(heartbeatRunEvents.sourceEventId),

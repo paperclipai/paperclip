@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { remoteProgram } from "../adapters/remote-program.js";
 import { createComputerService } from "./service.js";
 import type { ComputerBackend, ComputerRepository } from "./ports.js";
-import { ComputerError, type ComputerRecord } from "../domain/ledger.js";
+import { ComputerError, ComputerStopPendingError, type ComputerRecord } from "../domain/ledger.js";
 
 function fixture() {
   let record: ComputerRecord | undefined;
@@ -497,17 +497,42 @@ describe("computer ownership", () => {
     expect((await f.repository.get(f.scope)).ledger.owners[0]?.generation).toBe(first.owner.generation);
   });
 
-  it("bounds the wait for terminal predecessor teardown without forcing retirement", async () => {
+  it.each([false, true])("bounds terminal predecessor teardown with pending-stop deferral=%s", async (deferPendingStop) => {
     const f = fixture();
     await f.attach();
     await f.admit();
     vi.mocked(f.repository.runState).mockResolvedValue("terminal");
     const wait = vi.fn(async () => {});
     const waiting = createComputerService(f.repository, f.backend, () => new Date("2026-10-10T12:00:00Z"), { admissionWaitMs: 2000, wait });
-    await expect(waiting.admit({ ...f.scope, agentId: "agent", runId: "follow-up", sessionKey: "session", idleTimeoutMs: 60_000 }))
+    await expect(waiting.admit({ ...f.scope, agentId: "agent", runId: "follow-up", sessionKey: "session", idleTimeoutMs: 60_000, deferPendingStop }))
       .rejects.toMatchObject({ code: "conflict" });
     expect(wait).toHaveBeenCalledTimes(2);
     expect(f.backend.retire).not.toHaveBeenCalled();
+  });
+
+  it("defers an exact pending stop before owner creation and admits the same session after completion", async () => {
+    const f = fixture(); await f.attach(); await f.service.reconcile();
+    vi.mocked(f.backend.ready).mockClear();
+    const request = { ...f.scope, agentId: "agent", runId: "run", sessionKey: "saved-session", idleTimeoutMs: 60_000, deferPendingStop: true };
+    await expect(f.service.admit(request)).rejects.toBeInstanceOf(ComputerStopPendingError);
+    expect((await f.repository.get(f.scope)).ledger.owners).toEqual([]);
+    expect(f.backend.ready).not.toHaveBeenCalled(); expect(f.backend.launch).not.toHaveBeenCalled();
+    f.completeStop(); await f.service.reconcile();
+    const binding = await f.service.admit({ ...request, runId: "retry" });
+    await binding.launch({ command: "runnerd" });
+    expect((await f.repository.get(f.scope)).ledger.owners[0]).toMatchObject({ sessionKey: "saved-session", runId: "retry" });
+    expect(f.backend.launch).toHaveBeenCalledOnce();
+  });
+  it.each(["failing", "superseded", "different-action", "detaching"])("does not defer %s stop evidence", async kind => {
+    const f = fixture(); await f.attach(); await f.service.reconcile();
+    vi.mocked(f.backend.stopStatus).mockImplementation(async () => {
+      if (kind === "different-action") await f.repository.update(f.scope, record => { record.ledger.action!.id = "replacement"; });
+      if (kind === "detaching") await f.repository.update(f.scope, record => { record.ledger.status = "detaching"; });
+      return { id: "stop_1", status: ["failing", "superseded"].includes(kind) ? kind : "pending" };
+    });
+    const failure = await f.service.admit({ ...f.scope, agentId: "agent", runId: "run", sessionKey: "session", idleTimeoutMs: 60_000, deferPendingStop: true }).catch(error => error);
+    expect(failure).toBeInstanceOf(ComputerError); expect(failure).not.toBeInstanceOf(ComputerStopPendingError);
+    expect((await f.repository.get(f.scope)).ledger.owners).toEqual([]);
   });
 
   it("waits for a normal provider snapshot stop before admitting the next turn", async () => {

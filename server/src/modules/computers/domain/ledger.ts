@@ -60,6 +60,15 @@ export class ComputerError extends Error {
     this.name = "ComputerError";
   }
 }
+/** A verified provider stop is pending before this run acquired an owner. */
+export class ComputerStopPendingError extends ComputerError {
+  constructor(readonly admission: {
+    companyId: string; environmentId: string; computerId: string; stopId: string; runId: string;
+  }) {
+    super("conflict", "Computer is still saving its previous session.");
+    this.name = "ComputerStopPendingError";
+  }
+}
 export function segment(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value))
     throw new ComputerError("invalid", "Invalid computer resource identifier");
