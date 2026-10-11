@@ -223,6 +223,8 @@ interface ActorMiddlewareOptions {
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
 
+const teamsWebhookPath = /^\/api\/chat-webhooks\/[A-Za-z0-9_-]{43}\/microsoft-teams\/?$/;
+
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
@@ -248,6 +250,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    // Teams authenticates Microsoft's bearer token in the provider handler.
+    // Preserve those credentials without assigning a Paperclip actor, including
+    // the implicit board actor in local-trusted mode.
+    if (req.method === "POST" && teamsWebhookPath.test(req.path)) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
+
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
@@ -257,7 +268,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // validated by the gateway service itself. Do not interpret that bearer as
     // a board key or agent JWT here: doing so rejects the MCP handshake before
     // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
+    // restricted to the unguessable public gateway path; other routes retain
     // the normal actor authentication path below.
     if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
       if (runIdHeader) req.actor.runId = runIdHeader;
