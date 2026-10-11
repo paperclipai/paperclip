@@ -3,6 +3,7 @@ import { spawn, execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { WITHHELD_GITHUB_CREDENTIAL } from "@paperclipai/adapter-utils/github-launcher";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -60,7 +61,9 @@ it.each([false, true])("keeps one live parent and its original launcher environm
   const a = await operation();
   expect(a.value).toBe("fixture-run-a");
   releaseA();
-  expect((await operation()).value).toBe("anonymous");
+  // Released binding: the launcher denies a credential instead of leaving the name
+  // unset, so the fixture never observes the 'anonymous' fall-through.
+  expect((await operation()).value).toBe(WITHHELD_GITHUB_CREDENTIAL);
   const releaseB = b.activate(run("run-b"));
   releaseA(); // A's delayed cleanup cannot revoke B.
   const second = await operation();
@@ -123,6 +126,7 @@ it.each([false, true])("keeps anonymous launchers usable when the remote broker 
   const result = await promisify(execFile)(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), [], {
     env: { ...process.env, ...b.env, GH_TOKEN: "ambient-must-not-leak" },
   });
-  expect(result.stdout).toBe("anonymous");
+  expect(result.stdout).toBe(WITHHELD_GITHUB_CREDENTIAL);
+  expect(result.stdout).not.toContain("ambient-must-not-leak");
   expect(b.resolveCredentials).not.toHaveBeenCalled();
 });

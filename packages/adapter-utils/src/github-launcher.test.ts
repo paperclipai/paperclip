@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
+import { WITHHELD_GITHUB_CREDENTIAL, githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -78,7 +78,9 @@ describe("managed GitHub launchers", () => {
     cleanups.push(() => new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve())));
     const {port} = server.address() as {port:number};
     const result = await exec(path.join(bin,"gh"), [], {env:{...process.env,...githubBrokerEnvironment({GH_TOKEN:"host-token"},{url:`http://127.0.0.1:${port}`,token:"run-capability"}),PATH:`${bin}:${realBin}:${process.env.PATH}`}});
-    expect(JSON.parse(result.stdout)).toEqual({token:null});
+    // Withheld access denies the stored host credential rather than leaving the
+    // name unset, which would let gh fall through to its keychain.
+    expect(JSON.parse(result.stdout)).toEqual({token:WITHHELD_GITHUB_CREDENTIAL});
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
   });
@@ -174,7 +176,8 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("log", "-1", "--format=%an <%ae>|%cn <%ce>"))
       .toBe("Repository Author <repository@example.test>|Repository Author <repository@example.test>");
     const anonymous = JSON.parse((await exec(path.join(bin, "gh"), [], { cwd: repo, env })).stdout);
-    expect(anonymous.token).toBeNull();
+    expect(anonymous.token).toBe(WITHHELD_GITHUB_CREDENTIAL); // denied, not merely absent
+    expect(anonymous.token).not.toBe("ambient-host-token");
     await git("config", "--unset", "user.name");
     await git("config", "--unset", "user.email");
     await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();

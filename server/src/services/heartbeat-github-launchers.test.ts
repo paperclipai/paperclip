@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { cleanupGitHubOperationLaunchers } from "@paperclipai/adapter-utils/execution-target";
+import { WITHHELD_GITHUB_CREDENTIAL } from "@paperclipai/adapter-utils/github-launcher";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js";
@@ -107,7 +108,13 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
     expect(await readFile(path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), "utf8")).not.toContain("ambient-token");
     // A still-live provider uses its first-turn environment, not the new one.
     const command = await execute({ command: path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), env: first.env });
-    expect(JSON.parse(command.stdout)).toEqual({ token: "", githubToken: "", ssh: "", global: "/dev/null", imageConfig: false });
+    // The sandbox image's ambient credentials are not merely stripped: both token
+    // names are filled with the withheld placeholder, so gh cannot fall back to a
+    // credential the broker declined to issue.
+    expect(JSON.parse(command.stdout)).toEqual({ token: WITHHELD_GITHUB_CREDENTIAL,
+      githubToken: WITHHELD_GITHUB_CREDENTIAL, ssh: "", global: "/dev/null", imageConfig: false });
+    expect(command.stdout).not.toContain("ambient-token");
+    expect(command.stdout).not.toContain("ambient-other-token");
     const changedPath = await prepareHeartbeatGitHubLaunchers({ ...base, runId: "run-three", env: { ...imageEnv, PATH: `${imageEnv.PATH}:/extra` } });
     expect(changedPath.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
   } finally {
