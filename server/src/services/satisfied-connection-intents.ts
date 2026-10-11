@@ -56,7 +56,10 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
     const connection = await findSatisfiedToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
-    if (!connection || (retired && connection.id !== (interaction.result as { connectionId: string }).connectionId)) return "interaction";
+    // Historical system retirements describe a service need, not a permanent
+    // binding to an account the user may later replace. Delivery and native
+    // response projection still validate their own exact recorded connection.
+    if (!connection) return "interaction";
   }
   const [approval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),

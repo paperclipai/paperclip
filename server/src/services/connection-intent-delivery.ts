@@ -126,7 +126,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     const [loaded] = await db.select({ interaction: issueThreadInteractions, issue: issues })
       .from(issueThreadInteractions).innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
       .where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId), eq(issues.companyId, claimed.companyId)));
-    const interaction = loaded?.interaction;
+    let interaction = loaded?.interaction;
     const retiredForAvailableConnection = interaction?.status === "expired"
       && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
       && typeof interaction.result.connectionId === "string";
@@ -153,9 +153,34 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       if (!ready) return;
     }
     if (retiredForAvailableConnection) {
-      const ready = await findSatisfiedToolConnection(db, loaded.issue, { ...interaction, status: "pending" });
-      if (!ready || ready.id !== (interaction.result as { connectionId: string }).connectionId) return;
-      if (await connectionContinuationPendingResponse(db, loaded.issue, userId, interaction.sourceRunId)) return;
+      const publications: ActivityPublication[] = [];
+      const current = await db.transaction(async tx => {
+        const [task] = await tx.select().from(issues).where(and(eq(issues.id, loaded.issue.id), eq(issues.companyId, claimed.companyId))).for("update");
+        const [card] = await tx.select().from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId),
+          eq(issueThreadInteractions.issueId, loaded.issue.id))).for("update");
+        if (!task || !card || card.status !== "expired" || card.result?.outcome !== "expired") return null;
+        const ready = await findSatisfiedToolConnection(tx as unknown as Db, task, { ...card, status: "pending" });
+        if (!ready) return null;
+        if (ready.id !== (card.result as { connectionId: string }).connectionId) {
+          const previousConnectionId = (card.result as { connectionId: string }).connectionId;
+          // This is a system observation of existing access. It grants nothing
+          // and never changes or impersonates a human decision.
+          const [updated] = await tx.update(issueThreadInteractions).set({ result: { ...card.result,
+            connectionId: ready.id }, updatedAt: new Date() }).where(eq(issueThreadInteractions.id, card.id)).returning();
+          Object.assign(card, updated);
+          await logActivity(tx as unknown as Db, { companyId: claimed.companyId, actorType: "system", actorId: "connection-reconciliation",
+            action: "issue.thread_interaction_resolved", entityType: "issue", entityId: task.id,
+            details: { interactionId, interactionKind: "connection_intent", status: "expired", connectionId: ready.id,
+              previousConnectionId, resolutionSource: "existing_connection_refreshed" } }, publications);
+        }
+        return { task, card, waiting: await connectionContinuationPendingResponse(tx as unknown as Db, task, card.addresseeUserId, card.sourceRunId) };
+      });
+      for (const publication of publications) publishActivity(publication);
+      if (!current || current.waiting) return;
+      loaded.issue = current.task;
+      loaded.interaction = current.card;
+      interaction = current.card;
     }
     if (interaction.status === "accepted" && payload?.purpose === "ai" && loaded.issue.status === "blocked") {
       const restored = await restoreAiBlockedTask(loaded);

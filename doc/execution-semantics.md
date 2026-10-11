@@ -1618,7 +1618,12 @@ New requests notify the connection worker so this reconciliation also starts aft
 listing policy with issue, project, and run context. System-retired requests are
 rechecked against the next run's responsible user and current access, and saved
 continuations defer while another question or linked approval remains pending.
-Those checks run again during queued and final dispatch admission.
+Those checks run again during queued and final dispatch admission. An unstarted
+system continuation cancelled for a new response wait rearms its delivery in the
+same transaction. Verified absence of execution keeps that wait out of workspace
+repair incidents. Historical retirements do not bind all future retries to an
+old account; an already authorized replacement can refresh the system observation
+with its own audit record before delivery. Human decisions remain unchanged.
 
 ## Responses submitted during an active run
 

@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
+  connectionIntentDeliveries,
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
@@ -19,6 +20,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction } from "../../../services/budgets.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { connectionContinuationPendingResponse } from "../../../services/satisfied-connection-intents.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
 import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../../services/recovery/legacy-continuation.js";
@@ -924,6 +926,20 @@ export function createPostgresRunDispatchAdapter(
               eq(agentWakeupRequests.companyId, row.companyId),
             ),
           );
+      }
+
+      const context = parseObject(row.contextSnapshot);
+      if (decision.errorCode === "issue_waiting_for_response" && context.connectionIntentResolution === "existing_connection"
+        && context.source === "connection_intent.resolved" && context.interactionKind === "connection_intent"
+        && typeof context.interactionId === "string") {
+        // The partial wake-key uniqueness fence permits another delivery after
+        // this skipped receipt. Rearm atomically so restored access or a later
+        // answer can resume the untouched request after a restart.
+        await tx.update(connectionIntentDeliveries).set({ deliveredAt: null, nextAttemptAt: now }).where(and(
+          eq(connectionIntentDeliveries.companyId, row.companyId),
+          eq(connectionIntentDeliveries.interactionId, context.interactionId),
+        ));
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       }
 
       await tx
