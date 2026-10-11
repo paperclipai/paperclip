@@ -56,14 +56,31 @@ import {
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
+  isFalseyEnvFlag,
   isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
+  resolveOpenCodePrintLogLevel,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
+import {
+  OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  OPENCODE_SURVIVING_GROUP_SIGKILL_SETTLE_MS,
+  OPENCODE_SURVIVING_GROUP_TEARDOWN_POLL_MS,
+  OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS,
+  createOpenCodeOutputInactivityMonitor,
+  formatOpenCodeOutputInactivityMonitorErrorMessage,
+  resolveOpenCodeInactivityTimeout,
+} from "./output-inactivity-monitor.js";
+import {
+  OPENCODE_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+  createOpenCodeProcessActivityMonitor,
+  hasLiveProcessGroupMember,
+  type OpenCodeProcessActivityMonitorHandle,
+} from "./process-activity-monitor.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,6 +91,84 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+function signalOpenCodeChild(
+  target: { pid: number | null; processGroupId: number | null },
+  signal: NodeJS.Signals,
+): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, signal);
+      return true;
+    } catch {
+      // Fall back to direct child signal if group signaling fails (e.g. group already gone).
+    }
+  }
+  if (target.pid && target.pid > 0) {
+    try {
+      process.kill(target.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the inactivity monitor may signal this spawn target from the
+ * Paperclip host. Local runs spawn a real child process we own, and SSH runs
+ * spawn a local ssh client we own — both report a real local process group on
+ * POSIX. A sandbox runner instead reports a provider-internal pid and forces
+ * `processGroupId` to null; signaling that pid with `process.kill` can hit an
+ * unrelated host process while the sandbox-side opencode keeps running, and
+ * sandbox teardown has no local seam (it belongs to the sandbox runner and the
+ * runner's own timeout). So remote spawns without a local process group are
+ * never signaled: the monitor still fails the run fast, and teardown stays
+ * with the execution target's own runner.
+ */
+function canSignalSpawnTarget(
+  target: { pid: number | null; processGroupId: number | null } | null,
+  executionTargetIsRemote: boolean,
+): target is { pid: number; processGroupId: number | null } {
+  if (!target || target.pid == null || target.pid <= 0) return false;
+  if (executionTargetIsRemote && (target.processGroupId == null || target.processGroupId <= 0)) {
+    return false;
+  }
+  return true;
+}
+
+/** Whether the spawned child (or its process group) still exists. */
+function isSpawnTargetAlive(target: { pid: number; processGroupId: number | null }): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(target.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the spawn target can still touch its workspace. Linux groups are
+ * checked zombie-aware (`hasLiveProcessGroupMember`): an orphaned grandchild
+ * can remain an unreaped group member on hosts whose pid 1 never reaps, and
+ * a zombie holds no memory or descriptors, so it cannot write anywhere.
+ * Elsewhere the signal-based existence check is the best available probe.
+ */
+async function isSpawnTargetLive(target: { pid: number; processGroupId: number | null }): Promise<boolean> {
+  if (process.platform === "linux" && target.processGroupId && target.processGroupId > 0) {
+    return hasLiveProcessGroupMember(target.processGroupId);
+  }
+  return isSpawnTargetAlive(target);
 }
 
 function parseModelProvider(model: string | null): string | null {
@@ -607,17 +702,48 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
-    // run result) so failures that OpenCode otherwise wraps as an opaque
-    // "Unexpected server error" can be diagnosed in remote/sandbox runs where the
-    // log file is unreachable. Toggle via PAPERCLIP_OPENCODE_PRINT_LOGS (run env,
-    // then process env).
-    const printLogs = isTruthyEnvFlag(
+    // Surface OpenCode's own logs on stderr (captured into the run result) so
+    // upstream model stream errors and retries are visible in run output.
+    // Without this, a rate-limited/unhealthy model can retry with backoff for
+    // over an hour emitting nothing on stdout, which is indistinguishable from
+    // a hung run (see silent-run incidents BEF-114/BEF-116). Enabled by default
+    // at WARN level. Disable with PAPERCLIP_OPENCODE_PRINT_LOGS=0, or adjust
+    // the level via PAPERCLIP_OPENCODE_PRINT_LOG_LEVEL (DEBUG|INFO|WARN|ERROR);
+    // both read the run env first, then the process env.
+    const printLogsDisabled = isFalseyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    const printLogLevel =
+      resolveOpenCodePrintLogLevel(
+        env.PAPERCLIP_OPENCODE_PRINT_LOG_LEVEL ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOG_LEVEL,
+      ) ?? "WARN";
+
+    // Bound a doomed run at the adapter level: a rate-limited/unhealthy model
+    // can retry with backoff for over an hour emitting nothing on stdout
+    // (BEF-114/BEF-116). The inactivity monitor treats only stdout JSONL model
+    // events as progress — `--print-logs` stderr output must not keep a
+    // retry-storming run alive — and, on Linux, process-group CPU/IO/child
+    // churn keeps long-but-healthy tool executions alive. On fire the child
+    // gets SIGTERM (5s grace) then SIGKILL, and the run fails fast with a
+    // diagnosable error instead of churning until timeoutSec. Disable with
+    // adapterConfig.outputInactivityTimeoutMs=null.
+    const monitorResolution = resolveOpenCodeInactivityTimeout(config.outputInactivityTimeoutMs);
+    if (monitorResolution.mode === "disabled") {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung opencode runs will only be detected by the platform-level silent-run safety net.\n`,
+      );
+    } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
+      await onLog(
+        "stdout",
+        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
+      );
+    }
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
-      if (printLogs) args.push("--print-logs");
+      if (!printLogsDisabled) {
+        args.push("--print-logs", "--log-level", printLogLevel);
+      }
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
@@ -664,46 +790,308 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
           usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(runtimeEnv, provider), billingType: "unknown", model, complete: false };
       });
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        onProcessStopped: providerStop.beginInvocation(),
-        cwd,
-        env: preparedRuntimeConfig.env,
-        stdin: prompt,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog: accountingLog,
-        runLogTail: paperclipBridge?.runLogTail,
-        settleRunDisposition: paperclipBridge?.settleRunDisposition,
-      });
-      // Parse any unterminated final record before deciding whether its usage
-      // is complete. A clean exit alone cannot turn absent counters into zero.
-      await accountingLog.flush();
-      const retainedAccounting = consumeAccounting("");
-      await accountingLog.flush({ complete: proc.exitCode === 0 && !proc.timedOut && !proc.signal
-        && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
-      // Display output is capped by the process transport. Keep accounting
-      // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parseOpenCodeJsonl(proc.stdout);
-      if (hasAccounting) {
-        const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.usageReported = retained.usageReported;
-        parsed.usageComplete = retained.usageComplete;
-        parsed.costUsd = retained.costUsd;
+
+      let monitorFired = false;
+      let monitorTerminationSignal: NodeJS.Signals | null = null;
+      let monitorElapsedMs = 0;
+      let monitorTimeoutMs = 0;
+      let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+      let sigkillFired = false;
+      let monitorLogPromise: Promise<unknown> | null = null;
+      // Queue a stderr diagnostic instead of replacing any pending write: the
+      // cleanup below awaits only the latest promise, so a bare reassignment
+      // could drop an earlier diagnostic before the heartbeat logger
+      // persists it. Chaining also keeps the lines in emission order.
+      const queueMonitorLog = (line: string): void => {
+        const previous = monitorLogPromise ?? Promise.resolve();
+        monitorLogPromise = previous
+          .catch(() => {})
+          .then(() => Promise.resolve(onLog("stderr", line)).catch(() => {}));
+      };
+      const processActivityMonitor: { current: OpenCodeProcessActivityMonitorHandle | null } = { current: null };
+      const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
+
+      const monitor =
+        monitorResolution.mode === "disabled"
+          ? null
+          : createOpenCodeOutputInactivityMonitor({
+              timeoutMs: monitorResolution.timeoutMs,
+              onFire: (state) => {
+                monitorFired = true;
+                monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+                monitorTimeoutMs = monitorResolution.timeoutMs;
+                const message = formatOpenCodeOutputInactivityMonitorErrorMessage(monitorElapsedMs);
+                const elapsedSec = Math.round(monitorElapsedMs / 1000);
+                const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
+                const sentSigterm = beginMonitorTermination();
+                const terminationNote = sentSigterm
+                  ? "terminating opencode child via SIGTERM (5s grace, then SIGKILL)"
+                  : killTarget
+                    ? "execution target has no safe local kill seam; failing the run fast and leaving teardown to the target's own runner"
+                    : "no spawned child to signal yet; a child that spawns after this point is terminated on spawn";
+                const logLine =
+                  `[paperclip] adapter.invoke ${message}; ` +
+                  `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                  `parsedEvents=${state.parsedEventCount} stderrChunkCount=${state.stderrChunkCount} stderrBytes=${state.stderrBytes} ` +
+                  `processActivityCount=${state.processActivityCount} ` +
+                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ${terminationNote}.\n`;
+                // Issue the log without awaiting on the kill hot path, but keep
+                // the promise queued so the surrounding try/finally can await
+                // flush before the run resolves. Without this the diagnostic
+                // that explains the kill could be dropped if the child exits
+                // faster than onLog flushes.
+                queueMonitorLog(logLine);
+              },
+            });
+
+      // Signal the spawned child (SIGTERM, then SIGKILL after the grace
+      // window). Returns false when the target is not safely signalable from
+      // the host — a sandbox runner's pid must never be signaled here.
+      const beginMonitorTermination = (): boolean => {
+        const target = killTarget;
+        if (!canSignalSpawnTarget(target, executionTargetIsRemote)) return false;
+        const sentSig = signalOpenCodeChild(target, "SIGTERM");
+        if (sentSig) monitorTerminationSignal = "SIGTERM";
+        sigkillTimer = setTimeout(() => {
+          sigkillTimer = null;
+          sigkillFired = true;
+          const stillSent = signalOpenCodeChild(target, "SIGKILL");
+          if (stillSent) monitorTerminationSignal = "SIGKILL";
+        }, OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+        if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
+          (sigkillTimer as { unref: () => void }).unref();
+        }
+        return true;
+      };
+
+      const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+        killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+        if (monitor && monitorFired) {
+          // The inactivity window elapsed before the child spawned (slow
+          // runtime preparation). The already-fired monitor never signals
+          // again, so without this the fresh child would run to the
+          // wall-clock timeout. Terminate it immediately on spawn.
+          queueMonitorLog(
+            "[paperclip] Output inactivity monitor fired before the opencode child spawned; terminating the fresh child now.\n",
+          );
+          beginMonitorTermination();
+        } else if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
+          processActivityMonitor.current = createOpenCodeProcessActivityMonitor({
+            pid: meta.pid,
+            processGroupId: meta.processGroupId,
+            intervalMs: Math.min(
+              OPENCODE_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+              Math.max(1_000, Math.floor(resolvedMonitorTimeoutMs / 4)),
+            ),
+            onActivity: () => monitor.noteProcessActivity(),
+          });
+        }
+        if (onSpawn) {
+          await onSpawn(meta);
+        }
+      };
+
+      let invocation:
+        | {
+            proc: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>;
+            rawStderr: string;
+            parsed: ReturnType<typeof parseOpenCodeJsonl>;
+          }
+        | null = null;
+      try {
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
+          cwd,
+          env: preparedRuntimeConfig.env,
+          stdin: prompt,
+          timeoutSec,
+          graceSec,
+          onSpawn: wrappedOnSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog: async (stream, chunk) => {
+            monitor?.noteOutputChunk(stream, chunk);
+            await accountingLog(stream, chunk);
+          },
+          runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        });
+        // The opencode process has finished; both monitors must stop before
+        // accounting persistence below. The usage receipt write can outlast
+        // the inactivity window (slow control plane), and a monitor firing
+        // after the process resolved would report a completed run as
+        // `opencode_output_inactivity_monitor` and could signal a dead
+        // process group. The finally-block stops remain for the throw path;
+        // stop() is idempotent.
+        processActivityMonitor.current?.stop();
+        monitor?.stop();
+        // Parse any unterminated final record before deciding whether its usage
+        // is complete. A clean exit alone cannot turn absent counters into zero.
+        await accountingLog.flush();
+        const retainedAccounting = consumeAccounting("");
+        await accountingLog.flush({ complete: proc.exitCode === 0 && !proc.timedOut && !proc.signal
+          && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
+        // Display output is capped by the process transport. Keep accounting
+        // from the full stream, including when no checkpoint callback is installed.
+        const parsed = parseOpenCodeJsonl(proc.stdout);
+        if (hasAccounting) {
+          const retained = consumeAccounting("");
+          parsed.usage = retained.usage;
+          parsed.usageReported = retained.usageReported;
+          parsed.usageComplete = retained.usageComplete;
+          parsed.costUsd = retained.costUsd;
+        }
+        invocation = {
+          proc,
+          rawStderr: proc.stderr,
+          parsed,
+        };
+      } finally {
+        processActivityMonitor.current?.stop();
+        monitor?.stop();
+        if (sigkillTimer) {
+          // The run resolved during the SIGTERM grace — e.g. opencode exited
+          // promptly after SIGTERM while a detached tool subprocess in its
+          // process group ignored SIGTERM and closed its inherited stdio.
+          // When the group still exists, keep the scheduled SIGKILL so that
+          // subprocess receives the full promised grace window before the
+          // forced shutdown; cancel only when there is nothing left to
+          // signal, so the escalation cannot be lost and leak the group.
+          const signalableTarget = canSignalSpawnTarget(killTarget, executionTargetIsRemote) ? killTarget : null;
+          if (!signalableTarget || !isSpawnTargetAlive(signalableTarget)) {
+            clearTimeout(sigkillTimer);
+            sigkillTimer = null;
+          } else {
+            // The surviving subprocess still owns the workspace, and once
+            // this result resolves the heartbeat executor may immediately
+            // start the next queued run for the same agent. Preserve the
+            // full grace for the subprocess, but hold the resolve until its
+            // teardown completes — self-exit or the scheduled SIGKILL at
+            // grace end — so the next run cannot start while the old tool
+            // is still writing. Liveness is zombie-aware: an orphaned
+            // grandchild can stay an unreaped group member on hosts whose
+            // pid 1 never reaps, and a zombie can no longer write anywhere.
+            // A hard slack bounds the wait so a group that survives even
+            // SIGKILL (e.g. uninterruptible disk sleep) can never hang the
+            // run.
+            queueMonitorLog(
+              "[paperclip] Surviving process group is still alive after opencode exited; holding the run result until teardown completes so the next queued run cannot start early.\n",
+            );
+            const teardownDeadlineMs =
+              Date.now() + OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS + OPENCODE_SURVIVING_GROUP_TEARDOWN_SLACK_MS;
+            while (!sigkillFired && Date.now() < teardownDeadlineMs && (await isSpawnTargetLive(signalableTarget))) {
+              await new Promise((resolve) => setTimeout(resolve, OPENCODE_SURVIVING_GROUP_TEARDOWN_POLL_MS));
+            }
+            if (sigkillFired) {
+              // The SIGKILL was just delivered to the group; grant it a brief
+              // settle so its members finish dying before the next queued
+              // run may start.
+              await new Promise((resolve) => setTimeout(resolve, OPENCODE_SURVIVING_GROUP_SIGKILL_SETTLE_MS));
+            } else {
+              // The group tore itself down (or the slack elapsed) — cancel
+              // the no-longer-needed escalation.
+              clearTimeout(sigkillTimer);
+              sigkillTimer = null;
+            }
+          }
+        }
+        if (monitorLogPromise) {
+          await monitorLogPromise;
+          monitorLogPromise = null;
+        }
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // Snapshot the monitor outcome only after teardown completes: the
+      // scheduled SIGKILL can fire during the surviving-group teardown wait
+      // above, and the run result must report the actually-delivered signal
+      // (SIGKILL), not the stale SIGTERM captured when termination began.
+      return {
+        proc: invocation.proc,
+        rawStderr: invocation.rawStderr,
+        parsed: invocation.parsed,
+        monitor: monitorFired
+          ? {
+              fired: true as const,
+              terminationSignal: monitorTerminationSignal,
+              elapsedMsSinceLastEvent: monitorElapsedMs,
+              timeoutMs: monitorTimeoutMs,
+            }
+          : { fired: false as const },
+      };
     };
+
+    const buildSessionIdentity = (resolvedSessionId: string | null) =>
+      resolvedSessionId
+        ? ({
+            sessionId: resolvedSessionId,
+            cwd: effectiveExecutionCwd,
+            ...(workspaceId ? { workspaceId } : {}),
+            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+            ...(executionTargetIsRemote
+              ? {
+                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+                }
+              : {}),
+          } as Record<string, unknown>)
+        : null;
 
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        monitor?:
+          | { fired: false }
+          | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
+      if (attempt.monitor?.fired) {
+        const errorMessage = formatOpenCodeOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
+        const modelId = model || null;
+        // Retain the session identity on a monitor-fired failure: opencode
+        // may have persisted the interrupted session, so the next run can
+        // resume it. Nulling every session field here reads as an
+        // instruction to clear the stored session, which would strand a
+        // resumable session — the same retention rule the ordinary error
+        // path applies.
+        const resolvedSessionId = runtimeSessionId || null;
+        return {
+          exitCode: null,
+          signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
+          timedOut: false,
+          errorMessage,
+          errorCode: "opencode_output_inactivity_monitor",
+          // The monitor killed the run mid-flight: report whatever usage was
+          // already emitted, but never mark it complete (mirrors the timeout
+          // branch's accounting semantics).
+          usageComplete: false,
+          usageBasis: "per_run",
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+          sessionId: resolvedSessionId,
+          sessionParams: buildSessionIdentity(resolvedSessionId),
+          sessionDisplayId: resolvedSessionId,
+          provider: parseModelProvider(modelId),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
+          model: modelId,
+          billingType: "unknown",
+          costUsd: attempt.parsed.costUsd,
+          costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
+          resultJson: {
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            outputInactivityMonitor: {
+              kind: "output_inactivity",
+              timeoutMs: attempt.monitor.timeoutMs,
+              elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+              terminationSignal: attempt.monitor.terminationSignal,
+            },
+          },
+          summary: attempt.parsed.summary,
+          clearSession: false,
+        };
+      }
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
@@ -730,20 +1118,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const resolvedSessionId =
         attempt.parsed.sessionId ??
         (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
-      const resolvedSessionParams = resolvedSessionId
-        ? ({
-            sessionId: resolvedSessionId,
-            cwd: effectiveExecutionCwd,
-            ...(workspaceId ? { workspaceId } : {}),
-            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-            ...(executionTargetIsRemote
-              ? {
-                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-                }
-              : {}),
-          } as Record<string, unknown>)
-        : null;
+      const resolvedSessionParams = buildSessionIdentity(resolvedSessionId);
 
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);

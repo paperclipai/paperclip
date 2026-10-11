@@ -3,10 +3,35 @@ import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
+  isFalseyEnvFlag,
+  isTruthyEnvFlag,
   listOpenCodeModels,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
+  resolveOpenCodePrintLogLevel,
 } from "./models.js";
+
+describe("openCode print-logs env flags", () => {
+  it("keeps print-logs enabled unless explicitly disabled", () => {
+    expect(isFalseyEnvFlag(undefined)).toBe(false);
+    expect(isFalseyEnvFlag("")).toBe(false);
+    expect(isFalseyEnvFlag("1")).toBe(false);
+    expect(isFalseyEnvFlag("0")).toBe(true);
+    expect(isFalseyEnvFlag("false")).toBe(true);
+    expect(isFalseyEnvFlag(" off ")).toBe(true);
+    expect(isTruthyEnvFlag("1")).toBe(true);
+    expect(isTruthyEnvFlag(undefined)).toBe(false);
+  });
+
+  it("resolves the print-log level with a WARN fallback", () => {
+    expect(resolveOpenCodePrintLogLevel(undefined)).toBeNull();
+    expect(resolveOpenCodePrintLogLevel("")).toBeNull();
+    expect(resolveOpenCodePrintLogLevel("bogus")).toBeNull();
+    expect(resolveOpenCodePrintLogLevel("debug")).toBe("DEBUG");
+    expect(resolveOpenCodePrintLogLevel(" warn ")).toBe("WARN");
+    expect(resolveOpenCodePrintLogLevel("ERROR")).toBe("ERROR");
+  });
+});
 
 describe("openCode models", () => {
   afterEach(() => {
