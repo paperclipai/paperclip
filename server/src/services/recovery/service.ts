@@ -847,7 +847,8 @@ function isStrandedIssueRecoveryIssue(
 /**
  * True when the issue's latest run was cancelled by a board operator (the
  * board cancel route stamps the attribution; interrupt-by-comment uses the
- * operator_interrupted error code). While such a run is the latest activity
+ * operator_interrupted error code) or by a plugin cancelling the run of a
+ * session it owns (`cancelledByActorType: "plugin"`). While such a run is the latest activity
  * on an issue, recovery stands down entirely: the operator deliberately
  * stopped the agent, and re-waking it — or escalating "stranding" — would
  * fight the human. Any newer run or wake supersedes the exemption.
@@ -869,7 +870,10 @@ function isOperatorCancelledRun(
   const result = parseObject(latestRun.resultJson);
   return (
     result.cancelledByActorType === "user" ||
-    result.cancelledByActorType === "board"
+    result.cancelledByActorType === "board" ||
+    // A plugin cancelling the run of a session it owns is the same deliberate
+    // stop as an operator's, made on the operator's behalf.
+    result.cancelledByActorType === "plugin"
   );
 }
 

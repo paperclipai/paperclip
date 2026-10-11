@@ -466,6 +466,15 @@ Authoring rules:
 - Use managed agents for plugin-provided labor. Use `ctx.agents.invoke()` or
   `ctx.agents.sessions` only after you have a real agent id, either selected by
   the operator or resolved from `ctx.agents.managed`.
+- To halt a session, call `ctx.agents.sessions.cancelRun(sessionId,
+  companyId, { reason })` (requires `agent.sessions.send`). It stops the
+  session's running run and any queued turns, only for sessions your plugin
+  owns, and leaves the session open. Each cancel records a
+  `heartbeat.cancelled` activity entry with the plugin as the actor, and
+  recovery stands down as it does after an operator's Stop. It resolves to the
+  primary run's final status, or `null` when nothing was in flight (including
+  a run that finished or someone else stopped first). Older hosts reject it as
+  an unknown method, so catch that error if you must support them.
 - Use managed routines for recurring or externally triggered work that should
   produce tasks. Schedule, webhook, and API triggers are visible routine
   triggers, and each run has the normal Paperclip issue/audit trail.

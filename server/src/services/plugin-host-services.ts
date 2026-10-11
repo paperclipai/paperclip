@@ -28,7 +28,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, HeartbeatRunStatus, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -1188,6 +1188,31 @@ export function buildHostServices(
   const assertReadableOriginFilter = (originKind: unknown) => {
     if (typeof originKind !== "string" || !originKind.startsWith("plugin:")) return;
     normalizePluginOriginKind(originKind);
+  };
+
+  /**
+   * A plugin owns the agent sessions it created: their taskKey carries this
+   * plugin's `plugin:<pluginKey>:session:` prefix. Session reads and writes
+   * match on that prefix and the requested company. Plugin keys may contain
+   * `_`, a LIKE wildcard, so the key is escaped before it goes into the
+   * pattern.
+   */
+  const ownedSessionTaskKeyPattern = `plugin:${pluginKey.replace(/[%_\\]/g, (ch) => `\\${ch}`)}:session:%`;
+  const ownedSessionCondition = (sessionId: string, companyId: string) =>
+    and(
+      eq(agentTaskSessionsTable.id, sessionId),
+      eq(agentTaskSessionsTable.companyId, companyId),
+      like(agentTaskSessionsTable.taskKey, ownedSessionTaskKeyPattern),
+    );
+
+  const requireOwnedSession = async (sessionId: string, companyId: string) => {
+    const session = await db
+      .select()
+      .from(agentTaskSessionsTable)
+      .where(ownedSessionCondition(sessionId, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    return session;
   };
 
   const logPluginActivity = async (input: {
@@ -3477,7 +3502,7 @@ export function buildHostServices(
             and(
               eq(agentTaskSessionsTable.agentId, params.agentId),
               eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
+              like(agentTaskSessionsTable.taskKey, ownedSessionTaskKeyPattern),
             ),
           )
           .orderBy(desc(agentTaskSessionsTable.createdAt));
@@ -3499,19 +3524,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
 
-        // Verify session exists and belongs to this plugin
-        const session = await db
-          .select()
-          .from(agentTaskSessionsTable)
-          .where(
-            and(
-              eq(agentTaskSessionsTable.id, params.sessionId),
-              eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!session) throw new Error(`Session not found: ${params.sessionId}`);
+        const session = await requireOwnedSession(params.sessionId, companyId);
 
         const run = await heartbeat.wakeup(session.agentId, {
           source: "automation",
@@ -3607,18 +3620,80 @@ export function buildHostServices(
         return { runId: run.id };
       },
 
+      async cancelRun(params) {
+        if (disposed) {
+          throw new Error("Host services have been disposed");
+        }
+
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+
+        const session = await requireOwnedSession(params.sessionId, companyId);
+
+        // Halt the session: its running run and any queued or retry-scheduled
+        // turns. Session runs carry the session taskKey in their context
+        // snapshot. Queued turns go first so cancelling the running run cannot
+        // promote another turn of the same session.
+        const inFlightRuns = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, session.agentId),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'taskKey' = ${session.taskKey}`,
+              inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt));
+        if (inFlightRuns.length === 0) return null;
+
+        const primary = inFlightRuns.find((run) => run.status === "running") ?? inFlightRuns[0]!;
+        const ordered = [...inFlightRuns.filter((run) => run.id !== primary.id), primary];
+        const reason = params.reason?.trim() || `Cancelled by plugin ${pluginKey}`;
+        // Identifies this call's cancel, so an overlapping cancelRun from the
+        // same plugin cannot claim (and log) a run this call stopped.
+        const cancelRequestId = randomUUID();
+
+        let finalStatus: HeartbeatRunStatus | null = null;
+        for (const target of ordered) {
+          // The plugin attribution is what recovery reads to stand down, the
+          // same way it does for a board operator's Stop.
+          const cancelled = await heartbeat.cancelRun(target.id, reason, {
+            resultJson: {
+              cancelledByActorType: "plugin",
+              cancelledByPluginId: pluginId,
+              pluginCancelRequestId: cancelRequestId,
+            },
+          });
+          // cancelRun returns an already-terminal run unchanged. A run that
+          // finished, or that someone else (including another cancelRun call)
+          // stopped, between the lookup above and this cancel was not
+          // cancelled by this call: no activity, and it counts as nothing in
+          // flight.
+          if (cancelled?.resultJson?.pluginCancelRequestId !== cancelRequestId) continue;
+          if (target.id === primary.id) finalStatus = cancelled.status as HeartbeatRunStatus;
+          await logPluginActivity({
+            companyId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: {
+              agentId: cancelled.agentId,
+              sessionId: session.id,
+              reason,
+            },
+          });
+        }
+        return finalStatus;
+      },
+
       async close(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const deleted = await db
           .delete(agentTaskSessionsTable)
-          .where(
-            and(
-              eq(agentTaskSessionsTable.id, params.sessionId),
-              eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
-            ),
-          )
+          .where(ownedSessionCondition(params.sessionId, companyId))
           .returning()
           .then((rows) => rows.length);
         if (deleted === 0) throw new Error(`Session not found: ${params.sessionId}`);

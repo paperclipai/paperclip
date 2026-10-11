@@ -1228,6 +1228,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             }
           },
 
+          async cancelRun(sessionId: string, companyId: string, opts?: { reason?: string }) {
+            return callHost("agents.sessions.cancelRun", {
+              sessionId,
+              companyId,
+              reason: opts?.reason,
+            });
+          },
+
           async close(sessionId: string, companyId: string) {
             sessionEventCallbacks.delete(sessionId);
             await callHost("agents.sessions.close", { sessionId, companyId });

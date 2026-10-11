@@ -418,3 +418,41 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     expect(list).not.toHaveBeenCalled();
   });
 });
+
+describe("createHostClientHandlers agents.sessions.cancelRun", () => {
+  const context = { invocationScope: { companyId: "company-a" } };
+
+  function handlersWith(capabilities: Parameters<typeof createHostClientHandlers>[0]["capabilities"]) {
+    const cancelRun = vi.fn(async () => "cancelled" as const);
+    const services = { agentSessions: { cancelRun } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({ pluginId: "paperclip.test", capabilities, services });
+    return { handlers, cancelRun };
+  }
+
+  it("is gated by agent.sessions.send without introducing a new capability", async () => {
+    const { handlers, cancelRun } = handlersWith(["agent.sessions.send"]);
+
+    await expect(
+      handlers["agents.sessions.cancelRun"]({ sessionId: "s-1", companyId: "company-a", reason: "stop" }, context),
+    ).resolves.toBe("cancelled");
+    expect(cancelRun).toHaveBeenCalledWith({ sessionId: "s-1", companyId: "company-a", reason: "stop" });
+  });
+
+  it("denies plugins without agent.sessions.send", async () => {
+    const { handlers, cancelRun } = handlersWith(["agent.sessions.create", "agent.sessions.close"]);
+
+    await expect(
+      handlers["agents.sessions.cancelRun"]({ sessionId: "s-1", companyId: "company-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("denies a company outside the current invocation scope", async () => {
+    const { handlers, cancelRun } = handlersWith(["agent.sessions.send"]);
+
+    await expect(
+      handlers["agents.sessions.cancelRun"]({ sessionId: "s-1", companyId: "company-b" }, context),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+});

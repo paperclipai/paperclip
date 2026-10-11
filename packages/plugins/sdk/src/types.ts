@@ -56,6 +56,7 @@ import type {
   PrincipalPermissionGrant,
   PrincipalType,
   EnvSecretRefBinding,
+  HeartbeatRunStatus,
 } from "@paperclipai/shared";
 import type { PluginPerformActionContext } from "./protocol.js";
 
@@ -1739,10 +1740,17 @@ export interface AgentSessionSendResult {
 }
 
 /**
+ * Final status of the session run that `cancelRun` stopped. Mirrors the host's
+ * heartbeat run statuses; a successful cancel resolves to `"cancelled"`.
+ */
+export type AgentSessionRunStatus = HeartbeatRunStatus;
+
+/**
  * `ctx.agents.sessions` — create, message, and close agent chat sessions.
  *
  * Requires `agent.sessions.create` for create, `agent.sessions.list` for list,
- * `agent.sessions.send` for sendMessage, `agent.sessions.close` for close.
+ * `agent.sessions.send` for sendMessage and cancelRun, `agent.sessions.close`
+ * for close.
  */
 export interface PluginAgentSessionsClient {
   /** Create a new conversational session with an agent. Requires `agent.sessions.create`. */
@@ -1764,6 +1772,25 @@ export interface PluginAgentSessionsClient {
     reason?: string;
     onEvent?: (event: AgentSessionEvent) => void;
   }): Promise<AgentSessionSendResult>;
+
+  /**
+   * Halt a session this plugin owns, like an operator pressing Stop: cancels
+   * its running run and any queued or retry-scheduled turns. The session
+   * itself stays open for further messages, and recovery stands down as it
+   * does after an operator's Stop.
+   *
+   * Resolves to the final status of the primary run (the running run, or the
+   * newest queued turn when none is running) after this call cancelled it,
+   * normally `"cancelled"`. Resolves to `null` when nothing was in flight,
+   * including when the run finished or someone else stopped it before this
+   * cancel landed.
+   * Rejects when the session is not owned by this plugin in `companyId`.
+   * Requires `agent.sessions.send`. Hosts that predate this method reject the
+   * call as an unknown method; catch that error to fall back.
+   */
+  cancelRun(sessionId: string, companyId: string, opts?: {
+    reason?: string;
+  }): Promise<AgentSessionRunStatus | null>;
 
   /** Close a session, releasing resources. Requires `agent.sessions.close`. */
   close(sessionId: string, companyId: string): Promise<void>;

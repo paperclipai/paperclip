@@ -77,6 +77,7 @@ import type {
   PluginAuthorizationDecisionResult,
   PluginAuthorizationPolicyRecord,
   PluginAuthorizationPolicySummary,
+  AgentSessionRunStatus,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -2153,6 +2154,17 @@ export interface WorkerToHostMethods {
   "agents.sessions.close": [
     params: { sessionId: string; companyId: string },
     result: void,
+  ];
+  /**
+   * Halt a session owned by the calling plugin: cancel its running run and
+   * any queued or retry-scheduled turns. Gated by `agent.sessions.send`.
+   * Resolves to the primary run's final status after this call cancelled it,
+   * or `null` when nothing was in flight (including a run that finished or
+   * was stopped by someone else before this cancel landed).
+   */
+  "agents.sessions.cancelRun": [
+    params: { sessionId: string; companyId: string; reason?: string },
+    result: AgentSessionRunStatus | null,
   ];
 
   // Goals

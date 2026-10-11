@@ -282,11 +282,12 @@ export interface HostServices {
     managedReset(params: WorkerToHostMethods["agents.managed.reset"][0]): Promise<WorkerToHostMethods["agents.managed.reset"][1]>;
   };
 
-  /** Provides `agents.sessions.create`, `agents.sessions.list`, `agents.sessions.sendMessage`, `agents.sessions.close`. */
+  /** Provides `agents.sessions.create`, `agents.sessions.list`, `agents.sessions.sendMessage`, `agents.sessions.cancelRun`, `agents.sessions.close`. */
   agentSessions: {
     create(params: WorkerToHostMethods["agents.sessions.create"][0]): Promise<WorkerToHostMethods["agents.sessions.create"][1]>;
     list(params: WorkerToHostMethods["agents.sessions.list"][0]): Promise<WorkerToHostMethods["agents.sessions.list"][1]>;
     sendMessage(params: WorkerToHostMethods["agents.sessions.sendMessage"][0]): Promise<WorkerToHostMethods["agents.sessions.sendMessage"][1]>;
+    cancelRun(params: WorkerToHostMethods["agents.sessions.cancelRun"][0]): Promise<WorkerToHostMethods["agents.sessions.cancelRun"][1]>;
     close(params: WorkerToHostMethods["agents.sessions.close"][0]): Promise<void>;
   };
 
@@ -502,6 +503,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "agents.sessions.create": "agent.sessions.create",
   "agents.sessions.list": "agent.sessions.list",
   "agents.sessions.sendMessage": "agent.sessions.send",
+  "agents.sessions.cancelRun": "agent.sessions.send",
   "agents.sessions.close": "agent.sessions.close",
 
   // Goals
@@ -1010,6 +1012,9 @@ export function createHostClientHandlers(
     }),
     "agents.sessions.sendMessage": gated("agents.sessions.sendMessage", async (params) => {
       return services.agentSessions.sendMessage(params);
+    }),
+    "agents.sessions.cancelRun": gated("agents.sessions.cancelRun", async (params) => {
+      return services.agentSessions.cancelRun(params);
     }),
     "agents.sessions.close": gated("agents.sessions.close", async (params) => {
       return services.agentSessions.close(params);
