@@ -73,7 +73,7 @@ import {
 } from "../hot-restart.js";
 import { serverVersion } from "../../version.js";
 import { adapterExecutionControls, waitForAdapterStop } from "../adapter-execution-control.js";
-import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement } from "../legacy-shutdown-workspace-settlement.js";
+import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 
 import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
@@ -1211,6 +1211,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           try {
             await waitForAdapterStop(control.settled, Math.max(1, settlementDeadline.getTime() - Date.now()));
             await finishLegacyShutdownWorkspaceSettlement(db, run);
+            const current = await getRun(run.id, { includeExecutionEvidence: true });
+            if (current && HEARTBEAT_RUN_TERMINAL_STATUSES.some(status => status === current.status)) {
+              await releaseEnvironmentLeasesForRun({ runId: current.id, companyId: current.companyId,
+                agentId: current.agentId, status: current.status, failureReason: current.error ?? undefined });
+            }
           } catch { /* The durable fence retains this source after controller loss. */ }
         }
         return;
@@ -2436,6 +2441,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // pending_cleanup sweep, so this tick can stop the recovered sandbox.
     // Isolate the sweep so its failure never hides the reaper result.
     try {
+      await sweepLegacyShutdownWorkspaceSettlements(db);
       const orphanedActiveLeaseSweep = await sweepOrphanedActiveLeases({
         backoffMs: staleThresholdMs,
       });

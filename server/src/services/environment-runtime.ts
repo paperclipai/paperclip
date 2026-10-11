@@ -1,4 +1,4 @@
-import { allowLegacyShutdownWorkspaceCleanup } from "./legacy-shutdown-workspace-settlement.js";
+import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
@@ -1944,6 +1944,9 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+        for (let index = reusableCandidateLeases.length - 1; index >= 0; index--) {
+          if (await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!)) reusableCandidateLeases.splice(index, 1);
+        }
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
             lease,
@@ -2359,6 +2362,9 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+      for (let index = reusableCandidateLeases.length - 1; index >= 0; index--) {
+        if (await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!)) reusableCandidateLeases.splice(index, 1);
+      }
       const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
         reusableSandboxLeaseScopeMatches({
           lease,
@@ -3328,6 +3334,7 @@ function createSandboxEnvironmentDriver(
     lease: EnvironmentLease;
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
+    if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
     let cleanupStatus: "success" | "failed" = "success";
     let termination: ReturnType<typeof remoteTerminationReceipt>;
     const metadata = input.lease.metadata ?? {};
@@ -4069,7 +4076,9 @@ export function environmentRuntimeService(
       const released: EnvironmentRuntimeLeaseRecord[] = [];
       for (let leaseRow of leaseRows) {
         try {
-          if (!(await allowLegacyShutdownWorkspaceCleanup(db, leaseRow))) continue;
+          if (!(await allowLegacyShutdownWorkspaceCleanup(db, leaseRow, new Date(), {
+            ownerStopOnly: cancelActiveWork === true && providerResourceDisposition === "stop_and_retain",
+          }))) continue;
           if (leaseRow.metadata?.legacyShutdownWorkspaceSettlement) {
             leaseRow = (await db.select().from(environmentLeases).where(and(
               eq(environmentLeases.id, leaseRow.id), eq(environmentLeases.companyId, leaseRow.companyId),
