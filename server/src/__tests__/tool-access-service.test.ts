@@ -16537,7 +16537,7 @@ describeEmbeddedPostgres("tool access service", () => {
       if (href === "https://agent-scoped.example.test/mcp") {
         const authorization = new Headers(init?.headers).get("authorization");
         if (authorization) {
-          expect(authorization).toBe("scoped-manager-access-token");
+          expect(authorization).toBe("Bearer scoped-manager-access-token");
           return mcpHttpResponse({
             jsonrpc: "2.0",
             id: "paperclip-catalog-refresh",
