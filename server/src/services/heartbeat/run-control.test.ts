@@ -1,3 +1,6 @@
+import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { createHeartbeatRetries } from "./retries.js";
 import { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import { ComputerStopPendingError } from "../../modules/computers/index.js";
@@ -5,7 +8,7 @@ import { heartbeatService } from "../heartbeat.js";
 import { canRetryComputerAdmissionWait } from "../cancelled-native-startup.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { issueComments, issueRecoveryActions, computers, environments, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, issueTreeHolds, issueComments, issueRecoveryActions, computers, environments, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -203,6 +206,100 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
     await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issue.id));
     return { ...f, issue, run };
   }
+  async function pausedComputerRetryFixture() {
+    const f = await computerWaitFixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.run.id, { retryReason: "computer_admission_wait", delayMs: 0 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected computer wait successor");
+    const [hold] = await db.insert(issueTreeHolds).values({ companyId: f.company.id, rootIssueId: f.issue.id,
+      mode: "pause", status: "active", reason: "Pause test", releasePolicy: { strategy: "manual" } }).returning();
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({ runId: scheduled.run.id,
+      companyId: f.company.id, now: new Date(Date.now() + 60_000) })).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+    const [suppressed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id));
+    await db.update(issueTreeHolds).set({ status: "released", releasedAt: new Date() }).where(eq(issueTreeHolds.id, hold.id));
+    return { ...f, suppressed };
+  }
+
+  it("pause suppresses an unstarted computer retry without inventing recovery, and a new message after resume queues once", async () => {
+    const f = await pausedComputerRetryFixture();
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, f.suppressed)).toBe(false);
+    await terminalizeLegacyExecution({ db, run: f.suppressed, status: "cancelled", reconcileIfNeeded: true });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toHaveLength(0);
+    // Keep the executor out of this integration test while exercising real wake admission.
+    await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running" });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "Read the saved file after resume." }).returning();
+    const service = heartbeatService(db);
+    const wake = { source: "automation" as const, triggerDetail: "system" as const, reason: "issue_commented",
+      requestedByActorType: "user" as const, requestedByActorId: "board", idempotencyKey: `paused-computer:${comment.id}`,
+      payload: { issueId: f.issue.id, commentId: comment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: comment.id } };
+    await service.wakeup(f.agent.id, wake);
+    await service.wakeup(f.agent.id, wake);
+    const queued = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${comment.id}`);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ status: "queued", agentId: f.agent.id });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toHaveLength(0);
+  });
+
+  it.each(["valid", "saved-message", "saved-old-message", "foreign-parent", "started", "lease", "provider-event", "missing-receipt", "changed-parent", "retry", "interrupt", "deleted-comment", "old-comment"])("historical paused computer retry accepts only verified new-message authority (%s)", async kind => {
+    const f = await pausedComputerRetryFixture();
+    if (kind === "foreign-parent") {
+      const [other] = await db.insert(agents).values({ companyId: f.company.id, name: "Foreign parent agent", adapterType: "paperclip_runner" }).returning();
+      await db.update(heartbeatRuns).set({ agentId: other.id }).where(eq(heartbeatRuns.id, f.run.id));
+    }
+    if (kind === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.suppressed.id));
+    if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.company.id, issueId: f.issue.id, heartbeatRunId: f.suppressed.id, status: "released", releasedAt: new Date(), cleanupStatus: "success" });
+    if (kind === "provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.company.id, agentId: f.agent.id, runId: f.suppressed.id, seq: 999, eventType: "turn.started" });
+    if (kind === "missing-receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.suppressed.id));
+    if (kind === "changed-parent") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.run.id));
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.issue.id,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${f.suppressed.id}`,
+      status: "resolved", outcome: "blocked", ownerType: "board", nextAction: "Historical mistaken hold",
+      evidence: { runId: f.suppressed.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" } } }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "board", body: "A new instruction", createdAt: new Date(f.suppressed.finishedAt!.getTime() + (["old-comment", "saved-old-message"].includes(kind) ? -1000 : 1000)),
+      ...(kind === "deleted-comment" ? { deletedAt: new Date() } : {}) }).returning();
+    if (kind.startsWith("saved-")) {
+      await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running" });
+      const [saved] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", updatedAt: new Date(Date.now() - 60_000),
+        payload: { issueId: f.issue.id, commentId: comment.id, executionWait: { reason: "execution_recovery", recoveryActionId: action.id },
+          _paperclipWakeContext: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: comment.id, wakeCommentIds: [comment.id] } },
+      }).returning();
+      const service = heartbeatService(db);
+      await service.resumeExecutionWaitComments();
+      await service.resumeExecutionWaitComments();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved.id));
+      const turns = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${comment.id}`);
+      if (kind === "saved-message") {
+        expect(wake.status).toBe("coalesced");
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatchObject({ status: "queued" });
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence.explicitUserContinuation).toMatchObject({ commentId: comment.id });
+      } else {
+        expect(wake.status).toBe("deferred_issue_execution");
+        expect(turns).toHaveLength(0);
+      }
+      return;
+    }
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issue.id)).for("update");
+      return admitExplicitNativeContinuation({ db: tx as unknown as Db, companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+        actorType: "user", actorId: "board", reason: kind === "retry" ? "retry_failed_run" : "issue_commented", commentId: comment.id,
+        successorRunId: randomUUID(), ...(kind === "retry" ? { failedRunId: f.suppressed.id } : {}),
+        ...(kind === "interrupt" ? { queuedCommentInterruptId: randomUUID() } : {}) });
+    });
+    if (kind === "valid") {
+      expect(result).toMatchObject({ previousRunId: f.suppressed.id, commentId: comment.id });
+      const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(updated.evidence.explicitUserContinuation).toMatchObject({ commentId: comment.id, previousRunId: f.suppressed.id });
+    } else {
+      expect(result).toBeNull();
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
+    }
+  });
+
   const operatorStop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "board" } };
 
   function lifecycleRetries(deps = callbacks(db)) {
