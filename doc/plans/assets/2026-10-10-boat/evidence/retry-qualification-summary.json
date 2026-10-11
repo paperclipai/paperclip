@@ -1103,5 +1103,491 @@
         "providerErrorPresent": false
       }
     ]
+  },
+  "local37FailingStopCancellation": {
+    "classification": "operator cancellation while provider stop was failing; not a pending-wait qualification",
+    "checkedAt": "2026-10-11T03:10:53.835Z",
+    "run": {
+      "id": "b380b52e-12df-4231-9f79-7e38539050f1",
+      "status": "cancelled",
+      "created_at": "2026-10-11T03:08:39.968Z",
+      "started_at": "2026-10-11T03:08:40.002Z",
+      "finished_at": "2026-10-11T03:09:07.157Z",
+      "error_code": "cancelled",
+      "error": "Cancelled by a board operator",
+      "native_session_id": null,
+      "runner_instance_id": null,
+      "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+      "session_id_after": null,
+      "retry_of_run_id": null,
+      "scheduled_retry_at": null,
+      "scheduled_retry_attempt": 0,
+      "scheduled_retry_reason": null,
+      "execution_stage": "preparing",
+      "execution_recovery": null,
+      "computer_admission": null,
+      "cancellation": {
+        "reason": "Cancelled by a board operator",
+        "source": "operator",
+        "expected": true,
+        "initiator": {
+          "id": "local-board",
+          "type": "user"
+        },
+        "recordedAt": "2026-10-11T03:09:07.156Z"
+      }
+    },
+    "newOwnerIdsAfterFirstSample": [],
+    "ownersBoundToRun": [],
+    "leasesBoundToRun": [],
+    "subsequentTaskRuns": [],
+    "wakeRequestsAfter0306": [
+      {
+        "id": "dc6f6f64-fa09-4757-954f-dac920ffe185",
+        "run_id": "b380b52e-12df-4231-9f79-7e38539050f1",
+        "status": "cancelled",
+        "reason": "issue_reopened_via_comment",
+        "requested_at": "2026-10-11T03:08:39.968Z",
+        "claimed_at": "2026-10-11T03:08:40.002Z",
+        "finished_at": "2026-10-11T03:09:07.157Z"
+      }
+    ],
+    "runEventTypes": [
+      {
+        "event_type": "lifecycle",
+        "count": 2,
+        "first_at": "2026-10-11T03:09:07.165Z",
+        "last_at": "2026-10-11T03:09:07.694Z"
+      }
+    ],
+    "providerFailureBaseline": {
+      "recordedAt": "2026-10-11T03:06:37.292098+00:00",
+      "scope": "Read-only precondition for pending-wait cancellation; no guest reads or lifecycle actions",
+      "fixtures": [
+        {
+          "fixture": "local-main",
+          "sandboxId": "bx_ndnggjad",
+          "observedAt": "2026-10-11T03:06:37.280972+00:00",
+          "state": "archiving",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T03:02:42.113Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+          "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+          "stop": {
+            "id": "stop_e6158ef3a5ab49f1",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:49:01.985Z",
+            "lastAttemptAt": "2026-10-11T03:02:40.643Z",
+            "endedAt": null,
+            "error": "Final snapshot failed; stop aborted to protect unsaved data: archival snapshot 52656953-0970-44b4-b373-f9f29e5f3d50 did not complete (status=failed); machine kept alive"
+          },
+          "providerErrorPresent": false
+        },
+        {
+          "fixture": "staging",
+          "sandboxId": "bx_b8sawfyp",
+          "observedAt": "2026-10-11T03:06:37.291945+00:00",
+          "state": "idle",
+          "hydrated": true,
+          "health": "ok",
+          "snapshots": true,
+          "lastSnapshotAttemptAt": "2026-10-11T03:02:40.556Z",
+          "lastSnapshotStatus": "in_progress",
+          "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+          "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+          "stop": {
+            "id": "stop_804de979b357c47a",
+            "status": "failing",
+            "requestedAt": "2026-10-11T02:34:21.063Z",
+            "lastAttemptAt": "2026-10-11T03:06:20.495Z",
+            "endedAt": null,
+            "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+          },
+          "providerErrorPresent": false
+        }
+      ]
+    },
+    "evidence": [
+      {
+        "file": "retry-local37-admission-first.json",
+        "sha256": "5cd9c10c0dc66d82e994e12fdfcbe80c818f17419da2ad7481c4de60379e2662"
+      },
+      {
+        "file": "retry-local37-admission-settled.json",
+        "sha256": "818e5e94330d2d80d0714522ea4ba2c3d4904a6fbd02b5ea5e8cd1f9dd6a9ce0"
+      },
+      {
+        "file": "retry-pending-wait-provider-baseline.json",
+        "sha256": "f575cd34f84655a99b35c2094ab9cb5e1fc0cdb5bb3e797f709cf8bd39c34879"
+      },
+      {
+        "file": "retry-local37-admission-cleanup0313.json",
+        "sha256": "d4e010b16335d01c4d8167e52e9c3cd62b1cf180e3ebc38150a24cc848e511bd"
+      }
+    ],
+    "limits": [
+      "No guest inspection was performed while the provider was archiving with a failing stop.",
+      "Absence of provider dispatch is supported by null runtime binding, preparing stage, no owner/lease, and lifecycle-only run events.",
+      "No durable computer_admission_wait record was produced in this run.",
+      "The 03:10:53 sample still showed preparing; executor cleanup is proven only by the 03:13:38 sample and its 03:11:16.987 settlement receipt."
+    ],
+    "cleanupVerifiedAt": "2026-10-11T03:13:38.297Z",
+    "finalCleanup": {
+      "checkedAt": "2026-10-11T03:13:38.297Z",
+      "run": {
+        "id": "b380b52e-12df-4231-9f79-7e38539050f1",
+        "status": "cancelled",
+        "created_at": "2026-10-11T03:08:39.968Z",
+        "started_at": "2026-10-11T03:08:40.002Z",
+        "finished_at": "2026-10-11T03:09:07.157Z",
+        "error_code": "cancelled",
+        "error": "Cancelled by a board operator",
+        "native_session_id": null,
+        "runner_instance_id": null,
+        "session_id_before": "01a1286b-9338-7101-8ced-733e9b28ae99",
+        "session_id_after": null,
+        "retry_of_run_id": null,
+        "scheduled_retry_at": null,
+        "scheduled_retry_attempt": 0,
+        "scheduled_retry_reason": null,
+        "execution_stage": "settled",
+        "runtime_mode": "legacy",
+        "controller_lease_expires_at": null,
+        "startup_preparation_settled_at": "2026-10-11T03:11:16.987Z",
+        "computer_admission_preparation_settled_at": null,
+        "computer_admission_retry_outcome": null,
+        "execution_recovery": null,
+        "computer_admission": null,
+        "cancellation": {
+          "reason": "Cancelled by a board operator",
+          "source": "operator",
+          "expected": true,
+          "initiator": {
+            "id": "local-board",
+            "type": "user"
+          },
+          "recordedAt": "2026-10-11T03:09:07.156Z"
+        }
+      },
+      "noOwnerOrLeaseBoundToRun": true,
+      "noScheduledRetryOrSuccessor": true,
+      "sourceFile": "retry-local37-admission-cleanup0313.json",
+      "sourceSha256": "d4e010b16335d01c4d8167e52e9c3cd62b1cf180e3ebc38150a24cc848e511bd"
+    },
+    "finalSuccessorRunIds": []
+  },
+  "providerSnapshotInvestigation": {
+    "recordedAt": "2026-10-11T03:11:36.970048+00:00",
+    "scope": "GET sandbox, GET exact stop, GET latest five completed snapshots only; no guest contact or mutations",
+    "fixtures": [
+      {
+        "fixture": "staging",
+        "sandboxId": "bx_b8sawfyp",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:02:40.556Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": "2026-10-11T03:11:20.544Z",
+          "endedAt": null,
+          "error": "Refusing archive/stop: Sandbox machine [redacted] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+        },
+        "completedSnapshots": [
+          {
+            "id": "257de6e4-c150-4c2b-b8e7-026831946617",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 93,
+            "createdAt": "2026-10-11T02:19:44.213Z",
+            "completedAt": "2026-10-11T02:19:59.759Z",
+            "sizeBytes": 445853,
+            "fileCount": 81,
+            "contentSizeBytes": 13367620,
+            "contentFileCount": 81
+          },
+          {
+            "id": "3bcf62e0-cc69-47e9-b493-1e294d74ea51",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 92,
+            "createdAt": "2026-10-11T02:18:44.210Z",
+            "completedAt": "2026-10-11T02:18:59.226Z",
+            "sizeBytes": 357418,
+            "fileCount": 71,
+            "contentSizeBytes": 12994481,
+            "contentFileCount": 71
+          },
+          {
+            "id": "e543237f-89dc-41fc-a1e4-0ad6ad7a7ac4",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 91,
+            "createdAt": "2026-10-11T02:17:44.226Z",
+            "completedAt": "2026-10-11T02:18:02.424Z",
+            "sizeBytes": 179011,
+            "fileCount": 54,
+            "contentSizeBytes": 4214826,
+            "contentFileCount": 54
+          },
+          {
+            "id": "987fbaf1-a3c9-485c-81b1-a3e6c0a687e9",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 90,
+            "createdAt": "2026-10-11T02:16:44.225Z",
+            "completedAt": "2026-10-11T02:17:02.668Z",
+            "sizeBytes": 272375,
+            "fileCount": 5,
+            "contentSizeBytes": 6254470,
+            "contentFileCount": 5
+          },
+          {
+            "id": "6e688e9c-ba76-4c76-9ffd-fa9c457ce3c5",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 89,
+            "createdAt": "2026-10-11T02:15:44.223Z",
+            "completedAt": "2026-10-11T02:16:02.697Z",
+            "sizeBytes": 207058,
+            "fileCount": 4,
+            "contentSizeBytes": 4214662,
+            "contentFileCount": 4
+          }
+        ],
+        "hasMoreCompletedSnapshots": true
+      },
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "state": "archiving",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:02:42.113Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:41:45.984Z",
+        "snapshotVerifiedAt": "2026-10-11T02:41:45.984Z",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:49:01.985Z",
+          "lastAttemptAt": "2026-10-11T03:02:40.643Z",
+          "endedAt": null,
+          "error": "Final snapshot failed; stop aborted to protect unsaved data: archival snapshot 52656953-0970-44b4-b373-f9f29e5f3d50 did not complete (status=failed); machine kept alive"
+        },
+        "completedSnapshots": [
+          {
+            "id": "53e25365-31d5-4949-8913-121ea1d09a2c",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 279,
+            "createdAt": "2026-10-11T02:41:40.087Z",
+            "completedAt": "2026-10-11T02:41:45.984Z",
+            "sizeBytes": 48739,
+            "fileCount": 138,
+            "contentSizeBytes": 174240,
+            "contentFileCount": 138
+          },
+          {
+            "id": "64799060-7ed0-4a52-9b72-52dacb6f20c0",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 278,
+            "createdAt": "2026-10-11T02:40:43.045Z",
+            "completedAt": "2026-10-11T02:40:43.043Z",
+            "sizeBytes": 179245,
+            "fileCount": 28,
+            "contentSizeBytes": null,
+            "contentFileCount": null
+          },
+          {
+            "id": "983f8945-6e82-4f06-90d7-76b2ebb00ad4",
+            "status": "completed",
+            "kind": "noop",
+            "generation": null,
+            "createdAt": "2026-10-11T00:52:13.419Z",
+            "completedAt": "2026-10-11T00:52:14.041Z",
+            "sizeBytes": null,
+            "fileCount": null,
+            "contentSizeBytes": null,
+            "contentFileCount": null
+          },
+          {
+            "id": "35bf2230-1823-4517-99d6-440272916f9c",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 278,
+            "createdAt": "2026-10-11T00:50:15.044Z",
+            "completedAt": "2026-10-11T00:52:12.702Z",
+            "sizeBytes": 179245,
+            "fileCount": 28,
+            "contentSizeBytes": 6443682,
+            "contentFileCount": 28
+          },
+          {
+            "id": "fd62ed3a-723f-4545-8610-3109f6d02396",
+            "status": "completed",
+            "kind": "incremental",
+            "generation": 277,
+            "createdAt": "2026-10-11T00:46:33.572Z",
+            "completedAt": "2026-10-11T00:50:14.996Z",
+            "sizeBytes": 220697,
+            "fileCount": 496,
+            "contentSizeBytes": 6252535,
+            "contentFileCount": 496
+          }
+        ],
+        "hasMoreCompletedSnapshots": true
+      }
+    ]
+  },
+  "deployment17": {
+    "sourceCommit": "ca8ab88c78556c4711d59f71c6293619543a66a1",
+    "requestId": "f90ac5bb-503e-4f15-a56e-7ccd2509c187",
+    "prepareRunId": "38107501313",
+    "buildRunId": "38107534492",
+    "result": "Build cancelled before check/deploy after fresh review found admission lifecycle defects. No rollout occurred.",
+    "reviewFindings": [
+      "https://github.com/paperclipai/paperclip/pull/15813#discussion_r4240083053",
+      "https://github.com/paperclipai/paperclip/pull/15804#discussion_r4240095623"
+    ],
+    "correction": "In progress; fresh deployment required after correction."
+  },
+  "providerSelfRecovery0323": {
+    "recordedAt": "2026-10-11T03:23:54.960011+00:00",
+    "scope": "Single bounded provider status check; no guest reads or lifecycle actions",
+    "fixtures": [
+      {
+        "fixture": "staging",
+        "sandboxId": "bx_b8sawfyp",
+        "observedAt": "2026-10-11T03:23:54.959691+00:00",
+        "state": "idle",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:16:37.370Z",
+        "lastSnapshotStatus": "in_progress",
+        "snapshotCompletedAt": "2026-10-11T02:19:59.759Z",
+        "snapshotVerifiedAt": "2026-10-11T02:19:59.759Z",
+        "stop": {
+          "id": "stop_804de979b357c47a",
+          "status": "failing",
+          "requestedAt": "2026-10-11T02:34:21.063Z",
+          "lastAttemptAt": "2026-10-11T03:23:20.483Z",
+          "endedAt": null,
+          "error": "Refusing archive/stop: Sandbox machine [sandbox machine] has no successful snapshot in the last 30 minutes (latest completed at 2026-10-11T02:19:59.759Z)."
+        },
+        "providerErrorPresent": false
+      },
+      {
+        "fixture": "local-main",
+        "sandboxId": "bx_ndnggjad",
+        "observedAt": "2026-10-11T03:23:54.959875+00:00",
+        "state": "archived",
+        "hydrated": true,
+        "health": "ok",
+        "snapshots": true,
+        "lastSnapshotAttemptAt": "2026-10-11T03:16:03.007Z",
+        "lastSnapshotStatus": "completed",
+        "snapshotCompletedAt": "2026-10-11T03:16:03.591Z",
+        "snapshotVerifiedAt": "2026-10-11T03:16:03.591Z",
+        "stop": {
+          "id": "stop_e6158ef3a5ab49f1",
+          "status": "completed",
+          "requestedAt": null,
+          "lastAttemptAt": "2026-10-11T03:16:03.734Z",
+          "endedAt": "2026-10-11T03:16:03.734Z",
+          "error": null
+        },
+        "providerErrorPresent": false
+      }
+    ],
+    "provenance": {
+      "file": "retry-provider-self-recovery-status.json",
+      "sha256": "8cfe3e2f31d50468a5d9503aa0ebebb6840b01c50edeed4d7fa109f704291b27"
+    }
+  },
+  "local37ClaudeResume": {
+    "checkedAt": "2026-10-11T03:29:05.086Z",
+    "outcome": "failed during saved-session recovery before independent proof-file verification",
+    "run": {
+      "id": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "status": "failed",
+      "created_at": "2026-10-11T03:26:24.365Z",
+      "started_at": "2026-10-11T03:26:24.393Z",
+      "finished_at": "2026-10-11T03:28:55.832Z",
+      "error_code": "native_session_interrupted",
+      "error": "native_session_recovery_failed: Error: runner_remote_provider_cache_corrupt: [exact agent provider-pack cache directory]; stop tasks using this pack and have an operator remove or quarantine this exact cache directory before retrying",
+      "native_session_id": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+      "runner_instance_id": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+      "session_id_before": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+      "session_id_after": null,
+      "execution_stage": "preparing",
+      "controller_lease_expires_at": "2026-10-11T03:28:22.877Z",
+      "resultKeys": [],
+      "forceFreshSession": false,
+      "executionRecovery": null,
+      "providerPackDigest": null
+    },
+    "providerPackDigest": "sha256:a02b92afc8423b8fdea50a7fd480a5417b17d9c7b31a14dcab4221e57e8c270a",
+    "sameNormalizedSession": true,
+    "sameLogicalRunner": true,
+    "sameProviderThreadBefore": true,
+    "latestOwner": {
+      "id": "5ef4911d-a6a9-4d10-9eeb-dce1d02de041",
+      "phase": "retired",
+      "generation": 1,
+      "runId": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "sessionKey": "49e146ed7d44b43e9080ba7f0119315bc30625354fb5f70e132d4f1df35d1231",
+      "deadline": null,
+      "process": null
+    },
+    "latestLease": {
+      "id": "0354c41f-d8c2-48bb-889d-b2932082dfc8",
+      "status": "released",
+      "heartbeat_run_id": "7b6baf95-3e47-456a-99f9-9339183b6508",
+      "acquired_at": "2026-10-11T03:26:41.773Z",
+      "released_at": "2026-10-11T03:28:55.830Z",
+      "cleanup_status": "success"
+    },
+    "expectedProofHashes": [
+      "14fa23911a1a95ede22a93f43fc027934b20a1ba497f8e6120abc8769498e124",
+      "afaf525f4bf0c38614c5df0cf97140e7d1bf9cad96faa293e2317dc82116af4a"
+    ],
+    "proofFilesVerified": false,
+    "guestReadsPerformed": false,
+    "cacheMutationsPerformed": false,
+    "evidence": [
+      {
+        "file": "retry-local37-claude-baseline.json",
+        "sha256": "8b46b06284ea09fb29567df0296154b8ad18ccc5c26a1a935fd014035a6a48ff"
+      },
+      {
+        "file": "retry-local37-claude-progress0327.json",
+        "sha256": "575219156fe2e312c688d9a5f333387ddbe9426c302ef71e525c92491c89c78f"
+      },
+      {
+        "file": "retry-local37-claude-progress0329.json",
+        "sha256": "822cbec020ddec5f3d968200b9dbb8f383158c95423ebc95cccdb1260fb94fab"
+      }
+    ],
+    "sourceCommit": "04ce7eb2a8fddbb2a46c8ec99d3a748de53d7ae8",
+    "ui": "Ordinary follow-up in saved task; UI showed Run failed and Blocked. Screenshot local-37-claude-resume-failed.png."
+  },
+  "deployment18": {
+    "sourceCommit": "bd86e22e72578fa8a240160b6001802eb2cd40f1",
+    "requestId": "f8cb13bc-51c4-4639-9323-adc2560dda18",
+    "prepareRunId": "38108515304",
+    "status": "in progress; no serving verification yet"
   }
 }
