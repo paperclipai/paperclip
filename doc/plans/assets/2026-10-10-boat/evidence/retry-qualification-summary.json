@@ -1986,13 +1986,15 @@
     ]
   },
   "latestObservation": {
-    "recordedAt": "2026-10-11T03:56:00Z",
-    "canonical": "c4fd4d8c1a44e6a062d8742a89eae850ce2ef0cc",
-    "core": "c1273036d5",
-    "stagingCandidate": "2d8030417c",
-    "localServer": "local39",
-    "status": "live saved-Claude and paused-task continuation in progress; new Stop/suppression race under correction",
-    "originalSourceAndRemainingFields": "Historical at original recordedAt; later follow-ups supersede individual conditions without erasing original failures."
+    "recordedAt": "2026-10-11T04:29:00Z",
+    "canonical": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "core": "28d3fc1b65",
+    "stagingCandidate": "81108b27be3de129adcbc5e58522994ba514a19e",
+    "localServer": "local40",
+    "localServingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
+    "status": "Fresh Claude task failed at sidecar session.open; diagnosis continues. Saved Claude fixture remains quarantined. Deployment19 still pending; deployment20 not started.",
+    "originalSourceAndRemainingFields": "Historical at original recordedAt; later follow-ups supersede individual conditions without erasing original failures.",
+    "servingStaging": "05a1d1f2172261066ca53d3776f798c3073fc49f"
   },
   "boundedComputerPackVerification": {
     "core": "c1273036d5",
@@ -2010,5 +2012,172 @@
       "turn and recovery budgets"
     ],
     "liveOutcome": "pending"
+  },
+  "local39": {
+    "source": "c4fd4d8c1a44e6a062d8742a89eae850ce2ef0cc",
+    "pauseRecovery": {
+      "runId": "ed993c49",
+      "finishedAt": "2026-10-11T03:59:23.452Z",
+      "status": "succeeded",
+      "forceFreshSession": true,
+      "savedNativeSessionPass": false,
+      "markerLineCount": 1,
+      "markerSha256": "12772b6873ec4e7ffa80c9d0f798f0bb0492aae88b6cb3669c55a812f9bb312c",
+      "independentReadAt": "2026-10-11T03:59:55Z",
+      "screenshot": "../local39-pause-resume-proof.png"
+    },
+    "desktop": {
+      "normalConnectAt": "2026-10-11T04:00:00Z",
+      "directBrowserMouse": "passed; opened Chrome",
+      "directBrowserKeyboard": "passed; visible boat in address bar",
+      "embeddedInput": "unverified; automation rejected fractional iframe coordinates before input",
+      "typeTextAttempt": "no visible result; actual key events subsequently succeeded",
+      "screenshot": "../local39-direct-desktop-input.png",
+      "extraDirectTab": "closed normally; original viewer retained temporarily for bounded authorized diagnosis",
+      "normalConnectApproximate": true,
+      "originalViewer": "Closed normally around04:04; provider subsequently archived04:04:56.078 with verified snapshot and zero active owners."
+    },
+    "claude": {
+      "runId": "6c9d757f-c716-4d7c-b4d3-e0d4f00cf321",
+      "forceFreshSession": false,
+      "normalizedSessionId": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+      "providerThreadId": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+      "logicalRunnerId": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+      "outcome": "not passed; ACPX session.open rejected after successful pack verification; same-run recovery subsequently reported authority_indeterminate",
+      "firstFailureAt": "2026-10-11T03:58:50.828Z",
+      "uiFriction": "Run failed briefly appeared before automatic recovery returned the same run to Working.",
+      "proofFiles": "independent read confirms unchanged prior hashes; Claude did not execute the requested read",
+      "provenance": [
+        {
+          "file": "retry-local39-claude-checkpoint0359.json",
+          "sha256": "54bd757bf5d42219ff78f8873df6e0d2bb58cf28c40756f714c6e45a3c94a691"
+        },
+        {
+          "file": "retry-local39-claude-failure-events.json",
+          "sha256": "758dd96c05c1f63e91cad06b989b6bcbe7b95c4d3cfd23fbb99c270f5c691969"
+        }
+      ]
+    }
+  },
+  "stopWrapperRaceCorrection": {
+    "core": "280bad9d15",
+    "combined": "87694c9c3f",
+    "staging": "0a0ccbaac1",
+    "tests": 138,
+    "skipped": 0,
+    "finalAffectedCases": 3,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Suppression CAS preserves Stop; losing writes have no release effects. Wake queue re-reads source under task/run locks and retains claims and old input until aborted computer-wait acknowledgement. Both race orderings test the real wrapper, Stop and release with a barrier before acknowledgement.",
+    "provenance": [
+      {
+        "file": "computer-wait-wrapper-race-final-tests.log",
+        "sha256": "52d7d3543646188aeb19e2ec08043886646e99db9d4a9d1c1210b694abd595da"
+      },
+      {
+        "file": "computer-wait-wrapper-race-final-tsc.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "file": "computer-wait-wrapper-race-affected-tests.log",
+        "sha256": "c7a8c4a1c8b2a5afd4555738e62e091958ea1fb825d4b87c8730ce2f7e2659e7"
+      }
+    ]
+  },
+  "local39BroadChecks": {
+    "runtimeSource": "c4fd4d8c1a",
+    "documentationHeadAtBuild": "f43ee562a2",
+    "recursiveTypecheck": "passed",
+    "fullBuild": "passed",
+    "provenance": [
+      {
+        "file": "local39-recursive-typecheck.log",
+        "sha256": "38efb73dce2310a5a58e63f94d0f92d8b167d89f22804e75735fcf40cc88df38"
+      },
+      {
+        "file": "local39-build.log",
+        "sha256": "5de703cd3ccbf39a56d523f0ce7ddff235ce873d3b2f670ce9e450561f9a383d"
+      }
+    ]
+  },
+  "verificationRecoveryClassification": {
+    "core": "3e90f36fa7",
+    "combined": "121ec12299",
+    "staging": "ad27e0069c",
+    "tests": 13,
+    "typecheck": "passed",
+    "independentReview": "passed",
+    "behavior": "Preserves known verification-unavailable source classification. Only no-session/no-provider-evidence failures qualify for existing bounded bootstrap recovery; existing checkpoint identity and ambiguous-state protections remain."
+  },
+  "sidecarFailureDiagnostics": {
+    "core": "bb4536fb9a",
+    "combined": "8ccfdd3dd2",
+    "staging": "05a1d1f217",
+    "tests": 8,
+    "independentReview": "passed",
+    "behavior": "Closed categories for known pinned-sidecar admission errors; no arbitrary message/path output. Retryability, rejection and authority checks unchanged. Underlying live Claude cause not established."
+  },
+  "deployment19": {
+    "requestId": "3b28f246-540b-478a-b9d7-207686ae850e",
+    "sha": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "hostname": "boat.staging.paperclip.app",
+    "environment": "staging",
+    "status": "succeeded",
+    "verification": "verified",
+    "checkedAt": "2026-10-11T04:34:10.638Z"
+  },
+  "local40DiagnosticRetry": {
+    "outcome": "FAILED: saved controller authority remains quarantined; diagnostic sidecar opening not reached",
+    "receipt": "local40-saved-claude-outcome.json",
+    "quarantineBypassed": false
+  },
+  "local40FreshClaudeTask": {
+    "outcome": "FAILED: fresh session.open timed out before proof tools; no same-run automatic retry",
+    "receipt": "local40-fresh-claude-outcome.json",
+    "cleanup": "lease released successfully and owner retired",
+    "deeperEvidence": "Controller run.prepare, drain and suspend completed. Persisted session.open result identifies inner ACPX sidecar request timeout; no committed provider events or malformed frames.",
+    "packageCompatibility": "Source diff between pack source51e52d584 and runner8ccf shows unchanged ACPX sidecar/profiles/contracts/protocol and provider startup implementation; no package incompatibility found.",
+    "warmFollowupPassed": false,
+    "diagnosticReceipt": "local40-fresh-claude-diagnosis.json"
+  },
+  "legacyExplicitContinuationRaceCorrection": {
+    "core": "9a31fa2746",
+    "canonical": "b68c68566c",
+    "stagingCandidate": "e21a7ca1ba",
+    "cause": "Periodic legacy recovery recreated an explicitly resolved hold and cancelled its authorized successor before dispatch.",
+    "fix": "Honor exact explicit continuation receipts while preserving unsafe-workspace and multi-source holds.",
+    "validation": "329/329 affected tests; final8/8 focused regression cases; server TypeScript and independent review passed. Fresh browser CI pending.",
+    "browserCI": {
+      "checkedAt": "2026-10-11T04:30:44Z",
+      "exactCore": "9a31fa2746",
+      "exactCombined": "b68c68566c",
+      "e2e8": "passed on both heads",
+      "review": "5/5 and zero unresolved threads on both heads",
+      "otherCI": "pending, no failure observed"
+    }
+  },
+  "preDiagnosticPatchCI": {
+    "receipt": "core9a31-ui-b68-ci-review.json",
+    "status": "Both exact heads green, Greptile5/5 and zero unresolved threads; excludes later startup-stage diagnostics."
+  },
+  "staging19FreshClaude": {
+    "taskId": "c4aaef65-6d52-478d-9e1d-43a3acd0ab6a",
+    "runId": "fccc253e-ae3c-40d1-9950-f5702d17369b",
+    "startedAt": "2026-10-11T04:35:33Z",
+    "servingSource": "05a1d1f2172261066ca53d3776f798c3073fc49f",
+    "status": "in progress: Preparing provider pack for first use",
+    "persistentProofIndependentRead": {
+      "at": "2026-10-11T04:37:13Z",
+      "size": 25,
+      "sha256": "e646d151756f1efdb9e19d99a2a0971810468087c457fa458f1311c42ef07424"
+    }
+  },
+  "startupStageDiagnostics": {
+    "core": "28d3fc1b65",
+    "combined": "b698f54966638f99e7f3a0ef56c53563da12f47a",
+    "stagingCandidate": "81108b27be3de129adcbc5e58522994ba514a19e",
+    "behavior": "Closed admission-stage names and bounded elapsed milliseconds use existing diagnostic channel; timeout retains last non-cleanup stage. No deadline or lifecycle changes.",
+    "validation": "Rust10/10 real timeout/cleanup/privacy cases; host54/54 including observer failure isolation; TypeScript, entrypoint build and independent review passed.",
+    "liveValidation": "Pending matched local artifact build and fresh task."
   }
 }

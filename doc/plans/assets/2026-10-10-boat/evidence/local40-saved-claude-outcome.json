@@ -1,0 +1,75 @@
+{
+  "checkedAt": "2026-10-11T04:19:17.906Z",
+  "servingSource": "8ccfdd3dd269e251ba652cfb1ea469dc0861068c",
+  "configuredDiagnosticRunnerSha256": "32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1",
+  "outcome": "FAILED: historical saved session cannot resume from quarantined controller authority",
+  "run": {
+    "id": "6d3f8a42-a288-4c58-b3dd-309aef11a3d1",
+    "status": "failed",
+    "created_at": "2026-10-11T04:15:34.878Z",
+    "started_at": "2026-10-11T04:15:34.911Z",
+    "finished_at": "2026-10-11T04:18:16.508Z",
+    "error_code": "adapter_failed",
+    "error": "runner_state_identity_mismatch: durable_identity_unreadable",
+    "native_session_id": "5f2470db-eb0f-4561-95a2-6dddf5646fa6",
+    "runner_instance_id": "f7c84a3a-b36d-4885-ba30-91441a5f94f8",
+    "session_id_before": "582fc37b-ddc7-4227-9378-1cbd052a36ea",
+    "session_id_after": null,
+    "execution_stage": "preparing",
+    "controller_lease_expires_at": "2026-10-11T04:17:33.434Z",
+    "resultKeys": [
+      "stopReason",
+      "timeoutFired",
+      "timeoutSource",
+      "timeoutConfigured",
+      "effectiveTimeoutSec"
+    ],
+    "forceFreshSession": false,
+    "executionRecovery": null,
+    "providerPackDigest": null
+  },
+  "firstFailure": "PRP provider resume state is unavailable",
+  "finalFailure": "runner_state_identity_mismatch: durable_identity_unreadable",
+  "latestLease": {
+    "id": "c89c3492-87cc-4901-932d-eeefca32161e",
+    "status": "released",
+    "heartbeat_run_id": "6d3f8a42-a288-4c58-b3dd-309aef11a3d1",
+    "acquired_at": "2026-10-11T04:17:34.384Z",
+    "released_at": "2026-10-11T04:18:19.344Z",
+    "cleanup_status": "success"
+  },
+  "latestOwner": {
+    "id": "5f8f7237-369d-4d6f-b5b5-65650fac7277",
+    "phase": "retired",
+    "generation": 1,
+    "runId": "6d3f8a42-a288-4c58-b3dd-309aef11a3d1",
+    "sessionKey": "49e146ed7d44b43e9080ba7f0119315bc30625354fb5f70e132d4f1df35d1231",
+    "deadline": null,
+    "process": null
+  },
+  "sidecarDiagnosticReached": false,
+  "guestReadsPerformed": false,
+  "mutationsPerformed": false,
+  "evidence": [
+    {
+      "file": "retry-local37-claude-local40baseline0415.json",
+      "sha256": "fe572aece722f31bbcb80b835ee74470aadfee38dbfe367a55e30ab8cad91c3f"
+    },
+    {
+      "file": "retry-local37-claude-local40progress0416.json",
+      "sha256": "33a3ab19db7b6b36d1d8d023ca73cd56301362f901b558ba99c6c39351a575b2"
+    },
+    {
+      "file": "retry-local40-claude-failure-events.json",
+      "sha256": "3dd5d214cb7a794977637b77a335f8c7069a14aeb408a57723c410fef550c538"
+    },
+    {
+      "file": "retry-local40-controller-quarantine.json",
+      "sha256": "aaf17532f1923846f6ba37c4b8e95a596f7ad81695d7202fa69e82fdae518d85"
+    },
+    {
+      "file": "retry-local37-claude-local40final0419.json",
+      "sha256": "c2cae51af8a1e36921d4102c20b16a7c350dc74fb9895a2a69f0c565b7ccd8cf"
+    }
+  ]
+}

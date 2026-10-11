@@ -52,3 +52,9 @@ Direct Boat browser input proof: [Chromium with the typed marker](../staging-13-
 - Deployment 14 follow-up is included in retry-qualification-summary.json: full warm HMR and local detach/reconnect retention passed; Claude saved resume failed and live child cancellation remains inconclusive. Historical failures are preserved.
 
 Local38 pending admission and Pause work passed; later normal continuation remained behind a recovery gate. The retry summary preserves both outcomes. Claude verification reached its exact30-second deadline; classification now distinguishes unavailable verification from an explicit cache mismatch. Neither follow-up is a Claude continuation success.
+
+[Local39 outcomes](local39-resume-outcomes.json): normal saved-message recovery after pause passed with the unchanged one-line marker, using the documented fresh-session repair contract. Saved Claude identity and files were retained, but ACPX session opening failed; the later same-run recovery was rejected by the authority guard. No live Claude success is claimed. Direct desktop mouse/keyboard passed; embedded input was blocked by automation targeting. Full build and recursive typecheck passed on local39 runtime source.
+
+[Local40 saved Claude](local40-saved-claude-outcome.json) remains quarantined; [fresh Claude](local40-fresh-claude-outcome.json) reached the runner but timed out opening the provider session. Both cleaned up successfully. No current-source simple Claude or warm-follow-up success is claimed.
+
+[Fresh Claude diagnosis](local40-fresh-claude-diagnosis.json) confirms settled checkpoints and present inputs without identifying the stalled startup step. [CI and review receipt](core9a31-ui-b68-ci-review.json) records both previous exact heads green; it excludes the later startup-stage diagnostic patch.

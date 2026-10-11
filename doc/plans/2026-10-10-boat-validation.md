@@ -2,17 +2,17 @@
 
 **Experimental and unmerged. Local journeys and partial staging qualification passed on the sources below; final-source staging acceptance remains incomplete.** A successful build, probe, or earlier-source journey does not establish the remaining product conditions.
 
-## Current source boundary (2026-10-11 03:55 UTC)
+## Current source boundary (2026-10-11 04:40 UTC)
 
 | Surface | Source and evidence |
 | --- | --- |
-| Combined branch | `c4fd4d8c1a`: includes pause recovery, truthful verification errors, bounded 120-second Boat full-pack verification, UI waiting correction, and upstream CI alignment. Local39 is serving this source; live retries are in progress. |
-| Core branch | `c1273036d5`; focused tests and independent reviews passed. Fresh CI is pending. A new review identified a concurrent Stop/suppression ordering race; correction and regression tests are in progress. |
-| Serving staging | Deployment 18 `bd86e22e72578fa8a240160b6001802eb2cd40f1` verified at 03:56:25.724 UTC. It does not yet include the subsequent pause, verifier, UI, or Stop/suppression-race corrections. |
+| Combined branch | `b698f54966`: includes reviewed Stop, verification, legacy explicit-continuation and safe startup-stage diagnostics. Local40 serves `8ccfdd3dd2` with its matching diagnostic Linux runner and the compatible pinned provider pack. |
+| Core branch | `28d3fc1b65`; focused tests and independent reviews passed. Prior exact heads core9a31/combinedb68 passed all CI and Greptile5/5; those results exclude the new startup-stage diagnostics. |
+| Serving staging | Deployment 19 `05a1d1f2172261066ca53d3776f798c3073fc49f` verified at 04:34:10.638 UTC. It includes pause, verifier, Stop-race and safe rejection diagnostics; the latest legacy periodic-recovery correction is not yet deployed. |
 | Cancelled candidate | Deployment 17 `ca8ab88c78556c4711d59f71c6293619543a66a1` was cancelled during build before check/deploy. Fresh review found that Stop could leave a retry authorized and that premature terminalization could release the task lock. Corrections passed real cancellation/lifecycle-path tests and independent review; deployment18 of `bd86e22e72` is in progress. |
-| Provider and live state | Both providers recovered with verified snapshots: staging archived at 03:30:20.703, local at 03:34:37.716. Local normal Computer Connect subsequently resumed it for read-only cache diagnosis. On local39, ordinary saved-message recovery began for the paused task and a new read-only Claude continuation was submitted. No provider stop was forced or cancelled and no recovery gate or database state was manually cleared. |
+| Provider and live state | Both providers recovered with verified snapshots: staging archived at 03:30:20.703, local at 03:34:37.716. Local normal Computer Connect subsequently resumed it for read-only cache diagnosis. On local39, the paused message recovered successfully with its original marker intact. Claude passed verification but failed at provider session opening. Local archived again at 04:04:56.078 with a verified snapshot and zero active owners. No provider stop was forced or cancelled and no recovery gate or database state was manually cleared. |
 
-Latest source-specific live successes are staging warm HMR and corrected native computer use, local detach/reconnect retention, and local saved-session continuation after controller restart with an unchanged one-line marker. Latest native Claude saved-session recovery, active sibling cancellation isolation, and the new pending-wait UI journey remain unverified. A local cancellation during a **failing** stop is narrower evidence.
+Latest source-specific live successes are staging warm HMR and corrected native computer use, local detach/reconnect retention, and local saved-session continuation after controller restart with an unchanged one-line marker. Latest native Claude saved-session recovery failed and active sibling cancellation isolation remains unverified. Pending admission and pause/resume passed locally; concurrent Stop is covered by regression tests. A local cancellation during a **failing** stop is narrower evidence.
 
 The [consolidated retry receipt](assets/2026-10-10-boat/evidence/retry-qualification-summary.json) preserves exact sources, timestamps, original failures, and receipt hashes. A deployment proves serving source, not product acceptance. Staging retains its previously applied migration prefix; no database reset, history rewrite, or guard bypass was used. Historical observations below retain their original cutoffs.
 
@@ -107,6 +107,18 @@ Core `c1273036d5` gives only the full computer-provider pack integrity walk up t
 
 A fresh PR review found a separate Stop race in the outer retry wrapper: delayed suppression could overwrite an already aborted outcome. The next staging deployment is held for its correction. The old UI attachment E2E rerun passed; upstream workspace partition drift is corrected, while new-head CI is still pending.
 
+## Local39 results and follow-up (2026-10-11 04:03 UTC)
+
+The post-pause continuation **passed**: `ed993c49` succeeded at 03:59:23.452. Its existing proof file remained exactly one line with the original SHA-256, both in the visible response and an independent read at 03:59:55. The queued new message resumed through normal recovery without manual database or gate changes. This historical false-hold repair intentionally used a fresh session; it is not a saved-native-session pass. [Visible proof](assets/2026-10-10-boat/local39-pause-resume-proof.png).
+
+Claude `6c9d757f` retained its original normalized session, provider thread and logical runner, and passed the previously failing package verification. It then failed at 03:58:50.828 because ACPX rejected `session.open`. The same-run recovery subsequently reported `authority_indeterminate`. The independent read confirms both prior proof hashes, but Claude did not execute the requested check: **saved-session acceptance still failed**. The UI briefly showed “Run failed” before returning to Working for automatic recovery, a confusing transition preserved as a UX finding. Root-cause diagnosis is in progress; closed diagnostic categories are now committed as core `bb4536fb9a` / combined `8ccfdd3dd2`. Eight Rust tests and independent review passed. No checkpoint or cache reset was used.
+
+Normal Computer Connect rendered the shared desktop. In the direct browser viewer, mouse input opened Chrome and actual keyboard events entered `boat` in its address bar. [Direct desktop input](assets/2026-10-10-boat/local39-direct-desktop-input.png). The generic text-insertion attempt produced no visible result. Embedded input remains unverified because the automation tool rejected fractional iframe input coordinates before sending input. The extra direct stream was closed normally; the original viewer was temporarily retained for bounded read-only diagnosis, so this interval is not a runner-only idle test.
+
+The second Stop-race correction, core `280bad9d15` / combined `87694c9c3f` / staging `0a0ccbaac1`, passed 138 tests, a final three-case affected rerun, server TypeScript and independent review. Both ordering regressions pause real Stop before acknowledgement while the real scheduler wrapper proceeds. Losing writes cannot release queued input, and wake release checks current Stop state under the same locks. A separate review now checks propagation of the new verification-unavailable error classification before the next staging deployment.
+
+Recursive TypeScript and the full build passed on local39's runtime source `c4fd4d8c1a` (documentation head `f43ee562a2`). This does not retroactively make the frozen full test suite green or validate later runtime commits.
+
 ## Checks and their limits
 
 | Check | Recorded result |
@@ -158,3 +170,21 @@ The [sanitized evidence index](assets/2026-10-10-boat/evidence/README.md) and pr
 - [Corrected local Claude skill/completion](assets/2026-10-10-boat/local-32-legacy-claude-fixed.jpg) and [Codex remote instructions](assets/2026-10-10-boat/local-32-legacy-codex-fixed.jpg).
 
 - [Staging corrected Claude completion](assets/2026-10-10-boat/staging-11-legacy-claude-complete.jpg) and [Codex completion](assets/2026-10-10-boat/staging-11-legacy-codex-complete.jpg).
+
+Deployment 19 of `05a1d1f2172261066ca53d3776f798c3073fc49f` was dispatched through the official workflow at 04:08 UTC (request `3b28f246-540b-478a-b9d7-207686ae850e`). Serving verification and live acceptance remain pending.
+
+## Local40 diagnostic retry (2026-10-11 04:21 UTC)
+
+The exact `8ccfdd3dd2` Linux runner was built offline with Rust 1.97.1, hash `32c5ec947ad1541e34c6fa43fd40ef6ba4f5cb77ed4b063ccfcbd08f32f98ff1`, leaving the retained provider pack unchanged. The ordinary BOA-14 follow-up failed first with unavailable PRP resume state and finally with `durable_identity_unreadable` at 04:18:16.508; cleanup succeeded at 04:18:19.344. Read-only inspection confirmed the canonical controller root is absent and earlier controller state is quarantined. This failed before the new sidecar diagnostics and does not establish the original session-opening cause. No state was restored, reset or bypassed.
+
+BOA-14 is preserved as a failed historical saved-session fixture. A separate BOA-17 task on the same Claude agent and persistent home began normally at 04:19:43.189 to read its unchanged prior files and then exercise warm continuation. That outcome remains pending and will not be represented as recovery of BOA-14.
+
+## Local40 fresh and saved Claude retries (2026-10-11 04:29 UTC)
+
+The saved BOA14 retry failed before provider startup because its controller authority remained quarantined. The fixture was preserved. A separate new task, BOA17, also failed: `session.open` timed out before proof tools. Controller preparation, drain and suspension completed; the persisted error identifies the inner ACPX sidecar session-open deadline. This is a fresh-start failure, not proof of a transport or package-contract mismatch. Source comparison found the relevant sidecar, protocol and provider-startup contracts unchanged between the pinned pack and new runner. Diagnosis continues through normal Computer Connect and read-only inspection. Both failed runs released their leases successfully and retired their owners. Neither establishes a warm-follow-up pass.
+
+Receipts: [saved task](assets/2026-10-10-boat/evidence/local40-saved-claude-outcome.json), [fresh task](assets/2026-10-10-boat/evidence/local40-fresh-claude-outcome.json). Deployment19 remains pending; staging candidate `e21a7ca1ba` adds the reviewed legacy recovery race correction and is not yet deployed.
+
+Deployment 19 verified serving `05a1d1f2172261066ca53d3776f798c3073fc49f` at 04:34:10.638 UTC. A new staging Claude task will compare fresh startup against the official deployed pack; it cannot recover or validate either old quarantined fixture.
+
+The startup-stage diagnostic patch (`28d3fc1b65` / combined `b698f54966`) preserves only closed stage names and bounded elapsed milliseconds. Its real timeout test retains the stalled stage across cleanup and excludes arbitrary error text. Rust 10/10, runtime-host 54/54, TypeScript, entrypoint build and independent review passed. This adds evidence for the next retry; it does not itself fix Claude startup. The matched local test artifact is building.
