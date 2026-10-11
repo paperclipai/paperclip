@@ -21,6 +21,15 @@ implemented in [PAP-17087](/PAP/issues/PAP-17087).
 Both routes normalize through the same backend contract, so auth discovery,
 secret handling, catalog refresh and review cannot diverge between them.
 
+Remote tool calls use a 10-second timeout by default. An operator can set
+`config.timeoutMs` on a remote MCP connection through
+`PATCH /api/tool-connections/{connectionId}` for slower tools. Use a positive
+integer in milliseconds. Include the existing connection config fields in the
+request because the patch replaces the config object. Paperclip caps this
+connection timeout at 10 minutes.
+An explicit per-call timeout takes precedence. Railway `run-command` keeps its
+command-specific budget.
+
 **Advanced → Run your own** is a separate, higher-trust path for local stdio
 commands and is deliberately not covered here.
 
