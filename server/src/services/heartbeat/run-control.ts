@@ -31,7 +31,7 @@ import {
   admitExplicitNativeContinuation,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
-import { isCancelledNativeStartup, isComputerAdmissionWaitBeforeProvider, hasSettledComputerAdmissionPreparation } from "../cancelled-native-startup.js";
+import { isPausedComputerAdmissionRetryBeforeProvider, isCancelledNativeStartup, isComputerAdmissionWaitBeforeProvider, hasSettledComputerAdmissionPreparation } from "../cancelled-native-startup.js";
 import {
   executionBlockerPredicate,
   getExecutionBlocker,
@@ -386,7 +386,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       ? await db.select().from(nativeRunFinalizations).where(and(
           eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
         )) : [];
-    const cancelledPreparation = run.runtimeMode === "legacy" &&
+    const pausedComputerRetry = await isPausedComputerAdmissionRetryBeforeProvider(db, run);
+    const cancelledPreparation = pausedComputerRetry || run.runtimeMode === "legacy" &&
       await isCancelledNativeStartup(db, run, preparationCoordinator);
     if (run.runtimeMode !== "native" && !cancelledPreparation &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
@@ -422,6 +423,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
       let payload = parseObject(wake.payload);
       if (payload.queuedCommentInterrupt) {
+        if (pausedComputerRetry) continue;
         await resumeQueuedCommentInterrupt(wake.companyId, wake.id);
         continue;
       }

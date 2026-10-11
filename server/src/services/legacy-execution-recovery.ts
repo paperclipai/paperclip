@@ -1,4 +1,4 @@
-import { isComputerAdmissionWaitBeforeProvider } from "./cancelled-native-startup.js";
+import { isComputerAdmissionWaitBeforeProvider, isPausedComputerAdmissionRetryBeforeProvider } from "./cancelled-native-startup.js";
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
@@ -62,7 +62,7 @@ export function legacyExecutionNeedsReconciliation(
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run)) &&
-      !(await isComputerAdmissionWaitBeforeProvider(db, run)));
+      !(await isComputerAdmissionWaitBeforeProvider(db, run)) && !(await isPausedComputerAdmissionRetryBeforeProvider(db, run)));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */

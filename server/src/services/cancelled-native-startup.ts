@@ -1,7 +1,7 @@
 import { isComputerAdmissionWait } from "./execution-recovery-attempt.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
-import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { computers, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
@@ -111,6 +111,49 @@ export function hasSettledComputerAdmissionPreparation(run: Run): boolean {
       run.controllerBootId !== legacyControllerBootId && run.controllerLeaseExpiresAt &&
       run.controllerLeaseExpiresAt <= new Date())) return false;
   return true;
+}
+
+/** A paused scheduled computer retry never reached a preparing controller.
+ * This is evidence for new user input, never automatic replay of the old wake. */
+export async function isPausedComputerAdmissionRetryBeforeProvider(db: Db, run: Run): Promise<boolean> {
+  const issueId = run.contextSnapshot?.issueId;
+  if (run.status !== "cancelled" || run.errorCode !== "issue_paused" ||
+      run.scheduledRetryReason !== "computer_admission_wait" || !run.retryOfRunId ||
+      !run.scheduledRetryAt || !run.finishedAt || typeof issueId !== "string" ||
+      run.startedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt || run.executionStage ||
+      run.controllerBootId || run.controllerLeaseExpiresAt || run.nativeIssueId || run.nativeSessionId ||
+      run.runnerInstanceId || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter ||
+      adapterExecutionControls.has(run.id)) return false;
+  const [parent] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.retryOfRunId),
+    eq(heartbeatRuns.agentId, run.agentId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+  )).limit(1);
+  if (!parent || !await canRetryComputerAdmissionWait(db, parent)) return false;
+  const [receipt] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.agentId, run.agentId), eq(heartbeatRunEvents.eventType, "lifecycle"),
+    eq(heartbeatRunEvents.stream, "system"),
+    eq(heartbeatRunEvents.message, "Scheduled retry suppressed because the issue is held by an active subtree pause hold"),
+    sql`${heartbeatRunEvents.payload}->>'issueId' = ${issueId}`,
+    sql`${heartbeatRunEvents.payload}->>'scheduledRetryReason' = 'computer_admission_wait'`,
+    sql`${heartbeatRunEvents.payload}->>'scheduledRetryAt' = ${run.scheduledRetryAt.toISOString()}`,
+    sql`${heartbeatRunEvents.payload}->>'holdId' is not null`,
+  )).limit(1);
+  if (!receipt) return false;
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  )).limit(1);
+  const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+  )).limit(1);
+  const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
+        "provider.event", "provider.rpc_result", "tool.execution.started"])),
+  )).limit(1);
+  return !lease && !coordinator && !execution;
 }
 
 /** Scheduling additionally requires cleanup or an expired prior controller. */
