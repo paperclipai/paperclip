@@ -139,6 +139,8 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
 
 export function isPrivateOrReservedIp(address: string): boolean {
   const lower = address.toLowerCase();
+  const nat64Ipv4 = parseWellKnownNat64Ipv4(lower);
+  if (nat64Ipv4) return isPrivateOrReservedIpv4(nat64Ipv4);
   const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
   if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);
   const mappedIpv4Hex = parseMappedIpv4Hex(lower);
@@ -151,11 +153,12 @@ export function isPrivateOrReservedIp(address: string): boolean {
 /** Link-local egress is denied in every deployment mode. */
 export function isAlwaysDeniedLinkLocalIp(address: string): boolean {
   const normalized = normalizeIpAddress(address);
-  if (isIP(normalized) === 4) {
-    const octets = parseIpv4Address(normalized);
+  const destination = parseWellKnownNat64Ipv4(normalized) ?? normalized;
+  if (isIP(destination) === 4) {
+    const octets = parseIpv4Address(destination);
     return octets !== null && octets[0] === 169 && octets[1] === 254;
   }
-  return isIP(normalized) === 6 && /^fe[89ab]/.test(normalized);
+  return isIP(destination) === 6 && /^fe[89ab]/.test(destination);
 }
 
 function isPrivateOrReservedIpv4(address: string): boolean {
@@ -199,6 +202,23 @@ function parseMappedIpv4Hex(address: string): string | null {
   return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
 }
 
+/** Decode only RFC 6052's well-known /96 prefix, not network-specific NAT64 prefixes. */
+function parseWellKnownNat64Ipv4(address: string): string | null {
+  if (isIP(address) !== 6) return null;
+  let canonical: string;
+  try {
+    // URL normalizes expanded, uppercase and dotted-IPv4 forms to hex hextets.
+    canonical = new URL(`http://[${address}]/`).hostname;
+  } catch {
+    return null;
+  }
+  const match = canonical.match(/^\[64:ff9b::(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,4})?\]$/);
+  if (!match) return null;
+  const hi = Number.parseInt(match[1] ?? "0", 16);
+  const lo = Number.parseInt(match[2] ?? "0", 16);
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
 function isPrivateOrReservedIpv6(address: string): boolean {
   if (address === "::" || address === "::1") return true;
   if (address.startsWith("fc") || address.startsWith("fd")) return true;
@@ -210,6 +230,6 @@ function isPrivateOrReservedIpv6(address: string): boolean {
   if (address.startsWith("2001:2:") || address === "2001:2::") return true;
   if (/^2001:0?2[0-9a-f]:/.test(address)) return true;
   if (address.startsWith("2002:")) return true;
-  if (address.startsWith("64:ff9b:")) return true;
+  if (/^0*64:ff9b:/.test(address)) return true;
   return false;
 }
