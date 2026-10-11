@@ -2020,6 +2020,17 @@ async function buildRuntime(input: {
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
+  const expectedGitHubLauncherDir = input.ctx.executionTarget?.kind === "remote"
+    ? path.posix.join(input.ctx.executionTarget.remoteCwd, ".paperclip-runtime", "github", input.ctx.runId)
+    : path.join(os.tmpdir(), "paperclip-github-runtime", input.ctx.runId);
+  const managedGitHubLauncherDir = context.githubAuthenticationMode === "managed"
+    && shapedEnvConfig.PAPERCLIP_GITHUB_LAUNCHER_DIR === expectedGitHubLauncherDir
+    ? expectedGitHubLauncherDir
+    : null;
+  const managedGitHubCredentialKeys = new Set([
+    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+    "PAPERCLIP_GIT_TOKEN", "PAPERCLIP_GITHUB_BROKER_TOKEN", "SSH_AUTH_SOCK",
+  ]);
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
@@ -2033,7 +2044,22 @@ async function buildRuntime(input: {
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
-    if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
+    if (scratchKeys.has(key) && value === scratch.dir) continue;
+    // Managed GitHub paths and capabilities belong to this launch. Keep the
+    // process environment intact, but do not treat their rotation as new user
+    // configuration. Verify the run-owned directory before applying this rule.
+    if (managedGitHubLauncherDir) {
+      if (managedGitHubCredentialKeys.has(key)) continue;
+      if (["PAPERCLIP_GITHUB_LAUNCHER_DIR", "ZDOTDIR"].includes(key) && value === managedGitHubLauncherDir) continue;
+      if (key === "BASH_ENV" && value === `${managedGitHubLauncherDir}/.bashrc`) continue;
+      if (key === "GH_CONFIG_DIR" && value === `${managedGitHubLauncherDir}/gh-config`) continue;
+      if (key === "PATH") {
+        const delimiter = executionTargetIsRemote ? ":" : path.delimiter;
+        resolvedAdapterEnv[key] = value.split(delimiter).filter((entry) => entry !== managedGitHubLauncherDir).join(delimiter);
+        continue;
+      }
+    }
+    resolvedAdapterEnv[key] = value;
   }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
