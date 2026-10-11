@@ -35,6 +35,14 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { registerSlackTaskAuthority, slackRunOrigin } from "./connectors/slack-authority.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
+import {
+  chatTrustLaneOfIssue,
+  invokerLaneRow,
+  TRUST_LANE_AUDIENCE_MAX_PRINCIPALS,
+  TRUST_LANE_AUDIENCE_NOTICE,
+  TRUST_LANE_THREAD_ROWS_MAX,
+  type ChatTrustLane,
+} from "./chat-trust-lane.js";
 function githubPolicyRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 import { githubChatManagementService } from "./chat-github-management.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
@@ -10414,6 +10422,117 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
   }
 
+  /**
+   * Choose the task an inbound native-thread message may join. A thread can
+   * hold one task per trust lane, bound to the same provider thread: the guest
+   * task keeps its quarantine, sandbox policy and secret allowlist exactly as
+   * admitted, while an authorized linked user's turn runs in a separate task
+   * with no inherited comments, policy, session or workspace. Selection keys
+   * off the authority this transaction just locked, per message, so link or
+   * membership changes and interleaved senders land on the correct boundary.
+   */
+  async function selectChatTrustLane(
+    tx: DbOrTransaction,
+    input: {
+      anchor: ConversationRow;
+      endpoint: EndpointRow;
+      principalId: string;
+      verifiedUserId: string | null;
+    },
+  ): Promise<
+    | { kind: "default" }
+    | { kind: "reuse"; conversation: ConversationRow }
+    | { kind: "create"; sessionGeneration: number }
+    | { kind: "refused" }
+  > {
+    const lane: ChatTrustLane = input.verifiedUserId ? "verified" : "guest";
+    const rows = await tx
+      .select({ conversation: chatConversations, issue: issues })
+      .from(chatConversations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, chatConversations.companyId),
+          eq(issues.id, chatConversations.issueId),
+        ),
+      )
+      .where(
+        and(
+          eq(chatConversations.companyId, input.endpoint.companyId),
+          eq(chatConversations.endpointId, input.endpoint.id),
+          eq(
+            chatConversations.externalConversationId,
+            input.anchor.externalConversationId,
+          ),
+          eq(chatConversations.externalThreadId, input.anchor.externalThreadId),
+        ),
+      )
+      .orderBy(desc(chatConversations.sessionGeneration));
+    // A verified author does not authorize other readers of this thread to
+    // receive the trusted agent's replies. Once an unlinked guest has taken
+    // part, run a verified turn only if every other participant Paperclip has
+    // accepted here is itself a currently authorized linked user.
+    if (
+      lane === "verified" &&
+      rows.some((row) => chatTrustLaneOfIssue(row.issue) === "guest")
+    ) {
+      const others = await tx
+        .selectDistinct({ principalId: chatDeliveries.principalId })
+        .from(chatMessageLinks)
+        .innerJoin(
+          chatDeliveries,
+          and(
+            eq(chatDeliveries.companyId, chatMessageLinks.companyId),
+            eq(chatDeliveries.id, chatMessageLinks.deliveryId),
+          ),
+        )
+        .where(
+          and(
+            eq(chatMessageLinks.companyId, input.endpoint.companyId),
+            eq(chatMessageLinks.endpointId, input.endpoint.id),
+            inArray(
+              chatMessageLinks.conversationId,
+              rows.map((row) => row.conversation.id),
+            ),
+            eq(chatMessageLinks.direction, "inbound"),
+            isNotNull(chatDeliveries.principalId),
+            ne(chatDeliveries.principalId, input.principalId),
+          ),
+        )
+        .orderBy(asc(chatDeliveries.principalId))
+        .limit(TRUST_LANE_AUDIENCE_MAX_PRINCIPALS + 1);
+      if (others.length > TRUST_LANE_AUDIENCE_MAX_PRINCIPALS) {
+        return { kind: "refused" };
+      }
+      for (const other of others) {
+        const authorization = await lockCurrentPrincipalAuthorization(
+          tx,
+          input.endpoint,
+          other.principalId!,
+        );
+        if (!authorization.allowed || authorization.userId === null) {
+          return { kind: "refused" };
+        }
+      }
+    }
+    const anchorRow =
+      rows.find((row) => row.conversation.id === input.anchor.id) ?? rows[0];
+    if (!anchorRow || chatTrustLaneOfIssue(anchorRow.issue) === lane) {
+      return { kind: "default" };
+    }
+    const sameLane = rows.find(
+      (row) => chatTrustLaneOfIssue(row.issue) === lane,
+    );
+    if (sameLane) {
+      return { kind: "reuse", conversation: sameLane.conversation };
+    }
+    return {
+      kind: "create",
+      sessionGeneration:
+        Math.max(...rows.map((row) => row.conversation.sessionGeneration)) + 1,
+    };
+  }
+
   async function requireCurrentExternalActionAuthorization(
     tx: DbTransaction,
     input: {
@@ -16093,16 +16212,42 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       const inboundActivityPublications: ActivityPublication[] = [];
+      // Slack and Discord native threads stay bound to one task for life, so
+      // each trust lane needs its own task in that thread. Linear surfaces end
+      // a task with /new or /close, and the other providers keep their own
+      // thread, control and authority models.
+      const trustLanesIsolated =
+        surfaceKind === "native_thread" &&
+        (endpoint.provider === "slack" || endpoint.provider === "discord");
+      let trustLaneRefused = false;
       const persistTaskMutation = async (
         taskTx: DbOrTransaction,
         taskEndpoint: EndpointRow,
         taskUserId: string | null,
       ) => {
         let conversation = existingConversation;
+        let laneSessionGeneration: number | null = null;
+        if (trustLanesIsolated && existingConversation) {
+          const lane = await selectChatTrustLane(taskTx, {
+            anchor: existingConversation,
+            endpoint: taskEndpoint,
+            principalId: principalResolution.principal.id,
+            verifiedUserId: taskUserId,
+          });
+          if (lane.kind === "refused") {
+            trustLaneRefused = true;
+            return null;
+          }
+          if (lane.kind === "reuse") conversation = lane.conversation;
+          else if (lane.kind === "create") {
+            conversation = null;
+            laneSessionGeneration = lane.sessionGeneration;
+          }
+        }
         if (!conversation) {
-          const sessionGeneration = isLinear
-            ? (latestConversation?.sessionGeneration ?? 0) + 1
-            : 1;
+          const sessionGeneration =
+            laneSessionGeneration ??
+            (isLinear ? (latestConversation?.sessionGeneration ?? 0) + 1 : 1);
           const issue = await issuesSvc.create(
             endpoint.companyId,
             {
@@ -16124,7 +16269,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             },
             taskTx,
           );
-          await taskTx
+          const inserted = await taskTx
             .insert(chatConversations)
             .values({
               companyId: endpoint.companyId,
@@ -16145,7 +16290,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               state: "active",
               lastActivityAt: new Date(),
             })
-            .onConflictDoNothing();
+            .onConflictDoNothing()
+            .returning({ id: chatConversations.id });
+          // A lane task joins only the conversation created for it. If
+          // another writer already owns this generation, roll back and retry
+          // the delivery rather than bind this message to the other lane.
+          if (laneSessionGeneration !== null && inserted.length === 0)
+            throw conflict(
+              "Another task already owns this conversation generation",
+            );
           conversation = await taskTx
             .select()
             .from(chatConversations)
@@ -16563,7 +16716,41 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           currentPrincipalAuthorization.userId,
         );
       });
-      if (!taskMutation) return;
+      if (!taskMutation) {
+        if (trustLaneRefused) {
+          // The verified author is authorized, but this thread has readers
+          // Paperclip cannot clear for the trusted agent's replies. Say so
+          // instead of dropping the message silently or running it elsewhere.
+          const effectContext =
+            runtimeContext ??
+            runtimeContextForRecord(
+              (await endpointRecord(endpoint.id)) ??
+                (() => {
+                  throw new Error("Chat endpoint is unavailable");
+                })(),
+            );
+          const effect = await db.transaction((tx) =>
+            stageProviderEffect(tx, {
+              endpoint,
+              deliveryId: activeDelivery.id,
+              principalId: principalResolution.principal.id,
+              providerActionId: `provider_effect:delivery:${activeDelivery.id}`,
+              payload: {
+                version: 1,
+                effect: "thread_message",
+                threadId: thread.id,
+                text: TRUST_LANE_AUDIENCE_NOTICE,
+                settleDelivery: true,
+                resourceId: resource.id,
+              },
+              runtimeContext: effectContext,
+            }),
+          );
+          if (!effect) throw new Error("Provider effect was not persisted");
+          await processProviderEffect(effect.id, thread);
+        }
+        return;
+      }
       // The open task can fetch the comment immediately, before attachments
       // finish preparing or the agent starts. Never publish an uncommitted row.
       for (const publication of inboundActivityPublications) {
@@ -18466,9 +18653,32 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   lifecyclePrincipal.id,
                 )
               : null;
-          const authorizedPrincipalId = authorization?.allowed
-            ? (lifecyclePrincipal?.id ?? null)
-            : null;
+          // A guest, including a linked user whose link was revoked, never
+          // writes into a verified-lane task, even by editing a message that
+          // the task already holds.
+          const guestEditsVerifiedTask =
+            authorization?.allowed === true &&
+            authorization.userId === null &&
+            (currentEndpoint.provider === "slack" ||
+              currentEndpoint.provider === "discord") &&
+            currentConversation !== null &&
+            !currentConversation.isDirectMessage &&
+            (await tx
+              .select({ sourceTrust: issues.sourceTrust })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, currentEndpoint.companyId),
+                  eq(issues.id, linkedTarget.issueId),
+                ),
+              )
+              .then((rows) =>
+                rows[0] ? chatTrustLaneOfIssue(rows[0]) === "verified" : false,
+              ));
+          const authorizedPrincipalId =
+            authorization?.allowed && !guestEditsVerifiedTask
+              ? (lifecyclePrincipal?.id ?? null)
+              : null;
           if (!authorizedPrincipalId) {
             if (
               await retainSourceInvalidation(
@@ -23181,8 +23391,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               : null
             : invocation.sourceKind !== "guild_channel"
               ? await tx
-                  .select()
+                  .select({ conversation: chatConversations, issue: issues })
                   .from(chatConversations)
+                  .innerJoin(
+                    issues,
+                    and(
+                      eq(issues.companyId, chatConversations.companyId),
+                      eq(issues.id, chatConversations.issueId),
+                    ),
+                  )
                   .where(
                     and(
                       eq(chatConversations.companyId, scope.companyId),
@@ -23198,9 +23415,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     ),
                   )
                   .orderBy(desc(chatConversations.sessionGeneration))
-                  .limit(1)
-                  .for("update")
-                  .then((rows) => rows[0] ?? null)
+                  // Only a thread holds one task per trust lane. A direct
+                  // message needs just its newest generation.
+                  .limit(
+                    invocation.sourceKind === "native_thread"
+                      ? TRUST_LANE_THREAD_ROWS_MAX
+                      : 1,
+                  )
+                  .for("update", { of: chatConversations })
+                  .then((rows) =>
+                    // A command acts on the invoker's own lane, never on
+                    // another's.
+                    invocation.sourceKind === "native_thread"
+                      ? (invokerLaneRow(rows, principal.userId !== null)
+                          ?.conversation ?? null)
+                      : (rows[0]?.conversation ?? null),
+                  )
               : null;
           if (
             (receipt?.target && !conversation) ||
@@ -26234,9 +26464,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
       if (!currentEndpoint || currentEndpoint.provider !== "slack") return null;
 
-      const conversation = await tx
-        .select()
+      const conversations = await tx
+        .select({ conversation: chatConversations, issue: issues })
         .from(chatConversations)
+        .innerJoin(
+          issues,
+          and(
+            eq(issues.companyId, chatConversations.companyId),
+            eq(issues.id, chatConversations.issueId),
+          ),
+        )
         .where(
           and(
             eq(chatConversations.companyId, currentEndpoint.companyId),
@@ -26246,9 +26483,61 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ),
         )
         .orderBy(desc(chatConversations.sessionGeneration))
-        .limit(1)
-        .for("update")
-        .then((rows) => rows[0] ?? null);
+        .for("update", { of: chatConversations });
+      const conversation = await (async () => {
+        if (conversations[0]?.conversation.isDirectMessage)
+          return conversations[0].conversation;
+        if (conversations.length === 0) return null;
+
+        const issueIds = conversations.map((row) => row.issue.id);
+        // An issue with a current run is represented by that run, not stale queued wakes.
+        const queuedWakeIssues = await tx
+          .select({ issueId: issues.id })
+          .from(agentWakeupRequests)
+          .innerJoin(
+            issues,
+            and(
+              eq(issues.companyId, agentWakeupRequests.companyId),
+              inArray(issues.id, issueIds),
+              isNull(issues.executionRunId),
+              or(
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issues.id}::text`,
+                sql`${agentWakeupRequests.payload}->>'taskId' = ${issues.id}::text`,
+                sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId' = ${issues.id}::text`,
+                sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId' = ${issues.id}::text`,
+              ),
+            ),
+          )
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, currentEndpoint.companyId),
+              eq(agentWakeupRequests.agentId, currentEndpoint.assignedAgentId),
+              inArray(agentWakeupRequests.status, [
+                "queued",
+                "deferred_issue_execution",
+              ]),
+              isNull(agentWakeupRequests.runId),
+              lte(agentWakeupRequests.requestedAt, event.occurredAt),
+            ),
+          );
+        const queuedIssueIds = new Set(
+          queuedWakeIssues.map((row) => row.issueId),
+        );
+        // A thread can hold one task per trust lane. Only a linked user may
+        // Stop (a guest's Stop is denied when it executes), so prefer the
+        // verified lane among tasks with a run or queued wake in flight.
+        const withWork = conversations.filter(
+          (row) =>
+            row.issue.executionRunId !== null ||
+            queuedIssueIds.has(row.issue.id),
+        );
+        return (
+          invokerLaneRow(
+            withWork.length > 0 ? withWork : conversations,
+            true,
+          )?.conversation ?? null
+        );
+      })();
       const principal = await tx
         .select()
         .from(chatExternalPrincipals)
