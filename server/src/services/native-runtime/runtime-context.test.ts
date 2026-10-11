@@ -196,6 +196,34 @@ describe("buildNativeRuntimeContext", () => {
     },
   );
 
+  it("keeps an errored per-agent MCP connection in the native assignment", async () => {
+    serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [{ effect: "include", connectionId: "connection-1" }],
+      bindings: [],
+      allowedTools: [{ id: "tool-1", connectionId: "connection-1" }],
+      allowedToolNames: ["issues.read"],
+      installedConnections: [{
+        id: "connection-1",
+        transport: "mcp_remote",
+        credentialPolicy: "per_agent",
+        enabled: true,
+        status: "active",
+        healthStatus: "error",
+      }],
+    });
+
+    await expect(resolveNativeRuntimeMcpSnapshot({
+      db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runId: "run-1",
+    })).resolves.toMatchObject({
+      bindingId: "native-mcp:run-1",
+      digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
   it("keeps healthy native MCP connections when another assigned connection is unavailable", async () => {
     serviceMocks.exportFiles.mockResolvedValue({
       entryFile: "AGENTS.md",
