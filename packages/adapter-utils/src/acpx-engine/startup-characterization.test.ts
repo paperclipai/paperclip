@@ -697,8 +697,8 @@ describe("ACPX engine startup characterization", () => {
         createRuntime: () =>
           ({
             ensureSession: async () => okHandle,
-            // Gemini model/effort drive a session config option; a throwing setter
-            // fails the configure_session phase after the handshake succeeds.
+            // A custom agent's model/effort drive a session config option; a throwing
+            // setter fails the configure_session phase after the handshake succeeds.
             setConfigOption: async () => {
               throw new Error("setConfigOption boom");
             },
@@ -712,8 +712,9 @@ describe("ACPX engine startup characterization", () => {
         agent: { id: "agent-1", companyId: "company-1" },
         runtime: {},
         config: {
-          agent: "gemini",
-          model: "gemini-2.5-pro",
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          model: "custom-model",
           thinkingEffort: "high",
           stateDir: path.join(root, "state"),
         },
