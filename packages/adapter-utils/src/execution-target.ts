@@ -948,19 +948,42 @@ export async function runAdapterExecutionTargetProcess(
         );
       }
     };
-    // Arrival-order delivery: runners may call onLog without awaiting it, and
-    // display sinks have uneven latency, so push synchronously and deliver
-    // through one chain instead of ordering by onLog resolution.
+    // Preserve arrival order before awaiting display sinks. Cooperative runners
+    // wait for their control delivery; fire-and-forget producers have an explicit
+    // drop-newest policy once either the batch or character budget is full.
+    // Include the in-flight batch in both budgets.
+    const maxPendingControlBatches = 64;
+    let pendingControlBatches = 0;
+    let pendingControlChars = 0;
+    let droppedControlBatches = 0;
+    let droppedControlChars = 0;
     let controlDelivery: Promise<void> = Promise.resolve();
     const forwardSandboxChunk = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
       const records = liveControl?.[stream].push(chunk) ?? "";
+      let delivery: Promise<void> | null = null;
       if (records) {
-        controlDelivery = controlDelivery.then(() => forwardSandboxControls(stream, records));
+        if (pendingControlBatches >= maxPendingControlBatches || pendingControlChars + records.length > MAX_CAPTURE_BYTES) {
+          droppedControlBatches += 1;
+          droppedControlChars += records.length;
+        } else {
+          pendingControlBatches += 1;
+          pendingControlChars += records.length;
+          controlDelivery = controlDelivery.then(async () => {
+            try {
+              await forwardSandboxControls(stream, records);
+            } finally {
+              pendingControlBatches -= 1;
+              pendingControlChars -= records.length;
+            }
+          });
+          delivery = controlDelivery;
+        }
       }
       if (chunk) {
         streamedControlChars[stream] += chunk.length;
         await options.onLog(stream, chunk);
       }
+      await delivery;
     };
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
@@ -1027,6 +1050,12 @@ export async function runAdapterExecutionTargetProcess(
         await runLogTail.abort();
       }
       throw error;
+    } finally {
+      if (droppedControlBatches > 0) {
+        console.warn(
+          `[${runId}] dropped ${droppedControlBatches} sandbox control batches (${droppedControlChars} characters) because the live event sink backlog reached its limit`,
+        );
+      }
     }
   }
 

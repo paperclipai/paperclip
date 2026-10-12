@@ -637,6 +637,70 @@ describe("execution-target sandbox control-output forwarding (fake runner, no ho
     expect(byPipe.stdout.join("")).toBe("");
   });
 
+  it.each([
+    { budget: "batch count", count: 70, padding: 0, accepted: 64 },
+    { budget: "character count", count: 6, padding: 1024 * 1024, accepted: 3 },
+  ])("bounds unawaited control $budget and reports dropped live events without failing the run", async ({ count, padding, accepted }) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const records = Array.from({ length: count }, (_, i) => `${sandboxAssistant(`bounded-${i}${"x".repeat(padding)}`)}\n`);
+    const seen: string[] = [];
+    const harness = makeSandboxHarness({
+      streamed: records.map((chunk) => ({ stream: "stdout", chunk })),
+      finalStdout: records.join(""),
+      useTail: false,
+      unawaited: true,
+      settleMs: 0,
+      onBeforeReturn: release,
+    });
+    try {
+      const result = await runAdapterExecutionTargetProcess(randomUUID(), harness.target, "agent-cli", [], {
+        ...baseOptions(),
+        onControlOutput: async (_stream, output) => {
+          await blocked;
+          seen.push(output);
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(records.join(""));
+      expect(parseControlRecords(seen.join(""))).toEqual(records.slice(0, accepted).map((record) => JSON.parse(record)));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`dropped ${count - accepted} sandbox control batches`));
+    } finally {
+      release();
+      warn.mockRestore();
+    }
+  });
+
+  it("backpressures cooperative control producers without dropping their records", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const records = Array.from({ length: 70 }, (_, i) => `${sandboxAssistant(`cooperative-${i}`)}\n`);
+    const seen: string[] = [];
+    let seenBeforeReturn = 0;
+    const harness = makeSandboxHarness({
+      streamed: records.map((chunk) => ({ stream: "stdout", chunk })),
+      finalStdout: records.join(""),
+      useTail: true,
+      onBeforeReturn: () => { seenBeforeReturn = seen.length; },
+    });
+    try {
+      const result = await runAdapterExecutionTargetProcess(randomUUID(), harness.target, "agent-cli", [], {
+        ...baseOptions(),
+        onControlOutput: async (_stream, output) => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          seen.push(output);
+        },
+        runLogTail: harness.runLogTail,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(seenBeforeReturn).toBe(records.length);
+      expect(parseControlRecords(seen.join(""))).toEqual(records.map((record) => JSON.parse(record)));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("keeps arrival order and redaction under unawaited fan-out with uneven display latency", async () => {
     // P8 regression: the runner fans onLog out unawaited while the display
     // sink resolves unevenly (first call slower). Control delivery must

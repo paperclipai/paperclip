@@ -193,6 +193,13 @@ builds the same `onControlOutput` records itself. It feeds the raw streamed byte
 (tail chunks, or the runner's own `onLog` chunks when no tail is attached) into one
 sanitized control stream per pipe, never the display `onLog` text. Records are
 delivered in arrival order through a single chain, ahead of the process result.
+A runner that awaits its output callback also waits for that batch's control
+sink. A runner that does not await callbacks has a drop-newest policy: the shared
+queue accepts at most 64 batches and four Mi characters, including the in-flight
+batch. A batch that would exceed either limit is not delivered as live control
+output. At completion, one warning reports only the dropped batch and character
+counts. Display output and the runner's captured result are unchanged. These
+limits bound live-event backlog; they do not make a stuck sink complete.
 Without a tail, a pipe that streamed nothing is covered once from the runner's
 final output; a pipe that did stream is not replayed, so no record is emitted twice. A failing event
 sink logs a warning and does not fail the run. This extends control sanitization
