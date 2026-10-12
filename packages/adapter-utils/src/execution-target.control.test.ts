@@ -408,9 +408,107 @@ describe("execution-target sandbox control-output forwarding (fake runner, no ho
       // Also let the pre-fix RED case unwind without leaving a tail behind.
       releaseControl();
       await completed;
+      // completed settled before cleanup. Cross an event-loop boundary so all
+      // promise reactions behind the released sink can run before asserting.
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     expect(onControlOutput).toHaveBeenCalledTimes(1);
     expect(onControlOutput).toHaveBeenCalledWith("stdout", first);
+  });
+
+  it("drops control batches already queued by an unawaited producer when the runner rejects", async () => {
+    let enterControl!: () => void;
+    let releaseControl!: () => void;
+    const controlEntered = new Promise<void>((resolve) => { enterControl = resolve; });
+    const controlGate = new Promise<void>((resolve) => { releaseControl = resolve; });
+    const first = `${sandboxAssistant("first batch")}\n`;
+    const runnerError = new Error("unawaited producer failed");
+    const forwards: Promise<void>[] = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        forwards.push(input.onLog!("stdout", first));
+        await controlEntered;
+        // Both batches enter the delivery chain before the catch marks it aborted.
+        forwards.push(input.onLog!("stdout", `${sandboxAssistant("queued second")}\n`));
+        forwards.push(input.onLog!("stdout", `${sandboxAssistant("queued third")}\n`));
+        throw runnerError;
+      },
+    };
+    const onControlOutput = vi.fn(async () => {
+      enterControl();
+      await controlGate;
+    });
+    try {
+      await expect(runAdapterExecutionTargetProcess(
+        randomUUID(),
+        { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner },
+        "agent-cli", ["--json"],
+        { ...baseOptions(), onControlOutput, runLogTail: null },
+      )).rejects.toBe(runnerError);
+    } finally {
+      releaseControl();
+      await Promise.all(forwards);
+      // Abandoned forwarding promises need not join the delivery chain.
+      // Let that finite chain finish all its microtasks before counting calls.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(onControlOutput).toHaveBeenCalledExactlyOnceWith("stdout", first);
+  });
+
+  it("does not register a control wait after rejection during a real-tail display write", async () => {
+    let enterDisplay!: () => void;
+    let releaseDisplay!: () => void;
+    let releaseControl!: () => void;
+    const displayEntered = new Promise<void>((resolve) => { enterDisplay = resolve; });
+    const displayGate = new Promise<void>((resolve) => { releaseDisplay = resolve; });
+    const controlGate = new Promise<void>((resolve) => { releaseControl = resolve; });
+    const record = `${sandboxAssistant("display in flight")}\n`;
+    const runnerError = new Error("runner failed during display write");
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+          return {
+            exitCode: 0, signal: null, timedOut: false, pid: null,
+            startedAt: new Date().toISOString(), stderr: "",
+            stdout: [
+              "__PAPERCLIP_RUN_LOG_STDOUT__", Buffer.from(record).toString("base64"),
+              "__PAPERCLIP_RUN_LOG_STDERR__", "", "__PAPERCLIP_RUN_LOG_END__",
+            ].join("\n"),
+          };
+        }
+        await displayEntered;
+        throw runnerError;
+      },
+    };
+    const onControlOutput = vi.fn(async () => { await controlGate; });
+    let outcome: unknown;
+    const completed = runAdapterExecutionTargetProcess(
+      randomUUID(),
+      { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner },
+      "agent-cli", ["--json"],
+      {
+        ...baseOptions(), onControlOutput,
+        onLog: async () => { enterDisplay(); await displayGate; },
+        runLogTail: createSandboxRunLogTailFactory({
+          runner, remoteCwd: "/workspace", logsDir: "/logs", pollIntervalMs: 1,
+        }),
+      },
+    ).then((result) => { outcome = result; }, (error) => { outcome = error; });
+    try {
+      await displayEntered;
+      // Drain the runner rejection/catch microtasks while display is still held.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(outcome).toBeUndefined();
+      releaseDisplay();
+      // The invoked control sink stays unresolved throughout this assertion.
+      await vi.waitFor(() => expect(outcome).toBe(runnerError), { timeout: 1_000 });
+    } finally {
+      releaseDisplay();
+      releaseControl();
+      await completed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(onControlOutput).toHaveBeenCalledTimes(1);
   });
 
   it("delivers sanitized assistant/tool events before exit on the tail path with a chunk-split secret", async () => {
