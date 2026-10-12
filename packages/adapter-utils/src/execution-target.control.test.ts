@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import * as serverUtils from "./server-utils.js";
 import { runAdapterExecutionTargetProcess } from "./execution-target.js";
+import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 
 type ControlPipe = "stdout" | "stderr";
 type ControlCallback = (stream: ControlPipe, records: string) => Promise<void>;
@@ -357,6 +359,60 @@ function makeSandboxHarness(options: {
 }
 
 describe("execution-target sandbox control-output forwarding (fake runner, no host execution)", () => {
+  it("propagates runner failure while the real tail is blocked on a control sink", async () => {
+    let enterControl!: () => void;
+    let releaseControl!: () => void;
+    const controlEntered = new Promise<void>((resolve) => { enterControl = resolve; });
+    const controlGate = new Promise<void>((resolve) => { releaseControl = resolve; });
+    const first = `${sandboxAssistant("before failure")}\n`;
+    const second = `${sandboxAssistant("do not deliver after abort")}\n`;
+    const runnerError = new Error("runner exploded");
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+          return {
+            exitCode: 0, signal: null, timedOut: false, pid: null,
+            startedAt: new Date().toISOString(), stderr: "",
+            stdout: [
+              "__PAPERCLIP_RUN_LOG_STDOUT__", Buffer.from(first).toString("base64"),
+              "__PAPERCLIP_RUN_LOG_STDERR__", Buffer.from(second).toString("base64"),
+              "__PAPERCLIP_RUN_LOG_END__",
+            ].join("\n"),
+          };
+        }
+        // The provider fails only after the real tail has reached its sink.
+        await controlEntered;
+        throw runnerError;
+      },
+    };
+    const onControlOutput = vi.fn(async () => {
+      enterControl();
+      await controlGate;
+    });
+    let outcome: unknown;
+    const completed = runAdapterExecutionTargetProcess(
+      randomUUID(),
+      { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner },
+      "agent-cli", ["--json"],
+      {
+        ...baseOptions(), onControlOutput,
+        runLogTail: createSandboxRunLogTailFactory({
+          runner, remoteCwd: "/workspace", logsDir: "/logs", pollIntervalMs: 1,
+        }),
+      },
+    ).then((result) => { outcome = result; }, (error) => { outcome = error; });
+    try {
+      // The sink is deliberately unresolved until cleanup, not merely slow.
+      await vi.waitFor(() => expect(outcome).toBe(runnerError), { timeout: 1_000 });
+    } finally {
+      // Also let the pre-fix RED case unwind without leaving a tail behind.
+      releaseControl();
+      await completed;
+    }
+    expect(onControlOutput).toHaveBeenCalledTimes(1);
+    expect(onControlOutput).toHaveBeenCalledWith("stdout", first);
+  });
+
   it("delivers sanitized assistant/tool events before exit on the tail path with a chunk-split secret", async () => {
     const secret = "s3cr3t-sync-token-abc";
     const first = sandboxAssistant("streamed-first");

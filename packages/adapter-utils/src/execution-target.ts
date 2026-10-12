@@ -935,11 +935,13 @@ export async function runAdapterExecutionTargetProcess(
         }
       : null;
     const streamedControlChars = { stdout: 0, stderr: 0 };
+    let controlDeliveryAborted = false;
+    const controlBackpressureWaiters = new Set<() => void>();
     const forwardSandboxControls = async (
       stream: "stdout" | "stderr",
       records: string,
     ): Promise<void> => {
-      if (!records) return;
+      if (!records || controlDeliveryAborted) return;
       try {
         await options.onControlOutput?.(stream, records);
       } catch (err) {
@@ -959,7 +961,7 @@ export async function runAdapterExecutionTargetProcess(
     let droppedControlChars = 0;
     let controlDelivery: Promise<void> = Promise.resolve();
     const forwardSandboxChunk = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
-      const records = liveControl?.[stream].push(chunk) ?? "";
+      const records = controlDeliveryAborted ? "" : liveControl?.[stream].push(chunk) ?? "";
       let delivery: Promise<void> | null = null;
       if (records) {
         if (pendingControlBatches >= maxPendingControlBatches || pendingControlChars + records.length > MAX_CAPTURE_BYTES) {
@@ -983,7 +985,22 @@ export async function runAdapterExecutionTargetProcess(
         streamedControlChars[stream] += chunk.length;
         await options.onLog(stream, chunk);
       }
-      await delivery;
+      if (delivery && !controlDeliveryAborted) {
+        // The real tail's abort joins its poll loop, which is awaiting this
+        // callback. Release only the control wait when the runner rejects.
+        // Remove settled waiters instead of retaining one shared abort
+        // promise's reactions for every batch in a long-lived run.
+        let abandon!: () => void;
+        const abandoned = new Promise<void>((resolve) => {
+          abandon = resolve;
+          controlBackpressureWaiters.add(abandon);
+        });
+        try {
+          await Promise.race([delivery, abandoned]);
+        } finally {
+          controlBackpressureWaiters.delete(abandon);
+        }
+      }
     };
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
@@ -1046,6 +1063,9 @@ export async function runAdapterExecutionTargetProcess(
       }
       return settled;
     } catch (error) {
+      controlDeliveryAborted = true;
+      for (const abandon of controlBackpressureWaiters) abandon();
+      controlBackpressureWaiters.clear();
       if (runLogTail) {
         await runLogTail.abort();
       }

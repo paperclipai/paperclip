@@ -200,6 +200,12 @@ batch. A batch that would exceed either limit is not delivered as live control
 output. At completion, one warning reports only the dropped batch and character
 counts. Display output and the runner's captured result are unchanged. These
 limits bound live-event backlog; they do not make a stuck sink complete.
+If the runner rejects, control backpressure waits are released before abort joins
+its tail loop, so a stuck control sink does not hold the runner error. New and
+queued control batches are no longer delivered after this abort. An already
+invoked sink is not cancelled; display sinks and tail RPCs keep their existing
+behavior. When the runner returns a result normally, control delivery still drains
+before that result is returned, so a stuck sink can still prevent completion.
 Without a tail, a pipe that streamed nothing is covered once from the runner's
 final output; a pipe that did stream is not replayed, so no record is emitted twice. A failing event
 sink logs a warning and does not fail the run. This extends control sanitization
