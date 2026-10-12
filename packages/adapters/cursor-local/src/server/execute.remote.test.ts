@@ -102,7 +102,7 @@ describe("cursor remote execution", () => {
       const cwd = await mkdtemp(path.join(os.tmpdir(), "cursor-accounting-loss-"));
       cleanupDirs.push(cwd);
       // Supported stdout framing is normalized before the accounting log.
-      const raw = "stdout: " + JSON.stringify({ type: "result", result: "done", total_cost_usd: 0.2,
+      const raw = "stdout: " + JSON.stringify({ duration_ms: 123456, type: "result", result: "done", total_cost_usd: 0.2,
         usage: { input_tokens: collision ? 123456 : 17, output_tokens: 7, cached_input_tokens: 2 },
       }) + "\n";
       const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);

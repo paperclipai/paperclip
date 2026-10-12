@@ -628,7 +628,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const consumeAccounting = createCursorJsonlParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
       const parsed = consumeAccounting(stdout);
       const provider = resolveProviderFromModel(model);
       const hasCompleteAccounting = parsed.usageComplete || parsed.costUsd != null;
@@ -640,7 +640,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: resolveCursorBiller(effectiveEnv, billingType, provider), billingType, model,
         complete: parsed.sawResult && hasCompleteAccounting,
       };
-    }, event => event.type === "result" || event.type === "step_finish");
+    }, event => event.type === "result" || event.type === "step_finish", { trackLossWithoutSubscriber: true });
     let stdoutLineBuffer = "";
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);

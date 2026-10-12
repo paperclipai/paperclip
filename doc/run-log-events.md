@@ -146,10 +146,13 @@ Pi and OpenCode reconcile control accounting with full-stream display checkpoint
 A redacted price stays unknown even when later records are priced. If numeric
 redaction makes a display line unreadable, the checkpoint classifies its event
 envelope to count lost cost records. Quoted content remains intact, while an
-unquoted marker and any adjoining numeric-token characters become `null` in a
-temporary classification-only copy. Adjacent or separated markers within one
-numeric token are classified together. That copy is never retained, consumed as
-accounting, or promoted to control output. Each adapter supplies its actual
+unquoted marker and any adjoining numeric-token characters receive a private
+sentinel in a temporary copy. Adjacent or separated markers within one numeric
+token are classified together. Projection must remove every sentinel before any
+accounting can be consumed. This preserves intact usage when only ignored metadata,
+such as `duration_ms`, was redacted. A surviving sentinel means damaged accounting:
+that record is counted as lost, never reconstructed or promoted to control output.
+Each adapter supplies its actual
 cost-envelope predicate: OpenCode counts only `step_finish`; Pi shares its usage
 selection between parsing and classification, excluding envelopes its parser skips.
 Pi `message_end` duplicates with nested usage do not count as lost priced turns.
@@ -163,7 +166,11 @@ a lower bound when the two views omit different records; it is not their union.
 Claude, Codex, Gemini, Cursor, Grok, Pi and OpenCode keep final usage incomplete
 after a lost full-stream accounting record, including timeout and error results.
 Neither a terminal event, a clean exit, nor a recovered price overrides that loss.
-Loss tracking also runs when no checkpoint callback is installed. Claude's
+Loss tracking also runs when no checkpoint callback is installed, using an explicit
+loss-only mode rather than a fake subscriber. It never invokes the checkpoint
+consumer. If its eight-MiB bound is exceeded, it stops buffering, keeps usage
+incomplete and does not fail the provider run. Real subscribers retain the existing
+fatal parser and receipt-persistence failure contract. Claude's
 classifier includes model-only result ledgers; Gemini's includes `stats` and
 `usageMetadata` envelopes; Cursor normalizes its supported line framing first.
 Grok uses the same bounded classifier for its `end` records without adding an

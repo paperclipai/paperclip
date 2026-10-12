@@ -102,7 +102,7 @@ describe("claude_local ACP startup fallback", () => {
     "keeps lost accounting incomplete ($timedOut, $checkpoints, $collision, $modelLedger)", async ({ timedOut, checkpoints, collision, modelLedger }) => {
       const cwd = await mkdtemp(path.join(tmpdir(), "claude-accounting-loss-"));
       const input = collision ? 123456 : 17;
-      const raw = JSON.stringify({ type: "result", result: "done", total_cost_usd: 0.2,
+      const raw = JSON.stringify({ duration_ms: 123456, type: "result", result: "done", total_cost_usd: 0.2,
         ...(modelLedger
           ? { modelUsage: { "claude-test": { inputTokens: input, outputTokens: 7, cacheReadInputTokens: 2, costUSD: 0.2 } } }
           : { usage: { input_tokens: input, output_tokens: 7, cache_read_input_tokens: 2 } }),

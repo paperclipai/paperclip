@@ -623,8 +623,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
 
       // Grok has no incremental checkpoint parser. Use the bounded display
       // classifier only to prevent a neutralized counter becoming complete usage.
-      const accountingLog = createUsageCheckpointLog(onLog, async () => {}, () => null,
-        event => event.type === "end");
+      const accountingLog = createUsageCheckpointLog(onLog, undefined, () => null,
+        event => event.type === "end", { trackLossWithoutSubscriber: true });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,

@@ -109,7 +109,7 @@ describe("gemini_local ACP startup fallback", () => {
     "keeps lost accounting incomplete ($timedOut, $checkpoints, $collision, $envelope)", async ({ timedOut, checkpoints, collision, envelope }) => {
       const cwd = await mkdtemp(path.join(tmpdir(), "gemini-accounting-loss-"));
       const input = collision ? 123456 : 17;
-      const raw = JSON.stringify({ type: "result", status: "success", total_cost_usd: 0.2,
+      const raw = JSON.stringify({ duration_ms: 123456, type: "result", status: "success", total_cost_usd: 0.2,
         [envelope]: envelope === "stats"
           ? { input_tokens: input, output_tokens: 7, cached: 2 }
           : { promptTokenCount: input, candidatesTokenCount: 7, cachedContentTokenCount: 2 },

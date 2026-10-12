@@ -141,7 +141,7 @@ describe("codex_local ACP startup fallback", () => {
     "keeps lost accounting incomplete ($timedOut, $checkpoints, $collision)", async ({ timedOut, checkpoints, collision }) => {
       const cwd = await mkdtemp(path.join(tmpdir(), "codex-accounting-loss-"));
       // Redact output, not input: the remaining input/cache pair stays valid.
-      const raw = JSON.stringify({ type: "turn.completed",
+      const raw = JSON.stringify({ duration_ms: 123456, type: "turn.completed",
         usage: { input_tokens: 500000, output_tokens: collision ? 123456 : 7, cached_input_tokens: 2 },
       }) + "\n";
       const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);

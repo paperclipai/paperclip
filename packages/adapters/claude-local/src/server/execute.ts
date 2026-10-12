@@ -959,13 +959,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const consumeAccounting = createClaudeStreamParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
       const parsed = consumeAccounting(stdout);
       return { usage: parsed.usage ?? undefined, usageBasis: "per_run", costUsd: parsed.costUsd,
         provider: "anthropic", biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
         billingType, model: Object.keys(parseObject(parsed.resultJson?.modelUsage)).length > 1 ? "mixed" : parsed.model || model,
           usageByModel: claudeModelReceipts(parsed.resultJson?.modelUsage), complete: parsed.resultJson !== null };
-    }, event => event.type === "result" || (event.type === "assistant" && Boolean(parseObject(event.message).usage)));
+    }, event => event.type === "result" || (event.type === "assistant" && Boolean(parseObject(event.message).usage)), { trackLossWithoutSubscriber: true });
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       onProcessStopped: providerStop.beginInvocation(),
       cwd,

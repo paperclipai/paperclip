@@ -14,6 +14,46 @@ const createParser = () => {
 const event = JSON.stringify({ type: "usage", usage: { inputTokens: 2, costUsd: 0.25 }, text: "private content" });
 
 describe("usage checkpoint stream", () => {
+  it.each([false, true])("retains intact accounting when only ignored metadata is redacted (newline=%s)", async newline => {
+    const saved = vi.fn(); const consume = vi.fn(createParser());
+    const log = createUsageCheckpointLog(vi.fn(), saved, consume, value => value.type === "result");
+    const line = '{"type":"result","duration_ms":91***REDACTED***78,"diagnostic":{"n":***REDACTED***},"usage":{"inputTokens":2,"costUsd":0.25}}';
+    await log("stdout", line + (newline ? "\n" : ""));
+    await log.flush();
+    expect(log.unreadRecords()).toBe(0);
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: 0.25, complete: true }));
+    expect(consume.mock.calls[0][0]).not.toContain("REDACTED");
+    expect(consume.mock.calls[0][0]).not.toContain("duration_ms");
+  });
+
+  it.each([false, true])("loss-only tracking never calls the consumer (damaged=%s)", async damaged => {
+    const consume = vi.fn(() => { throw new Error("No checkpoint subscriber"); });
+    const log = createUsageCheckpointLog(vi.fn(), undefined, consume, value => value.type === "result",
+      { trackLossWithoutSubscriber: true });
+    await log("stdout", `{"type":"result","usage":{"inputTokens":${damaged ? "***REDACTED***" : 2}}}`);
+    await log.flush();
+    expect(log.unreadRecords()).toBe(damaged ? 1 : 0);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps oversized-output failure fatal only for real subscribers (subscriber=%s)", async subscriber => {
+    const output = vi.fn(); const consume = vi.fn(() => null);
+    const log = createUsageCheckpointLog(output, subscriber ? vi.fn() : undefined, consume, () => true,
+      { trackLossWithoutSubscriber: true });
+    const chunk = "x".repeat(1024 * 1024);
+    for (let i = 0; i < 9; i++) await log("stdout", chunk);
+    if (subscriber) await expect(log.flush()).rejects.toThrow("Accounting protocol line exceeds 8 MiB");
+    else {
+      await expect(log.flush()).resolves.toBeUndefined();
+      expect(log.unreadRecords()).toBe(1);
+      await log("stdout", "after overflow\n");
+      await expect(log.flush()).resolves.toBeUndefined();
+      expect(log.unreadRecords()).toBe(1);
+    }
+    expect(output).toHaveBeenCalledTimes(subscriber ? 9 : 10);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
   it("redacts malformed counter text without making the counter absent", async () => {
     const consume = vi.fn((_records: string) => null);
     const log = createUsageCheckpointLog(vi.fn(), vi.fn(), consume);

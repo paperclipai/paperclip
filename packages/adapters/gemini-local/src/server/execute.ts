@@ -645,10 +645,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const consumeAccounting = createGeminiJsonlParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
       const parsed = consumeAccounting(stdout);
       return { usage: parsed.usage, costUsd: parsed.costUsd, usageBasis: "per_run", provider: "google", biller: "google", billingType, model, complete: parsed.resultEvent !== null };
-    }, event => event.type === "result" || event.type === "step_finish" || Boolean(event.usage || event.usageMetadata));
+    }, event => event.type === "result" || event.type === "step_finish" || Boolean(event.usage || event.usageMetadata), { trackLossWithoutSubscriber: true });
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       onProcessStopped: providerStop.beginInvocation(),
       cwd,

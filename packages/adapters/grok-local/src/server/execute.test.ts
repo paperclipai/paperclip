@@ -169,7 +169,7 @@ describe("grok_local execute", () => {
       const cwd = await makeTempRoot();
       const ctx = await makeCtx("grok-accounting-loss", cwd);
       ctx.config.env = { GROK_HOME: path.join(cwd, "home"), XAI_API_KEY: "fixture-key" };
-      const raw = JSON.stringify({ type: "end", stopReason: "EndTurn", total_cost_usd: 0.2,
+      const raw = JSON.stringify({ duration_ms: 123456, type: "end", stopReason: "EndTurn", total_cost_usd: 0.2,
         usage: { input_tokens: collision ? 123456 : 17, output_tokens: 7, cache_read_input_tokens: 2 },
       }) + "\n";
       const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
