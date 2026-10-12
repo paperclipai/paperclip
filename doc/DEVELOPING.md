@@ -2095,7 +2095,7 @@ npx paperclipai worktree reseed \
   --seed-mode full
 ```
 
-Managed workspace repair uses this same verified full-reseed contract through `POST /api/execution-workspaces/:id/runtime-commands/repair`. The exclusive, audited operation stops managed services, writes a recoverable pre-repair database backup under the isolated instance's backup directory, performs the full seed/migration/quarantine/rebinding sequence, and restarts only after terminal manifest and service-health validation. It preserves the worktree filesystem. On failure, services remain stopped while the database backup, seed manifest, bounded phase diagnostics, and operation log are retained for inspection; repair never retries itself in a loop.
+Managed workspace repair uses this same verified full-reseed contract through `POST /api/execution-workspaces/:id/runtime-commands/repair`. The exclusive, audited operation stops managed services, writes a recoverable pre-repair database backup under the isolated instance's backup directory, performs the full seed/migration/quarantine/rebinding sequence, and restarts only after terminal manifest and service-health validation. It preserves the worktree filesystem. On failure, services remain stopped while the database backup, seed manifest, bounded phase diagnostics, and operation log are retained for inspection; repair never retries itself in a loop. Pre-repair archives have unique filenames and are excluded from automatic tier pruning. A later repair cannot delete or overwrite an earlier pre-repair snapshot. These safety copies accumulate in the `repair` subdirectory until an operator explicitly removes them after checking that they are no longer needed; ordinary seed and scheduled backups still use tiered retention.
 
 **`npx paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
@@ -3268,7 +3268,7 @@ pnpm paperclipai configure --section database
 Configure automatic retention tiers in **Instance Settings → General → Backup retention**.
 Changes take effect on the next backup without a server restart.
 
-Run a one-off backup manually. One-off backups share the scheduled backup directory, so they prune with the widest `48 hourly / 14 daily / 4 weekly / 6 monthly` policy (a retired retentionDays value or PAPERCLIP_DB_BACKUP_RETENTION_DAYS only extends monthly further) and print the effective policy before pruning:
+Run a one-off backup manually. One-off backups share the scheduled backup directory and prune with the widest preset windows, `48 hourly / 14 daily / 4 weekly / 6 monthly`. A retired retentionDays value or PAPERCLIP_DB_BACKUP_RETENTION_DAYS can extend the monthly window; a valid environment value takes precedence over the raw config-file value. The effective policy is printed before pruning. Wider windows are not a guarantee that every scheduled-policy file survives: different tier boundaries can select different daily, weekly or monthly representatives. Use a separate backup directory when every existing restore point must remain unchanged:
 
 ```sh
 pnpm paperclipai db:backup

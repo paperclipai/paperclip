@@ -1,10 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "./backup-lib.js";
-import {
-  formatBackupRetentionPolicy,
-  type DatabaseBackupRetentionPolicy,
-} from "@paperclipai/shared";
+import { formatDatabaseBackupResult, resolveOneOffBackupRetention, runDatabaseBackup } from "./backup-lib.js";
+import { formatBackupRetentionPolicy } from "@paperclipai/shared";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -24,36 +21,6 @@ type PartialConfig = {
     };
   };
 };
-
-// One-off backups share the scheduled backup directory and filename prefix,
-// so pruning with the narrower scheduled default could delete restore points
-// the configured policy would keep. Use the widest presets as the safe base.
-const ONE_OFF_BASE_RETENTION: DatabaseBackupRetentionPolicy = {
-  hourlyHours: 48,
-  dailyDays: 14,
-  weeklyWeeks: 4,
-  monthlyMonths: 6,
-};
-
-function resolveRetention(config: PartialConfig | null): DatabaseBackupRetentionPolicy {
-  const fromConfig = asPositiveInt(config?.database?.backup?.retentionDays);
-  const fromEnv = asPositiveInt(
-    process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS
-      ? Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS)
-      : null,
-  );
-  // Environment override wins over the file value (former precedence).
-  const legacyDays = fromEnv ?? fromConfig;
-  if (legacyDays == null) return ONE_OFF_BASE_RETENTION;
-  // Preserve the legacy window without narrowing: the widest daily base (14)
-  // already covers any legacy window the monthly tier does not extend.
-  return {
-    hourlyHours: 48,
-    dailyDays: 14,
-    weeklyWeeks: 4,
-    monthlyMonths: Math.max(6, Math.ceil(legacyDays / 30)),
-  };
-}
 
 function readConfig(configPath: string): PartialConfig | null {
   if (!existsSync(configPath)) return null;
@@ -104,7 +71,7 @@ async function main() {
 
   console.log(`Config path: ${configPath}`);
   console.log(`Backing up database to: ${backupDir}`);
-  const retention = resolveRetention(config);
+  const retention = resolveOneOffBackupRetention(configPath);
   console.log(`Retention policy: ${formatBackupRetentionPolicy(retention)}`);
 
   try {

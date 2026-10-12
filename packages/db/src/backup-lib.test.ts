@@ -2,11 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import {
   createBufferedTextFileWriter,
   pruneOldBackups,
+  resolveOneOffBackupRetention,
   runDatabaseBackup,
   runDatabaseRestore,
 } from "./backup-lib.js";
@@ -85,6 +86,40 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("resolveOneOffBackupRetention", () => {
+  it.each([
+    { fileDays: undefined, env: "", months: 6 },
+    { fileDays: 90, env: "", months: 6 },
+    { fileDays: 365, env: "90", months: 6 },
+    { fileDays: 90, env: " 365 ", months: 13 },
+    { fileDays: 365, env: "junk", months: 13 },
+    { fileDays: 365, env: "-1", months: 13 },
+    { fileDays: 365, env: "Infinity", months: 13 },
+    { fileDays: "365", env: "", months: 6 },
+  ])("resolves raw file $fileDays and environment '$env' to $months months", ({ fileDays, env, months }) => {
+    const configPath = path.join(createTempDir("paperclip-backup-legacy-policy-"), "config.json");
+    fs.writeFileSync(configPath, JSON.stringify({ database: { backup: { retentionDays: fileDays } } }));
+    expect(resolveOneOffBackupRetention(configPath, env)).toEqual({
+      hourlyHours: 48, dailyDays: 14, weeklyWeeks: 4, monthlyMonths: months,
+    });
+  });
+
+  it("reads the real environment override and tolerates missing or malformed raw files", () => {
+    const configPath = path.join(createTempDir("paperclip-backup-legacy-invalid-"), "config.json");
+    vi.stubEnv("PAPERCLIP_DB_BACKUP_RETENTION_DAYS", "210");
+    try {
+      expect(resolveOneOffBackupRetention(configPath).monthlyMonths).toBe(7);
+      fs.writeFileSync(configPath, "{broken");
+      expect(resolveOneOffBackupRetention(configPath).monthlyMonths).toBe(7);
+      expect(resolveOneOffBackupRetention(configPath, "junk")).toEqual({
+        hourlyHours: 48, dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -191,6 +226,37 @@ describe("pruneOldBackups", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it.each(["javascript", "pg_dump"] as const)("retains every repair snapshot, even in the same second (%s)", async (backupEngine) => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-pre-repair-");
+    const history = writeBackupFixture(backupDir, "original", "2020-01-01T00:00:00.000Z");
+    const originalBytes = fs.readFileSync(history);
+    const executable = path.join(backupDir, "pg-dump-fixture");
+    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n'\n", { mode: 0o700 });
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    // Fake Date only: database/process timers remain real. Both archives must
+    // get distinct names even when the wall clock reports the same second.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T09:40:00.000Z"));
+    try {
+      const opts = { connectionString, backupDir, retention: null, filenamePrefix: "paperclip-test", backupEngine };
+      const first = await runDatabaseBackup(opts);
+      const firstBytes = fs.readFileSync(first.backupFile);
+      const second = await runDatabaseBackup(opts);
+      expect(first.prunedCount).toBe(0);
+      expect(second.prunedCount).toBe(0);
+      expect(second.backupFile).not.toBe(first.backupFile);
+      expect(fs.readFileSync(first.backupFile)).toEqual(firstBytes);
+      expect(fs.readFileSync(history)).toEqual(originalBytes);
+      expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz"))).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("preserves a post-pg_dump verification error without falling back or pruning", async () => {
     const connectionString = await createTempDatabase();
     const backupDir = createTempDir("checkpoint-pg-dump-");

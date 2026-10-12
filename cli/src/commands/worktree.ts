@@ -4249,12 +4249,9 @@ async function backupWorktreeReseedTarget(input: {
     const result = await runDatabaseBackup({
       connectionString: `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/paperclip`,
       backupDir: path.resolve(input.targetPaths.backupDir, "repair"),
-      retention: {
-        ...DEFAULT_BACKUP_RETENTION,
-        dailyDays: 30,
-        weeklyWeeks: 12,
-        monthlyMonths: 12,
-      },
+      // A retry captures an already-reseeded DB. Keep every original safety
+      // copy until explicitly removed; scheduled tier downsampling is unsafe.
+      retention: null,
       filenamePrefix: `${input.targetPaths.instanceId}-pre-repair`,
       backupEngine: "auto",
       includeMigrationJournal: true,

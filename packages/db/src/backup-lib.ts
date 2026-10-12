@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -11,10 +11,44 @@ import type { DatabaseBackupRetentionPolicy } from "@paperclipai/shared";
 
 export type BackupRetentionPolicy = DatabaseBackupRetentionPolicy;
 
+/** Shared by both one-off backup entry points; read before config migration drops the retired key. */
+export function resolveOneOffBackupRetention(
+  configPath?: string,
+  envRaw: string | undefined = process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS,
+): BackupRetentionPolicy {
+  const positiveInt = (value: unknown): number | null => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    const rounded = Math.trunc(value);
+    return rounded > 0 ? rounded : null;
+  };
+  let fromConfig: number | null = null;
+  if (configPath) {
+    try {
+      const raw = JSON.parse(readFileSync(configPath, "utf8")) as {
+        database?: { backup?: { retentionDays?: unknown } };
+      } | null;
+      fromConfig = positiveInt(raw?.database?.backup?.retentionDays);
+    } catch {
+      // Missing or malformed legacy files have no usable retention override.
+    }
+  }
+  const fromEnv = envRaw?.trim() ? positiveInt(Number(envRaw)) : null;
+  const legacyDays = fromEnv ?? fromConfig;
+  // Widest preset windows, not a strict superset of every scheduled policy:
+  // tier boundaries may choose different daily/weekly/monthly representatives.
+  return {
+    hourlyHours: 48,
+    dailyDays: 14,
+    weeklyWeeks: 4,
+    monthlyMonths: Math.max(6, Math.ceil((legacyDays ?? 0) / 30)),
+  };
+}
+
 export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
-  retention: BackupRetentionPolicy;
+  /** null retains every archive until explicitly removed (pre-repair safety copies). */
+  retention: BackupRetentionPolicy | null;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
@@ -552,9 +586,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  // Initial and final sleep checks can run within the same second. A failed
-  // second checkpoint must never overwrite the first verified recovery point.
-  const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
+  // Checkpoints and repair retries can occur in the same second. Neither may
+  // overwrite an earlier recovery point, even when no pruning is requested.
+  const checkpointSuffix = opts.verifyBeforePrune || retention === null ? `-${randomUUID()}` : "";
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
@@ -589,7 +623,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
         await opts.verifyBeforePrune?.(backupFile);
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        const prunedCount = retention === null ? 0 : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return { backupFile, sizeBytes, prunedCount };
       }
     }
@@ -1074,7 +1108,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const sizeBytes = statSync(backupFile).size;
     await opts.verifyBeforePrune?.(backupFile);
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const prunedCount = retention === null ? 0 : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,

@@ -1,12 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
-import {
-  formatBackupRetentionPolicy,
-  type DatabaseBackupRetentionPolicy,
-} from "@paperclipai/shared";
+import { formatDatabaseBackupResult, resolveOneOffBackupRetention, runDatabaseBackup } from "@paperclipai/db";
+import { formatBackupRetentionPolicy } from "@paperclipai/shared";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -42,45 +38,6 @@ function resolveBackupDir(raw: string): string {
   return path.resolve(expandHomePrefix(raw.trim()));
 }
 
-function asPositiveInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const rounded = Math.trunc(value);
-  return rounded > 0 ? rounded : null;
-}
-
-// One-off backups share the scheduled backup directory and filename prefix,
-// so pruning with the narrower scheduled default could delete restore points
-// the configured policy would keep. Use the widest presets as the safe base.
-// A retired retentionDays scalar only widens the window further, never narrows it.
-// readConfig() already migrated (deleted) retentionDays, so read the raw file.
-function readRawLegacyDays(configPath: string): number | null {
-  try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-      database?: { backup?: { retentionDays?: unknown } };
-    } | null;
-    return asPositiveInt(raw?.database?.backup?.retentionDays);
-  } catch {
-    return null;
-  }
-}
-
-function resolveRetention(configPath?: string): DatabaseBackupRetentionPolicy {
-  const fromConfig = configPath ? readRawLegacyDays(configPath) : null;
-  const envRaw = process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS?.trim();
-  const fromEnv = envRaw ? asPositiveInt(Number(envRaw)) : null;
-  // Environment override wins over the file value (former precedence).
-  const legacyDays = fromEnv ?? fromConfig;
-  if (legacyDays == null) {
-    return { hourlyHours: 48, dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6 };
-  }
-  return {
-    hourlyHours: 48,
-    dailyDays: 14,
-    weeklyWeeks: 4,
-    monthlyMonths: Math.max(6, Math.ceil(legacyDays / 30)),
-  };
-}
-
 export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
@@ -95,7 +52,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
-  const retention = resolveRetention(configPath);
+  const retention = resolveOneOffBackupRetention(configPath);
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
   p.log.message(pc.dim(`Retention: ${formatBackupRetentionPolicy(retention)}`));
 

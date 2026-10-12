@@ -30,6 +30,7 @@ export {
 export {
   runDatabaseBackup,
   runDatabaseRestore,
+  resolveOneOffBackupRetention,
   formatDatabaseBackupResult,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getOperatorSettingDefaults } from "../services/setting-defaults.js";
 
@@ -59,6 +60,24 @@ describe("getOperatorSettingDefaults", () => {
 });
 
 describe("instanceSettingsService operator setting defaults", () => {
+  it("persists a partial retention patch without resetting the stored hourly and longer tiers", async () => {
+    const stored = { hourlyHours: 48, dailyDays: 7, weeklyWeeks: 2, monthlyMonths: 3 };
+    const { db, persistedSets } = stubDb(settingsRow({ backupRetention: stored }));
+    const svc = instanceSettingsService(db, { runtimeEnv: {} });
+    const patch = patchInstanceGeneralSettingsSchema.parse({ backupRetention: { dailyDays: 14 } });
+    expect(patch.backupRetention).toEqual({ dailyDays: 14 });
+    const result = await svc.updateGeneral(patch);
+    const expected = { ...stored, dailyDays: 14 };
+    expect(result.general.backupRetention).toEqual(expected);
+    expect(persistedSets).toHaveLength(1);
+    expect(persistedSets[0]!.general).toMatchObject({ backupRetention: expected });
+  });
+
+  it("rejects unsupported and unknown retention patch fields", () => {
+    for (const backupRetention of [{ hourlyHours: 5 }, { hourlyHours: 48, unknown: 1 }]) {
+      expect(() => patchInstanceGeneralSettingsSchema.parse({ backupRetention })).toThrow();
+    }
+  });
   it("substitutes the operator value where the schema default holds", async () => {
     const { db } = stubDb(settingsRow({}));
     const svc = instanceSettingsService(db, { runtimeEnv: defaultsEnv() });

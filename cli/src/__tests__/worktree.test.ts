@@ -2186,9 +2186,20 @@ describe("worktree helpers", () => {
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_NAME=existing-name");
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_COLOR=\"#112233\"");
       expect(fs.readFileSync(worktreeSentinelPath, "utf8")).toBe("preserve me");
-      expect(
-        fs.readdirSync(path.join(currentPaths.backupDir, "repair")).some((name) => name.endsWith(".sql.gz")),
-      ).toBe(true);
+      const repairDir = path.join(currentPaths.backupDir, "repair");
+      const firstSnapshots = fs.readdirSync(repairDir).filter((name) => name.endsWith(".sql.gz"));
+      expect(firstSnapshots).toHaveLength(1);
+      const originalSnapshot = fs.readFileSync(path.join(repairDir, firstSnapshots[0]!));
+
+      // A retry captures the already-reseeded DB, not the original target. It
+      // must neither prune nor overwrite the first recoverable snapshot.
+      await worktreeReseedCommand({
+        fromConfig: sourcePaths.configPath,
+        yes: true,
+        backupTarget: true,
+      });
+      expect(fs.readdirSync(repairDir).filter((name) => name.endsWith(".sql.gz"))).toHaveLength(2);
+      expect(fs.readFileSync(path.join(repairDir, firstSnapshots[0]!))).toEqual(originalSnapshot);
     } finally {
       await currentDatabaseReservation.release();
       process.chdir(originalCwd);
