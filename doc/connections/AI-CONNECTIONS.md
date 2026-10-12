@@ -690,9 +690,10 @@ LiteLLM API that it supports:
 | OpenCode, Hermes | `<proxy>/v1/chat/completions` |
 | Fast responses | `<proxy>/v1/chat/completions` |
 
-Model IDs are the `model_name` aliases in the proxy configuration. Paperclip
-does not call the proxy from the control plane, so saving the connection does
-not validate the key; use **Run test**. Usage billing shows as unknown, because
+Model IDs are the `model_name` aliases in the proxy configuration. Saving the
+connection does not call the proxy, so it does not validate the key; use
+**Run test**. Fast responses call the proxy from the Paperclip server, so the
+proxy URL must also be reachable from the server, not only from the sandbox. Usage billing shows as unknown, because
 LiteLLM tracks spend per virtual key. References:
 [LiteLLM proxy quick start](https://docs.litellm.ai/docs/proxy/quick_start),
 [virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys), and
