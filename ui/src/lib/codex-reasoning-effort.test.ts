@@ -32,4 +32,19 @@ describe("codexReasoningEffortOptions", () => {
       "xhigh",
     ]);
   });
+
+  it("offers only the DeepSeek low/high/max domain for a DeepSeek model", () => {
+    expect(codexReasoningEffortOptions("deepseek-flash").map((option) => option.value)).toEqual([
+      "",
+      "low",
+      "high",
+      "max",
+    ]);
+    expect(codexReasoningEffortOptions("deepseek-flash[1m]").map((option) => option.value)).toEqual([
+      "",
+      "low",
+      "high",
+      "max",
+    ]);
+  });
 });

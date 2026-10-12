@@ -1,6 +1,7 @@
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
+import { priceDeepSeekReceipt } from "./deepseek-pricing.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -244,7 +245,7 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
   throw new Error("Accounting spool changed during recovery; retry required");
 }
 
-export async function createRunUsageRecorder(db: Db, input: { companyId: string; runId: string; adapterType: string }, directory = usageReceiptSpoolPath()) {
+export async function createRunUsageRecorder(db: Db, input: { companyId: string; runId: string; adapterType: string; aiRouting?: unknown }, directory = usageReceiptSpoolPath()) {
   registerIdleSpoolDirectory(directory);
   const sourceId = randomUUID();
   // Verify durable storage before starting paid work, including a directory
@@ -311,8 +312,8 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     const attempt = parsed.attemptId ?? currentAttempt;
     if (!attempts.has(attempt)) currentAttempt = attempt;
     const previous = attempts.get(attempt);
-    const priced = priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
-      complete: parsed.complete && !(previous?.usage && !parsed.usage) }));
+    const priced = priceDeepSeekReceipt(priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
+      complete: parsed.complete && !(previous?.usage && !parsed.usage) })), new Date(), input.aiRouting);
     priced.pricingProvenance ??= {
       source: priced.costUsd != null || priced.costUsdExact != null || priced.cacheAdjustedCostUsd != null ? "provider_reported" : "unknown",
       version: "accounting-receipt/v1",

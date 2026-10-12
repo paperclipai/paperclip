@@ -4,7 +4,7 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
-  "anthropic", "openai", "openrouter", "xai", "google", "bedrock",
+  "anthropic", "openai", "openrouter", "xai", "google", "deepseek", "bedrock",
   "responses-api", "messages-api", "chat-completions-api", "local",
   "agentmail",
   "browser-use-cloud",

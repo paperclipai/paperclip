@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AI_CONNECTION_CAPABILITIES,
   aiConnectionBindingSchema,
   isAiConnectionCompatible,
   type AiRuntimeConnectionBinding,
@@ -10,6 +11,7 @@ import {
   type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { AI_PROVIDERS } from "./model";
 import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
@@ -43,6 +45,21 @@ export function aiProviderForAdapter(
     } as Record<string, AiProvider>
   )[adapterType];
 }
+
+/**
+ * Every API-key provider compatible with a harness. Most harnesses belong to a
+ * single provider, but reusable ones (opencode/codex/claude/hermes) also accept
+ * DeepSeek, so the connect dialog must let the user pick rather than guess.
+ */
+export function aiProvidersForAdapter(adapterType: string): AiProvider[] {
+  const primary = aiProviderForAdapter(adapterType);
+  const others = (Object.keys(AI_CONNECTION_CAPABILITIES) as AiProvider[]).filter(
+    (provider) =>
+      provider !== primary &&
+      Boolean(AI_CONNECTION_CAPABILITIES[provider].methods.api_key?.adapters.includes(adapterType)),
+  );
+  return primary ? [primary, ...others] : others;
+}
 export function AiConnectionField({
   companyId,
   agentId,
@@ -71,6 +88,8 @@ export function AiConnectionField({
   routerAdapterType?: string;
 }) {
   const provider = aiProviderForAdapter(adapterType);
+  const providerCandidates = aiProvidersForAdapter(adapterType);
+  const [chosenProvider, setChosenProvider] = useState<AiProvider>();
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -79,7 +98,15 @@ export function AiConnectionField({
   const [advancedSetup, setAdvancedSetup] = useState(false);
   const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
   const [allAgents, setAllAgents] = useState(true);
-  const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
+  const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod; provider: AiProvider }>();
+  // Keep the reopened agent's saved provider (or the account being repaired)
+  // instead of falling back to the harness default and swapping providers.
+  // If the saved provider no longer fits the harness, use the harness provider.
+  const savedProvider = value && value.mode !== "router" ? value.provider : undefined;
+  const activeProvider = [chosenProvider, reconnecting?.provider, savedProvider, provider]
+    .find((candidate): candidate is AiProvider => Boolean(candidate && providerCandidates.includes(candidate)))
+    ?? providerCandidates[0]
+    ?? provider;
   const changeBinding = (next: AiRuntimeConnectionBinding) => {
     if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
@@ -105,13 +132,14 @@ export function AiConnectionField({
     },
     onSuccess: async (result) => {
       await client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
-      changeBinding({ provider: provider!, method: result.method, mode: "responsible_user" });
+      changeBinding({ provider: result.provider, method: result.method, mode: "responsible_user" });
       setConnecting(false);
     },
   });
   const openConnection = (reconnect?: AiManagedConnectionSummary) => {
     returnFocus.current = document.activeElement as HTMLElement;
     setReconnecting(reconnect);
+    setChosenProvider(undefined);
     setAdvancedSetup(!reconnect && (preferAdvanced || provider === "openrouter"));
     setAllAgents(accounts.data?.canManageConnections ?? false);
     setSavedAccount(undefined);
@@ -232,6 +260,20 @@ export function AiConnectionField({
             <Checkbox checked={allAgents} disabled={!accounts.data?.canManageConnections} onCheckedChange={(checked) => setAllAgents(checked === true)} />
             Allow all agents in this company to use this account for my tasks
           </label>}
+          {!reconnecting && !savedAccount && providerCandidates.length > 1 && <label className="block space-y-1 text-sm">
+            Provider
+            <select
+              aria-label="Provider"
+              className="block w-full rounded-md border bg-background px-3 py-2"
+              value={activeProvider}
+              onChange={(event) => setChosenProvider(event.target.value as AiProvider)}
+              disabled={selectDefault.isPending}
+            >
+              {providerCandidates.map((candidate) => (
+                <option key={candidate} value={candidate}>{AI_PROVIDERS[candidate].name}</option>
+              ))}
+            </select>
+          </label>}
           {savedAccount ? <div className="space-y-4">
             {selectDefault.error ? <>
               <p role="alert" className="text-sm text-destructive">{selectDefault.error.message}</p>
@@ -239,8 +281,9 @@ export function AiConnectionField({
             </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
           </div> :
           <AiConnectionCredentialStep
+            key={activeProvider}
             companyId={companyId}
-            provider={provider}
+            provider={activeProvider!}
             initialMethod={reconnecting?.method ?? method}
             fixedMethod={Boolean(reconnecting)}
             connectionId={reconnecting?.id}
@@ -251,8 +294,11 @@ export function AiConnectionField({
             environmentId={environmentId}
             onCancel={() => setConnecting(false)}
             onComplete={(result) => {
-              setSavedAccount(result);
-              selectDefault.mutate(result);
+              // Bind the provider that saved this credential, not whatever the
+              // chooser points to if the user switched providers mid-save.
+              const saved = { ...result, provider: activeProvider! };
+              setSavedAccount(saved);
+              selectDefault.mutate(saved);
             }}
           />}
           {!reconnecting && !savedAccount && <details>

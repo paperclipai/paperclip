@@ -124,7 +124,7 @@ it("allows an ordinary member to save a personal gateway before the agent exists
 });
 
 
-it.each(["google", "openai", "anthropic", "xai"] as const)("allows an ordinary member to connect a personal %s account before an agent exists", async provider => {
+it.each(["google", "openai", "anthropic", "xai", "deepseek"] as const)("allows an ordinary member to connect a personal %s account before an agent exists", async provider => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: false, connections: [] });
   client.setQueryData(["agents", "company", "provider-access"], []);

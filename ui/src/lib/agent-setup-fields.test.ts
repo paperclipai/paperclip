@@ -20,4 +20,22 @@ describe("model-specific setup efforts", () => {
     expect(setupEfforts("codex_local", "gpt-6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("codex_local", "gpt-6-sol")).toContain("ultra");
   });
+
+  it("offers the DeepSeek low/high/max domain on the Claude and Codex harnesses", () => {
+    expect(setupEfforts("codex_local", "deepseek-flash")).toEqual(["low", "high", "max"]);
+    expect(setupEfforts("claude_local", "deepseek-v4-pro")).toEqual(["low", "high", "max"]);
+    // Non-DeepSeek models keep their harness-native list.
+    expect(setupEfforts("codex_local", "gpt-6-sol")).not.toEqual(["low", "high", "max"]);
+  });
+
+  it("offers the full reasoning-effort domain on the OpenCode harness", () => {
+    expect(setupEfforts("opencode_local", "deepseek-flash")).toEqual([
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
 });

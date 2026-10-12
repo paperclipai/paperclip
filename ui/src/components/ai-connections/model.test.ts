@@ -158,5 +158,6 @@ describe("default AI account names", () => {
     expect(defaultAiConnectionName("Dotta", "openai", "subscription")).toBe("Dotta's ChatGPT subscription account");
     expect(defaultAiConnectionName("You", "openai", "api_key")).toBe("My OpenAI API account");
     expect(defaultAiConnectionName(undefined, "openrouter", "api_key")).toBe("My OpenRouter API account");
+    expect(defaultAiConnectionName("dotta", "deepseek", "api_key")).toBe("dotta's DeepSeek API account");
   });
 });

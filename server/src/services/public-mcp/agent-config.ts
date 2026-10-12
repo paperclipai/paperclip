@@ -1,13 +1,15 @@
 import { codexLocalReasoningEffortsForModel, DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
+import { DEEPSEEK_REASONING_EFFORTS, isDeepSeekModel } from "@paperclipai/shared";
 import { unprocessable } from "../../errors.js";
 
 function effortSettings(adapterType: string, config: Record<string, unknown>) {
+  const model = typeof config.model === "string" ? config.model : undefined;
   if (adapterType === "codex_local" || (adapterType === "paperclip_runner" && (config.provider ?? "codex") === "codex")) {
-    return { field: "modelReasoningEffort", supported: codexLocalReasoningEffortsForModel(typeof config.model === "string" ? config.model : DEFAULT_CODEX_LOCAL_MODEL) };
+    return { field: "modelReasoningEffort", supported: isDeepSeekModel(model) ? DEEPSEEK_REASONING_EFFORTS : codexLocalReasoningEffortsForModel(model ?? DEFAULT_CODEX_LOCAL_MODEL) };
   }
   if (adapterType === "claude_local") {
-    return { field: "effort", supported: claudeLocalReasoningEffortsForModel(typeof config.model === "string" ? config.model : DEFAULT_CLAUDE_LOCAL_MODEL) };
+    return { field: "effort", supported: isDeepSeekModel(model) ? DEEPSEEK_REASONING_EFFORTS : claudeLocalReasoningEffortsForModel(model ?? DEFAULT_CLAUDE_LOCAL_MODEL) };
   }
   return { field: null, supported: [] as readonly string[] };
 }

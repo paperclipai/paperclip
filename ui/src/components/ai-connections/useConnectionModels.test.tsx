@@ -8,7 +8,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
 import { useConnectionModels } from "./useConnectionModels";
 
-vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn() } }));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn(), listModels: vi.fn() } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { adapterModels: vi.fn() } }));
 
 const binding: AiConnectionBinding = { provider: "openrouter", method: "api_key", mode: "shared", connectionId: "router", grantId: "grant" };
@@ -17,6 +17,11 @@ const account: AiManagedConnectionSummary = {
   name: "Company OpenRouter", ownership: "shared", isDefault: false, status: "connected",
   routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] },
 };
+const deepseekAccount: AiManagedConnectionSummary = {
+  id: "ds-connection", grantId: "ds-grant", companyId: "company", provider: "deepseek", method: "api_key",
+  name: "My DeepSeek", ownership: "personal", ownerUserId: "you", isDefault: true, status: "connected",
+};
+const deepseekBinding: AiConnectionBinding = { provider: "deepseek", method: "api_key", mode: "responsible_user" };
 const catalog = [
   { id: "openrouter/z-ai/glm-5", label: "Z.AI GLM" },
   { id: "openrouter/anthropic/claude-sonnet-4.5", label: "Claude Sonnet" },
@@ -105,4 +110,19 @@ it("exposes loading and allows retry after a catalog failure", async () => {
   await act(async () => { await result?.refreshModels?.(); });
   await vi.waitFor(() => expect(result?.models).toEqual(catalog));
   expect(result?.error).toBeNull();
+});
+
+it("surfaces a DeepSeek live-catalog failure instead of hiding it behind the static list", async () => {
+  vi.mocked(aiConnectionsApi.listModels).mockRejectedValueOnce(new Error("DeepSeek key rejected"));
+  await mount([deepseekAccount], "opencode_local", deepseekBinding);
+  await vi.waitFor(() => expect(result?.error?.message).toBe("DeepSeek key rejected"));
+  expect(result?.models.map(m => m.id)).toContain("paperclip/deepseek-flash");
+  expect(result?.refreshModels).toBeDefined();
+});
+
+it("does not offer a live DeepSeek refresh when no saved connection exists", async () => {
+  await mount([], "opencode_local", deepseekBinding);
+  expect(result?.models.map(m => m.id)).toContain("paperclip/deepseek-flash");
+  expect(result?.refreshModels).toBeUndefined();
+  expect(aiConnectionsApi.listModels).not.toHaveBeenCalled();
 });

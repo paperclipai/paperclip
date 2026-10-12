@@ -132,6 +132,7 @@ export function providerDisplayName(provider: string): string {
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",
     google: "Google",
+    deepseek: "DeepSeek",
     cursor: "Cursor",
     jetbrains: "JetBrains AI",
   };

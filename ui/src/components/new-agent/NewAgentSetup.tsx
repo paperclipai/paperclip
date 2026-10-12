@@ -81,6 +81,14 @@ const controlClass = nativeSelectClassName;
 const blocking = (result: AdapterEnvironmentTestResult) =>
   result.status === "fail" ||
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+// Create-mode adapter fields read/write `values`/`set`, not the edit overlay,
+// so the overlay helpers are inert here.
+const identityEff = <T,>(
+  _group: "adapterConfig",
+  _field: string,
+  original: T,
+): T => original;
+const noopMark = () => {};
 
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
@@ -161,8 +169,16 @@ function Setup({
   const hasCredentialField =
     isKimi || chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
   const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
+  const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
+  const [gatewayPassword, setGatewayPassword] = useState("");
+  // Schema-driven adapter fields (getConfigSchema) captured in create mode, so
+  // the wizard offers the same settings the edit form does. Populated by the
+  // adapter's ConfigFields component and merged into adapterConfig on submit.
+  const [adapterSchemaValues, setAdapterSchemaValues] = useState<
+    Record<string, unknown>
+  >({});
   const [kimiModel, setKimiModel] = useState("");
   const [kimiBaseUrl, setKimiBaseUrl] = useState("");
   const [kimiProtocol, setKimiProtocol] = useState("kimi");
@@ -472,6 +488,7 @@ function Setup({
       thinkingEffort: effort,
       dangerouslyBypassSandbox: adapterType === "codex_local" && runner === "legacy",
       envBindings: nextConnection?.env ?? {},
+      adapterSchemaValues,
       ...(isRunner
         ? {
             adapterSchemaValues: {
@@ -526,6 +543,10 @@ function Setup({
         ...(branch.trim() ? { repoStartingRef: branch.trim() } : {}),
       });
     if (adapterType === "hermes_gateway") config.apiBaseUrl = gatewayUrl.trim();
+    if (adapterType === "opencode_gateway") {
+      config.apiBaseUrl = gatewayUrl.trim();
+      config.password = gatewayPassword.trim();
+    }
     if (usingKimiApi) {
       // --model overrides Kimi's environment-defined model. Let KIMI_MODEL_NAME win.
       delete config.model;
@@ -575,6 +596,26 @@ function Setup({
       } catch {
         throw new Error("Enter the Hermes API base URL.");
       }
+    }
+    if (adapterType === "opencode_gateway") {
+      const raw = gatewayUrl.trim();
+      let valid = false;
+      try {
+        const url = new URL(
+          /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`,
+        );
+        valid = ["http:", "https:"].includes(url.protocol);
+      } catch {
+        valid = false;
+      }
+      if (!valid)
+        throw new Error("Enter the OpenCode server base URL (http://host:port).");
+      if (adapterSchemaValues.allowNoAuth !== true && !gatewayPassword.trim())
+        throw new Error(
+          "Enter the OpenCode server password (OPENCODE_SERVER_PASSWORD), or enable 'Connect without a password'.",
+        );
+      if (!model.trim())
+        throw new Error("Enter an OpenCode model in provider/model format.");
     }
     if (usingKimiApi && !kimiModel.trim())
       throw new Error("Enter the Kimi API model name.");
@@ -1287,6 +1328,7 @@ function Setup({
                                             ? "Anthropic"
                                             : ({
                                                 google: "Google",
+                                                deepseek: "DeepSeek",
                                                 xai: "xAI",
                                                 groq: "Groq",
                                                 opencode: "OpenCode",
@@ -1390,6 +1432,83 @@ function Setup({
                             />
                           </Field>
                         )}
+                        {adapterType === "opencode_gateway" && (
+                          <div className="grid gap-5 sm:grid-cols-2">
+                            <Field
+                              label="OpenCode server URL"
+                              hint="An already-running opencode serve reachable from Paperclip, for example http://192.168.0.119:4096. Paperclip does not launch it."
+                            >
+                              <Input
+                                aria-label="OpenCode server URL"
+                                value={gatewayUrl}
+                                onChange={(event) => {
+                                  setGatewayUrl(event.target.value);
+                                  resetTest();
+                                }}
+                                placeholder="http://127.0.0.1:4096"
+                              />
+                            </Field>
+                            <Field
+                              label="Server password"
+                              hint={
+                                adapterSchemaValues.allowNoAuth === true
+                                  ? "Not needed while “Connect without a password” is on."
+                                  : "The OPENCODE_SERVER_PASSWORD the server was started with."
+                              }
+                            >
+                              <Input
+                                aria-label="OpenCode server password"
+                                type="password"
+                                autoComplete="off"
+                                value={gatewayPassword}
+                                disabled={
+                                  adapterSchemaValues.allowNoAuth === true
+                                }
+                                onChange={(event) => {
+                                  setGatewayPassword(event.target.value);
+                                  resetTest();
+                                }}
+                                placeholder={
+                                  adapterSchemaValues.allowNoAuth === true
+                                    ? "Not required"
+                                    : "Required"
+                                }
+                              />
+                            </Field>
+                          </div>
+                        )}
+                        {adapterType === "opencode_gateway" && (
+                          <div className="space-y-5">
+                            <uiAdapter.ConfigFields
+                              mode="create"
+                              isCreate
+                              adapterType={adapterType}
+                              values={{
+                                ...defaultCreateValues,
+                                adapterType,
+                                model,
+                                adapterSchemaValues,
+                              }}
+                              set={(patch) => {
+                                if (!patch.adapterSchemaValues) return;
+                                setAdapterSchemaValues(
+                                  patch.adapterSchemaValues,
+                                );
+                                if (
+                                  patch.adapterSchemaValues.allowNoAuth === true
+                                )
+                                  setGatewayPassword("");
+                                resetTest();
+                              }}
+                              config={{}}
+                              eff={identityEff}
+                              mark={noopMark}
+                              models={models.data ?? []}
+                              hideModel
+                              omitSchemaKeys={["apiBaseUrl", "password"]}
+                            />
+                          </div>
+                        )}
                         {usingKimiApi && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             <Field label="Kimi API model name">
@@ -1471,7 +1590,7 @@ function Setup({
                             onChange={value => { setRunner(value); resetTest(); }} />
                         </details>}
                       </section>
-                      {!["cursor_cloud", "hermes_gateway"].includes(
+                      {!["cursor_cloud", "hermes_gateway", "opencode_gateway"].includes(
                         adapterType,
                       ) && (
                         <section className="space-y-5">

@@ -11346,6 +11346,15 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/models",
+  tags: ["ai-connections"],
+  summary: "List the selected AI account’s provider models on demand",
+  query: z.object({ grantId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/companies/{companyId}/ai-connections",
   tags: ["ai-connections"],
   summary: "List available AI connections, personal defaults, and connection-manager access",

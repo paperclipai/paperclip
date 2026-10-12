@@ -11,7 +11,7 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
-  aiConnectionMetadataSchema, aiRoutingHarness,
+  aiConnectionMetadataSchema, aiProviderRoutingSchema, aiRoutingHarness, protocolForDeepSeekHarness,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
@@ -67,6 +67,8 @@ export const AI_AUTH_ENV_KEYS = [
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_BASE_URL",
 ] as const;
 export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
   const result = {
@@ -303,6 +305,17 @@ export async function prepareManagedAiRuntime(
       );
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
     const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    // DeepSeek is a first-class native provider (like OpenAI/Anthropic), but its
+    // OpenAI- vs Anthropic-shaped endpoints require a per-harness projection.
+    // Synthesize the internal route here; it is never user-selected or persisted.
+    const projectionRouting = routing ?? (selection.attribution.provider === "deepseek"
+      ? aiProviderRoutingSchema.parse({
+          kind: "deepseek",
+          protocol: protocolForDeepSeekHarness(harness),
+          auth: "bearer",
+          models: [],
+        })
+      : undefined);
     const noAuth = routing?.auth === "none";
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {
@@ -614,7 +627,7 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         ...projected?.config,
-        ...(routing ? { managedAiRouting: routing } : {}),
+        ...(projectionRouting ? { managedAiRouting: projectionRouting } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },
       },

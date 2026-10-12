@@ -34,6 +34,7 @@ export const AI_PROVIDERS = [
   "xai",
   "github",
   "google",
+  "deepseek",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
@@ -116,6 +117,15 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     methods: {
       subscription: { adapters: ["grok_local"], envKey: "GROK_HOME" },
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
+    },
+  },
+  deepseek: {
+    name: "DeepSeek",
+    methods: {
+      api_key: {
+        adapters: ["opencode_local", "hermes_local", "codex_local", "claude_local"],
+        envKey: "DEEPSEEK_API_KEY",
+      },
     },
   },
 };

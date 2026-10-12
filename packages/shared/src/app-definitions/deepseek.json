@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "slug": "deepseek",
+  "name": "DeepSeek",
+  "description": "Use DeepSeek models with an API key.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/deepseek.svg"
+  },
+  "urlPatterns": [
+    "https://api.deepseek.com/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "DeepSeek API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "deepseek",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use DeepSeek models with an API key.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "consoleLinks": {
+        "register": "https://platform.deepseek.com/sign_up",
+        "keys": "https://platform.deepseek.com/api_keys",
+        "docs": "https://api-docs.deepseek.com"
+      },
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "DEEPSEEK_API_KEY"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
 import { AgentProviderConnection } from "@/components/new-agent/AgentProviderConnection";
 import { ProviderApiKeyCard } from "@/components/AdapterLoginChrome";
+import { AI_PROVIDERS } from "./model";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

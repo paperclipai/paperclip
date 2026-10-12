@@ -1165,12 +1165,63 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("hermes-test-key");
   });
-  it("uses the shared Grok connection flow and hides ignored Kimi and OpenCode effort controls", async () => {
+  it("renders the OpenCode Gateway config schema and hires with the wizard's fields", async () => {
+    // Regression: the create wizard must surface the same getConfigSchema fields
+    // the edit form does, not only the bespoke URL/password/model inputs.
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          fields: [
+            { key: "apiBaseUrl", label: "Server base URL", type: "text", required: true },
+            { key: "password", label: "Server password", type: "text" },
+            { key: "allowNoAuth", label: "Connect without a password", type: "toggle", default: false },
+            { key: "username", label: "Basic-auth username", type: "text", default: "opencode" },
+            { key: "version", label: "Server version", type: "select", default: "auto", options: [{ value: "auto", label: "Auto-detect" }] },
+            { key: "model", label: "Model", type: "combobox" },
+            { key: "sessionKeyStrategy", label: "Session key strategy", type: "select", default: "issue", options: [{ value: "issue", label: "Issue scoped" }] },
+            { key: "timeoutSec", label: "Timeout seconds", type: "number", default: 600 },
+          ],
+        }),
+      })),
+    );
+    try {
+      state.adapters = [
+        ...(state.adapters as object[]),
+        { type: "opencode_gateway", loaded: true, disabled: false },
+      ];
+      await render("opencode_gateway");
+      await settle();
+      expect(container.textContent).toContain("Connect without a password");
+      expect(container.textContent).toContain("Server version");
+      expect(container.textContent).toContain("Session key strategy");
+      await fill("OpenCode server URL", "http://127.0.0.1:4096");
+      await fill("OpenCode server password", "server-pass");
+      await fill("Model", "opencode/big-pickle");
+      await click("Finish setup");
+      expect(api.hire).toHaveBeenCalledTimes(1);
+      expect(api.hire.mock.calls[0][1].adapterConfig).toMatchObject({
+        apiBaseUrl: "http://127.0.0.1:4096",
+        password: "server-pass",
+        model: "opencode/big-pickle",
+        username: "opencode",
+        version: "auto",
+        sessionKeyStrategy: "issue",
+        timeoutSec: 600,
+        allowNoAuth: false,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("uses the shared Grok connection flow and exposes OpenCode effort controls", async () => {
     await render("grok_local");
     expect(container.textContent).toContain("Connect a model");
     expect(container.textContent).not.toContain("Connect Atlas to Grok");
     await render("opencode_local");
-    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Thinking effort"]')).not.toBeNull();
   });
   it("restores confirmation on refresh without hiring again", async () => {
     api.get.mockResolvedValue({

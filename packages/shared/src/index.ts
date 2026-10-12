@@ -359,6 +359,7 @@ export {
   AGENT_ROLES,
   AGENT_ROLE_LABELS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  CAVEMAN_ULTRA_DIRECTIVE,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_ICON_NAMES,
@@ -2796,6 +2797,7 @@ export * from "./ai-connections.js";
 export * from "./ai-connection-router.js";
 export * from "./ai-connection-usage.js";
 export * from "./subscriptions.js";
+export * from "./deepseek-models.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";

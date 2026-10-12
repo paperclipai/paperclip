@@ -92,7 +92,7 @@ export function AiConnectionUsagePanel({ account, observation, cachedOnly = fals
       {usage && usage.status !== "ok" && <p role={usage.status === "unsupported" ? "status" : "alert"} className="text-sm text-muted-foreground">{usageError(usage)}</p>}
       {usage?.status === "ok" && (
         <div className="space-y-3" aria-live="polite">
-          {usage.limits.length === 0 && <p className="text-xs text-muted-foreground">Usage not reported.</p>}
+          {usage.limits.length === 0 && !usage.overage && <p className="text-xs text-muted-foreground">Usage not reported.</p>}
           {usage.limits.map((window) => {
             const details = limitDetails(window);
             return <div key={window.id} className="space-y-1.5">
