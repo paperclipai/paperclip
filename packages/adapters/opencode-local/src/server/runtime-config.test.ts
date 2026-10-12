@@ -472,6 +472,42 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       expect(json.args.command).toContain("Invoke-RestMethod:ContentType");
       expect(json.args.command).toContain("Invoke-WebRequest:ContentType");
 
+      // Regression: the agent replays a partial UTF-8 preamble it saw in its own
+      // history (the marker and some encodings) but drops the request content
+      // type. The hook must still add the UTF-8 content-type default; otherwise
+      // PowerShell 5.1 encodes the non-ASCII string body as ASCII ("?").
+      const partialPreamble =
+        "$env:PAPERCLIP_WINDOWS_UTF8='1';" +
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);" +
+        "$OutputEncoding=[System.Text.UTF8Encoding]::new($false);";
+      const replayedJson = {
+        args: {
+          command:
+            partialPreamble +
+            "$h=@{'Content-Type'='application/json'}; $body=@{title='Привет'}|ConvertTo-Json; " +
+            "Invoke-RestMethod -Uri $u -Headers $h -Method Put -Body $body",
+        },
+      };
+      await hooks["tool.execute.before"]({ tool: "bash" }, replayedJson);
+      expect(replayedJson.args.command).toContain("Invoke-RestMethod:ContentType");
+      expect(replayedJson.args.command).toContain("[Console]::InputEncoding");
+
+      // A ConvertTo-Json body without the literal application/json still gets the
+      // UTF-8 content-type default.
+      const convertedJson = {
+        args: {
+          command:
+            "$body=@{title='Привет'}|ConvertTo-Json; Invoke-RestMethod -Uri $u -Method Post -Body $body",
+        },
+      };
+      await hooks["tool.execute.before"]({ tool: "shell" }, convertedJson);
+      expect(convertedJson.args.command).toContain("Invoke-RestMethod:ContentType");
+
+      // A command that already carries the complete settings is not re-injected.
+      const fullSettingsCommand = replayedJson.args.command;
+      await hooks["tool.execute.before"]({ tool: "bash" }, replayedJson);
+      expect(replayedJson.args.command).toBe(fullSettingsCommand);
+
       // A non-JSON request keeps its own content type: no JSON default is added.
       const form = { args: { command: "Invoke-RestMethod -Uri https://example.test/form -Body 'name=alice'" } };
       await hooks["tool.execute.before"]({ tool: "bash" }, form);
