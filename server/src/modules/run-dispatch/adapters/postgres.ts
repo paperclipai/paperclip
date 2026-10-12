@@ -589,12 +589,13 @@ export function createPostgresRunDispatchAdapter(
     );
 
     const wakeCommentId = deriveCommentId(context);
-    const isInteractionWake = allowsIssueInteractionWake(
-      context,
-      ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-    );
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    // interaction_pending wakes target the interaction's addressee (e.g. a
+    // reviewer), who is not necessarily the issue assignee.
+    const isInteractionWake =
+      allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) ||
+      wakeReason === "interaction_pending";
+    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const retryReason =
       readNonEmptyString(context.retryReason) ?? input.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);

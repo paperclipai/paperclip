@@ -1294,6 +1294,29 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       });
     });
 
+    it("does not cancel an interaction_pending wake for a non-assignee addressee", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const assigneeAgentId = randomUUID();
+      await seedAgent({ id: assigneeAgentId, companyId, name: "Assignee" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: { issueId, wakeReason: "interaction_pending" },
+      });
+
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).not.toMatchObject({ errorCode: "issue_assignee_changed" });
+      expect(result.outcome).not.toBe("cancelled");
+    });
+
     it(
       "reads the locked issue state and cancels in the same semantic transaction",
       async () => {
