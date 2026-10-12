@@ -207,7 +207,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     try {
       await expect(runDatabaseBackup({
         connectionString, backupDir,
-        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
         verifyBeforePrune: async archive => {
           verified++;
           expect(gunzipSync(fs.readFileSync(archive)).toString()).toBe("SELECT 1;\n");
@@ -238,7 +238,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         );
         INSERT INTO identity_fixture.records (value) VALUES ('one'), ('two');
       `);
-      const backup = await runDatabaseBackup({ connectionString: source, backupDir: createTempDir("identity-backup-"), backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
+      const backup = await runDatabaseBackup({ connectionString: source, backupDir: createTempDir("identity-backup-"), backupEngine: "javascript", retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
       await runDatabaseRestore({ connectionString: target, backupFile: backup.backupFile });
       expect(await targetSql`SELECT id::text, default_id, value FROM identity_fixture.records ORDER BY id`)
         .toEqual([{ id: "7", default_id: 1, value: "one" }, { id: "9", default_id: 2, value: "two" }]);
