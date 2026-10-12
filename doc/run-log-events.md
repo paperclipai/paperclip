@@ -160,10 +160,16 @@ all price representations unavailable and usage incomplete after losing a displa
 cost record, even on completion. Final control reconciliation may recover a price,
 but not a secret-valued counter. The element-wise maximum of usage totals is only
 a lower bound when the two views omit different records; it is not their union.
-Pi and OpenCode therefore keep final usage incomplete after a lost full-stream
-accounting record. Neither `agent_end`, a clean exit, nor a recovered price overrides
-that loss. The checkpoint never advertises a complete subtotal. An unclassifiable damaged line
-provides no accounting evidence. OpenCode also preserves the retained stream's
+Claude, Codex, Gemini, Cursor, Grok, Pi and OpenCode keep final usage incomplete
+after a lost full-stream accounting record, including timeout and error results.
+Neither a terminal event, a clean exit, nor a recovered price overrides that loss.
+Loss tracking also runs when no checkpoint callback is installed. Claude's
+classifier includes model-only result ledgers; Gemini's includes `stats` and
+`usageMetadata` envelopes; Cursor normalizes its supported line framing first.
+Grok uses the same bounded classifier for its `end` records without adding an
+incremental checkpoint protocol. Kimi's wire protocol has no usage receipt and
+its explicit no-usage behavior is unchanged. The checkpoint never advertises a
+complete subtotal. An unclassifiable damaged line provides no accounting evidence. OpenCode also preserves the retained stream's
 usage-completeness verdict when its parsed plus classified unread `step_finish`
 records outnumber control records: a valid captured suffix cannot hide earlier
 invalid counters. Equal parsed counts alone do not prove equal coverage. Control

@@ -628,7 +628,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const consumeAccounting = createCursorJsonlParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
       const parsed = consumeAccounting(stdout);
       const provider = resolveProviderFromModel(model);
       const hasCompleteAccounting = parsed.usageComplete || parsed.costUsd != null;
@@ -640,7 +640,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: resolveCursorBiller(effectiveEnv, billingType, provider), billingType, model,
         complete: parsed.sawResult && hasCompleteAccounting,
       };
-    });
+    }, event => event.type === "result" || event.type === "step_finish");
     let stdoutLineBuffer = "";
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);
@@ -690,6 +690,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return {
       proc,
       parsed: parseCursorProcessOutput(proc),
+      accountingComplete: accountingLog.unreadRecords() === 0,
     };
   };
 
@@ -706,11 +707,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode?: string | null;
       };
       parsed: ReturnType<typeof parseCursorProcessOutput>;
+      accountingComplete: boolean;
     },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     const hasCompleteAccounting = attempt.parsed.usageComplete || attempt.parsed.costUsd != null;
-    const usageComplete = hasCompleteAccounting && (attempt.parsed.sawResult || (attempt.parsed.sawLegacyStep
+    const usageComplete = attempt.accountingComplete && hasCompleteAccounting && (attempt.parsed.sawResult || (attempt.parsed.sawLegacyStep
       && attempt.proc.exitCode === 0 && !attempt.proc.signal && !attempt.proc.timedOut
       && !attempt.parsed.errorMessage));
     if (attempt.proc.timedOut) {
