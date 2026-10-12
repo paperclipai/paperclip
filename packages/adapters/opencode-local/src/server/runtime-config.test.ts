@@ -454,14 +454,15 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     try {
-      // A plain shell command gets the console and $OutputEncoding fix only.
+      // A plain shell command gets the console and $OutputEncoding fix and keeps
+      // its original text inside the outer scriptblock.
       const plain = { args: { command: "Write-Output 'Привет'" } };
       await hooks["tool.execute.before"]({ tool: "bash" }, plain);
       expect(plain.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
       expect(plain.args.command).toContain("[Console]::OutputEncoding");
       expect(plain.args.command).toContain("$OutputEncoding");
       expect(plain.args.command).not.toContain("Invoke-RestMethod:ContentType");
-      expect(plain.args.command.endsWith("Write-Output 'Привет'")).toBe(true);
+      expect(plain.args.command).toContain("& {Write-Output 'Привет'\n};");
 
       // A JSON request also gets the UTF-8 request content type default.
       const json = {
@@ -476,23 +477,39 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await hooks["tool.execute.before"]({ tool: "bash" }, form);
       expect(form.args.command).not.toContain("Invoke-RestMethod:ContentType");
 
-      // A comment-prefixed command still gets the fix: a statement may precede a comment.
+      // A comment-prefixed command still gets the fix: the comment may precede
+      // the executable statement inside the scriptblock.
       const commentCmd = { args: { command: "# note\nWrite-Output 'Привет'" } };
       await hooks["tool.execute.before"]({ tool: "shell" }, commentCmd);
       expect(commentCmd.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
-      expect(commentCmd.args.command.endsWith("Write-Output 'Привет'")).toBe(true);
+      expect(commentCmd.args.command).toContain("& {# note\nWrite-Output 'Привет'\n};");
 
-      // A command whose first non-comment token is a script header is left unchanged.
-      const headerCommands = [
+      // A command whose first non-comment token is a `using` statement is left
+      // unchanged: `using` must stay first and cannot live inside a scriptblock.
+      const usingCommands = [
         "using namespace System.Text; [Encoding]::UTF8.GetBytes('Привет')",
-        "param([string]$text = 'Привет'); Write-Output $text",
-        "param([string]$text = ')'); Write-Output $text",
         "<# note #>using namespace System.Text; Write-Output 'Привет'",
       ];
-      for (const headerCommand of headerCommands) {
-        const headerArgs = { args: { command: headerCommand } };
-        await hooks["tool.execute.before"]({ tool: "shell" }, headerArgs);
-        expect(headerArgs.args.command).toBe(headerCommand);
+      for (const usingCommand of usingCommands) {
+        const usingArgs = { args: { command: usingCommand } };
+        await hooks["tool.execute.before"]({ tool: "shell" }, usingArgs);
+        expect(usingArgs.args.command).toBe(usingCommand);
+      }
+
+      // Wrappable top-level constructs (`param`, `begin`/`process`/`end` blocks)
+      // stay valid because the original text runs inside the outer scriptblock.
+      const wrappedCommands = [
+        "param([string]$text = 'Привет'); Write-Output $text",
+        "param([string]$text = ')'); Write-Output $text",
+        "begin { Write-Output 'Привет' }",
+        "process { Write-Output 'Привет' }",
+        "end { Write-Output 'Привет' }",
+      ];
+      for (const wrappedCommand of wrappedCommands) {
+        const wrappedArgs = { args: { command: wrappedCommand } };
+        await hooks["tool.execute.before"]({ tool: "shell" }, wrappedArgs);
+        expect(wrappedArgs.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
+        expect(wrappedArgs.args.command).toContain(`& {${wrappedCommand}\n};`);
       }
 
       // Second pass must not double-prefix.
