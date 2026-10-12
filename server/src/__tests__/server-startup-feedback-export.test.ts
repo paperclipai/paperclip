@@ -1139,7 +1139,7 @@ describe("startServer feedback export wiring", () => {
       const backupFile = path.join(directory, "paperclip-restart.sql.gz");
       const bytes = gzipSync("SELECT 'restart recovery';\n");
       writeFileSync(backupFile, bytes);
-      expect(options.retention).toEqual({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+      expect(options.retention).toEqual({ hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
       expect(options.verifyBeforePrune).toEqual(expect.any(Function));
       await options.verifyBeforePrune!(backupFile);
       return { backupFile, sizeBytes: bytes.length, prunedCount: 0 };
