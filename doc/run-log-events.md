@@ -156,14 +156,18 @@ Pi `message_end` duplicates with nested usage do not count as lost priced turns.
 An explicitly unavailable Pi primary price cannot enable the direct-price fallback.
 A classified lost record requires complete control evidence covering the expected
 number of cost records; otherwise the total is unknown. Checkpoint callbacks mark
-all price representations unavailable after losing a display cost record, even on
-completion; final control reconciliation may recover a price, but the lower-bound
-checkpoint never advertises a fully priced subtotal. An unclassifiable damaged line
+all price representations unavailable and usage incomplete after losing a display
+cost record, even on completion. Final control reconciliation may recover a price,
+but not a secret-valued counter. The element-wise maximum of usage totals is only
+a lower bound when the two views omit different records; it is not their union.
+Pi and OpenCode therefore keep final usage incomplete after a lost full-stream
+accounting record. Neither `agent_end`, a clean exit, nor a recovered price overrides
+that loss. The checkpoint never advertises a complete subtotal. An unclassifiable damaged line
 provides no accounting evidence. OpenCode also preserves the retained stream's
 usage-completeness verdict when its parsed plus classified unread `step_finish`
 records outnumber control records: a valid captured suffix cannot hide earlier
 invalid counters. Equal parsed counts alone do not prove equal coverage. Control
-covering that full expected record count still permits the existing recovery.
+covering that full expected record count still permits price recovery, not complete usage.
 
 The private terminal scan inspects each full candidate before retaining its
 64-Ki-character tail. The final control capture uses the existing four-Mi-character

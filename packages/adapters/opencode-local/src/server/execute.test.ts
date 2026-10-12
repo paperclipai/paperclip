@@ -429,6 +429,23 @@ describe("OpenCode cost accounting when redaction hides a display record", () =>
     expect(result.costUsd).toBeCloseTo(0.005, 6);
   });
 
+  it.each([false, true])("keeps usage incomplete after a lost display step (control capped=%s)", async capped => {
+    const records = [step(4), ...(capped ? [JSON.stringify({ type: "text", part: { text: "x".repeat(4 * 1024 * 1024) } })] : []), step(123456)];
+    const raw = records.join("\n") + "\n";
+    const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
+    control.append(raw);
+    expect(control.snapshot().includes(step(4))).toBe(!capped);
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await run([redactKnownSecretEnvValues(raw, ["123456"])], [control.snapshot()], onUsage);
+    // Neither view can recover the secret-valued counter. With capped control,
+    // they also omit different steps, so max(totals) is not their union.
+    expect(result.usage).toEqual({ inputTokens: 4, outputTokens: capped ? 7 : 14, cachedInputTokens: 0 });
+    expect(result.usageComplete).toBe(false);
+    if (capped) expect(result.costUsd).toBeNull();
+    else expect(result.costUsd).toBeCloseTo(0.005, 6);
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: false, costStatus: "unpriced" }));
+  });
+
   it("keeps the control total when a redacted step is missing from the display stream", async () => {
     // Step 1's input matched a secret: unparseable in display, input 0 in control.
     const result = await run([step(marker).replace(`"${marker}"`, marker), step(5)], [step(0), step(5)]);
@@ -483,7 +500,7 @@ describe("OpenCode cost accounting when redaction hides a display record", () =>
     const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
     const result = await runRedacted([step(4, 0.123456), step(5)], onUsage);
     expect(result.costUsd).toBeNull();
-    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costStatus: "unpriced", complete: true }));
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costStatus: "unpriced", complete: false }));
   });
 
   it("leaves a fully readable stream on the checkpoint total", async () => {

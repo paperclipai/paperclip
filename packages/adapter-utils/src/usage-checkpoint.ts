@@ -122,11 +122,11 @@ export function createUsageCheckpointLog(
     if (!parsed) return;
     const receipt: AdapterUsageCheckpoint = { ...parsed, complete: parsed.complete || complete };
     if (unreadRecords > 0) {
-      // Display totals are only lower bounds until final control reconciliation.
-      // Never persist their price as complete, including nested Pi price metadata.
+      // A terminal event or clean process exit cannot restore lost records.
+      // These totals are lower bounds, not complete usage or a complete price.
       const usage = parsed.usage ? { ...parsed.usage } : undefined;
       if (usage && "costUsd" in usage) usage.costUsd = null;
-      Object.assign(receipt, { usage, costUsd: null, costUsdExact: null,
+      Object.assign(receipt, { complete: false, usage, costUsd: null, costUsdExact: null,
         cacheAdjustedCostUsd: null, usageByModel: undefined, costStatus: "unpriced" });
     }
     if (!receipt.complete && receipt.costStatus !== "unpriced" && receipt.costUsd == null && receipt.costUsdExact == null &&

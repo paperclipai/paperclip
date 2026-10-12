@@ -808,13 +808,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
         parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // agent_end proves termination, not that redaction preserved every counter.
+      return { proc, rawStderr: proc.stderr, parsed, accountingComplete: accountingLog.unreadRecords() === 0 };
     };
 
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
+        accountingComplete: boolean;
         parsed: ReturnType<typeof parsePiProcessOutput>;
       },
       clearSessionOnMissingSession = false,
@@ -824,7 +826,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          usageComplete: attempt.parsed.sawAgentEnd,
+          usageComplete: attempt.accountingComplete && attempt.parsed.sawAgentEnd,
         usage: attempt.parsed.usage, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), model, billingType: "unknown", costUsd: attempt.parsed.usage.costUsd,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
@@ -857,7 +859,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.parsed.sawAgentEnd,
+        usageComplete: attempt.accountingComplete && attempt.parsed.sawAgentEnd,
       usageBasis: "per_run",
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.

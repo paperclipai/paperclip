@@ -1,15 +1,13 @@
-/** Merge usage/cost parsed from two views of the same run without downgrading.
+/** Keep lower-bound usage evidence from two views of the same run.
  *
- * The display-stream checkpoint and the sanitized control records carry the
- * same run events, but redaction degrades each view differently: a display
- * counter matching a known secret value arrives as a literal `***REDACTED***`
- * marker, so that JSON record is unparseable and the checkpoint totals stay
- * low; the same counter in a control record is replaced with a type-preserving
- * `0`, so the control totals stay parseable but undercount that step. Neither
- * view can exceed the run's true totals, so the element-wise maximum keeps the
- * best available evidence instead of letting an emptier view overwrite a fuller
- * one. Cost follows the same rule: a null (missing/redacted) cost never
- * replaces a known cost. */
+ * A secret-valued counter makes its display record unreadable and becomes zero
+ * in sanitized control output. Control capture can also omit early records.
+ * The element-wise maximum avoids replacing fuller evidence with smaller totals,
+ * but it cannot reconstruct the union when the views omit different records.
+ * Callers must mark usage incomplete after any unread full-stream accounting
+ * record, even when control recovers a complete price. Cost has a separate
+ * coverage-aware merge below; usage counters must never be reconstructed from
+ * secret values or presented as complete merely because a price is known. */
 export interface AccountingCounters {
   inputTokens: number;
   outputTokens: number;

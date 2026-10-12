@@ -41,7 +41,7 @@ describe("Pi cost accounting when redaction hides a display record", () => {
 
   // Display text is what the redacted log carries; control text is the
   // sanitized copy, where the same counter becomes 0 and stays parseable.
-  async function run(display: string[], control: string[], onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>) {
+  async function run(display: string[], control: string[], onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>, timedOut = false) {
     const commandPath = path.join(home, "fake-pi");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     runProcessMock.mockReset();
@@ -49,7 +49,7 @@ describe("Pi cost accounting when redaction hides a display record", () => {
       const stdout = display.join("\n") + "\n";
       await opts.onLog("stdout", stdout);
       return {
-        exitCode: 0, signal: null, timedOut: false, stdout, stderr: "", pid: 123, startedAt: new Date().toISOString(),
+        exitCode: 0, signal: null, timedOut, stdout, stderr: "", pid: 123, startedAt: new Date().toISOString(),
         controlOutput: { stdout: control.join("\n") + "\n", stderr: "" },
       };
     }) as never);
@@ -63,6 +63,39 @@ describe("Pi cost accounting when redaction hides a display record", () => {
       onUsage,
     });
   }
+
+  it.each([false, true])("does not treat agent_end as complete accounting after record loss (control capped=%s)", async capped => {
+    const records = [turn(4), ...(capped ? [JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "x".repeat(4 * 1024 * 1024) } })] : []), turn(123456), '{"type":"agent_end","messages":[]}'];
+    const raw = records.join("\n") + "\n";
+    const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
+    control.append(raw);
+    expect(control.snapshot().includes(turn(4))).toBe(!capped);
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await run([redactKnownSecretEnvValues(raw, ["123456"])], [control.snapshot()], onUsage);
+    expect(result.usage).toEqual({ inputTokens: 4, outputTokens: capped ? 7 : 14, cachedInputTokens: 0 });
+    expect(result.usageComplete).toBe(false);
+    if (capped) expect(result.costUsd).toBeNull();
+    else expect(result.costUsd).toBeCloseTo(0.005, 6);
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: false, costStatus: "unpriced" }));
+  });
+
+  it("keeps lost accounting incomplete even if agent_end precedes a timeout", async () => {
+    const end = '{"type":"agent_end","messages":[]}';
+    const result = await run([redacted(), turn(5), end], [turn(0), turn(5), end], undefined, true);
+    expect(result.timedOut).toBe(true);
+    expect(result.usageComplete).toBe(false);
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it("keeps complete full-stream accounting when control retains only the last turn", async () => {
+    const end = '{"type":"agent_end","messages":[]}';
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await run([turn(4), turn(5), end], [turn(5), end], onUsage);
+    expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 14, cachedInputTokens: 0 });
+    expect(result.usageComplete).toBe(true);
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: true, costUsd: 0.005 }));
+  });
 
   it("keeps the control total when a redacted turn is missing from the display stream", async () => {
     const result = await run([redacted(), turn(5)], [turn(0), turn(5)]);
@@ -130,7 +163,7 @@ describe("Pi cost accounting when redaction hides a display record", () => {
     const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
     const result = await runRedacted([turn(4, 0.123456), turn(5), '{"type":"agent_end","messages":[]}'], onUsage);
     expect(result.costUsd).toBeNull();
-    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costStatus: "unpriced", complete: true }));
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costStatus: "unpriced", complete: false }));
     expect(onUsage.mock.calls.at(-1)![0].usage).toMatchObject({ costUsd: null });
   });
 

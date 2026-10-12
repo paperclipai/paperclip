@@ -717,13 +717,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           accountingLog.unreadRecords(),
         );
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // Sanitized control may recover a price, but cannot recover secret-valued
+      // counters. Keep this separate from parser flags and priced-total fallback.
+      return { proc, rawStderr: proc.stderr, parsed, accountingComplete: accountingLog.unreadRecords() === 0 };
     };
 
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
+        accountingComplete: boolean;
         parsed: ReturnType<typeof parseOpenCodeProcessOutput>;
       },
       clearSessionOnMissingSession = false,
@@ -783,7 +786,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+        usageComplete: attempt.accountingComplete && attempt.proc.exitCode === 0 && !attempt.proc.signal
           && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
         usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,

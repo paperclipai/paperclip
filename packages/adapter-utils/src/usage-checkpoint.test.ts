@@ -100,16 +100,16 @@ describe("usage checkpoint stream", () => {
     await expect(log.flush()).rejects.toBe(failure);
   });
 
-  it("clears every price representation when the display lost a cost record", async () => {
+  it.each([false, true])("clears completeness and every price after record loss (parser complete=%s)", async parserComplete => {
     const saved = vi.fn();
     const log = createUsageCheckpointLog(vi.fn(), saved, () => ({
       usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25, costUsdExact: "0.25",
-      cacheAdjustedCostUsd: 0.25, usageByModel: [{ model: "example", usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25 }], complete: false,
+      cacheAdjustedCostUsd: 0.25, usageByModel: [{ model: "example", usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25 }], complete: parserComplete,
     }));
     await log("stdout", '{"type":"step_finish","part":{"cost":***REDACTED***}}\n');
     await log("stdout", event + "\n");
     await log.flush({ complete: true });
-    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced", complete: true }));
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced", complete: false }));
     expect(saved.mock.calls.at(-1)![0].usageByModel).toBeUndefined();
   });
 
