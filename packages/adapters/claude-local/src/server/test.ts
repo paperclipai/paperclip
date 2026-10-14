@@ -203,6 +203,8 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
     });
+  } else if (config.managedAiRouting) {
+    checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);

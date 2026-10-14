@@ -249,7 +249,16 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       throw conflict(
         "The connected GitHub account changed. Check and confirm its identity again.",
       );
+    await linkObservedIdentity(endpointId, userId, verified);
+    return verified;
+  }
+  async function linkObservedIdentity(endpointId: string, userId: string, verified: { githubUserId: string; login: string; avatarUrl?: string | null; grantId?: string; connectionId?: string }) {
+    const bot = await endpoint(endpointId);
+    await member(bot.companyId, userId);
+    if (!bot.providerAccountId) throw conflict("Verify the App installation first");
     await db.transaction(async (tx) => {
+      const [membership] = await tx.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, bot.companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId))).for("update");
+      if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") throw forbidden("An active company manager is required");
       const [principal] = await tx
         .insert(chatExternalPrincipals)
         .values({
@@ -288,6 +297,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         throw conflict(
           "This GitHub account is already linked to another Paperclip member",
         );
+      if (verified.grantId) {
       const [grant] = await tx
         .select()
         .from(connectionGrants)
@@ -302,6 +312,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         .for("update");
       if (!grant)
         throw forbidden("Your personal GitHub connection was revoked");
+      }
       const values = {
         companyId: bot.companyId,
         endpointId,
@@ -330,14 +341,14 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         entityId: bot.connectionId,
         details: {
           endpointId,
-          connectionId,
+          connectionId: verified.connectionId ?? bot.connectionId,
           githubUserId: verified.githubUserId,
         },
       });
     });
-    return verified;
   }
   return {
+    linkObservedIdentity,
     verification: async (endpointId: string) => {
       const bot = await endpoint(endpointId);
       const checks: Array<{
@@ -412,44 +423,52 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       const inaccessible: string[] = [];
       // Ask GitHub to authorize the selected repository IDs now. A cached
       // inventory alone cannot prove access after an installation is changed.
-      for (let offset = 0; offset < resources.length; offset += 4) {
-        await Promise.all(
-          resources.slice(offset, offset + 4).map(async (resource) => {
-            const repositoryId = String(
-              resource.metadata?.providerRepositoryId ?? "",
-            );
-            try {
-              if (
-                !permissionsOk ||
-                resource.availability !== "available" ||
-                !/^[1-9][0-9]*$/.test(repositoryId) ||
-                !Number.isSafeInteger(Number(repositoryId))
-              )
-                throw new Error("Unavailable repository");
-              const issued = await githubBotRequest<{ token?: string }>(
-                fetchImpl,
-                credentials.appJwt,
-                `/app/installations/${credentials.credentials.installationId}/access_tokens`,
-                {
-                  method: "POST",
-                  body: {
-                    repository_ids: [Number(repositoryId)],
-                    permissions: {
-                      contents: "read",
-                      metadata: "read",
-                      issues: "write",
-                      pull_requests: "write",
-                      checks: "write",
-                    },
-                  },
+      const verifiable = resources.filter((resource) => {
+        const repositoryId = String(resource.metadata?.providerRepositoryId ?? "");
+        if (
+          !permissionsOk ||
+          resource.availability !== "available" ||
+          !/^[1-9][0-9]*$/.test(repositoryId) ||
+          !Number.isSafeInteger(Number(repositoryId))
+        ) {
+          inaccessible.push(resource.label ?? resource.providerResourceId);
+          return false;
+        }
+        return true;
+      });
+      // GitHub authorizes up to 500 explicit IDs in one scoped token request.
+      // Keep these tokens inside verification; task credentials remain scoped
+      // separately. Never omit repository_ids, which would request all access.
+      for (let offset = 0; offset < verifiable.length; offset += 500) {
+        const batch = verifiable.slice(offset, offset + 500);
+        try {
+          const issued = await githubBotRequest<{ token?: string }>(
+            fetchImpl,
+            credentials.appJwt,
+            `/app/installations/${credentials.credentials.installationId}/access_tokens`,
+            {
+              method: "POST",
+              body: {
+                repository_ids: batch.map((resource) =>
+                  Number(resource.metadata!.providerRepositoryId),
+                ),
+                permissions: {
+                  contents: "read",
+                  metadata: "read",
+                  issues: "write",
+                  pull_requests: "write",
+                  checks: "write",
                 },
-              );
-              if (!issued.token) throw new Error("Missing installation token");
-            } catch {
-              inaccessible.push(resource.label ?? resource.providerResourceId);
-            }
-          }),
-        );
+              },
+            },
+          );
+          if (!issued.token) throw new Error("Missing installation token");
+        } catch {
+          // A rejected batch is unverified; do not activate from cached access.
+          inaccessible.push(
+            ...batch.map((resource) => resource.label ?? resource.providerResourceId),
+          );
+        }
       }
       checks.push({
         key: "repositories",
@@ -588,7 +607,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
             ? `Repair tool policy for: ${denied.join(", ")}.`
             : "Assign the bot's GitHub tools to this agent, then verify again.",
       });
-      return { checks, ready: checks.every((check) => check.ok) };
+      return { checks, ready: checks.every((check) => check.ok), connectionReady: checks.filter(check => !["runtime", "isolation"].includes(check.key)).every(check => check.ok) };
     },
     configuration,
     saveConfiguration,
@@ -610,6 +629,16 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       )
         throw badRequest("Choose a GitHub person or bot account");
       return { githubUserId: String(user.id), login: user.login };
+    },
+    review: async (endpointId: string, reviewId: string) => {
+      const bot = await endpoint(endpointId);
+      const [review] = await db.select().from(chatGitHubReviews).where(and(
+        eq(chatGitHubReviews.companyId, bot.companyId),
+        eq(chatGitHubReviews.endpointId, endpointId),
+        eq(chatGitHubReviews.id, reviewId),
+      ));
+      if (!review) throw notFound("This review was not found in this connection");
+      return review;
     },
     reviews: async (endpointId: string) => {
       const bot = await endpoint(endpointId);

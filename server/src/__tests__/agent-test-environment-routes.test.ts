@@ -93,6 +93,10 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/dot-runner-broker.js", () => ({
+  dotRunnerBroker: () => ({ enabled: async () => true, bindingForAgent: async () => null }),
+}));
+
 const testEnvironmentSpy = vi.fn();
 
 const externalAdapter: ServerAdapterModule = {
@@ -110,11 +114,17 @@ const mockPrepareManagedAiRuntime = vi.hoisted(() => vi.fn());
 vi.mock("../services/ai-connection-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/ai-connection-runtime.js")>()),
   prepareManagedAiRuntime: mockPrepareManagedAiRuntime,
+  withManagedAiProbe: async (_db: unknown, input: unknown, probe: (runtime: unknown) => Promise<unknown>) => {
+    const runtime = await mockPrepareManagedAiRuntime(_db, input);
+    try { return await probe(runtime); } finally { await runtime.cleanup(); }
+  },
 }));
 const mockValidateAiApiKey = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("../routes/ai-connections.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../routes/ai-connections.js")>()),
-  validateAiApiKey: mockValidateAiApiKey,
+vi.mock("../services/ai-api-key-test.js", () => ({ validateAiApiKey: mockValidateAiApiKey }));
+const mockMarkAuthenticationFailed = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../services/ai-connections.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/ai-connections.js")>()),
+  aiConnectionService: () => ({ markAuthenticationFailed: mockMarkAuthenticationFailed }),
 }));
 
 function mockManagedRuntime(method: "api_key" | "subscription") {
@@ -241,6 +251,35 @@ describe("agent test-environment route", () => {
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
+  });
+
+  it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    const app = await createApp();
+    try {
+      const res = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.checks).toContainEqual(expect.objectContaining({ code: "dot_controller", level: "info" }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("fails the Cloud Dot check without a managed sandbox instead of probing the host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud");
+    const app = await createApp();
+    try {
+      const res = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe("fail");
+      expect(res.body.checks).toContainEqual(expect.objectContaining({ code: "dot_controller", level: "error" }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("tests the instance default sandbox when the agent inherits its environment", async () => {
@@ -451,7 +490,10 @@ describe("agent test-environment route", () => {
 
   it("fails adoption of an api_key connection the provider no longer accepts", async () => {
     mockManagedRuntime("api_key");
-    mockValidateAiApiKey.mockRejectedValueOnce(Object.assign(new Error("The provider rejected this API key."), { status: 422 }));
+    const { unprocessable } = await import("../errors.js");
+    mockValidateAiApiKey.mockRejectedValueOnce(unprocessable("The provider rejected this API key.", {
+      code: "ai_connection_api_key_rejected",
+    }));
     const app = await createApp();
     const res = await request(app)
       .post("/api/companies/company-1/adapters/external_test/test-environment")
@@ -462,6 +504,10 @@ describe("agent test-environment route", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("fail");
     expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_api_key_rejected");
+    expect(mockMarkAuthenticationFailed).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      attribution: expect.objectContaining({ connectionId: "conn-1", grantId: "grant-1" }),
+    }));
   });
 
   it("still fails subscription adoption when no hello probe can run", async () => {
@@ -1013,4 +1059,10 @@ describe("agent test-environment route", () => {
       expect(testEnvironmentSpy.mock.calls[0]?.[0]?.executionTarget ?? null).toBeNull();
     });
   });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
 });

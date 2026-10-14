@@ -1,3 +1,4 @@
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import {
   issues,
@@ -206,6 +207,7 @@ export async function commitToolActionReview(
               : { version: 1, outcome: "rejected", reason: input.reason },
         })
         .where(eq(issueThreadInteractions.id, interaction.id));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolAction);
       await tx
         .insert(toolActionDeliveries)
         .values({

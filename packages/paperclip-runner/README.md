@@ -14,6 +14,102 @@ session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
 
+Connection continuations inspect the harness descriptor's optional
+`toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
+OpenCode, and qualified Claude/Codex/Grok ACPX profiles expose it; unqualified
+harnesses leave it false or absent. Changing tools can replace a provider process while retaining
+the provider conversation. Company, agent, task, workspace, model, instruction,
+and skill compatibility still gate recovery. An MCP-only assignment change can
+resume only when the selected harness explicitly supports refreshing tools.
+
+Compact continuation messages include the active completion revision and criterion
+IDs plus a reminder to obtain an accepted `paperclip_finish` or `paperclip_block`
+result for this turn. Reports from earlier turns do not finish the new turn.
+Provider final text alone remains insufficient; governed waits and strict native
+completion validation keep their existing behavior. This reminder changes the
+resumed model input, not the tool catalog or automatic retry policy.
+
+When recovery needs a fresh conversation, the server supplies a deterministic
+handoff through a lazy history loader at the fresh attempt boundary.
+It includes the original request, recent messages, resolved interaction
+summaries, agent replies, and document excerpts, with source identities and
+retrieval instructions. Reads and excerpts are bounded; the handoff has a
+24,000-byte ceiling and explicit truncation/omission markers. Conversation
+reset boundaries, deleted messages, source quarantine, and secret redaction
+apply before model submission. Successful recovery does not fetch or replay the
+handoff.
+Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
+harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
+Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
+invocation with current endpoints and credentials, including resumed turns. ACP reloads
+current MCP bindings, including run-scoped credentials, while preserving the
+conversation; an unqualified/custom harness retains its restart fence.
+Legacy fresh attempts receive the same bounded handoff, including resume-failure
+fallbacks. Provider
+authentication repairs retain their existing fresh-session recovery behavior.
+
+## ACPX release declarations
+
+`acpx-profiles.json` owns the package versions, command/profile digests, and
+required execution policies used by TypeScript and Rust. It contains no models.
+After changing it, run `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`.
+Normal build and typecheck reject stale generated declarations. Generation also
+checks installed dependency pins and agreement with Cursor's distribution manifest
+and immutable release attestation (`cursor-contract.json`). Cursor's per-platform
+closure pins are generated from `cursor-distributions.json`.
+
+Codex startup and browser login prefer the CLI from the installed dependency
+graph. If that dependency is absent, they use an executable `codex` from the
+selected execution host's `PATH`. An explicit execution command takes precedence,
+and resumed sessions retain their recorded command. Older or newer CLI versions
+are allowed. Relative PATH entries use the selected process working directory.
+Compatibility is established by the actual protocol or login attempt.
+Missing executables and real protocol failures still return actionable errors.
+Package identity and executable containment remain checked. Browser login keeps
+its provider-specific credential home and resolves the installed Codex CLI on
+64-bit Linux and macOS independently of the daemon's libc requirements.
+
+Exact dependency pins remain release and ACPX artifact-qualification checks.
+They make published builds reproducible and verify sandbox artifacts; they do not
+add a version-number gate to ordinary native Codex startup or browser login.
+
+Release packages retain the pinned Codex JavaScript dependency graph, but do not
+bundle Codex native binaries. The published manifest declares the official,
+exact-version platform packages as optional dependencies. npm installs the
+package for the consumer's operating system and architecture. Those declarations
+belong to the published server manifest; the bundled JavaScript wrapper delegates
+platform installation there so npm can keep native and legacy versions separate.
+The wrapper code and patched ACP bridge stay unchanged.
+Codex sandbox read roots include the separately installed native vendor resources
+without granting access to enclosing npm directories or credential homes.
+This packaging does not change agent defaults or
+the selected runner of an existing agent.
+
+Every ACPX harness accepts an explicit caller-selected model without a Paperclip
+model allowlist. The adapter sends that ID unchanged and verifies the provider's
+effective model before prompting. An incomplete discovery catalog does not block
+selection; a provider rejection or mismatch fails without choosing a fallback.
+Qualification model selections live in test catalogs, separately from optional
+product defaults. The legacy resolved snapshot field `qualificationModel` contains
+the caller's selected model; its serialized name preserves recovery identities.
+Historical profile fixtures remain immutable evidence, not release declarations.
+
+Pi credentials are selected from the explicit run environment and remain session-bound.
+The native Rust launcher forwards the controller-bound credential names, including
+custom provider references, without restricting Pi to an OpenRouter credential.
+Built-in providers can use their usual API-key environment variables. Custom Pi
+providers are supported through `PAPERCLIP_PI_PROVIDERS`: a JSON object containing
+the native `models.json` provider entries (without the outer `providers` key).
+The runner writes that configuration to the private Pi agent directory and binds
+its digest to recovery. API-key and header environment references are forwarded
+only from the explicit run environment; command-based credential resolution is
+unsupported. Select the provider/model ID explicitly in the agent configuration.
+The bundled ACPX package tests exercise unlisted model selection, rejection,
+exact acknowledgement, and replay on a loaded connection. Catalog membership
+and Cursor model-alias expansion do not determine the selected model.
+Provider activity adapters own native tool identities, evidence, and diagnostic
+usage projection; the shared driver and sidecar consume those hooks.
+
 ## Public package surfaces
 
 - `@paperclipai/paperclip-runner` — production contracts, clients/backends,
@@ -52,9 +148,134 @@ synchronous trace scan for each pending event: it blocks event delivery and can
 leave the board showing an active run after the provider turn has already ended.
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
-stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
-validates the exact model, session identity, tool catalog, structured input,
-and terminal settlement at the process boundary. Pi remains unavailable.
+stdin/stdout bridge admits the pinned Claude, Codex, Grok and Cursor ACPX profiles.
+It validates the exact model, session identity, tool catalog, structured input,
+and terminal settlement at the process boundary. Copilot and Pi remain gated.
+Verified distributions are build-owned; no provider accepts an arbitrary executable.
+See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+
+Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation
+does not download it. Run setup as the OS user that runs Paperclip (the service
+account for a managed service). Setup writes to that account's
+`~/.paperclip/runtimes/cursor/<platform>-<arch>/<closure-sha256>`, so a system-wide
+npm installation can remain read-only. Isolated provider HOME/XDG settings do not
+redirect this cache. Container images continue to use their packaged assets.
+Configure a company secret binding for `CURSOR_API_KEY` or
+`CURSOR_AUTH_TOKEN`, select Cursor in the Runner configuration, and select an exact
+model ID. Agent is the default; Plan and Ask are explicit modes. Paperclip semantic
+questions are supported. Native AskQuestion and authoritative per-run dollar usage
+are unavailable. Accepting a native plan ends the planning run successfully while
+the task waits for the next instruction. See the
+[Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
+
+A release includes all four platform daemons and the Linux provider-pack identity
+from its matching Daytona image. Run `stage:release-binaries` with a manifest that
+binds each daemon path and SHA-256, plus `remoteProviderPack: {path, sha256}` for
+the actual image's `provider-pack.json`. Assemble these assets after the normal
+build and include them in the server's vendored Runner output before npm packing.
+Assembly requires the provider pack's source revision to match `sourceRevision`
+and its ACPX profiles and Cursor distribution to match the current source pins.
+An independently rehashed older pack is rejected.
+Provider-pack builds replace the installed Copilot platform wrappers with relative
+launchers. These wrappers remain usable after the pack moves into an image. The
+build still rejects any wrapper that retains its temporary deployment path.
+Ordinary remote Cursor startup uses the packaged Linux daemon and verifies every
+image asset against that manifest. A mismatched image fails before the provider
+starts; install the matching package and image together.
+
+### Native binary platform baseline
+
+Release packages contain Paperclip daemons for `linux-x64`, `linux-arm64`,
+`darwin-arm64`, and `darwin-x64`. Codex native binaries are installed separately
+through the official optional npm platform dependencies described above.
+
+The shipped Linux daemons target **GNU libc 2.39 or newer**, on x86-64 or AArch64.
+Their ELF version requirements include `GLIBC_2.39`; both depend on `libc.so.6`,
+`libm.so.6`, `libgcc_s.so.1`, and the matching GNU dynamic loader. The ARM64
+loader is `/lib/ld-linux-aarch64.so.1`; x64 uses
+`/lib64/ld-linux-x86-64.so.2`. This is a binary compatibility baseline, not a
+promise that every Linux distribution or kernel has been qualified.
+
+Hosted native producers use Ubuntu 24.04 for both Linux architectures. Clean npm
+install checks use the pinned Debian 13 Node image; the cloud Dockerfile uses
+Debian 13 (`node:24-trixie-slim`). macOS binaries build on the existing macOS 15
+Apple Silicon and Intel hosts. Actual task and follow-up acceptance is performed
+on Apple Silicon; Intel qualification covers build, installation, and protocol
+startup.
+
+For sandbox environments, the existing explicit environment probe can measure
+OS, architecture and libc from its allocated lease. It records those facts only
+for an image pinned with `@sha256`, after confirmed lease cleanup. The record is
+server-owned and bound to the company, effective provider/image configuration
+and active custom-image identity. Creation and discovery read this record without
+allocating a sandbox. Configuration or image changes invalidate it. Mutable tags,
+provider defaults and name-only snapshots do not establish compatibility; they
+keep automatic Legacy selection until there is verifiable immutable image evidence.
+A connection-only success does not establish native readiness.
+
+On Linux, Codex's sandboxed filesystem modes also require the host to permit its
+unprivileged namespaces. A no-privilege Docker container can prohibit nested
+namespace creation even when installation and binary compatibility pass.
+Qualification therefore retains the restricted Docker install/lifecycle checks
+and exercises the same installed graph's read-only native startup on the actual
+ARM host. This does not qualify arbitrary container or managed setup targets;
+their selected runtime must pass setup in that environment.
+
+Ubuntu 24.04 also needs system `bubblewrap` and the stock
+`bwrap-userns-restrict` AppArmor profile described in
+[Codex's Linux prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites).
+The qualified ARM64 host uses that distribution helper/profile while retaining
+AppArmor enforcement and global namespace restrictions. Hosted qualification
+materializes authenticated stock package files without running maintainer
+scripts; it verifies native startup and package continuity separately from the
+restricted Docker installation check. This does not prove a normal OS package
+installation journey or a paid provider task on ARM64.
+
+Windows, 32-bit ARM, and Alpine/musl native qualification remain deferred.
+
+Native release jobs cache Cargo dependencies per platform and OS baseline,
+including compiler, lockfile, and external generated-contract inputs. Workspace
+crates and released binaries are rebuilt and verified every time. Only canonical
+exact-source master pushes may save trusted caches; preview qualification can
+restore them. JavaScript preparation and native compilation run concurrently,
+and both must succeed before artifact metadata and source-bound hashes are
+recorded. Run Docker and native qualification on hosted CI rather than a local
+developer machine.
+
+Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
+while retaining the existing Runner authority. Live adoption and ordinary
+commands retain their 30-second bounds. Closing the transport cancels admission;
+an acknowledgement received after the admission deadline cannot revive it.
+
+The board's transcript parser coalesces consecutive identical Pi runtime-failure
+display rows within one run, turn and session, including the exit handler and
+its late prompt rejection. Both original PRP facts remain in the run log.
+Distinct failure details, intervening retry activity and later turns remain
+visible. The profile-14 notice projection, wrapper bytes and terminal settlement
+remain unchanged.
+
+Cursor candidate configuration accepts `acpxSessionMode: "agent" | "plan" | "ask"`
+(default `agent`). This selects the native Cursor mode independently of
+`acpxPermissionMode` and Paperclip task planning or company approvals. The mode
+is validated at the API boundary and is bound to provider admission and recovery;
+changing it cannot reuse an incompatible warm session. Other providers reject
+this setting. Cursor configuration requires an explicit model. Pending providers retain
+operator-controlled qualification admission.
+
+
+Remote Codex sessions relay assigned app tools through the server's configured
+gateway. Small catalogs are sent directly. When a catalog would exceed the
+runner's 256-operation or 768 KiB contract limit, the server exposes
+`paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search returns bounded pages of names, descriptions, and input schemas. Each
+page intersects the session's pinned assignments with current gateway grants.
+An individual schema that exceeds a page returns an `inputSchemaRef`. The same
+search tool retrieves that schema in chunks via `schemaTool` and
+`schemaOffset`; discovery can continue past the large tool.
+Calls retain task ownership, work-mode restrictions, gateway authorization,
+approvals, and audit. Core task tools and the runner's completion tools keep
+their reserved space; no assigned tools are silently removed to fit the limit.
 
 Native Claude skill assignments travel in the runtime-context snapshot through
 runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
@@ -76,6 +297,37 @@ provider-native operations. Full auto is resolved consistently for agent
 creation, adapter conversion, direct driver launches, and fresh/resumed turns.
 Explicitly stored restrictive modes still apply.
 
+Native OpenCode forwards incremental text and reasoning parts as they arrive;
+the final full snapshot selects the final response without repeating streamed
+text. Delta parts must match an observed message and part identity. Identical
+chunks without event IDs remain distinct tokens. Each isolated launch disables
+automatic updates, remote model-catalog refreshes, and default plugins; the
+runner supplies the pinned executable, selected model, and assigned MCP tools.
+Provider inference and reasoning still contribute to time to first text. These
+startup settings do not disable model reasoning.
+
+On macOS, the verified OpenCode executable keeps its private launch pathname
+until the provider process exits. Removing that pathname immediately after
+spawn can kill or stall the signed binary before its health check succeeds.
+Ownership, permissions, and file-identity checks remain enforced; cleanup also
+runs on failed launches, and retries create a fresh launch snapshot.
+
+Call `session.startTurn({ message, reasoningMode: "disabled" })` to disable
+reasoning for one OpenCode/OpenRouter turn. `CapabilityLiveSession.sendMessage`
+accepts the same option in its second argument. The choice travels in the durable
+`turn.start` command and selects an OpenCode model variant for that prompt only.
+Omitting it (or passing `"default"`) on the next turn restores provider defaults,
+including on a warm or recovered session. It is not an environment variable or
+agent-wide setting. No automatic decision policy selects it. The model must
+support disabling reasoning; other runner providers reject an explicit selection
+before starting work. Native sessions expose support through the
+`perTurnReasoning` capability.
+
+OpenCode's proxy sends agent instructions once per turn through the system prompt. The
+task envelope retains task-specific constraints and the completion contract,
+without repeating the system instructions. This applies to all users of the
+proxy; already-recorded conversation history is not rewritten.
+
 The runner's authenticated bridge and controller still enforce company access,
 action claims, task modes, and governed approvals. Provider permission defaults
 do not change workspace isolation or grant credentials or connection access.
@@ -83,12 +335,27 @@ do not change workspace isolation or grant credentials or connection access.
 task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
 None of these restrictive modes is the default.
 
-This runtime has no interactive permission handler. An operation that still
-requires approval stops the turn with `approval_required`. The server marks the
-task blocked, exposes the permission action to the operator, and disables
-automatic retry. The operator must review the operation and the agent's
-permission setting before retrying. Company access checks still run when each
-Paperclip tool executes.
+`prepare_repository` requires a provider permission decision in restrictive
+modes, including `approve-paperclip`: repository acquisition can clone onto the
+controller and is not automatically approved as a planning action. Full auto
+still allows it; repository acquisition currently has no cumulative disk quota.
+
+Restrictive profiles route supported permission decisions through durable runtime
+requests and the existing task interaction controls. Requests are persisted
+before presentation; answers are checked against the offered decisions and
+acknowledged by the sidecar before settlement. Unknown, stale and duplicate
+responses fail. Missing provider decision support remains a blocked disposition,
+not implicit approval. Company access checks still run for each Paperclip tool.
+Provider death expires pending promises; approvals are never replayed into a
+replacement process.
+
+Automatic Paperclip/read allowances currently require the Claude SDK dispatch
+boundary. Grok preserves these restricted settings, but its ACP requests lack
+independently bound tool authority. Those operations require a supported operator
+permission decision; a missing interactive responder stops with
+`approval_required`. An explicitly selected `approve-all` policy permits unattended
+Grok work in an assigned sandbox. Paperclip authorization and governed approvals
+still apply.
 
 Runnerd selects only qualified provider profiles. Claude Managed and AWS
 AgentCore receive immutable company-profile snapshots with explicit retention,
@@ -112,7 +379,25 @@ tool, input, permission, and terminal events require the exact active binding.
 A package-local payload boundary decodes events only after that scope check. It
 validates control identities, terminal status, question sets, and the admitted
 runtime event types and bounded fields. It redacts diagnostic and retained
-event values again before they can enter provider state.
+event values again before they can enter provider state. Authoritative semantic
+tool arguments are validated for transport bounds and forwarded unchanged,
+including credential-bearing document and instruction content. The provider
+harness owns credential policy; redaction of logs and audit previews must not
+reject or rewrite execution arguments. Diagnostic detection requires explicit
+credential fields/assignments or recognizable key, Bearer, JWT, or PEM formats,
+not ordinary prose such as "credential handling" or dotted filenames.
+
+Human question tools accept one complete `payload.questionSet` for text and
+choice questions. The control plane generates legacy `questions` entries with
+stable free-text option IDs. Legacy callers remain supported. Calls that supply
+both forms must describe the same complete form; partial forms remain invalid.
+The native recovery bridge uses the same projection for answer delivery.
+
+The server validates canonical answer constraints before persistence. Regex
+matching runs in isolated workers with a one-second deadline and at most four
+active workers. A timeout or capacity error leaves the question pending. The
+ordinary and native answer paths both await this validation before persistence.
+Saved native answer delivery does not repeat regex matching.
 
 Validated ACPX runtime events normalize into the same provider-neutral activity
 families as the direct Codex transport. Reasoning contents stay private. Tool
@@ -265,7 +550,11 @@ pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 `report:runner-live-evals` is a paid, provider-backed command. Native Codex
 requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
-matrix admits no Pi profile and does not persist credential values. Set
+matrix remains qualified-only and does not persist credential values. Candidate
+qualification uses `eval-session --candidate-profile <pi|cursor|copilot>` with an
+explicit model and a separately materialized pinned candidate pack. This option
+is a constructor-bound diagnostic opt-in; session JSON cannot enable a candidate.
+Missing credentials or unverifiable spend block paid qualification. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound
 additional scheduling after the observed campaign total reaches that value:
 

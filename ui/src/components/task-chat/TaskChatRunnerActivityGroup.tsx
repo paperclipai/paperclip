@@ -333,7 +333,7 @@ export function TaskChatRunnerActivityGroup({
     >
       {item.interstitial ? (
         <div
-          className="min-w-0 text-sm text-foreground/90"
+          className="min-w-0 px-1 text-sm text-foreground/90"
           data-testid="task-chat-phase-interstitial"
         >
           <MarkdownBody softBreaks linkIssueReferences>

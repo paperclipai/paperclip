@@ -119,6 +119,20 @@ from the default branch and provide:
   marked disabled;
 - `max_infrastructure_retries`: zero through three, applied only when an
   attempt explicitly reports a retryable infrastructure failure.
+
+Native suspension failures are non-retryable infrastructure failures. The CLI
+retains only allowlisted close diagnostics: suspension and provider-drain
+booleans, the suspension-command status, the durable Runner lifecycle, and
+whether its identity matches. Missing or conflicting suspension evidence never
+becomes a pass. Preserve the original artifact before correcting a close defect
+and explicitly authorizing a new attempt.
+
+Pi cleanup stops an idle provider during close preparation through the exact
+native process owner. Native code rejects active turns or pending callbacks on
+that idle path. It proves release of the original inherited lifetime fence and
+preserves the attested provider identity. The subsequent drain and suspension
+barriers still require their durable receipts. An unconfirmed provider exit
+cannot certify a reusable checkpoint.
 - `grok_authentication`: `api_key` (the compatibility default) or `subscription`.
   Subscription requires an explicitly selected Grok roster and the owner-approved
   `GROK_AUTH_JSON` secret in the protected `runner-e2e-paid` environment. API mode
@@ -154,6 +168,16 @@ versions and patched ACP server bytes. Do not replace this step with a fresh
 `patchedDependencies`, so the resulting ACPX executables no longer match their
 qualified digests.
 
+Candidate ACPX evals require both `--candidate-profile <agent>` and
+`--expected-acpx-profile <JSON>`. The eval program supplies the exact configured
+profile as the JSON argument. Before creating a runtime context or provider
+service, the built CLI compares every profile field, including model, version
+and command digest, with its own resolved profile. Missing, extra or mismatched
+fields fail admission. Older CLIs reject the new flag before execution; there
+is no retry without the check. The daemon's own profile admission and binary
+digest check remain independent gates. Post-run scoring still compares the
+retained profile as evidence, but cannot replace this pre-launch check.
+
 The direct eval CLI also materializes a minimal immutable native runtime
 context in each isolated attempt workspace. This keeps the direct layer on the
 same `paperclip.native-execution-input.v3` contract as production, including
@@ -186,6 +210,9 @@ replacement objective or proof that a newly requested action is already done.
 Finishing the provider turn does not authorize an unrequested mock task-state
 change or completion comment. These harness instructions keep single-operation
 cases bounded while leaving their operation and state-effect assertions intact.
+For a bounded request, the harness also asks for only the context needed to act.
+A brief progress request does not require an investigation of unrelated history
+or documents. Its grader still requires the actual successful mutation.
 
 ACPX accounting uses the qualified server's billable token semantics: Claude
 and Codex already include reasoning in output, and Codex has no cache-write

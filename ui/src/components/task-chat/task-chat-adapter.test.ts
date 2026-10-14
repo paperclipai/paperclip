@@ -6,6 +6,40 @@ import {
 } from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
+  it("preserves distinct human IDs, photos and viewer ownership, including after a profile refresh", () => {
+    const comments = ["alex", "sam"].map(authorUserId => ({
+      id: `comment-${authorUserId}`, authorType: "user", authorUserId,
+      authorAgentId: null, body: "A human message", createdAt: "2026-10-09T20:42:00Z",
+    } as unknown as IssueChatComment));
+    const userProfileMap = new Map([
+      ["alex", { label: "Alex Morgan", image: "/alex.png" }],
+      ["sam", { label: "Sam Rivera", image: "/sam.png" }],
+    ]);
+    expect(commentsToTaskChatItems(comments, { currentUserId: "alex", userProfileMap })).toMatchObject([
+      { authorUserId: "alex", authorName: "Alex Morgan", authorAvatarUrl: "/alex.png", isCurrentUser: true },
+      { authorUserId: "sam", authorName: "Sam Rivera", authorAvatarUrl: "/sam.png", isCurrentUser: false },
+    ]);
+    expect(commentsToTaskChatItems(comments, { currentUserId: "sam", userProfileMap })).toMatchObject([
+      { authorUserId: "alex", isCurrentUser: false },
+      { authorUserId: "sam", isCurrentUser: true },
+    ]);
+    expect(commentsToTaskChatItems(comments, { currentUserId: "alex" })).toMatchObject([
+      { authorName: "You", isCurrentUser: true, authorAvatarUrl: null },
+      { authorName: "User", isCurrentUser: false, authorAvatarUrl: null },
+    ]);
+    // Directory hydration changes presentation without changing canonical message IDs.
+    expect(commentsToTaskChatItems(comments, { currentUserId: "alex", userProfileMap })[1]).toMatchObject({
+      id: "comment-sam", authorName: "Sam Rivera", authorAvatarUrl: "/sam.png",
+    });
+  });
+
+  it("does not infer ownership from matching names or an unresolved viewer", () => {
+    const comment = { id: "other", authorType: "user", authorUserId: "other", body: "Hello" } as IssueChatComment;
+    expect(commentsToTaskChatItems([comment], {
+      currentUserId: "me", userLabelMap: new Map([["me", "Alex"], ["other", "Alex"]]),
+    })[0]).toMatchObject({ authorName: "Alex", isCurrentUser: false });
+    expect(commentsToTaskChatItems([comment])[0]).toMatchObject({ authorName: "User", isCurrentUser: false });
+  });
   it("carries inbound channel attribution into the human bubble", () => {
     expect(commentsToTaskChatItems([{
       id: "photon-comment",
@@ -162,6 +196,26 @@ describe("commentsToTaskChatItems", () => {
     expect(item).toMatchObject({
       kind: "message",
       timestamp: formatTaskChatTimestamp(createdAt),
+    });
+  });
+
+  it("preserves human identity for steered and ordinary messages", () => {
+    const comment = {
+      id: "steered-by-colleague", body: "Check the latest result.",
+      authorType: "user", authorUserId: "colleague", steeredIntoRunId: "run-1",
+      createdAt: "2026-09-04T14:09:33.000Z",
+    } as unknown as IssueChatComment;
+    const ctx = {
+      currentUserId: "viewer",
+      userProfileMap: new Map([["colleague", { label: "Sam Rivera", image: "/api/assets/sam/content" }]]),
+    };
+    for (const steeredIntoRunId of ["run-1", null]) {
+      expect(commentsToTaskChatItems([{ ...comment, steeredIntoRunId }], ctx)[0]).toMatchObject({
+        authorName: "Sam Rivera", authorAvatarUrl: "/api/assets/sam/content", isCurrentUser: false,
+      });
+    }
+    expect(commentsToTaskChatItems([{ ...comment, authorUserId: "viewer" }], ctx)[0]).toMatchObject({
+      isCurrentUser: true,
     });
   });
 

@@ -14,6 +14,7 @@ import { and, eq } from "drizzle-orm";
 import { badRequest, forbidden } from "../../errors.js";
 import {
   resolveSlackTaskAuthority,
+  slackEndpointCandidates,
   type SlackTaskBinding,
 } from "./slack-authority.js";
 import {
@@ -28,7 +29,7 @@ import {
   recordSlackReadBoundary,
 } from "./slack-access.js";
 
-export async function slackAssignedResource(
+async function slackAssignedEndpoint(
   db: Db,
   binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
 ) {
@@ -90,7 +91,7 @@ export async function slackAssignedResource(
       label: authority.endpoint.botDisplayName ?? "Slack",
       metadata: {
         workspaceId: authority.endpoint.providerAccountId,
-        channelId: authority.conversation.externalConversationId.replace(
+        channelId: authority.conversation?.externalConversationId.replace(
           /^slack:/,
           "",
         ),
@@ -100,6 +101,22 @@ export async function slackAssignedResource(
     },
   ];
 }
+export async function slackAssignedResource(
+  db: Db,
+  binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
+) {
+  const resources = [];
+  for (const endpoint of await slackEndpointCandidates(db, binding)) {
+    resources.push(
+      ...(await slackAssignedEndpoint(db, {
+        ...binding,
+        endpointId: endpoint.id,
+      })),
+    );
+  }
+  return resources;
+}
+
 const messageView = (message: SlackObject, team: string, channel: string) => ({
   ts: message.ts,
   threadTs: message.thread_ts,
@@ -129,8 +146,14 @@ export async function executeSlackTool(
 ) {
   const tool = SLACK_TOOLS.find((entry) => entry.name === name);
   if (!tool) throw forbidden("Unknown Slack tool");
-  const args = tool.schema.parse(value) as SlackObject;
+  const { endpointId, ...args } = tool.schema.parse(value) as SlackObject;
+  if (endpointId !== undefined) {
+    if (binding.endpointId && binding.endpointId !== endpointId)
+      throw forbidden("Slack connection selector does not match this tool");
+    binding = { ...binding, endpointId: String(endpointId) };
+  }
   const authority = await resolveSlackTaskAuthority(db, binding);
+  binding = { ...binding, endpointId: authority.endpoint.id };
   const upstream = slackClient(authority.botToken, fetchImpl);
   const users = new Map<string, Promise<SlackObject>>();
   const api: typeof upstream = (method, args = {}) => {
@@ -171,6 +194,7 @@ export async function executeSlackTool(
           authorized.is_im === true
         ) {
           if (
+            authority.conversation &&
             !authority.conversation.isDirectMessage &&
             authorized.id !==
               authority.conversation.externalConversationId.replace(
@@ -190,14 +214,12 @@ export async function executeSlackTool(
       } catch (error) {
         // Access denials omit inaccessible channels; provider outages/rate limits
         // must remain visible rather than masquerading as an empty directory.
-        if (
-          !(
-            error &&
-            typeof error === "object" &&
-            "status" in error &&
-            error.status === 403
-          )
-        )
+        if (!(
+          error &&
+          typeof error === "object" &&
+          "status" in error &&
+          error.status === 403
+        ))
           throw error;
       }
     }
@@ -469,10 +491,16 @@ export async function executeGovernedSlackTool(
   name: string,
   value: unknown,
 ) {
-  const authority = await resolveSlackTaskAuthority(db, binding);
   const tool = SLACK_TOOLS.find((t) => t.name === name);
   if (!tool) throw forbidden("Unknown Slack tool");
-  const args = tool.schema.parse(value) as SlackObject;
+  const { endpointId, ...args } = tool.schema.parse(value) as SlackObject;
+  if (endpointId !== undefined) {
+    if (binding.endpointId && binding.endpointId !== endpointId)
+      throw forbidden("Slack connection selector does not match this task");
+    binding = { ...binding, endpointId: String(endpointId) };
+  }
+  const authority = await resolveSlackTaskAuthority(db, binding);
+  binding = { ...binding, endpointId: authority.endpoint.id };
   if (
     binding.workMode &&
     binding.workMode !== "standard" &&

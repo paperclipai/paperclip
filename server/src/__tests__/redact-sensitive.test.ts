@@ -6,6 +6,11 @@ import {
   stripSecretBearingUrlParts,
 } from "../middleware/redact-sensitive.js";
 
+it("redacts Slack manager grants and sealed OAuth handoffs", () => {
+  const result = redactSensitive({ managerToken: "manager-canary", refreshToken: "refresh-canary", sealed: { ct: "sealed-canary" }, handoff: { token: "handoff-canary" }, claim_id: "claim-canary" });
+  expect(JSON.stringify(result)).not.toContain("canary");
+});
+
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
     const body = {

@@ -14,7 +14,9 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
+import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -130,8 +132,8 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
+  StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
+    <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
 }));
 
@@ -438,6 +440,18 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
+function createRelation(id: string, identifier: string, title: string, status: Issue["status"] = "todo") {
+  return {
+    id,
+    identifier,
+    title,
+    status,
+    priority: "medium" as const,
+    assigneeAgentId: null,
+    assigneeUserId: null,
+  };
+}
+
 function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>, hiddenSettings: string[] = []) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -463,6 +477,123 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
 
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
+
+  it("surfaces saved PR review links even when external objects are unavailable", async () => {
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" },
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjectsError: true,
+    });
+    await waitForAssertion(() => {
+      const link = container.querySelector('a[href="https://github.com/example/private-repo/pull/42"]');
+      expect(link?.textContent).toBe("example/private-repo#42");
+      expect(container.textContent).toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("refreshes PR state when opening Properties over an already loaded task", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => [
+      options?.refreshPullRequests ? { ...saved, metadata: { state: "merged" } } : saved,
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.issues.workProducts("issue-1"), [{ ...saved, metadata: { state: "merged" } }]);
+    const root = createRoot(container);
+    act(() => root.render(<QueryClientProvider client={queryClient}>
+      <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
+    </QueryClientProvider>));
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("refreshes PRs on first panel open when the thread uses an identifier cache key", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => [
+      options?.refreshPullRequests ? { ...saved, metadata: { state: "merged" } } : saved,
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.issues.workProducts("PAP-1"), [{ ...saved, metadata: { state: "merged" } }]);
+    const root = createRoot(container);
+    act(() => root.render(<QueryClientProvider client={queryClient}>
+      <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
+    </QueryClientProvider>));
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("shows saved PRs while the first provider refresh is stalled", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    const root = renderProperties(container, { issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+      expect(container.textContent).toContain("Review requested");
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { statusLabel: "Open", statusCategory: "open", liveness: "stale", statusIconKey: "git-pull-request", review: true },
+    { statusLabel: "Merged", statusCategory: "succeeded", liveness: "fresh", statusIconKey: "git-merge", review: false },
+    { statusLabel: "Not found", statusCategory: "archived", liveness: "stale", statusIconKey: null, review: true },
+  ] as const)("combines a saved PR with its $statusLabel provider status and freshness", async (provider) => {
+    const canonical = "https://github.com/example/private-repo/pull/42";
+    const savedUrl = `${canonical}?diff=split#discussion_r123`;
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", title: "Update runtime probe", url: savedUrl,
+      metadata: {}, status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjects: [{
+        pill: { providerKey: "github", objectType: "pull_request", url: canonical, ...provider },
+        mentionCount: 1, sourceLabels: ["Comment"],
+        group: { object: null, mentions: [], mentionCount: 1, sourceLabels: ["Comment"] },
+      }],
+    });
+    await waitForAssertion(() => {
+      const links = container.querySelectorAll('a[href*="/pull/42"]');
+      expect(links).toHaveLength(1);
+      expect(links[0].getAttribute("href")).toBe(savedUrl);
+      const row = links[0].closest("li")!;
+      expect(row.textContent).toContain(provider.statusLabel);
+      expect(row.querySelector("[data-external-liveness]")?.getAttribute("data-external-liveness")).toBe(provider.liveness);
+      expect(row.textContent?.includes("Review requested")).toBe(provider.review);
+    });
+    act(() => root.unmount());
+  });
 
   beforeEach(() => {
     mockSidebarState.isMobile = false;
@@ -527,6 +658,12 @@ describe("IssueProperties", () => {
     expect(surface?.classList).toContain("pl-4");
     expect(surface?.querySelectorAll('[data-property-section="true"]').length).toBeGreaterThan(1);
     expect(surface?.querySelector('[data-property-value="true"]')).not.toBeNull();
+    const statusVisual = surface?.querySelector(
+      '[data-property-label="Status"] + [data-property-value="true"] [data-testid="status-icon"]',
+    );
+    expect(statusVisual).not.toBeNull();
+    expect(statusVisual?.getAttribute("data-size")).toBeNull();
+    expect(statusVisual?.getAttribute("data-glyph-container-class")).toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
       .toContain("text-muted-foreground/70");
     const projectLabel = surface?.querySelector('[data-property-label="Project"]');
@@ -539,24 +676,8 @@ describe("IssueProperties", () => {
   });
 
   it("stacks property chips vertically and aligns each label with the first chip", async () => {
-    const blockedBy = Array.from({ length: 3 }, (_, index) => ({
-      id: `blocker-${index + 1}`,
-      identifier: `BLOCK-${index + 1}`,
-      title: `Blocker ${index + 1}`,
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-    })) as NonNullable<Issue["blockedBy"]>;
-    const blocks = Array.from({ length: 3 }, (_, index) => ({
-      id: `blocked-${index + 1}`,
-      identifier: `BLOCKED-${index + 1}`,
-      title: `Blocked task ${index + 1}`,
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-    })) as NonNullable<Issue["blocks"]>;
+    const blockedBy = Array.from({ length: 3 }, (_, index) => (createRelation(`blocker-${index + 1}`, `BLOCK-${index + 1}`, `Blocker ${index + 1}`))) as NonNullable<Issue["blockedBy"]>;
+    const blocks = Array.from({ length: 3 }, (_, index) => (createRelation(`blocked-${index + 1}`, `BLOCKED-${index + 1}`, `Blocked task ${index + 1}`))) as NonNullable<Issue["blocks"]>;
     const labels = Array.from({ length: 3 }, (_, index) => createLabel({
       id: `label-${index + 1}`,
       name: `Label ${index + 1}`,
@@ -1239,6 +1360,20 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("preserves a locked parent stub without manufacturing a title or navigation link", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ parentId: "private-parent", ancestors: [{ id: "private-parent", identifier: "PAP-99", locked: true }] as unknown as Issue["ancestors"] }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toContain("PAP-99");
+    expect(container.querySelector('a[href="/issues/PAP-99"]')).toBeNull();
+    expect(container.querySelector('[title="private-"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("links relationship status and IDs and removes only the selected blocker with its X", async () => {
     const onUpdate = vi.fn();
     const blockers = [
@@ -1278,15 +1413,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
-          {
-            id: "issue-2",
-            identifier: "PAP-2",
-            title: "Existing blocker",
-            status: "in_progress",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
+          createRelation("issue-2", "PAP-2", "Existing blocker", "in_progress"),
         ],
       }),
       childIssues: [],
@@ -1378,24 +1505,8 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
-          {
-            id: "issue-2",
-            identifier: "PAP-2",
-            title: "Existing blocker",
-            status: "in_progress",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
-          {
-            id: "issue-4",
-            identifier: "PAP-4",
-            title: "Keep blocker",
-            status: "todo",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
+          createRelation("issue-2", "PAP-2", "Existing blocker", "in_progress"),
+          createRelation("issue-4", "PAP-4", "Keep blocker"),
         ],
       }),
       childIssues: [],
@@ -1431,24 +1542,8 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
-          {
-            id: "issue-2",
-            identifier: "PAP-2",
-            title: "Existing blocker",
-            status: "in_progress",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
-          {
-            id: "issue-4",
-            identifier: "PAP-4",
-            title: "Keep blocker",
-            status: "todo",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
+          createRelation("issue-2", "PAP-2", "Existing blocker", "in_progress"),
+          createRelation("issue-4", "PAP-4", "Keep blocker"),
         ],
       }),
       childIssues: [],
@@ -1479,15 +1574,7 @@ describe("IssueProperties", () => {
   });
 
   it("summarizes long blocked-by and subtask relationships in their picker triggers", async () => {
-    const blockedBy = Array.from({ length: 7 }, (_, index) => ({
-      id: `blocker-${index + 1}`,
-      identifier: `BLOCK-${index + 1}`,
-      title: `Blocker ${index + 1}`,
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-    })) as NonNullable<Issue["blockedBy"]>;
+    const blockedBy = Array.from({ length: 7 }, (_, index) => (createRelation(`blocker-${index + 1}`, `BLOCK-${index + 1}`, `Blocker ${index + 1}`))) as NonNullable<Issue["blockedBy"]>;
     const childIssues = Array.from({ length: 7 }, (_, index) => createIssue({
       id: `child-${index + 1}`,
       identifier: `SUB-${index + 1}`,
@@ -1539,15 +1626,7 @@ describe("IssueProperties", () => {
       enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
-    const blocking = Array.from({ length: 7 }, (_, index) => ({
-      id: `blocking-${index + 1}`,
-      identifier: `BLOCKING-${index + 1}`,
-      title: `Blocking issue ${index + 1}`,
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-    })) as NonNullable<Issue["blocks"]>;
+    const blocking = Array.from({ length: 7 }, (_, index) => (createRelation(`blocking-${index + 1}`, `BLOCKING-${index + 1}`, `Blocking issue ${index + 1}`))) as NonNullable<Issue["blocks"]>;
     const relatedIssues = Array.from({ length: 7 }, (_, index) => ({
       id: `related-${index + 1}`,
       identifier: `RELATED-${index + 1}`,
@@ -1665,15 +1744,7 @@ describe("IssueProperties", () => {
   });
 
   it("updates the blocked-by relationship summary when the issue changes", async () => {
-    const blockedBy = Array.from({ length: 7 }, (_, index) => ({
-      id: `blocker-${index + 1}`,
-      identifier: `BLOCK-${index + 1}`,
-      title: `Blocker ${index + 1}`,
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: null,
-      assigneeUserId: null,
-    })) as NonNullable<Issue["blockedBy"]>;
+    const blockedBy = Array.from({ length: 7 }, (_, index) => (createRelation(`blocker-${index + 1}`, `BLOCK-${index + 1}`, `Blocker ${index + 1}`))) as NonNullable<Issue["blockedBy"]>;
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -1778,6 +1849,57 @@ describe("IssueProperties", () => {
     expect(projectTile?.style.backgroundColor).toBe("rgb(14, 165, 233)");
     expect(projectTile?.querySelector("svg")?.classList).toContain("lucide-rocket");
 
+    act(() => root.unmount());
+  });
+
+  it("leaves project memory unchanged until task property edits are persisted", async () => {
+    localStorage.clear();
+    mockProjectsApi.list.mockResolvedValue([createProject({ name: "Remembered Project" })]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+    });
+    await flush();
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const option = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Remembered Project")!;
+    expect(option).toBeDefined();
+    act(() => option.click());
+    expect(getLastProjectId("company-1")).toBeUndefined();
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const none = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "No project")!;
+    act(() => none.click());
+    expect(getLastProjectId("company-1")).toBeUndefined();
+    expect(getLastProjectId("company-2")).toBeUndefined();
+    act(() => root.unmount());
+    localStorage.clear();
+  });
+
+  it("changes only project organization while preserving the bound workspace", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject({ name: "Target Project" })]);
+    const workspace = createExecutionWorkspace({ projectId: null, projectWorkspaceId: null });
+    const issue = createIssue({
+      executionWorkspaceId: workspace.id,
+      currentExecutionWorkspace: workspace,
+    });
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, { issue, childIssues: [], onUpdate, inline: true });
+    await flush();
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const project = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "Target Project")!;
+    act(() => project.click());
+    expect(onUpdate).toHaveBeenLastCalledWith({ projectId: "project-1" });
+    const assigned = applyOptimisticIssueFieldUpdate(issue, onUpdate.mock.lastCall![0])!;
+    expect(assigned.executionWorkspaceId).toBe(workspace.id);
+    expect(assigned.currentExecutionWorkspace).toBe(workspace);
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const none = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "No project")!;
+    act(() => none.click());
+    expect(onUpdate).toHaveBeenLastCalledWith({ projectId: null });
+    const cleared = applyOptimisticIssueFieldUpdate(assigned, onUpdate.mock.lastCall![0])!;
+    expect(cleared.executionWorkspaceId).toBe(workspace.id);
+    expect(cleared.currentExecutionWorkspace).toBe(workspace);
+    expect(cleared.currentExecutionWorkspace?.cwd).toBe(workspace.cwd);
     act(() => root.unmount());
   });
 
@@ -1975,30 +2097,14 @@ describe("IssueProperties", () => {
         relatedWork: {
           outbound: [
             {
-              issue: {
-                id: "issue-22",
-                identifier: "PAP-22",
-                title: "Related task",
-                status: "todo",
-                priority: "medium",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-              },
+              issue: createRelation("issue-22", "PAP-22", "Related task"),
               mentionCount: 1,
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-22" }],
             },
           ],
           inbound: [
             {
-              issue: {
-                id: "issue-23",
-                identifier: "PAP-23",
-                title: "Mentions this task",
-                status: "in_progress",
-                priority: "medium",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-              },
+              issue: createRelation("issue-23", "PAP-23", "Mentions this task", "in_progress"),
               mentionCount: 1,
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-1" }],
             },
@@ -2034,65 +2140,25 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
-          {
-            id: "issue-22",
-            identifier: "PAP-22",
-            title: "Blocker",
-            status: "todo",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
+          createRelation("issue-22", "PAP-22", "Blocker"),
         ],
         blocks: [
-          {
-            id: "issue-33",
-            identifier: "PAP-33",
-            title: "Blocked issue",
-            status: "todo",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
+          createRelation("issue-33", "PAP-33", "Blocked issue"),
         ],
         relatedWork: {
           outbound: [
             {
-              issue: {
-                id: "issue-22",
-                identifier: "PAP-22",
-                title: "Blocker",
-                status: "todo",
-                priority: "medium",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-              },
+              issue: createRelation("issue-22", "PAP-22", "Blocker"),
               mentionCount: 1,
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-22" }],
             },
             {
-              issue: {
-                id: "issue-33",
-                identifier: "PAP-33",
-                title: "Blocked issue",
-                status: "todo",
-                priority: "medium",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-              },
+              issue: createRelation("issue-33", "PAP-33", "Blocked issue"),
               mentionCount: 1,
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-33" }],
             },
             {
-              issue: {
-                id: "child-44",
-                identifier: "PAP-44",
-                title: "Child issue",
-                status: "todo",
-                priority: "medium",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-              },
+              issue: createRelation("child-44", "PAP-44", "Child issue"),
               mentionCount: 1,
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-44" }],
             },
@@ -2569,6 +2635,30 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders reviewer and approver controls for a monitor-only execution policy", async () => {
+    const policy = {
+      monitor: {
+        nextCheckAt: "2026-10-08T16:00:00.000Z",
+        notes: "Check pull request",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github-pr",
+      },
+    } as IssueExecutionPolicy;
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy: policy }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(findRowTrigger(container, "Reviewers")?.textContent).toContain("None");
+    expect(findRowTrigger(container, "Approvers")?.textContent).toContain("None");
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -2576,10 +2666,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2608,10 +2698,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "approval-stage",
+              id: "00000000-0000-4000-8000-000000000011",
               type: "approval",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-2", type: "user", agentId: null, userId: "user-1" }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000014", type: "user", agentId: null, userId: "user-1" }],
             },
           ],
         }),
@@ -2634,10 +2724,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2660,10 +2750,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2763,6 +2853,60 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
     dateNowSpy.mockRestore();
+  });
+
+  it.each([true, false])("clears a monitor with omitted stages while preserving independent limits (authorization: %s)", async (withAuthorization) => {
+    const onUpdate = vi.fn();
+    const executionPolicy = {
+      ...(withAuthorization ? { authorizationPolicy: { trustPreset: "standard" } } : {}),
+      maxReviewRounds: 4,
+      monitor: { nextCheckAt: "2099-01-01T12:00:00.000Z", notes: "Check service", scheduledBy: "board" },
+    } as IssueExecutionPolicy;
+    const before = structuredClone(executionPolicy);
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy }), childIssues: [], onUpdate, inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Reviewers");
+    expect(container.textContent).not.toContain("Execution policy unavailable");
+    const monitorTrigger = container.querySelector('[data-testid="monitor-row-trigger"]')?.closest("button");
+    expect(monitorTrigger).toBeTruthy();
+    await act(async () => { monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const clearButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Clear");
+    expect(clearButton).toBeTruthy();
+    await act(async () => { clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+
+    expect(onUpdate).toHaveBeenCalledWith({ executionPolicy: {
+      mode: "normal", commentRequired: true, stages: [],
+      ...(withAuthorization ? { authorizationPolicy: before.authorizationPolicy } : {}), maxReviewRounds: 4,
+    } });
+    expect(executionPolicy).toEqual(before);
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { stages: {} },
+    { stages: [null] },
+    { stages: [{ type: "review", participants: {} }] },
+    { monitor: { nextCheckAt: {}, notes: {} } },
+  ])("keeps malformed policies unavailable without exposing destructive edits: %j", async (executionPolicy) => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy: executionPolicy as unknown as IssueExecutionPolicy }),
+      childIssues: [], onUpdate, inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Execution policy unavailable. Refresh to try again.");
+    expect(container.textContent).toContain("Assignee");
+    expect(container.textContent).not.toContain("No reviewers");
+    expect(container.textContent).not.toContain("No approvers");
+    expect(container.textContent).not.toContain("Run review now");
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')).toBeNull();
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+    act(() => root.unmount());
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {

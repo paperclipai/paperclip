@@ -110,6 +110,27 @@ describe("workProductService", () => {
     expect(product.metadata.state).toBe("open");
   });
 
+  it.each([
+    { url: "https://github.com/example/private-repo/pull/42" },
+    { repository: "example/private-repo", number: 42 },
+  ])("refreshes a PR whose identity is stored only in metadata: %j", async (metadata) => {
+    const product = createWorkProductRow({ url: null, metadata }) as any;
+    const resolve = vi.fn(async () => ({ state: "merged" as const, workProductState: "merged" as const, headRef: null, headSha: null }));
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(resolve).toHaveBeenCalledWith("company-1", {
+      host: "github.com", owner: "example", repo: "private-repo", number: 42,
+    });
+    expect(refreshed.metadata).toMatchObject({ state: "merged" });
+    expect(product.metadata).toEqual(metadata);
+  });
+
+  it("retains the saved PR when the provider cannot access it", async () => {
+    const product = createWorkProductRow({ url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" } }) as any;
+    const resolve = vi.fn(async () => { throw new Error("Not found"); });
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(refreshed).toBe(product);
+  });
+
   it("resolves GitHub commit stats when runner diff events are unavailable", async () => {
     const resolveCommitDetails = vi.fn(async () => ({ additions: 13, deletions: 2, changedFiles: 3 }));
     const svc = workProductService({} as any, { resolveCommitDetails });

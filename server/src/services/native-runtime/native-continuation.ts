@@ -44,7 +44,7 @@ export function buildNativeContinuationPrompt(input: {
     });
   // Other provider, attachment, question, approval, and recovery paths keep
   // their specialized framing. A matching prior run still gates every delta.
-  if ((wake.externalChatProvider && !externalChat) ||
+  if (rawWake.chatCompletionUpdates || (wake.externalChatProvider && !externalChat) ||
     (!['issue_commented', 'issue_children_completed'].includes(wake.reason ?? '') &&
       !(externalChat && wake.reason === "External chat message received")) ||
     wake.fallbackFetchNeeded || wake.truncated || wake.recovery || continuation?.interruptedRunId ||

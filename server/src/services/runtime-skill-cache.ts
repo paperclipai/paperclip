@@ -165,6 +165,18 @@ async function setTreeMode(directory: string, readonly: boolean): Promise<void> 
   if (readonly) await fs.chmod(directory, 0o555);
 }
 
+// Darwin requires a directory being renamed to be writable by its owner.
+// Change only the directory itself, while the publication lock is held; the
+// contents remain read-only. Restore the mode even when publication fails.
+async function renameCacheDirectory(source: string, destination: string) {
+  const stat = await fs.lstat(source);
+  const directory = stat.isDirectory() && !stat.isSymbolicLink();
+  if (directory) await fs.chmod(source, 0o700);
+  let moved = false;
+  try { await fs.rename(source, destination); moved = true; }
+  finally { if (directory) await fs.chmod(moved ? destination : source, stat.mode & 0o777); }
+}
+
 async function removeTree(directory: string): Promise<void> {
   await setTreeMode(directory, false);
   await fs.rm(directory, { recursive: true, force: true });
@@ -202,9 +214,9 @@ export async function resolveRuntimeSkillCache(
         if (!await matches(spec, staging)) throw new Error("Runtime skill cache validation failed");
         // Lifecycle mutations can update the DB while this builder owns the filesystem lock.
         if (!await stillInstalled()) throw new Error("Skill was renamed or removed during preparation");
-        await fs.rename(spec.entry, path.join(spec.root, `.invalid-${spec.fingerprint}-${randomUUID()}`))
+        await renameCacheDirectory(spec.entry, path.join(spec.root, `.invalid-${spec.fingerprint}-${randomUUID()}`))
           .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
-        await fs.rename(staging, spec.entry);
+        await renameCacheDirectory(staging, spec.entry);
         return path.join(spec.entry, "files");
       } finally { await removeTree(staging); }
     });

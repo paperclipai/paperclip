@@ -17,7 +17,7 @@ vi.mock("@daytonaio/sdk", () => ({
   DaytonaTimeoutError: class MockDaytonaTimeoutError extends Error {},
 }));
 
-import { performSyncIn } from "./file-sync.js";
+import { performSyncIn, performSyncOut } from "./file-sync.js";
 import { __setDaytonaPluginContextForTest } from "./plugin.js";
 import type { PluginContext, PluginSyncOperation } from "@paperclipai/plugin-sdk";
 
@@ -1080,5 +1080,80 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       expect(seenTimeouts.length).toBeGreaterThanOrEqual(3); // mkdir and probe, transfer, promote
       expect(seenTimeouts.every((timeout) => timeout === 123)).toBe(true);
     });
+  });
+});
+
+
+describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
+  const cleanupDirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(cleanupDirs.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+  it.each(["/usr/bin/pnpm", "../../outside.txt", "ambiguous", "ambiguous-target"])("preserves files and safe links when a link is unsafe: %s", async (target) => {
+    const root = await fs.mkdtemp("/tmp/paperclip-export-recovery-");
+    cleanupDirs.push(root);
+    const remoteDir = path.join(root, "remote");
+    const output = path.join(root, "output");
+    const bin = path.join(root, "bin");
+    await fs.mkdir(path.join(remoteDir, "nested"), { recursive: true });
+    await fs.mkdir(path.join(remoteDir, "cache"));
+    await fs.mkdir(path.join(remoteDir, "empty"));
+    await fs.mkdir(bin);
+    await fs.symlink(gnuTar!, path.join(bin, "tar"));
+    await fs.writeFile(path.join(root, "outside.txt"), "private bytes");
+    await fs.writeFile(path.join(remoteDir, "nested", "--safe [file].txt"), "saved work", { mode: 0o600 });
+    await fs.writeFile(path.join(remoteDir, "cache", "ignored.txt"), "excluded");
+    const linkName = target === "ambiguous" ? "tool -> decoy" : "tool";
+    const linkTarget = target === "ambiguous" ? "--safe [file].txt" : target === "ambiguous-target" ? "saved -> work.txt" : target;
+    if (target === "ambiguous-target") await fs.writeFile(path.join(remoteDir, "nested", linkTarget), "more saved work");
+    await fs.symlink(linkTarget, path.join(remoteDir, "nested", linkName));
+    await fs.symlink("nested/--safe [file].txt", path.join(remoteDir, "safe-link"));
+    await fs.link(path.join(remoteDir, "nested", "--safe [file].txt"), path.join(remoteDir, "hard-link"));
+    const downloads = vi.fn(async (requests: Array<{ source: string; destination: string }>) => {
+      for (const request of requests) await fs.copyFile(request.source, request.destination);
+      return requests.map(({ source }) => ({ source }));
+    });
+    const recovery = vi.fn();
+    const { sandbox } = createRealExecSandbox({ commandEnv: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    Object.assign(sandbox.fs, { downloadFiles: downloads, deleteFile: (file: string) => fs.rm(file, { force: true }) });
+    await expect(performSyncOut({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30, onArchiveRecovery: recovery,
+      operations: [{ operationId: "export", files: [{ sourcePath: remoteDir, targetPath: output, kind: "directory", exclude: ["cache"] }] }],
+    })).resolves.toMatchObject({ operations: [{ operationId: "export", filesTransferred: target === "ambiguous-target" ? 4 : 3 }] });
+    expect(downloads).toHaveBeenCalledTimes(2);
+    expect(recovery).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(output, "nested", "--safe [file].txt"), "utf8")).toBe("saved work");
+    expect((await fs.stat(path.join(output, "nested", "--safe [file].txt"))).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(path.join(output, "hard-link"), "utf8")).toBe("saved work");
+    await expect(fs.lstat(path.join(output, "nested", linkName))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readlink(path.join(output, "safe-link"))).toBe("nested/--safe [file].txt");
+    expect(await fs.readdir(path.join(output, "empty"))).toEqual([]);
+    await expect(fs.stat(path.join(output, "cache", "ignored.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(root, "outside.txt"), "utf8")).toBe("private bytes");
+    expect((await fs.lstat(path.join(remoteDir, "nested", linkName))).isSymbolicLink()).toBe(true);
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+  });
+
+  it("finishes an export containing only unsafe links with an empty directory", async () => {
+    const root = await fs.mkdtemp("/tmp/paperclip-export-empty-");
+    cleanupDirs.push(root);
+    const remoteDir = path.join(root, "remote");
+    const output = path.join(root, "output");
+    const bin = path.join(root, "bin");
+    await fs.mkdir(remoteDir);
+    await fs.mkdir(bin);
+    await fs.symlink(gnuTar!, path.join(bin, "tar"));
+    await fs.symlink("/usr/bin/pnpm", path.join(remoteDir, "pnpm"));
+    const { sandbox } = createRealExecSandbox({ commandEnv: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    Object.assign(sandbox.fs, {
+      downloadFiles: async (requests: Array<{ source: string; destination: string }>) => {
+        for (const request of requests) await fs.copyFile(request.source, request.destination);
+        return requests.map(({ source }) => ({ source }));
+      },
+      deleteFile: (file: string) => fs.rm(file, { force: true }),
+    });
+    await performSyncOut({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "empty", files: [{ sourcePath: remoteDir, targetPath: output, kind: "directory" }] }],
+    });
+    expect(await fs.readdir(output)).toEqual([]);
   });
 });

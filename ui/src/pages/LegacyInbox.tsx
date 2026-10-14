@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
@@ -23,7 +23,6 @@ import {
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
@@ -700,7 +699,6 @@ export function Inbox() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -976,17 +974,19 @@ export function Inbox() {
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",
       "inbox-supplement",
+      issueFilters.showAgentCreatedTasks,
       "live-descendant-summary",
     ],
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         q: normalizedSearchQuery,
         limit: 25,
+        includeAgentCreatedTasks: issueFilters.showAgentCreatedTasks,
+        includeParticipatedTasks: true,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
       }).then((rows) => rows as Issue[]),
     enabled: shouldUseIssueSearchSupplement,
-    placeholderData: (previousData) => previousData,
   });
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, [
@@ -1017,11 +1017,11 @@ export function Inbox() {
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
     [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
     [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const unreadTouchedIssues = useMemo(
@@ -1213,8 +1213,9 @@ export function Inbox() {
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
     if (tab === "all" && !showFailedRunsCategory) return [];
+    if (tab === "mine") return failedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId));
     return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory]);
+  }, [failedRuns, tab, showFailedRunsCategory, currentUserId]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -1322,7 +1323,7 @@ export function Inbox() {
         remoteIssues: remoteIssueSearchResults,
         issueFilters,
         currentUserId,
-        enableRoutineVisibilityFilter: true,
+        enableAgentCreatedVisibilityFilter: false,
         liveIssueIds,
         issueFilterContext,
       }),
@@ -2009,8 +2010,6 @@ export function Inbox() {
 
   // Keyboard shortcuts (mail-client style) — single stable listener using refs
   useEffect(() => {
-    if (!keyboardShortcutsEnabled) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
 
@@ -2199,7 +2198,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [issueLinkState, keyboardShortcutsEnabled, noteInboxSortInteraction]);
+  }, [issueLinkState, noteInboxSortInteraction]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -2353,10 +2352,9 @@ export function Inbox() {
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
               />
               <Popover>
                 <PopoverTrigger asChild>
@@ -2452,10 +2450,9 @@ export function Inbox() {
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
               />
               <Popover>
                 <PopoverTrigger asChild>

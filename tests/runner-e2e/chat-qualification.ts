@@ -101,10 +101,7 @@ export async function runActiveReassignment(context: Context) {
   const wait = await brief(input, first.id);
   const reference = `REFERENCE${randomUUID().replaceAll("-", "")}`;
   const workerInstructions = `First save a draft Paperclip document on the assigned task containing the reference from its plan. Then run node ${wait.scriptPath} and wait for the brief before finishing. Do not finish before the command returns.`;
-  const savedInstructions = await api.request.put(`/api/agents/${first.id}/instructions-bundle/file`, {
-    data: { path: "AGENTS.md", content: workerInstructions },
-  });
-  expect(savedInstructions.ok()).toBe(true);
+  await api.saveAgentInstructions(first.id, workerInstructions);
   expect(await api.get(`/api/agents/${first.id}/instructions-bundle/file?path=AGENTS.md`)).toMatchObject({ content: workerInstructions });
   const task = await api.post<Row>(`${company}/issues`, { title: `Launch checklist ${input.nonce}`, status: "todo", assigneeAgentId: first.id,
     description: `Write a short launch checklist as a Paperclip document on this existing task. Use the saved plan and preserve any draft. Include its reference and ${marker} in the final checklist, then complete this task.`,

@@ -252,7 +252,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(
       page.getByText("Welcome to Paperclip!").first()
     ).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("What would you like to do?")).toBeVisible();
+    // The timeline also summarizes the unanswered question. Check the open
+    // question card so a summary alone cannot satisfy this assertion.
+    await expect(
+      page
+        .getByTestId("task-chat-interaction")
+        .getByText("What would you like to do?", { exact: true })
+    ).toBeVisible();
 
     // … and that the no-run contract holds. This spec used to poll for an
     // assignment-triggered heartbeat run here; a run appearing before the

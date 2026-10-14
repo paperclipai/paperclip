@@ -4,10 +4,13 @@ import type { FromSchema } from "json-schema-to-ts";
 import {
   capabilitiesSchema,
   capabilitiesV2Schema,
+  capabilitiesV3Schema,
   commandSchema,
   commandV2Schema,
   eventSchema,
   eventV2Schema,
+  eventV3Schema,
+  commandV3Schema,
   identitySchema,
   questionSetSchema,
   requestSchema,
@@ -20,6 +23,7 @@ import {
 import {
   eventValidator as standaloneEventV1Validator,
   eventV2Validator as standaloneEventV2Validator,
+  eventV3Validator as standaloneEventV3Validator,
   fixtureValidator as standaloneFixtureValidator,
   resultValidator as standaloneResultValidator,
 } from "./generated/standalone-validators.js";
@@ -27,7 +31,7 @@ import { normalizeLegacyPrpStructuredRunResult } from "./result-normalization.js
 
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
 export const PRP_PROTOCOL_MIN_VERSION = 1;
-export const PRP_PROTOCOL_VERSION = 2;
+export const PRP_PROTOCOL_VERSION = 3;
 export const PRP_FIXTURE_SCHEMA = "paperclip.prp.fixture.v1";
 
 type TerminalReferences = [typeof stopReasonSchema];
@@ -45,13 +49,15 @@ export type PrpCapabilitiesV2 = FromSchema<
   typeof capabilitiesV2Schema,
   { references: CapabilitiesV2References }
 >;
+export type PrpCapabilitiesV3 = FromSchema<typeof capabilitiesV3Schema, { references: CapabilitiesV2References }>;
 type PrpCommandV1 = FromSchema<typeof commandSchema>;
+type PrpCommandV3 = FromSchema<typeof commandV3Schema>;
 type PrpCommandV2 = FromSchema<typeof commandV2Schema>;
 export interface PrpCommand {
-  schema: PrpCommandV1["schema"] | PrpCommandV2["schema"];
+  schema: PrpCommandV1["schema"] | PrpCommandV2["schema"] | PrpCommandV3["schema"];
   commandId: string;
   controllerSeq: number;
-  type: PrpCommandV1["type"] | PrpCommandV2["type"];
+  type: PrpCommandV1["type"] | PrpCommandV2["type"] | PrpCommandV3["type"];
   issuedAt: string;
   payload: Record<string, unknown>;
 }
@@ -65,9 +71,10 @@ type RequestReferences = [typeof questionSetSchema];
 export type PrpRequest = FromSchema<typeof requestSchema, { references: RequestReferences }>;
 export type PrpStructuredRunResult = FromSchema<typeof resultSchema>;
 type PrpEventV1 = FromSchema<typeof eventSchema, { references: EventReferences }>;
+type PrpEventV3 = FromSchema<typeof eventV3Schema, { references: EventV2References }>;
 type PrpEventV2 = FromSchema<typeof eventV2Schema, { references: EventV2References }>;
 export interface PrpEvent {
-  schema: PrpEventV1["schema"] | PrpEventV2["schema"];
+  schema: PrpEventV1["schema"] | PrpEventV2["schema"] | PrpEventV3["schema"];
   sourceEventId: string;
   sourceSeq: number;
   sourceInstanceId: string;
@@ -76,8 +83,8 @@ export interface PrpEvent {
   normalizedSessionId: string;
   turnId?: string;
   itemId?: string;
-  eventType: PrpEventV1["eventType"] | PrpEventV2["eventType"];
-  schemaVersion: 1 | 2;
+  eventType: PrpEventV1["eventType"] | PrpEventV2["eventType"] | PrpEventV3["eventType"];
+  schemaVersion: 1 | 2 | 3;
   priority: 0 | 1 | 2;
   emittedAt: string;
   observedAt?: string;
@@ -90,11 +97,11 @@ export interface PrpEvent {
 export interface PrpFixture {
   schema: typeof PRP_FIXTURE_SCHEMA;
   fixtureVersion: 1;
-  protocolVersion: 1 | 2;
+  protocolVersion: 1 | 2 | 3;
   name: string;
   description: string;
   identity: PrpIdentity;
-  capabilities: PrpCapabilities | PrpCapabilitiesV2;
+  capabilities: PrpCapabilities | PrpCapabilitiesV2 | PrpCapabilitiesV3;
   commands: PrpCommand[];
   events: PrpEvent[];
   requests?: PrpRequest[];
@@ -128,6 +135,7 @@ export interface ProtocolVersionRange {
 // `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
 const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
 const eventV1Validator = standaloneEventV1Validator as ValidateFunction<PrpEvent>;
+const eventV3Validator = standaloneEventV3Validator as ValidateFunction<PrpEvent>;
 const eventV2Validator = standaloneEventV2Validator as ValidateFunction<PrpEvent>;
 const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
@@ -184,11 +192,11 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
     fixture.events.forEach((entry, index) => {
       const event = asRecord(entry);
       const actual = event?.schemaVersion;
-      if (typeof actual === "number" && actual !== 1 && actual !== 2) {
+      if (typeof actual === "number" && actual !== 1 && actual !== 2 && actual !== 3) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/schemaVersion`,
-          message: `event schemaVersion ${actual} is unsupported; this implementation supports 1-2`,
+          message: `event schemaVersion ${actual} is unsupported; this implementation supports 1-3`,
         });
       }
       const payload = asRecord(event?.payload);
@@ -468,7 +476,7 @@ export type EventValidationResult =
 export function validatePrpEvent(value: unknown): EventValidationResult {
   const record = asRecord(value);
   const schemaVersion = record?.schemaVersion;
-  if (typeof schemaVersion === "number" && schemaVersion !== 1 && schemaVersion !== 2) {
+  if (typeof schemaVersion === "number" && schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3) {
     return {
       ok: false,
       event: null,
@@ -476,12 +484,12 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
         {
           code: "unsupported_required_version",
           path: "/schemaVersion",
-          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation supports 1-2`,
+          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation supports 1-3`,
         },
       ],
     };
   }
-  const eventValidator = schemaVersion === 2 ? eventV2Validator : eventV1Validator;
+  const eventValidator = schemaVersion === 3 ? eventV3Validator : schemaVersion === 2 ? eventV2Validator : eventV1Validator;
   if (!eventValidator(value)) {
     return {
       ok: false,

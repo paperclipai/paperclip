@@ -57,7 +57,13 @@ export async function explicitOperatorRunIdentity(
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
 type Executor = Pick<Db, "select" | "insert" | "update">;
 
-/** Match task mutation ordering: lock the task before the run, never the reverse. */
+/**
+ * Lock the task before the run, matching task mutation ordering. Identity
+ * operations do not change parent keys: NO KEY UPDATE still serializes writers
+ * and steering, while allowing audit inserts to check their foreign keys.
+ * FOR UPDATE can deadlock with an append that holds KEY SHARE on the run and
+ * then checks the task while identity capture holds the task and waits on the run.
+ */
 async function lockIdentityTask(
   executor: Pick<Db, "select">,
   companyId: string,
@@ -85,7 +91,7 @@ async function lockIdentityTask(
       .select({ id: issues.id })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-      .for("update");
+      .for("no key update");
 }
 
 async function append(
@@ -181,7 +187,7 @@ export async function initializeRunIdentity(
           eq(heartbeatRuns.companyId, input.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run) throw forbidden("Run identity does not belong to this company");
     if (run.activeIdentityContextId) {
       const [current] = await tx
@@ -345,7 +351,7 @@ export async function reserveSteeredIdentity(
           eq(heartbeatRuns.companyId, input.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     // Processes started before the broker rollout keep their original environment.
     if (!run?.activeIdentityContextId) return null;
     const [pending] = await tx
@@ -439,7 +445,7 @@ export async function captureRunIdentity(
           eq(heartbeatRuns.agentId, input.agentId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run || run.status !== "running")
       throw forbidden(
         "Credential acquisition requires this agent's active run",
@@ -512,7 +518,7 @@ export async function reconcileSteeredIdentity(
           eq(heartbeatRuns.companyId, context.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run) return;
     await acceptSteeredIdentity(tx, context);
   });

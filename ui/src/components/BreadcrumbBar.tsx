@@ -137,7 +137,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                 <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                   {isLast || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
-                      <BreadcrumbPage className="flex min-w-0 items-baseline gap-1.5">
+                      <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline")}>
                         {crumb.leading && (
                           <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
                         )}

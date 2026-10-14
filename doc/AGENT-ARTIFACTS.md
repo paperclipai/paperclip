@@ -5,6 +5,20 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Upload files from a task
+
+People can open the task's Artifacts tab and use the upload icon, or drop files
+anywhere in the panel, including its header and existing artifact cards. Uploads
+save directly to the task. They do not send a message, assign an agent, or
+release a pause hold. Files from people and agents appear together in Artifacts.
+
+Markdown imports create task documents. Repeated filenames get a new document
+key instead of replacing an existing revision.
+Hidden system keys and artifact-review prefixes are reserved; imports with
+those filenames receive a visible upload document key. Other supported files use
+the existing attachment API and its type and size limits. Failed uploads show
+an inline Retry action while successful files remain available.
+
 ## Native runner
 
 When `register_deliverable` is available, use it for files in the bound local or
@@ -12,6 +26,17 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 `contentType`, exact `byteSize` and SHA-256, `title`, and a stable `idempotencyKey`.
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
+
+The completion gate permits a narrow sentence-bound exception for one requested
+file when the following sentence explicitly qualifies it, for example:
+`Write memory.txt. This is personal memory, not a task deliverable.` or
+`Write internal-proof.txt. This is an internal verification file, not a deliverable.`
+Each qualifier applies to one file in the immediately preceding request sentence.
+Separate file requests can each qualify when each has its own following qualifier.
+Multiple files requested in one sentence, unqualified report requests, and explicit
+attachment/download requests still need verified accessible publication evidence. Saying only “for internal verification”
+does not establish this exception. Expected denied native writes in a negative
+test are separately recognized as denied attempts, not requested deliverables.
 
 Wait for the receipt. It includes `attachmentId`, `contentPath`, and
 `downloadPath`, along with the existing command, revision, entity references,
@@ -47,13 +72,14 @@ The command prints issue-safe markdown links for the final task comment.
 
 ## Task artifact presentation
 
-While a task is open, a new agent attachment, work product, or document opens
-the task's Artifacts tab and reveals the side panel (or mobile drawer). This
-uses stored object IDs, so it works with either runner. Uploading a file and
-registering its work product counts as one arrival. Existing history, revisions,
-and repeated query refreshes preserve the user's tab selection. Plans retain
-their existing Plan-tab behavior; unregistered user input attachments remain in
-the conversation.
+Existing and newly arriving agent attachments, work products, and documents add
+the task's Artifacts tab without selecting it, opening the side panel or mobile
+drawer, or changing the current document/file link. If the pane is closed, the
+tab is available when the user opens it. This uses stored object IDs, so it works
+with either runner. Uploading a file and registering its work product counts as
+one arrival. Revisions and repeated query refreshes preserve dismissed tabs and
+the user's selection. Plans retain their existing Plan-tab behavior;
+unregistered user input attachments remain in the conversation.
 
 ## Uploaded Artifacts vs Workspace Files
 
@@ -173,6 +199,13 @@ Use `type: "artifact"`, `provider: "paperclip"`, and metadata containing the
 uploaded `attachmentId`. The server canonicalizes `contentType`, `byteSize`,
 `contentPath`, `openPath`, `downloadPath`, and `originalFilename`.
 
+The optional `executionWorkspaceId` on work-product create and update requests
+must identify an execution workspace in the same company. A project workspace
+ID is a different identifier and cannot be used here. Omit the field when no
+execution workspace is available, or send `null` to clear an existing link.
+Invalid references return `422` without changing the work product or the current
+primary product.
+
 ## Verification
 
 The file-delivery integration suite runs the real helper through queue and
@@ -193,3 +226,27 @@ PAPERCLIP_FILE_DELIVERY_DAYTONA=1 pnpm exec vitest run server/src/__tests__/file
 
 The live fixture deletes each sandbox before checking that its attachments
 remain downloadable from Paperclip. It does not run unless explicitly enabled.
+
+## Text attachment previews
+
+In the task chat layout, select a text attachment in Artifacts, a work-product
+card, or a chat attachment chip to open a named right-side tab. Reopening the
+same attachment focuses its existing tab. Tabs can be switched and closed.
+On mobile, the same viewer opens in the task details drawer.
+
+Markdown work products keep their expandable review document, annotations,
+revision indicator, and document links. **Open in tab** is a separate action.
+Work-product cards keep **Download** as a direct original-file download.
+Text file cards provide **Open in tab** beside their existing actions. CSV cards
+keep this action before and after loading their data preview.
+
+Markdown attachments offer **Rendered** and **Raw** views. Other supported text
+files display literal text. Image references and diagram source remain inert;
+opening a preview does not load attachment-selected media URLs. The viewer
+provides a download action. Preview reads
+are limited to 512 KiB; oversized, unsupported, or unavailable files show an
+explicit fallback instead of attempting an unbounded render. A failed read can
+be retried. Workspace files continue to use the existing workspace file viewer.
+
+Storybook: **Tasks / Text file tabs** covers opening from Artifacts, Markdown,
+plain text, empty files, oversized files, missing attachments, and a narrow panel.

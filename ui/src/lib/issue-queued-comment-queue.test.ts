@@ -119,6 +119,18 @@ describe("normalizeIssueQueuedCommentQueue", () => {
     });
   });
 
+  it("keeps native steering while an empty queue snapshot predates the submitted message", () => {
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      protocol: "legacy", entries: [],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({
+      issueId: "issue-1", authoritativeQueue,
+      pendingComments: [{ comment: comment("optimistic-1", "Use the new model next turn"), targetRunId: "run-native" }],
+      fallbackProtocol: "paperclip_runner_v1",
+    });
+    expect(queue).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+  });
+
   it("deduplicates acknowledged entries and restores the authoritative queue identity", () => {
     const pending = comment("comment-1", "Use three seconds instead");
     const authoritativeQueue = normalizeIssueQueuedCommentQueue(

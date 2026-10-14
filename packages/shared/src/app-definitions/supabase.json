@@ -25,7 +25,22 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.supabase.com/mcp"
+        "serverUrl": "https://mcp.supabase.com/mcp",
+        "scopesHint": [
+          "organizations:read",
+          "projects:read",
+          "projects:write",
+          "database:write",
+          "database:read",
+          "analytics:read",
+          "secrets:read",
+          "edge_functions:read",
+          "edge_functions:write",
+          "environment:read",
+          "environment:write",
+          "storage:read",
+          "storage:write"
+        ]
       },
       "guidanceMd": "Connect Supabase in the browser and scope the connection to one development project. Write tools start enabled and remain governed by Paperclip's action policies.",
       "riskTier": "S4",
@@ -60,7 +75,8 @@
             "location": "query",
             "name": "read_only",
             "format": "boolean"
-          }
+          },
+          "advanced": true
         },
         {
           "key": "features",
@@ -101,7 +117,8 @@
           "type": "password",
           "required": true,
           "placeholder": "sbp_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -140,7 +157,8 @@
             "location": "query",
             "name": "read_only",
             "format": "boolean"
-          }
+          },
+          "advanced": true
         },
         {
           "key": "features",

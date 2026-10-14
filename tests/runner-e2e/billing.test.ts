@@ -1,3 +1,4 @@
+import { reserveCompletionQuality } from "./completion-quality.js";
 import { describe, expect, it } from "vitest";
 import {
   aggregateCampaignBilling,
@@ -28,6 +29,15 @@ function result(overrides: Partial<RunnerE2EResult> = {}): RunnerE2EResult {
 }
 
 describe("runner E2E billing summaries", () => {
+  it("counts completion judge reservations and preserves unknown spend after interruption", () => {
+    const pending = { ...reserveCompletionQuality({ sourceId: "chat", marker: "x", worker: { id: "task", status: "done", completedAt: "2026-09-01" }, documents: [{ id: "doc", issueId: "task", body: "result" }], comments: [{ id: "reply", issueId: "chat", authorAgentId: "agent", createdAt: "2026-09-02", body: "ready" }], runs: [] }, 0.5), name: "completion", expectedPass: true };
+    const unknown = summarizeExecutionBilling(result({ completionQuality: [pending] }));
+    expect(unknown.judge?.reservedCostUsd).toBe(pending.reservedCostUsd);
+    expect(unknown.observedAndEstimatedCostUsd).toBeNull();
+    expect(unknown.complete).toBe(false);
+    const known = summarizeExecutionBilling(result({ completionQuality: [{ ...pending, status: "completed", inputTokens: 100, outputTokens: 50, estimatedCostUsd: 0.001 }] }));
+    expect(known.judge).toMatchObject({ inputTokens: 100, outputTokens: 50, estimatedCostUsd: 0.001 });
+  });
   it("summarizes provider-reported token usage and cost", () => {
     const billing = summarizeExecutionBilling(
       result({

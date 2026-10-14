@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
@@ -67,6 +67,22 @@ describe("decideQueuedCommentQueueSteering", () => {
 
     expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1" });
   });
+
+  it("keeps a preparing Paperclip Runner on the steering protocol until runtime selection finishes", () => {
+    expect(decideQueuedCommentQueueSteering({ state: "deferred", queueRunRuntimeMode: null,
+      activeRun: { id: "preparing-run", runtimeMode: "legacy", runtimeModeResolvedAt: null,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } },
+      assignedAgentAdapterType: "paperclip_runner", queuedCommentCount: 1,
+    })).toEqual({ protocol: "paperclip_runner_v1", kind: "temporarily_unavailable" });
+  });
+
+  it("preserves the historical adapter when mutable agent settings change", () => {
+    expect(decideQueuedCommentQueueSteering({ state: "deferred", queueRunRuntimeMode: null,
+      activeRun: { id: "legacy-run", runtimeMode: "legacy", runtimeModeResolvedAt: null,
+        runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } },
+      assignedAgentAdapterType: "paperclip_runner", queuedCommentCount: 1,
+    })).toEqual({ protocol: "legacy", kind: "unsupported" });
+  });
 });
 
 describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
@@ -113,5 +129,36 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
 
     expect(queue.entries[0]?.canEdit).toBe(false);
     expect(queue.entries[0]?.canDiscard).toBe(false);
+  });
+});
+
+describe("withQueuedCommentIdsInRunContext", () => {
+  it("invalidates every generated task projection and ownership metadata", () => {
+    const result = withQueuedCommentIdsInRunContext({
+      issueId: "issue-1",
+      preserved: "keep",
+      paperclipWake: { comments: [{ id: "comment-1" }] },
+      paperclipWakeComment: { id: "comment-1" },
+      paperclipTaskMarkdown: "historical",
+      paperclipTaskMarkdownCompact: "historical compact",
+      paperclipTaskMarkdownAssignment: "assignment",
+      paperclipTaskMarkdownAssignmentCompact: "assignment compact",
+      paperclipTurnContext: { version: 1, events: { owner: "wake_prompt" } },
+    }, ["comment-2"]);
+
+    expect(result).toMatchObject({
+      issueId: "issue-1",
+      preserved: "keep",
+      wakeCommentIds: ["comment-2"],
+      wakeCommentId: "comment-2",
+      commentId: "comment-2",
+    });
+    expect(result).not.toHaveProperty("paperclipWake");
+    expect(result).not.toHaveProperty("paperclipWakeComment");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdown");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownCompact");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignment");
+    expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
+    expect(result).not.toHaveProperty("paperclipTurnContext");
   });
 });

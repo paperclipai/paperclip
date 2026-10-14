@@ -1,14 +1,30 @@
+import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
+import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { parseObject } from "../adapters/utils.js";
+import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
+import { executionWorkspaceRepositoryService, lockExecutionWorkspaceRootProvenance, preserveExecutionWorkspaceRootProvenance, assertExecutionWorkspaceRootWriteAccess, assertExecutionWorkspaceRootReadAccess, assertIsolatedWorkspaceSourceReadAccess, retainIsolatedWorkspaceSourceAccess, canonicalRepositoryRoot, type IsolatedWorkspaceSourceAccess, type TaskWorkspaceCreationTrustContext } from "./execution-workspace-repositories.js";
+import { forbidden } from "../errors.js";
+import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
+import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import type { SQL } from "drizzle-orm";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
+  agents,
   heartbeatRuns,
+  nativeRunFinalizations,
+  environmentLeases,
+  workspaceOperations,
   issueComments,
   issueWorkProducts,
   issues,
@@ -42,7 +58,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
-import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy, gateProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings, resolveExecutionWorkspaceMode, parseIssueAssigneeAdapterOverrides, applyDefaultIsolatedExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -62,6 +78,10 @@ import {
   listCurrentRuntimeServicesForProjectWorkspaces,
   selectConfiguredRuntimeServiceRows,
 } from "./workspace-runtime-read-model.js";
+
+export type TaskWorkspaceBindingPatch = Partial<Pick<typeof issues.$inferInsert,
+  "executionWorkspaceId" | "projectWorkspaceId" | "executionWorkspacePreference" | "executionWorkspaceSettings"
+>>;
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -214,6 +234,36 @@ async function acquireExecutionWorkspaceLifecycleLock(
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
   );
+}
+
+const workspaceSourceKeys = ["cwd", "projectId", "projectWorkspaceId", "sourceIssueId"] as const;
+
+async function preserveWorkspaceOwnershipForPatch(
+  tx: DbTransaction, current: typeof executionWorkspaces.$inferSelect, patch: Partial<typeof executionWorkspaces.$inferInsert>,
+) {
+  if (workspaceSourceKeys.some(key => patch[key] !== undefined && patch[key] !== current[key])) {
+    await preserveExecutionWorkspaceRootProvenance(tx, {
+      companyId: current.companyId, workspaceId: current.id, cwd: current.cwd,
+    });
+  }
+  const nextPatch = { ...patch };
+  const retainedSources = {
+    ...parseObject(parseObject(patch.metadata)._issuePrivacySources),
+    ...parseObject(current.metadata?._issuePrivacySources),
+  };
+  if (patch.sourceIssueId !== undefined && patch.sourceIssueId !== current.sourceIssueId && current.sourceIssueId) {
+    retainedSources[current.sourceIssueId] = true;
+  }
+  if (Object.keys(retainedSources).length > 0) {
+    nextPatch.metadata = {
+      ...(patch.metadata !== undefined ? patch.metadata ?? {} : current.metadata ?? {}),
+      _issuePrivacySources: retainedSources,
+    };
+  }
+  if (current.metadata?.[CONTROLLER_PROVISION_COPY_ONLY] === true) {
+    nextPatch.metadata = { ...(nextPatch.metadata ?? current.metadata), [CONTROLLER_PROVISION_COPY_ONLY]: true };
+  }
+  return nextPatch;
 }
 
 export type ReopenClosedIsolatedExecutionWorkspaceResult =
@@ -415,6 +465,9 @@ async function runExpensiveGitStatus(input: {
     operation: input.operation,
     fairnessKeys: input.fairnessKeys,
     cacheTtlMs: 0,
+    // Nested task worktrees can exceed the scheduler's 1 MiB default.
+    // Keep exact file counts for readiness and reconciliation checks.
+    maxStdoutBytes: 32 * 1024 * 1024,
   });
 }
 
@@ -1261,7 +1314,7 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
 }
 
 type WorkspaceOverviewPageRow = ExecutionWorkspaceRow & {
-  projectName: string;
+  projectName: string | null;
   projectWorkspaceMetadata: Record<string, unknown> | null;
 };
 
@@ -1271,7 +1324,269 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 
 const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
 
+async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
+  companyId: string; issueId: string; excludeRunId?: string;
+}) {
+  const rows = await tx.select({ finalization: nativeRunFinalizations, run: heartbeatRuns })
+    .from(nativeRunFinalizations).innerJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+    )).where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+      input.excludeRunId ? ne(nativeRunFinalizations.runId, input.excludeRunId) : undefined));
+  if (rows.length === 0) return false;
+  if (rows.some(({ finalization, run }) => finalization.leaseOwner ||
+      !["committed", "terminal_failure"].includes(finalization.phase) ||
+      !["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status))) return true;
+  const runIds = rows.map(({ run }) => run.id);
+  const [pendingLease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), inArray(environmentLeases.heartbeatRunId, runIds),
+    or(and(isNull(environmentLeases.releasedAt),
+        sql`not coalesce(${environmentLeases.status} = 'retained'
+          and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+          and ${environmentLeases.cleanupStatus} = 'success', false)`),
+      eq(environmentLeases.status, "pending_cleanup"), eq(environmentLeases.cleanupStatus, "failed"),
+      sql`${environmentLeases.metadata} ? 'nativeWorkspaceExportResume'`),
+  )).limit(1);
+  if (pendingLease) return true;
+  const operations = await tx.select({ runId: workspaceOperations.heartbeatRunId, status: workspaceOperations.status })
+    .from(workspaceOperations).where(and(eq(workspaceOperations.companyId, input.companyId),
+      inArray(workspaceOperations.heartbeatRunId, runIds), eq(workspaceOperations.phase, "workspace_finalize")))
+    .orderBy(desc(workspaceOperations.createdAt),
+      asc(sql`case when ${workspaceOperations.status} = 'succeeded' then 1 else 0 end`));
+  const latest = new Map<string, string>();
+  for (const operation of operations) {
+    if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
+  }
+  return rows.some(({ finalization, run }) => {
+    const status = latest.get(run.id);
+    if (status !== undefined) return status !== "succeeded";
+    return finalization.phase === "terminal_failure" && finalization.resultId !== null;
+  });
+}
+
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
+  async function resolveSourceWorkspaceStrategy(input: {
+    companyId: string; issueId?: string | null; assigneeAgentId?: string | null;
+    assigneeAdapterOverrides?: unknown; executionWorkspaceSettings?: unknown;
+    executionWorkspacePolicy: unknown; typedSelection?: boolean; projectId?: string | null; executionPolicy?: unknown;
+  }, reader: Db | DbTransaction = db) {
+    const [task] = input.issueId ? await reader.select().from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )) : [];
+    const assigneeAgentId = task ? task.assigneeAgentId : input.assigneeAgentId;
+    const [agent] = assigneeAgentId ? await reader.select({ adapterConfig: agents.adapterConfig, permissions: agents.permissions }).from(agents)
+      .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.companyId))) : [];
+    const overrides = assigneeAgentId ? parseIssueAssigneeAdapterOverrides(task ? task.assigneeAdapterOverrides : input.assigneeAdapterOverrides) : null;
+    const experimental = await instanceSettingsService(db).getExperimental();
+    const projectPolicy = applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(input.executionWorkspacePolicy), experimental.enableIsolatedWorkspaces),
+      defaultIsolatedWorkspacesEnabled: experimental.enableIsolatedWorkspaces && experimental.enableIsolatedWorkspacesByDefault,
+      hasProjectWorkspace: true,
+    });
+    const settingsEnabled = experimental.enableIsolatedWorkspaces || input.typedSelection || task?.workspaceSelection || task?.executionWorkspaceId;
+    const issueSettings = settingsEnabled ? parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings) : null;
+    const projectId = task ? task.projectId : input.projectId;
+    const [organization] = projectId ? await reader.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, input.companyId))) : [];
+    const trust = resolveCoreTrustPreset({ companyId: input.companyId, agent,
+      project: organization, workspaceSourceProject: { companyId: input.companyId, executionWorkspacePolicy: input.executionWorkspacePolicy },
+      issue: { companyId: input.companyId, executionPolicy: task ? task.executionPolicy : input.executionPolicy } });
+    if (trust.kind === "denied") throw forbidden(trust.detail);
+    const resolvedMode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null });
+    const mode = trust.kind === "low_trust_review" && resolvedMode === "shared_workspace" ? "isolated_workspace" : resolvedMode;
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: parseObject(agent?.adapterConfig), projectPolicy, issueSettings, mode,
+      legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null, adapterConfigOverrides: overrides?.adapterConfig });
+    return resolveEffectiveWorkspaceStrategyType(mode, config);
+  }
+
+  async function validateSelection(input: { taskCreation?: TaskWorkspaceCreationTrustContext; companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; assigneeAdapterOverrides?: unknown; projectId?: string | null; executionPolicy?: unknown; preserveImplicitDefaultSettings?: boolean }, reader: Db | DbTransaction = db) {
+    const selection = taskWorkspaceSelectionSchema.parse(input.selection);
+    if (selection.kind === "existing") {
+      const [workspace] = await reader.select().from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.id, selection.workspaceId), eq(executionWorkspaces.companyId, input.companyId),
+        taskWorkspaceSelectableCondition(),
+        await executionWorkspaceReadSqlCondition(reader, input.actor),
+      ));
+      if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
+      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId, parentIssueId: input.parentIssueId, assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId });
+      if (workspace.cwd) await assertExecutionWorkspaceRootWriteAccess(reader, {
+        companyId: input.companyId, cwd: workspace.cwd, sourceWorkspaceId: workspace.id, actor: input.actor, taskCreation: input.taskCreation,
+        issueId: input.issueId, parentIssueId: input.parentIssueId, assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId,
+      });
+      return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
+        executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
+    }
+    if (selection.kind === "configured_source") {
+      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
+        .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(
+          eq(projectWorkspaces.id, selection.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId),
+          await projectReadSqlCondition(reader, input.actor),
+        ));
+      if (!source) throw notFound("Workspace source is unavailable or inaccessible");
+      const mode = selection.mode === "shared" ? "shared_workspace" : "isolated_workspace";
+      let executionWorkspaceSettings: Record<string, unknown> = { mode };
+      if (input.preserveImplicitDefaultSettings) {
+        const [task] = input.issueId ? await reader.select({ settings: issues.executionWorkspaceSettings,
+          intent: issues.workspaceSelection }).from(issues).where(and(eq(issues.id, input.issueId),
+          eq(issues.companyId, input.companyId), await issueReadSqlCondition(reader, input.actor))) : [];
+        if (!task || !["project", "task_default"].includes(task.intent?.source ?? "")
+          || !isDeepStrictEqual(task.intent?.selection, selection)) throw conflict("Task workspace default changed");
+        executionWorkspaceSettings = { ...parseObject(task.settings), mode };
+      }
+      const strategy = await resolveSourceWorkspaceStrategy({ ...input, typedSelection: true,
+        executionWorkspaceSettings, executionWorkspacePolicy: source.executionWorkspacePolicy }, reader);
+      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, {
+        write: strategy !== "git_worktree",
+        issueId: input.issueId, parentIssueId: input.parentIssueId,
+        assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId,
+      });
+      return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
+        executionWorkspaceSettings };
+    }
+    return { executionWorkspaceId: null, projectWorkspaceId: null, executionWorkspacePreference: null,
+      executionWorkspaceSettings: { mode: "shared_workspace" } };
+  }
+
+  async function inspectTaskWorkspace(companyId: string, issueId: string, actor: AuthorizationActor) {
+    const [task] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), await issueReadSqlCondition(db, actor)));
+    if (!task) throw notFound("Task not found");
+    const [workspace] = task.executionWorkspaceId ? await db.select().from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.id, task.executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(db, actor))) : [];
+    if (task.executionWorkspaceId && !workspace) throw notFound("Workspace is unavailable or inaccessible");
+    if (workspace) await assertTaskWorkspaceAccess(db, actor, companyId, workspace.id);
+    return { issueId, bindingRevision: task.workspaceBindingRevision, selection: task.workspaceSelection,
+      pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null };
+  }
+
+  async function selectTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;
+    selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string }) {
+    return db.transaction(async tx => {
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+        await issueReadSqlCondition(tx, input.actor))).for("update");
+      if (!task) throw notFound("Task not found");
+      const decision = await authorizationService(tx).decide({ actor: input.actor, action: "issue:mutate", resource: {
+        type: "issue", companyId: task.companyId, issueId: task.id,
+        status: task.status, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId,
+      } });
+      if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
+      if (task.workspaceSelection?.request?.key === input.requestKey) {
+        if (task.workspaceSelection.request.expectedBindingRevision !== input.expectedBindingRevision ||
+            JSON.stringify(taskWorkspaceSelectionSchema.parse(task.workspaceSelection.selection)) !== JSON.stringify(taskWorkspaceSelectionSchema.parse(input.selection))) {
+          throw conflict("Workspace selection request key was already used for different intent");
+        }
+        return { kind: "applied" as const, bindingRevision: task.workspaceBindingRevision };
+      }
+      if (task.workspacePendingSelection?.requestKey === input.requestKey) {
+        if ((task.workspacePendingSelection.intent.request?.expectedBindingRevision ?? task.workspacePendingSelection.expectedBindingRevision) !== input.expectedBindingRevision ||
+            JSON.stringify(taskWorkspaceSelectionSchema.parse(task.workspacePendingSelection.intent.selection)) !== JSON.stringify(taskWorkspaceSelectionSchema.parse(input.selection))) {
+          throw conflict("Workspace selection request key was already used for different intent");
+        }
+        return { kind: "scheduled" as const, applies: "next_normal_admission" as const, bindingRevision: task.workspaceBindingRevision };
+      }
+      if (task.workspaceBindingRevision !== input.expectedBindingRevision) throw conflict("Task workspace binding changed; inspect it before selecting again");
+      await validateSelection(input, tx);
+      const intent: TaskWorkspaceIntent = { version: 1, request: { key: input.requestKey, expectedBindingRevision: input.expectedBindingRevision }, selection: input.selection, source: "explicit" };
+      const nextRevision = task.workspaceBindingRevision + 1;
+      await tx.update(issues).set({ workspaceBindingRevision: nextRevision,
+        workspacePendingSelection: { version: 1, requestKey: input.requestKey,
+          expectedBindingRevision: nextRevision, intent }, updatedAt: new Date() }).where(eq(issues.id, task.id));
+      return { kind: "scheduled" as const, applies: "next_normal_admission" as const, bindingRevision: nextRevision };
+    });
+  }
+
+  async function applyPendingTaskWorkspaceSelection(input: { companyId: string; issueId: string; runId: string; actor: AuthorizationActor }) {
+    return db.transaction(async tx => {
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+      if (!task?.workspacePendingSelection) return false;
+      const pending = task.workspacePendingSelection;
+      if (pending.expectedBindingRevision !== task.workspaceBindingRevision) throw conflict("Pending workspace selection is stale");
+      const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
+        or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+        eq(heartbeatRuns.status, "running"),
+      )).limit(1);
+      if (holder) throw conflict("Previous task run must finish persistence before changing its workspace");
+      const unsettled = await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId });
+      if (unsettled) throw conflict("Previous task run still owns workspace recovery; finish recovery before changing its workspace");
+      const patch = await validateSelection({ ...input, selection: pending.intent.selection }, tx);
+      await tx.update(issues).set({ ...patch, workspaceSelection: pending.intent, workspacePendingSelection: null,
+        workspaceBindingRevision: task.workspaceBindingRevision + 1, updatedAt: new Date() }).where(eq(issues.id, task.id));
+      return true;
+    });
+  }
+
+  async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
+    return db.transaction(async tx => {
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("no key update");
+      const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId))).for("no key update");
+      if (!task || !workspace) throw notFound("Task workspace unavailable");
+      await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata,
+        _issuePrivacySources: { ...(workspace.metadata?._issuePrivacySources as Record<string, unknown> ?? {}), [task.id]: true } } }).where(eq(executionWorkspaces.id, workspaceId));
+      const nextRevision = task.workspaceBindingRevision + (task.executionWorkspaceId === workspaceId ? 0 : 1);
+      const pending = task.workspacePendingSelection;
+      const pendingAfterFirstBinding = !task.executionWorkspaceId && pending?.expectedBindingRevision === task.workspaceBindingRevision
+        ? { ...pending, expectedBindingRevision: nextRevision }
+        : pending;
+      const [bound] = await tx.update(issues).set({ ...patch, executionWorkspaceId: workspaceId,
+        workspaceBindingRevision: nextRevision, workspacePendingSelection: pendingAfterFirstBinding, updatedAt: new Date() })
+        .where(eq(issues.id, issueId)).returning();
+      return bound;
+    });
+  }
+
+  async function assertTaskWorkspaceUpdateAccess(input: {
+    task: typeof issues.$inferSelect; actor: AuthorizationActor;
+  }, tx: DbTransaction) {
+    const { task, actor } = input;
+    if (task.executionWorkspaceId) {
+      await assertTaskWorkspaceAccess(tx, actor, task.companyId, task.executionWorkspaceId, { write: true, issueId: task.id });
+      return;
+    }
+    if (!task.projectWorkspaceId) return;
+    const [source] = await tx.select({ projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projectWorkspaces).innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+      .where(and(eq(projectWorkspaces.id, task.projectWorkspaceId), eq(projectWorkspaces.companyId, task.companyId),
+        await projectReadSqlCondition(tx, actor)));
+    if (!source) throw notFound("Workspace source is unavailable or inaccessible");
+    const strategy = await resolveSourceWorkspaceStrategy({ companyId: task.companyId, issueId: task.id,
+      executionWorkspaceSettings: task.executionWorkspaceSettings, executionWorkspacePolicy: source.executionWorkspacePolicy }, tx);
+    await assertTaskWorkspaceSourceProjectAccess(tx, actor, task.companyId, source.projectId, {
+      issueId: task.id, write: strategy !== "git_worktree",
+    });
+  }
+
+  async function prepareTaskWorkspaceUpdate(input: {
+    companyId: string; issueId: string; patch: TaskWorkspaceBindingPatch;
+  }, tx: DbTransaction) {
+    const [task] = await tx.select().from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )).for("no key update");
+    if (!task) throw notFound("Task not found");
+    const fields = ["executionWorkspaceId", "projectWorkspaceId", "executionWorkspacePreference", "executionWorkspaceSettings"] as const;
+    if (!fields.some(field => input.patch[field] !== undefined && !isDeepStrictEqual(input.patch[field], task[field]))) return {};
+    if (input.patch.projectWorkspaceId !== undefined && input.patch.projectWorkspaceId !== task.projectWorkspaceId &&
+        task.executionWorkspaceId && input.patch.executionWorkspaceId !== null) {
+      throw conflict("Task already has bound files; schedule a workspace selection or explicitly clear its binding when changing the source");
+    }
+    const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running"),
+      or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`,
+        task.executionRunId ? eq(heartbeatRuns.id, task.executionRunId) : undefined),
+    )).limit(1);
+    const unsettled = await hasPendingTaskWorkspaceRecovery(tx, input);
+    if (holder || unsettled) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
+    const [selectedWorkspace] = input.patch.executionWorkspaceId
+      ? await tx.select({ projectWorkspaceId: executionWorkspaces.projectWorkspaceId }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.id, input.patch.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId),
+      )).limit(1)
+      : [];
+    if (input.patch.executionWorkspaceId && !selectedWorkspace) throw notFound("Execution workspace not found");
+    return { workspaceBindingRevision: task.workspaceBindingRevision + 1,
+      workspacePendingSelection: null, workspaceSelection: null,
+      ...(selectedWorkspace ? { projectWorkspaceId: selectedWorkspace.projectWorkspaceId } : {}) };
+  }
+
   const inspectDisplay = opts.inspectGitCloseReadiness
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
     : inspectGitForDisplay;
@@ -1719,7 +2034,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       db
         .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
-        .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
+        .where(and(eq(projects.companyId, workspace.companyId), workspace.projectId ? eq(projects.id, workspace.projectId) : sql`false`))
         .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
     ]);
     const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
@@ -1829,9 +2144,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
+      readCondition?: SQL<boolean>;
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
+    if (filters?.readCondition) conditions.push(filters.readCondition);
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -1842,6 +2160,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
     }
+    if (filters?.selectableForTask) conditions.push(taskWorkspaceSelectableCondition());
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
       conditions.push(isNull(executionWorkspaces.closedAt));
@@ -1863,18 +2182,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   return {
+    requestTaskRepository: executionWorkspaceRepositoryService(db).request,
+    listTaskRepositories: executionWorkspaceRepositoryService(db).list,
+    prepareTaskRepositoriesForAdmission: executionWorkspaceRepositoryService(db).prepareForAdmission,
+    guardTaskRepositoryRootForPublication: executionWorkspaceRepositoryService(db).guardForPublication,
+    prepareConfiguredRepositorySource: executionWorkspaceRepositoryService(db).prepareConfiguredRepositorySource,
+    reserveTaskRepositoryRootForRecovery: executionWorkspaceRepositoryService(db).reserveForRecovery,
+    resolveSourceWorkspaceStrategy, validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
+      readCondition?: SQL<boolean>,
     ): Promise<WorkspaceOverviewResponse> => {
       const conditions = buildOverviewConditions(companyId, filters);
-      const whereClause = and(...conditions);
+      if (readCondition) conditions.push(readCondition);
+      const whereClause = and(...conditions, sql`(${executionWorkspaces.projectId} IS NULL OR ${projects.id} IS NOT NULL)`);
 
       const [totalRow, rows] = await Promise.all([
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(executionWorkspaces)
-          .innerJoin(
+          .leftJoin(
             projects,
             and(
               eq(projects.id, executionWorkspaces.projectId),
@@ -1913,7 +2241,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             projectWorkspaceMetadata: projectWorkspaces.metadata,
           })
           .from(executionWorkspaces)
-          .innerJoin(
+          .leftJoin(
             projects,
             and(
               eq(projects.id, executionWorkspaces.projectId),
@@ -2034,7 +2362,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           workspaceId: row.id,
           workspaceName: row.name,
           projectId: row.projectId,
-          projectUrlKey: deriveProjectUrlKey(row.projectName, row.projectId),
+          projectUrlKey: row.projectId && row.projectName ? deriveProjectUrlKey(row.projectName, row.projectId) : null,
           projectName: row.projectName,
           mode: row.mode as WorkspaceOverviewItem["mode"],
           strategyType: row.strategyType as WorkspaceOverviewItem["strategyType"],
@@ -2078,6 +2406,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
+      readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db
@@ -2104,6 +2434,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
+      readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db
@@ -2890,52 +3222,148 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      const row = await db
-        .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
+      if (patch.metadata === undefined && !workspaceSourceKeys.some(key => patch[key] !== undefined)) {
+        const row = await db.update(executionWorkspaces).set({ ...patch, updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, id)).returning().then(rows => rows[0] ?? null);
+        return row ? toExecutionWorkspace(row) : null;
+      }
+      const [identity] = await db.select({ companyId: executionWorkspaces.companyId }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id));
+      if (!identity) return null;
+      return db.transaction(async tx => {
+        await lockExecutionWorkspaceRootProvenance(tx, identity.companyId);
+        const [current] = await tx.select().from(executionWorkspaces).where(and(
+          eq(executionWorkspaces.id, id), eq(executionWorkspaces.companyId, identity.companyId),
+        )).for("no key update");
+        if (!current) return null;
+        const nextPatch = await preserveWorkspaceOwnershipForPatch(tx, current, patch);
+        const [row] = await tx.update(executionWorkspaces).set({ ...nextPatch, updatedAt: new Date() })
+          .where(and(eq(executionWorkspaces.id, id), eq(executionWorkspaces.companyId, current.companyId))).returning();
+        return row ? toExecutionWorkspace(row) : null;
+      });
     },
 
     // Reopen one closed isolated execution workspace so an authorized issue can
     // use it again. The caller must first authorize the request on the issue.
-    // The whole operation runs under the per-workspace lifecycle lock: it reads
-    // the row in the issue scope, rebuilds the worktree, and only then publishes
-    // the row as "active". A rebuild failure keeps the row closed and returns an
-    // error, so the caller never dispatches a run against a broken workspace.
     reopenClosedIsolatedExecutionWorkspaceForIssue: async (input: {
       workspaceId: string;
       issue: { id: string; companyId: string; projectId: string | null };
       actor: { agentId: string | null; actorType: string };
+      authorizationActor: AuthorizationActor;
     }): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
       const { issue, actor } = input;
-      // Bind the workspace to the issue company and project. A null project on
-      // the issue must match a null project on the row (IS NOT DISTINCT FROM).
-      const projectIdCondition =
-        issue.projectId == null
-          ? sql`${executionWorkspaces.projectId} IS NULL`
-          : eq(executionWorkspaces.projectId, issue.projectId);
-
-      return db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+      const [boundSnapshot] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, issue.id), eq(issues.companyId, issue.companyId),
+        eq(issues.executionWorkspaceId, input.workspaceId),
+        await issueReadSqlCondition(db, input.authorizationActor),
+      ));
+      const snapshot = boundSnapshot ? await db.select().from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.id, input.workspaceId), eq(executionWorkspaces.companyId, issue.companyId),
+        eq(executionWorkspaces.mode, "isolated_workspace"),
+        await executionWorkspaceReadSqlCondition(db, input.authorizationActor),
+      )).then(rows => rows[0] ?? null) : null;
+      if (!snapshot) return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
+      await assertTaskWorkspaceAccess(db, input.authorizationActor, issue.companyId, snapshot.id);
+      const [
+        { ensurePersistedExecutionWorkspaceAvailable },
+        { workspaceOperationService },
+        { ensureManagedProjectWorkspace },
+      ] = await Promise.all([
+        import("./workspace-runtime.js"),
+        import("./workspace-operations.js"),
+        import("./heartbeat.js"),
+      ]);
+      const [projectWorkspace, projectPolicy] = await Promise.all([
+        snapshot.projectWorkspaceId
+          ? db
+              .select({ cwd: projectWorkspaces.cwd })
+              .from(projectWorkspaces)
+              .where(and(
+                eq(projectWorkspaces.companyId, snapshot.companyId),
+                eq(projectWorkspaces.id, snapshot.projectWorkspaceId),
+              ))
+              .then((rows) => rows[0] ?? null)
+          : null,
+        db
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(eq(projects.companyId, snapshot.companyId), snapshot.projectId ? eq(projects.id, snapshot.projectId) : sql`false`))
+          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+      ]);
+      let resolvedBaseCwd: string | null;
+      try { resolvedBaseCwd = await verifiedRecordedIsolatedRemoteSource(snapshot) ?? projectWorkspace?.cwd ?? null; }
+      catch { return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" }; }
+      if (isClosedExecutionWorkspaceStatus(snapshot.status) && resolvedBaseCwd == null && snapshot.strategyType === "git_worktree" && snapshot.projectId) {
+        try {
+          const managedWorkspace = await ensureManagedProjectWorkspace({
+            companyId: snapshot.companyId,
+            projectId: snapshot.projectId,
+            repoUrl: snapshot.repoUrl,
+            prepareLocalSource: async sourceCwd => {
+              const captured = await assertIsolatedWorkspaceSourceReadAccess(db, {
+                companyId: snapshot.companyId, sourceCwd, actor: input.authorizationActor, copyKind: "repository",
+              });
+              return targetCwd => retainIsolatedWorkspaceSourceAccess(db, {
+                companyId: snapshot.companyId, sourceCwd, targetCwd, actor: input.authorizationActor,
+                captured, issueId: issue.id, copyKind: "repository",
+              });
+            },
+            resolveGitAuth: createGitRemoteAuthProvider(db, snapshot.companyId, {
+              issueId: snapshot.sourceIssueId ?? issue.id,
+            }),
+          });
+          resolvedBaseCwd = managedWorkspace.cwd;
+        } catch {
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+      }
+      let capturedSource: IsolatedWorkspaceSourceAccess | null = null;
+      let authorizedTarget: string | null = null;
+      if (isClosedExecutionWorkspaceStatus(snapshot.status) && snapshot.strategyType === "git_worktree") {
+        try {
+          if (!resolvedBaseCwd || !(snapshot.providerRef ?? snapshot.cwd)) throw new Error("Missing workspace copy identity");
+          authorizedTarget = await canonicalRepositoryRoot(snapshot.providerRef ?? snapshot.cwd!);
+          if (snapshot.cwd && await canonicalRepositoryRoot(snapshot.cwd) !== authorizedTarget) {
+            throw new Error("Workspace checkout and provider roots disagree");
+          }
+          capturedSource = await assertIsolatedWorkspaceSourceReadAccess(db, {
+            companyId: snapshot.companyId, sourceCwd: resolvedBaseCwd, actor: input.authorizationActor,
+          });
+          await retainIsolatedWorkspaceSourceAccess(db, {
+            companyId: snapshot.companyId, sourceCwd: resolvedBaseCwd, targetCwd: authorizedTarget,
+            actor: input.authorizationActor, captured: capturedSource, issueId: issue.id, phase: "preparing",
+          });
+        } catch {
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+      }
+      const result = await db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
         await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+        const [boundTask] = await tx.select().from(issues).where(and(
+          eq(issues.id, issue.id), eq(issues.companyId, issue.companyId),
+          eq(issues.executionWorkspaceId, input.workspaceId),
+          await issueReadSqlCondition(tx, input.authorizationActor),
+        ));
+        if (!boundTask) return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         const row = await tx
           .select()
           .from(executionWorkspaces)
           .where(and(
             eq(executionWorkspaces.id, input.workspaceId),
             eq(executionWorkspaces.companyId, issue.companyId),
-            projectIdCondition,
+            await executionWorkspaceReadSqlCondition(tx, input.authorizationActor),
             eq(executionWorkspaces.mode, "isolated_workspace"),
           ))
           .then((rows) => rows[0] ?? null);
         if (!row) {
-          // Wrong company, wrong project, wrong mode, or missing. Fail closed and
           // disclose no workspace detail.
           return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         }
+        await assertTaskWorkspaceAccess(tx, input.authorizationActor, issue.companyId, row.id);
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
+          if (row.cwd) await assertExecutionWorkspaceRootReadAccess(tx, {
+            companyId: row.companyId, cwd: row.cwd, actor: input.authorizationActor,
+          });
           // A concurrent reopen already restored the row. Report success without a
           // second rebuild so the caller continues normally. The other request
           // owns the reopen-pending flag, so return its generation and let the
@@ -2948,53 +3376,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           };
         }
 
-        const [
-          { ensurePersistedExecutionWorkspaceAvailable },
-          { workspaceOperationService },
-          { ensureManagedProjectWorkspace },
-        ] = await Promise.all([
-          import("./workspace-runtime.js"),
-          import("./workspace-operations.js"),
-          // heartbeat.js imports this module, so a static import creates a
-          // cycle. Load ensureManagedProjectWorkspace dynamically instead.
-          import("./heartbeat.js"),
-        ]);
-        const [projectWorkspace, projectPolicy] = await Promise.all([
-          row.projectWorkspaceId
-            ? db
-                .select({ cwd: projectWorkspaces.cwd })
-                .from(projectWorkspaces)
-                .where(and(
-                  eq(projectWorkspaces.companyId, row.companyId),
-                  eq(projectWorkspaces.id, row.projectWorkspaceId),
-                ))
-                .then((rows) => rows[0] ?? null)
-            : null,
-          db
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
-            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
-        ]);
-        // Resolve the base checkout that the rebuild spawns git in. A
-        // local-folder project stores its base path in projectWorkspaces.cwd.
-        // A managed_checkout project stores null there, so resolve its live
-        // managed checkout instead. Never use row.cwd for a git_worktree
-        // rebuild: row.cwd is the archived worktree path, which the reaper
-        // already removed from disk. A spawn in that missing directory fails
-        // with "spawn git ENOENT" and hides the real cause.
-        let resolvedBaseCwd = projectWorkspace?.cwd ?? null;
-        if (resolvedBaseCwd == null && row.strategyType === "git_worktree" && row.projectId) {
-          const managedWorkspace = await ensureManagedProjectWorkspace({
-            companyId: row.companyId,
-            projectId: row.projectId,
-            repoUrl: row.repoUrl,
-            resolveGitAuth: createGitRemoteAuthProvider(db, row.companyId, {
-              issueId: row.sourceIssueId ?? issue.id,
-            }),
-          });
-          resolvedBaseCwd = managedWorkspace.cwd;
+        if (capturedSource && !["projectId", "projectWorkspaceId", "cwd", "providerRef", "repoUrl", "baseRef", "branchName", "strategyType", "mode", "metadata"]
+          .every(key => isDeepStrictEqual(row[key as keyof typeof row], snapshot[key as keyof typeof snapshot]))) {
+          return { ok: false, code: "not_reopenable", message: "Execution workspace source changed during reopen" };
         }
+        if (capturedSource && snapshot.projectWorkspaceId) {
+          const [currentSource] = await tx.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
+            .where(and(eq(projectWorkspaces.id, snapshot.projectWorkspaceId), eq(projectWorkspaces.companyId, snapshot.companyId)));
+          if (!isDeepStrictEqual(currentSource ?? null, projectWorkspace)) {
+            return { ok: false, code: "not_reopenable", message: "Execution workspace source changed during reopen" };
+          }
+        }
+        const verifyCopyIdentity = capturedSource && authorizedTarget ? async (sourceCwd: string, targetCwd: string) => {
+          if (!capturedSource!.roots.includes(await fs.realpath(sourceCwd))
+            || await canonicalRepositoryRoot(targetCwd) !== authorizedTarget) {
+            throw forbidden("Execution workspace copy identity changed during reopen");
+          }
+          for (const cwd of [...capturedSource!.roots, authorizedTarget!]) await assertExecutionWorkspaceRootReadAccess(tx, {
+            companyId: row.companyId, cwd, actor: input.authorizationActor,
+          });
+        } : undefined;
+
         const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
         const nextGeneration = readExecutionWorkspaceLifecycleGeneration(
           row.metadata as Record<string, unknown> | null,
@@ -3009,8 +3411,38 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
         let rebuildError: string | null = null;
         try {
+          const [assignee, organization, sourceProject] = await Promise.all([
+            boundTask.assigneeAgentId ? tx.select({ companyId: agents.companyId, permissions: agents.permissions }).from(agents)
+              .where(and(eq(agents.id, boundTask.assigneeAgentId), eq(agents.companyId, row.companyId)))
+              .then(rows => rows[0] ?? null) : null,
+            boundTask.projectId ? tx.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects)
+              .where(and(eq(projects.id, boundTask.projectId), eq(projects.companyId, row.companyId)))
+              .then(rows => rows[0] ?? null) : null,
+            row.projectId ? tx.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects)
+              .where(and(eq(projects.id, row.projectId), eq(projects.companyId, row.companyId)))
+              .then(rows => rows[0] ?? null) : row.projectWorkspaceId
+                ? tx.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+                  .from(projectWorkspaces).innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+                  .where(and(eq(projectWorkspaces.id, row.projectWorkspaceId), eq(projectWorkspaces.companyId, row.companyId), eq(projects.companyId, row.companyId)))
+                  .then(rows => rows[0] ?? null) : null,
+          ]);
+          if ((boundTask.assigneeAgentId && !assignee) || (boundTask.projectId && !organization)
+            || ((row.projectId || row.projectWorkspaceId) && !sourceProject)) {
+            throw forbidden("Execution workspace trust policy is unavailable");
+          }
+          const trust = resolveCoreTrustPreset({ companyId: row.companyId, agent: assignee, issue: boundTask,
+            project: organization, workspaceSourceProject: sourceProject });
+          if (trust.kind === "denied") throw forbidden(trust.detail);
+          const copyOnlyProvisioning = await workspaceRequiresCopyOnlyProvisioning(tx, {
+            companyId: row.companyId, task: boundTask, sourceProjectId: row.projectId,
+            sourceWorkspaceId: row.projectWorkspaceId, boundWorkspace: row,
+          });
+          if (copyOnlyProvisioning) nextMetadata[CONTROLLER_PROVISION_COPY_ONLY] = true;
           const realized = await ensurePersistedExecutionWorkspaceAvailable({
             db: tx as unknown as Db,
+            skipHostProvision: trust.kind === "low_trust_review" || copyOnlyProvisioning,
+            beforeSourceCopy: verifyCopyIdentity,
+            afterSourceCopy: verifyCopyIdentity,
             base: {
               baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
               source: "task_session",
@@ -3156,7 +3588,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           },
         });
         return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow), generation: nextGeneration };
+      }).catch((error): ReopenClosedIsolatedExecutionWorkspaceResult => {
+        logger.warn({ error, executionWorkspaceId: snapshot.id }, "Execution workspace reopen failed");
+        return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
       });
+      if (capturedSource && authorizedTarget && resolvedBaseCwd) {
+        try {
+          await retainIsolatedWorkspaceSourceAccess(db, {
+            companyId: snapshot.companyId, sourceCwd: resolvedBaseCwd, targetCwd: authorizedTarget,
+            actor: input.authorizationActor, captured: capturedSource, issueId: issue.id, phase: "verified",
+          });
+        } catch {
+          if (result.ok && result.reopened) {
+            await executionWorkspaceService(db).clearReopenPendingConsumptionForUnconsumedReopen({
+              workspaceId: snapshot.id, issue, actor, expectedGeneration: result.generation,
+            });
+          }
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+      }
+      return result;
     },
 
     // Clear the reopen-pending flag after a caller failed to consume a reopened
@@ -3253,12 +3704,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       | { outcome: "reopen_pending" }
       | null
     > => {
+      const [identity] = await db.select({ companyId: executionWorkspaces.companyId }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.id));
+      if (!identity) return null;
       return db.transaction(async (tx) => {
+        await lockExecutionWorkspaceRootProvenance(tx, identity.companyId);
         await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
         const fresh = await tx
           .select()
           .from(executionWorkspaces)
-          .where(eq(executionWorkspaces.id, input.id))
+          .where(and(eq(executionWorkspaces.id, input.id), eq(executionWorkspaces.companyId, identity.companyId)))
+          .for("no key update")
           .then((rows) => rows[0] ?? null);
         if (!fresh || isClosedExecutionWorkspaceStatus(fresh.status)) {
           // The row is missing or already closed by a concurrent path. Do not
@@ -3272,8 +3728,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // rebuilt worktree. The route maps this to HTTP 409.
           return { outcome: "reopen_pending" };
         }
+        const nextPatch = await preserveWorkspaceOwnershipForPatch(tx, fresh, input.patch);
         const baseMetadata =
-          (input.patch.metadata as Record<string, unknown> | null | undefined)
+          (nextPatch.metadata as Record<string, unknown> | null | undefined)
           ?? (fresh.metadata as Record<string, unknown> | null);
         const archiveMetadata = clearMetadataReopenPendingConsumption(
           bumpExecutionWorkspaceLifecycleGeneration(baseMetadata),
@@ -3281,7 +3738,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const archived = await tx
           .update(executionWorkspaces)
           .set({
-            ...input.patch,
+            ...nextPatch,
             status: "archived",
             closedAt: input.closedAt,
             cleanupReason: null,
@@ -3290,6 +3747,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           })
           .where(and(
             eq(executionWorkspaces.id, input.id),
+            eq(executionWorkspaces.companyId, fresh.companyId),
             // Defense in depth: never archive a reopen-pending row even if the
             // flag appears between the read above and this write. The lifecycle
             // lock already serializes reopen and archive, so this predicate only

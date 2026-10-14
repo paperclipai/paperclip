@@ -101,7 +101,9 @@ let NEXT_HMR_PORT: number;
  * must be read before that happens. Mirrors the default in
  * `resolvePaperclipHomeDir`.
  */
-const REAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
+const REAL_PAPERCLIP_HOME = process.env.PAPERCLIP_TEST_HOST_HOME?.trim()
+  || process.env.PAPERCLIP_HOME?.trim()
+  || path.join(os.homedir(), ".paperclip");
 
 /**
  * Every port a local Paperclip instance's on-disk service registry currently

@@ -183,6 +183,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       # Deployment tooling reads these labels from the registry to verify an
       # image's schema expectations against a migrator before deploying it,

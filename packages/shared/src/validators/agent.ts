@@ -1,10 +1,9 @@
 import { agentAppearanceSchema } from "../agent-appearance.js";
-import { aiConnectionBindingSchema } from "../ai-connections.js";
+import { aiRuntimeConnectionBindingSchema as aiConnectionBindingSchema } from "../ai-connection-router.js";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
-  AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -34,10 +33,18 @@ export const updateAgentInstructionsBundleSchema = z.object({
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
 
 export const upsertAgentInstructionsFileSchema = z.object({
-  path: z.string().trim().min(1),
-  content: z.string(),
+  path: z.string().min(1).max(512),
+  content: z.string().max(1024 * 1024),
+  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
-});
+}).strict();
+
+export const restoreAgentInstructionSchema = z.object({
+  path: z.string().min(1).max(512),
+  revisionId: z.string().uuid(),
+  baseRevisionId: z.string().uuid(),
+}).strict();
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
@@ -147,8 +154,8 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
-    status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
+    status: z.enum(["paused", "idle", "terminated"]).optional(),
+    spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -289,3 +296,9 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const resolveAgentInstructionCandidateSchema = z.object({
+  baseRevisionId: z.string().uuid().nullable(),
+  content: z.string().max(1024 * 1024),
+}).strict();
+export type ResolveAgentInstructionCandidate = z.infer<typeof resolveAgentInstructionCandidateSchema>;

@@ -1,3 +1,4 @@
+import { TaskVoiceLauncher } from "@/components/voice/TaskVoiceLauncher";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Paperclip, Radio } from "lucide-react";
@@ -17,8 +18,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
+import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
+import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
 import {
   boardSendDraftKey,
@@ -32,6 +34,7 @@ import {
 } from "./board-send-draft";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -109,44 +112,42 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 };
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
-  const { enabled } = useChatConnectorsEnabled();
-  const queryEnabled = enabled && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const { enabled, githubEnabled } = useChatConnectorsEnabled();
+  const queryEnabled = (enabled || githubEnabled) && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),
     enabled: queryEnabled,
   });
   return {
-    binding: queryEnabled ? (query.data ?? null) : null,
+    binding: queryEnabled && chatProviderVisible(query.data?.provider, enabled, githubEnabled) ? (query.data ?? null) : null,
     isLoading: queryEnabled && query.isLoading,
   };
 }
 
 type ConnectedTaskProps = {
+  className?: string;
   attachments?: IssueAttachment[];
   companyId: string;
   issueId: string;
   issueCacheRefs?: string[];
+  assigneeAgentId?: string | null;
 };
 
 export function ExternallyConnectedTaskBanner(props: ConnectedTaskProps) {
   const { binding } = useIssueChatBinding(props.companyId, props.issueId);
-  if (!binding || binding.provider === "agentmail") return null;
-  return (
-    <ConnectedTaskComposer
-      key={boardSendDraftKey(
-        props.companyId,
-        props.issueId,
-        binding.endpointId,
-        binding.conversationId,
-      )}
+  return <>
+    {binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
+      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId)}
       {...props}
       binding={binding}
-    />
-  );
+    />}
+    <TaskVoiceLauncher companyId={props.companyId} issueId={props.issueId} agentId={props.assigneeAgentId} boundEndpointId={binding?.provider === "speko" ? binding.endpointId : undefined} />
+  </>;
 }
 
 function ConnectedTaskComposer({
+  className,
   attachments = [],
   companyId,
   issueId,
@@ -485,7 +486,7 @@ function ConnectedTaskComposer({
   return (
     <section
       aria-label="External conversation"
-      className="space-y-3 rounded-lg border border-border bg-muted/40 p-3 text-sm"
+      className={cn("task-context-notice space-y-3", className)}
     >
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex min-w-0 flex-1 basis-64 items-center gap-3">
@@ -495,8 +496,9 @@ function ConnectedTaskComposer({
               Connected to {providerNames[binding.provider]}
             </p>
             <p className="truncate text-xs text-muted-foreground">
-              {binding.externalLabel} · Agent assignment is fixed for this
-              external task.
+              {binding.externalLabel} · {binding.provider === "slack"
+                ? "Messages you send here and agent replies are also posted to Slack."
+                : "Agent assignment is fixed for this external task."}
             </p>
           </div>
         </div>
@@ -825,7 +827,9 @@ function ConnectedTaskComposer({
           )}
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Ordinary board comments remain Paperclip-only.
+              {binding.provider === "slack"
+                ? "Your message is posted to Slack with your name and starts the agent."
+                : "Ordinary board comments remain Paperclip-only."}
             </p>
             <Button
               size="sm"

@@ -1,4 +1,5 @@
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
@@ -18,7 +19,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
-import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
@@ -411,6 +412,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         const referencedChildren = children.filter((child) => child.identifier !== null && references.includes(child.identifier));
         return referencedChildren.length === 1 && referencedChildren[0].status === "done";
       });
+    },
+
+    async isCompletedOnboardingHandoffWake(input) {
+      return isCompletedOnboardingHandoffWake(tx, input);
     },
 
     async reopenIssue({ companyId, issueId }) {
@@ -1099,7 +1104,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          legacyExecutionNeedsReconciliation: await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
@@ -1191,6 +1196,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
+        // Explicit retry admission requires the exact source's task claim.
+        // Preserve it only when the existing queue-first recovery policy
+        // requests that retry. The clear/restore stays inside this task lock.
+        if (run.runtimeMode === "legacy" && ["failed", "timed_out"].includes(run.status) &&
+            run.contextSnapshot?.explicitUserContinuation && issueRow.executionRunId === run.id &&
+            result.postCommitEffects.some(effect => effect.kind === "conversation_retry_requested" && effect.runId === run.id)) {
+          await tx.update(issues).set({ executionRunId: run.id,
+            executionAgentNameKey: issueRow.executionAgentNameKey,
+            executionLockedAt: issueRow.executionLockedAt,
+          }).where(and(eq(issues.companyId, input.companyId), eq(issues.id, issueRow.id),
+            sql`${issues.executionRunId} is null`));
+        }
         return { ...result, run: runSnapshot };
       });
     },

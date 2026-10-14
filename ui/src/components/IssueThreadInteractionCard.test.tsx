@@ -22,6 +22,7 @@ import {
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
   pendingRequestConfirmationInteraction,
+  pendingRequestCheckboxConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
   issueThreadInteractionFixtureMeta,
@@ -62,6 +63,15 @@ const connectionIntentsApiMocks = vi.hoisted(() => ({
   decline: vi.fn(),
 }));
 
+const routerMocks = vi.hoisted(() => ({
+  searchParams: new URLSearchParams(),
+  readSearchParams: vi.fn(),
+  setSearchParams: vi.fn(),
+  navigate: vi.fn(),
+  setBreadcrumbs: vi.fn(),
+  pushToast: vi.fn(),
+}));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function act(callback: () => void | Promise<void>) {
@@ -79,12 +89,37 @@ async function act(callback: () => void | Promise<void>) {
 }
 
 vi.mock("@/lib/router", () => ({
+  useParams: () => ({}),
+  useSearchParams: () => {
+    routerMocks.readSearchParams();
+    return [routerMocks.searchParams, routerMocks.setSearchParams];
+  },
+  useNavigate: () => routerMocks.navigate,
   Link: ({ to, children, className }: { to: string; children: ReactNode; className?: string }) => (
     <a href={to} className={className}>{children}</a>
   ),
 }));
 
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../context/CompanyContext")>(),
+  useCompany: () => ({ selectedCompanyId: issueThreadInteractionFixtureMeta.companyId, selectedCompany: null }),
+}));
+vi.mock("@/context/BreadcrumbContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../context/BreadcrumbContext")>(),
+  useBreadcrumbs: () => ({ setBreadcrumbs: routerMocks.setBreadcrumbs }),
+}));
+vi.mock("@/context/ToastContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../context/ToastContext")>(),
+  useToast: () => ({ pushToast: routerMocks.pushToast }),
+}));
+
 vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: connectionIntentsApiMocks }));
+
+vi.mock("./task-chat/TaskChatRichInput", () => ({
+  TaskChatRichInput: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
+    <textarea aria-label="Canonical answer" value={value} onChange={(event) => onChange(event.target.value)} />
+  ),
+}));
 
 function renderCard(
   props: Partial<ComponentProps<typeof IssueThreadInteractionCard>> = {},
@@ -121,9 +156,54 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+  localStorage.clear();
+  routerMocks.readSearchParams.mockClear();
 });
 
 describe("IssueThreadInteractionCard", () => {
+  const canonicalDraftInteraction = {
+    ...pendingAskUserQuestionsInteraction,
+    payload: {
+      ...pendingAskUserQuestionsInteraction.payload,
+      questions: [{ id: "draft", prompt: "Edit draft", required: true, selectionMode: "single" as const, options: [{ id: "draft_text", label: "Write an answer", freeText: true }], allowOther: false }],
+      questionSet: {
+        schema: "paperclip.question_set.v1" as const,
+        questions: [{ id: "draft", prompt: "Edit draft", required: true, answerMode: "text" as const, initialText: "  Provider draft\n漢字\\n  " }],
+      },
+    },
+  };
+
+  async function editCanonical(host: HTMLDivElement, value: string) {
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("presents canonical drafts and submits only explicitly edited exact text", async () => {
+    const submit = vi.fn();
+    const host = renderCard({ interaction: canonicalDraftInteraction, onSubmitInteractionAnswers: submit });
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("  Provider draft\n漢字\\n  ");
+    expect(submit).not.toHaveBeenCalled();
+    const edited = "\n  Operator edit 漢字\\n\n  ";
+    await editCanonical(host, edited);
+    await act(() => Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledExactlyOnceWith(canonicalDraftInteraction, [{ questionId: "draft", optionIds: [], otherText: edited }]);
+  });
+
+  it("keeps an explicit cleared canonical draft after reopening and requires an answer", async () => {
+    const submit = vi.fn();
+    const host = renderCard({ interaction: canonicalDraftInteraction, onSubmitInteractionAnswers: submit });
+    await editCanonical(host, "");
+    await act(() => root!.unmount());
+    host.remove();
+    const reopened = renderCard({ interaction: canonicalDraftInteraction, onSubmitInteractionAnswers: submit });
+    expect(reopened.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+    expect(Array.from(reopened.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it("opens the shared connection setup for the addressed user", async () => {
     connectionIntentsApiMocks.setupOptions.mockResolvedValue({ existingConnections: [] });
     const host = renderCard({
@@ -134,6 +214,10 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect");
     expect(host.textContent).toContain("Not now");
+    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
+    expect(labels).toContain("Connect");
+    expect(labels).toContain("Not now");
+    expect(host.textContent).toContain("Access is added only for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );
@@ -146,28 +230,30 @@ describe("IssueThreadInteractionCard", () => {
         "interaction-connection-intent-default",
       ),
     );
+    // setupOptions being called precedes React Query publishing its result.
+    // Wait for the real setup flow, not just the dialog's loading shell.
+    await vi.waitFor(async () => {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const setupDialog = document.body.querySelector('[role="dialog"]');
+      expect(setupDialog).toBeTruthy();
+      expect(setupDialog?.textContent).not.toContain("Loading connection options");
+      expect(routerMocks.readSearchParams).toHaveBeenCalled();
+    });
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog).toBeTruthy();
     expect(dialog?.textContent).toContain("Connect Notion");
     expect(dialog?.textContent).toContain("Complete connection setup without leaving this task.");
   });
 
-  it("keeps connection resolution controls exclusive to the addressed user", () => {
-    const host = renderCard({
-      interaction: pendingConnectionIntentInteraction,
-      currentUserId: "another-user",
-    });
-
-    expect(host.querySelector('[data-testid="connection-intent-waiting"]')).toBeTruthy();
-    expect(Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim())).not.toContain("Connect");
-    expect(host.textContent).not.toContain("Not now");
-  });
+  ;
 
   it("exposes pending question options as selectable radio and checkbox controls", () => {
     const host = renderCard({
       interaction: pendingAskUserQuestionsInteraction,
       onSubmitInteractionAnswers: vi.fn(),
     });
+
+    expect(host.childElementCount).toBeGreaterThan(0);
 
     const singleGroup = host.querySelector('[role="radiogroup"]');
     expect(singleGroup?.getAttribute("aria-labelledby")).toBe(
@@ -344,15 +430,7 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toBe("");
   });
 
-  it("still renders a legitimate ask_user_questions card", () => {
-    const host = renderCard({
-      interaction: pendingAskUserQuestionsInteraction,
-      onSubmitInteractionAnswers: vi.fn(),
-    });
-
-    expect(host.childElementCount).toBeGreaterThan(0);
-    expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
-  });
+  ;
 
   it("keeps a closed native select set closed while preserving direct-question defaults", () => {
     const closed = {
@@ -582,6 +660,26 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it.each([
+    pendingRequestConfirmationInteraction,
+    pendingRequestCheckboxConfirmationInteraction,
+    pendingSecretProposalInteraction,
+  ])("keeps $kind approval disabled while preparing without disabling rejection", async (fixture) => {
+    const onAcceptInteraction = vi.fn();
+    const host = renderCard({
+      interaction: { ...fixture, acceptanceBlocker: "workspace_sync_pending" },
+      onAcceptInteraction,
+      onRejectInteraction: vi.fn(),
+    });
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+    const approve = host.querySelector<HTMLButtonElement>('[data-testid="confirmation-actions"] button')!;
+    expect(approve.disabled).toBe(true);
+    await act(() => approve.click());
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    const reject = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["Reject", "Revise…", "Add reason…"].includes(button.textContent ?? ""));
+    expect(reject?.disabled).toBe(false);
+  });
+
   it("invokes the confirm callback with pending request confirmations", async () => {
     const onAcceptInteraction = vi.fn(async () => undefined);
     const host = renderCard({
@@ -763,7 +861,72 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("Plan v4");
     expect(targetLinks[0]?.getAttribute("href")).toContain("#document-plan");
     expect(targetLinks[1]?.getAttribute("href")).toContain("#document-plan");
+    expect(host.querySelector(".lucide-chevron-right")).not.toBeNull();
     expect(host.textContent).not.toContain("Approve plan");
+  });
+
+  describe("custom request confirmation targets", () => {
+    const prKey = (pull: number) => `github:paperclipai/paperclip-desktop:pull:${pull}`;
+    const unlabeled = (pull: number) => ({ type: "custom" as const, key: prKey(pull) });
+    const labeled = (pull: number) => ({
+      ...unlabeled(pull),
+      label: `PR #${pull}`,
+      href: `https://github.com/paperclipai/paperclip-desktop/pull/${pull}`,
+    });
+    const staleTargetChange = (
+      staleTarget: ReturnType<typeof unlabeled>,
+      target: ReturnType<typeof unlabeled>,
+    ) => ({
+      ...staleTargetRequestConfirmationInteraction,
+      payload: { ...staleTargetRequestConfirmationInteraction.payload, target },
+      result: { version: 1 as const, outcome: "stale_target" as const, staleTarget },
+    });
+
+    it("hides an unlabeled target key on a pending card", () => {
+      const host = renderCard({
+        interaction: {
+          ...pendingRequestConfirmationInteraction,
+          payload: { ...pendingRequestConfirmationInteraction.payload, target: unlabeled(16) },
+        },
+      });
+      expect(host.textContent).not.toContain("github:paperclipai");
+    });
+
+    it("links a labeled target on a pending card", () => {
+      const host = renderCard({
+        interaction: {
+          ...pendingRequestConfirmationInteraction,
+          payload: { ...pendingRequestConfirmationInteraction.payload, target: labeled(16) },
+        },
+      });
+      const link = host.querySelector(
+        'a[href="https://github.com/paperclipai/paperclip-desktop/pull/16"]',
+      );
+      expect(link?.textContent).toContain("PR #16");
+      expect(host.textContent).not.toContain("github:paperclipai");
+    });
+
+    it("shows no chips or chevron for an unlabeled stale-target change", () => {
+      const host = renderCard({ interaction: staleTargetChange(unlabeled(15), unlabeled(16)) });
+      expect(host.textContent).toContain("Expired by target change");
+      expect(host.textContent).not.toContain("github:paperclipai");
+      expect(host.querySelector(".lucide-chevron-right")).toBeNull();
+    });
+
+    it("links both labeled targets across a stale-target chevron", () => {
+      const host = renderCard({ interaction: staleTargetChange(labeled(15), labeled(16)) });
+      expect(host.textContent).toContain("PR #15");
+      expect(host.textContent).toContain("PR #16");
+      expect(host.textContent).not.toContain("github:paperclipai");
+      expect(host.querySelector(".lucide-chevron-right")).not.toBeNull();
+    });
+
+    it("drops the chevron when only one side of the stale-target change is labeled", () => {
+      const host = renderCard({ interaction: staleTargetChange(unlabeled(15), labeled(16)) });
+      expect(host.textContent).toContain("PR #16");
+      expect(host.textContent).not.toContain("github:paperclipai");
+      expect(host.querySelector(".lucide-chevron-right")).toBeNull();
+    });
   });
 
   it("renders a jump link for confirmations expired by comment", () => {
@@ -1415,17 +1578,7 @@ describe("IssueThreadInteractionCard connection-authorization card", () => {
 describe("IssueThreadInteractionCard connection-intent card", () => {
   const USER_LABELS = new Map([[issueThreadInteractionFixtureMeta.currentUserId, "Carol"]]);
 
-  it("offers the addressed user the shared setup entry point and Not now", () => {
-    const host = renderCard({
-      interaction: pendingConnectionIntentInteraction,
-      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
-    });
-    expect(host.querySelector('[data-testid="connection-intent-actions"]')).not.toBeNull();
-    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
-    expect(labels).toContain("Connect");
-    expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
-  });
+  ;
 
   it("shows another viewer only who it is waiting for", () => {
     const host = renderCard({
@@ -1438,6 +1591,7 @@ describe("IssueThreadInteractionCard connection-intent card", () => {
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeNull();
     expect(host.querySelectorAll("button")).toHaveLength(0);
     expect(host.innerHTML).not.toContain("authorizationUrl");
+    expect(host.textContent).not.toContain("Not now");
   });
 
   it("renders retry and connected terminal states without generic confirmation actions", () => {

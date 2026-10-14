@@ -1,0 +1,26 @@
+---
+description: Keep routine work in the harness and expose only useful product details.
+alwaysApply: true
+---
+
+# Let the harness handle routine work
+
+Applies to product design, implementation and review across UI, orchestration,
+setup, settings and user-facing errors.
+
+If the system knows the next step and can safely perform it under existing
+authority, the harness owns it.
+
+- Implement routine retries, reconnection, lease maintenance and finalization in
+  the owning service. Do not turn orchestration gaps into user checklists.
+- Each control and detail must enable a real decision, resolve uncertainty or help
+  use a result. Keep incidental internal states and identifiers out of default views.
+- Keep normal operation quiet. Show brief, contextual status only when useful,
+  backed by observed server state. Never hide blockers or imply progress that has
+  not occurred.
+- Do not ask task users to certify infrastructure facts.
+
+**Review:** Check that harness responsibility is implemented, visible details
+serve a purpose the user should affect.
+
+Apply this rule to changed flows; unrelated redesign is not required.

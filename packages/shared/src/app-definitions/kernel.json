@@ -25,7 +25,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.onkernel.com/mcp"
+        "serverUrl": "https://mcp.onkernel.com/mcp",
+        "scopesHint": [
+          "openid"
+        ]
       },
       "guidanceMd": "Connect Kernel in the browser. A Kernel account with either browser authorization or an API key.",
       "riskTier": "S3",
@@ -58,7 +61,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Kernel API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "Launch/manage browsers, profiles, apps and browser automation. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

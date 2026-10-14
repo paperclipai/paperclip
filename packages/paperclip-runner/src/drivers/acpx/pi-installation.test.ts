@@ -1,0 +1,204 @@
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { stripTypeScriptTypes } from "node:module";
+import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "./pi-closure-pins.js";
+import { PI_NODE_VERSION } from "./pi-node-pins.js";
+import { assertPiInstallationProfile, verifyPiInstallation } from "./pi-installation.js";
+import { QUALIFIED_ACPX_PROFILES, type AcpxReleaseProfile } from "./qualified-profiles.js";
+
+const roots: string[] = [];
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const candidate = (): AcpxReleaseProfile => ({ ...QUALIFIED_ACPX_PROFILES.pi });
+
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "pi-installation-test-")); roots.push(root);
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", root);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", join(root, "package.json"));
+  const assets = join(root, "provider-assets/pi", `${process.platform}-${process.arch}`);
+  await mkdir(join(assets, "runtime"), { recursive: true });
+  return { root, assets };
+}
+
+describe("Pi installation factory", () => {
+  it("preserves profile 13 and changes only the version and corrected ACPX patch binding", async () => {
+    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v13-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v14-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort()).toEqual(["acpxPatchSha256", "agentProfileVersion"]);
+  });
+
+  it("preserves profile 14 and binds the method-specific question extension in profile 15", async () => {
+    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v14-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v15-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "closure", "extensionSha256", "nativeQuestions"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("preserves profile 16 and changes only the provider credential policy in profile 17", async () => {
+    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v16-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v17-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "providerConfigurationSourceSha256"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("preserves profile 17 and binds acknowledged cancellation in profile 18", async () => {
+    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v17-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v18-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "closure", "helperSha256", "nativeCancellation", "wrapperSha256"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("preserves profile 18 and binds root question field types in profile 19", async () => {
+    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v18-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v19-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "closure", "extensionSha256", "nativeQuestions"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("revises only the shared Codex environment attestation while preserving Pi runtime bytes", async () => {
+    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
+    const prior = await read(19), current = await read(20);
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "runtimeSandboxSourceSha256"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("preserves profile 20 and binds only the configured environment and fixed dependency payload", async () => {
+    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
+    const prior = await read(20), current = await read(21);
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "closure", "credentialEnvironmentSourceSha256", "dependencySecurityPatchSha256"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("preserves profile 21 and binds the restriction on general IAM credentials", async () => {
+    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
+    const prior = await read(21), current = await read(22);
+    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
+      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256", "providerConfigurationSourceSha256"]);
+    expect(current.commandDigest).not.toBe(prior.commandDigest);
+  });
+
+  it("binds the profile declaration to the reviewed patch and platform closure pins", async () => {
+    const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+    const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
+    const identity = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v22-identity.json", import.meta.url), "utf8"));
+    const declaration = identity.declaration;
+    expect(declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");
+    expect(identity.commandDigest).toBe(`sha256:${hash(canonical(declaration))}`);
+    expect(QUALIFIED_ACPX_PROFILES.pi.commandDigest).toBe(identity.commandDigest);
+    for (const key of ["agent", "agentProfileVersion", "acpxVersion", "agentServerVersion", "agentRuntimeVersion"] as const) {
+      expect(declaration[key]).toBe(QUALIFIED_ACPX_PROFILES.pi[key]);
+    }
+    expect(declaration.closure).toEqual(PI_DISTRIBUTION_CLOSURE_SHA256);
+    expect(hash(await readFile(new URL("../../../../../patches/brace-expansion@5.0.9.patch", import.meta.url)))).toBe(declaration.dependencySecurityPatchSha256);
+    expect(declaration.nodeVersion).toBe(PI_NODE_VERSION);
+    for (const [path, field] of [["pi-provider-config.ts", "providerConfigurationSourceSha256"], ["environment.ts", "credentialEnvironmentSourceSha256"], ["runtime-sandbox.ts", "runtimeSandboxSourceSha256"], ["recovery-identity.ts", "recoveryIdentitySourceSha256"]]) {
+      expect(hash(await readFile(new URL(`./${path}`, import.meta.url)))).toBe(declaration[field!]);
+    }
+    expect(hash(await readFile(new URL("../../../../../patches/acpx@0.13.1.patch", import.meta.url)))).toBe(declaration.acpxPatchSha256);
+    expect(hash(await readFile(new URL("./pi-message-projection.ts", import.meta.url)))).toBe(declaration.messageProjectionSha256);
+    expect(hash(await readFile(new URL("./pi-extension-adapter.ts", import.meta.url)))).toBe(declaration.noticeProjectionSha256);
+    const helper = stripTypeScriptTypes(await readFile(new URL("./pi-acp-runtime.ts", import.meta.url), "utf8")).split("\n").map(line => line.trimEnd()).join("\n");
+    const extension = stripTypeScriptTypes(await readFile(new URL("./pi-runtime-extension.ts", import.meta.url), "utf8")).replace('from "./pi-acp-runtime.js"', 'from "../node_modules/pi-acp/dist/paperclip-runtime.js"');
+    expect(hash(helper)).toBe(declaration.helperSha256);
+    expect(hash(extension)).toBe(declaration.extensionSha256);
+    const materializer = await readFile(new URL("../../../scripts/materialize-pi-distribution.mjs", import.meta.url), "utf8");
+    expect(materializer).toContain(`wrapperSha256: "${declaration.wrapperSha256}"`);
+    expect(materializer).toContain(`helperSha256: "${declaration.helperSha256}"`);
+    // This exact patch produced the reviewed current wrapper/closure.
+    // Pin it separately so wrapper-only edits cannot keep an unchanged declaration.
+    expect(hash(await readFile(new URL("../../../../../patches/pi-acp@0.0.33.patch", import.meta.url)))).toBe("a7c63900b513490cceed9e41bc3bd06f03f2cd56265f434aa2c5dc7925fa76b4");
+  });
+
+  it("rejects legacy profiles and tampered executable identities", () => {
+    expect(() => assertPiInstallationProfile(candidate())).not.toThrow();
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 1 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 2 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 3 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 4 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 5 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 6 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 7 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 8 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 9 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 10 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 11 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 12 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 13 })).toThrow("version 22");
+    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 14 })).toThrow("version 22");
+    for (const priorVersion of [15, 16, 17, 18, 19, 20, 21]) expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: priorVersion })).toThrow("version 22");
+    for (const changed of [{ agentServerVersion: "latest" }, { commandDigest: `sha256:${"0".repeat(64)}` }, { agentRuntimePackage: "ambient-pi" }]) {
+      expect(() => assertPiInstallationProfile({ ...candidate(), ...changed })).toThrow("trusted declaration");
+    }
+  });
+  it("never takes closure authority from installed metadata", async () => {
+    const { assets } = await fixture();
+    await writeFile(join(assets, "pi-distribution.json"), JSON.stringify({
+      schema: "paperclip.pi-distribution.v1", runtimeRoot: "runtime", nativeClosureSha256: "0".repeat(64),
+      target: { platform: process.platform, architecture: process.arch, nodeVersion: "24.21.0" },
+      pins: { nodeVersion: "24.21.0", wrapper: "0.0.33", runtime: "1.0.0", sdk: "0.26.0", zod: "3.25.76" },
+    }));
+    await expect(verifyPiInstallation(candidate())).rejects.toThrow("trusted target pin");
+  });
+  it.runIf(process.env.PAPERCLIP_TEST_PI_DISTRIBUTION_ROOT)("launches the actual closed Pi snapshot with bound subprocess paths", async () => {
+    const { root, assets } = await fixture();
+    await cp(process.env.PAPERCLIP_TEST_PI_DISTRIBUTION_ROOT!, assets, { recursive: true });
+    const workspace = join(root, "workspace"); const agentHome = join(root, "agent");
+    await mkdir(workspace); await mkdir(agentHome);
+    const installation = await verifyPiInstallation(candidate());
+    const command = await installation.openCommand();
+    const child = command.spawn([], { cwd: workspace, env: {
+      PATH: "/usr/bin:/bin", HOME: agentHome, PI_CODING_AGENT_DIR: agentHome,
+      PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_PI_READ_ONLY: "1",
+      PAPERCLIP_PI_READ_ROOTS: "[]", PAPERCLIP_PI_PROTECTED_ROOTS: JSON.stringify([agentHome]),
+      PAPERCLIP_PI_ENTRYPOINT: "/unverified/ignored.js", PI_TELEMETRY: "0",
+    } });
+    let stderr = ""; child.stderr!.on("data", chunk => { stderr += String(chunk); });
+    const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+    const decoder = new StringDecoder("utf8"); let buffer = ""; let id = 0;
+    child.stdout!.on("data", chunk => {
+      buffer += decoder.write(chunk);
+      for (;;) {
+        const at = buffer.indexOf("\n"); if (at < 0) break;
+        const line = buffer.slice(0, at); buffer = buffer.slice(at + 1); if (!line.trim()) continue;
+        const value = JSON.parse(line); const waiter = pending.get(value.id);
+        if (waiter) { pending.delete(value.id); if (value.error) waiter.reject(new Error(JSON.stringify(value.error))); else waiter.resolve(value.result); }
+      }
+    });
+    child.once("exit", () => { for (const waiter of pending.values()) waiter.reject(new Error(`Pi exited: ${stderr}`)); pending.clear(); });
+    const call = (method: string, params: unknown) => new Promise<any>((resolve, reject) => {
+      const requestId = ++id;
+      const timer = setTimeout(() => reject(new Error(`Pi snapshot admission timed out: ${stderr}`)), 15_000);
+      pending.set(requestId, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
+      child.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params })}\n`);
+    });
+    try {
+      const initialized = await call("initialize", { protocolVersion: 1, clientCapabilities: { elicitation: { form: {} } } });
+      expect(initialized.agentCapabilities._meta.paperclipPi.steering).toBe(true);
+      expect(initialized.authMethods).toEqual([]);
+      await expect(call("session/new", { cwd: workspace, mcpServers: [] })).rejects.toThrow("Bind the configured OpenRouter API credential");
+    } finally {
+      child.stdin!.end();
+      if (child.exitCode === null) { const timer = setTimeout(() => child.kill("SIGKILL"), 3000); await once(child, "close"); clearTimeout(timer); }
+      await command.close();
+    }
+  }, 90_000);
+
+  it("refuses symlinked target assets and metadata", async () => {
+    const { root, assets } = await fixture();
+    await rm(assets, { recursive: true });
+    await symlink(root, assets);
+    await expect(verifyPiInstallation(candidate())).rejects.toThrow("fixed asset directory");
+  });
+});

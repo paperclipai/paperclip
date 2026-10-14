@@ -17,6 +17,8 @@ interface StatusIconProps {
   blockerAttention?: IssueBlockerAttention | null;
   onChange?: (status: string) => void;
   className?: string;
+  /** Optional layout wrapper around the glyph. Does not change glyph dimensions. */
+  glyphContainerClassName?: string;
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
@@ -76,14 +78,14 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
   const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
 
-  const glyph = (
+  const glyphIcon = (
     <StatusGlyph
       status={glyphStatus}
       size={size}
@@ -91,6 +93,11 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
       title={ariaLabel}
     />
   );
+  const glyph = glyphContainerClassName ? (
+    <span className={glyphContainerClassName} data-status-glyph-container="true">
+      {glyphIcon}
+    </span>
+  ) : glyphIcon;
 
   if (!onChange) {
     return showLabel ? (

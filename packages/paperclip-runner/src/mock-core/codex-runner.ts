@@ -114,12 +114,12 @@ function dispositionIssues(
   } else if (result.reportedWorkDisposition === "yielded") {
     if (
       result.blocker !== undefined ||
-      result.continuation?.kind !== "response_wake"
+      !["response_wake", "monitor"].includes(result.continuation?.kind ?? "")
     ) {
       issues.push({
         code: "invalid_disposition",
         path: "/reportedWorkDisposition",
-        message: "yielded requires a response_wake continuation and must not include a blocker",
+        message: "yielded requires a response_wake or monitor continuation and must not include a blocker",
       });
     }
   } else {

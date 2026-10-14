@@ -258,7 +258,7 @@ function resetInstalledExternalAdapterState() {
   setOverridePaused("claude_local", false);
 }
 
-describe.sequential("adapter management route authorization", () => {
+describe("adapter management route authorization", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/adapter-plugin-store.js");

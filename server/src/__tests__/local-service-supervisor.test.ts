@@ -31,6 +31,13 @@ describe("local service supervision", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `service-stdio-${randomUUID()}`;
 
+    // The managed service uses a login shell, whose PATH can select a different
+    // Node installation from the one CI configured for this test process.
+    // Git Bash accepts Windows drive paths with forward slashes.
+    const nodeExecutable = process.platform === "win32"
+      ? process.execPath.replace(/\\/g, "/")
+      : process.execPath;
+    const nodeCommand = "'" + nodeExecutable.replace(/'/g, "'\\''") + "'";
     let registryRecord: Awaited<ReturnType<typeof listLocalServiceRegistryRecords>>[number] | null = null;
     try {
       const [service] = await startRuntimeServicesForWorkspaceControl({
@@ -54,7 +61,7 @@ describe("local service supervision", () => {
           workspaceRuntime: {
             services: [{
               name: "web",
-              command: "command -v node; node --version; node -e \"const http=require('node:http'); console.log('fixture starting', process.execPath, process.env.PORT); process.on('SIGTERM',()=>{}); http.createServer((req,res)=>{ process.stdout.write('request '+req.url+'\\\\n',(error)=>{ if (!error) res.end('ok'); }); }).listen(Number(process.env.PORT), '127.0.0.1',()=>console.log('fixture listening', process.env.PORT))\"",
+              command: nodeCommand + " -e \"const http=require('node:http'); console.log('fixture starting', process.execPath, process.env.PORT); process.on('SIGTERM',()=>{}); http.createServer((req,res)=>{ process.stdout.write('request '+req.url+'\\\\n',(error)=>{ if (!error) res.end('ok'); }); }).listen(Number(process.env.PORT), '127.0.0.1',()=>console.log('fixture listening', process.env.PORT))\"",
               port: { type: "auto" },
               readiness: {
                 type: "http",
@@ -82,6 +89,7 @@ describe("local service supervision", () => {
       await expect(fetch(`${service!.url}/after-restart`)).resolves.toMatchObject({ ok: true });
       const log = await fs.readFile(resolveLocalServiceLogPath(registryRecord!.serviceKey), "utf8");
       expect(log).toContain("request /after-restart");
+      expect(log).toContain(process.execPath);
 
       await terminateLocalService(registryRecord!);
       expect(await readLocalServicePortOwner(service!.port!)).toBeNull();

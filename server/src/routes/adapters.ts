@@ -259,6 +259,7 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 
 export function adapterRoutes(options: {
   getNativeRunnerEnabled?: () => Promise<boolean>;
+  getOpenAiDotEnabled?: () => Promise<boolean>;
 } = {}) {
   const router = Router();
 
@@ -281,7 +282,10 @@ export function adapterRoutes(options: {
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
     const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
-    if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
+    const openAiDotEnabled = await options.getOpenAiDotEnabled?.().catch(() => false) ?? false;
+    // One shared implementation, with independent provider rollouts. Explicit
+    // adapter-admin disabling still applies to both choices.
+    if (!nativeRunnerEnabled && !openAiDotEnabled) disabledSet.add("paperclip_runner");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),

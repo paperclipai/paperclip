@@ -190,7 +190,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe.sequential("issue goal context routes", () => {
+describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -462,6 +462,9 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+    expect(res.body.taskQuestionContext).toEqual({
+      questions: [], truncated: false, guidance: expect.stringContaining("Historical questions remain answerable"),
+    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

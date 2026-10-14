@@ -374,9 +374,10 @@ describe("effective snapshot gates the persistent-session execution decision", (
 
   it("forces the persistent session when the snapshot grants persistent process sessions", async () => {
     const { target, execute } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
-    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true });
+    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true, commandTimeoutMs: 12000 });
     const call = execute.mock.calls[0]![0] as { forceSession?: boolean };
     expect(call.forceSession).toBe(true);
+    expect(call).toHaveProperty("commandTimeoutMs", 12000);
   });
 
   it("never forces the persistent session when the snapshot removes persistent process sessions", async () => {

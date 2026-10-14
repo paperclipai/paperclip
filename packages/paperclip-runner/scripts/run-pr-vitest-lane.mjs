@@ -15,10 +15,10 @@
 // Contract, mirrored in scripts/run-vitest-stable.mjs (prWorkflowName) and
 // pinned by scripts/__tests__/run-vitest-stable-shard.test.mjs:
 // - Only the PR workflow (pr.yml, whose GITHUB_WORKFLOW the reusable
-//   pr-trusted.yml jobs inherit) excludes the suite from the server shards,
-//   and only there does this wrapper run it. Any other caller — local runs,
-//   release-verify.yml — keeps the suite in the server group, so a renamed
-//   workflow degrades to the slower covered path instead of losing coverage.
+//   pr-trusted.yml jobs inherit) excludes these suites from the existing
+//   without-chat group, and only there does this wrapper run them. Other
+//   callers keep that group complete. Release verification instead selects
+//   an explicit partition and its own required cached native lane.
 // - The suite runs on the lane whose --shard=N/M has N === M (or an unsharded
 //   invocation), so exactly one PR lane carries it.
 import { spawnSync } from "node:child_process";

@@ -1,5 +1,6 @@
 import type {
   Project,
+  ProjectAccessMember,
   ProjectRepositoryOptions,
   ProjectWorkspace,
   WorkspaceOperation,
@@ -32,6 +33,17 @@ export const projectsApi = {
     api.post<Project>(`/companies/${companyId}/projects`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
+  listAccessMembers: (id: string, companyId?: string) =>
+    api.get<ProjectAccessMember[]>(projectPath(id, companyId, "/access-members")),
+  addAccessMember: (
+    id: string,
+    data: { subjectType: "user" | "agent"; subjectId: string },
+    companyId?: string,
+  ) => api.post<ProjectAccessMember>(projectPath(id, companyId, "/access-members"), data),
+  removeAccessMember: (id: string, memberId: string, companyId?: string) =>
+    api.delete<ProjectAccessMember>(
+      projectPath(id, companyId, `/access-members/${encodeURIComponent(memberId)}`),
+    ),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>

@@ -1,3 +1,4 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -81,6 +82,9 @@ export interface CommandManagedRuntimeRunner {
     env?: Record<string, string>;
     stdin?: string;
     timeoutMs?: number;
+    /** Optional execution deadline for a session command, separate from an
+     * individual provider observation timeout. Zero means no command deadline. */
+    commandTimeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     /**
@@ -538,12 +542,19 @@ export async function prepareCommandManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
@@ -559,6 +570,8 @@ export async function prepareCommandManagedRuntime(input: {
   // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
   // under the `stage.sync` step. The default is a no-op.
   runtimeSpan?: RuntimeSpanRunner;
+  /** Copy-back retry delays; pass `[]` for throwaway workspaces that must not wait on retries. */
+  workspaceRestoreRetryDelaysMs?: readonly number[];
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -570,7 +583,7 @@ export async function prepareCommandManagedRuntime(input: {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
     sandboxId: input.spec.leaseId ?? "managed",
-    remoteCwd: workspaceRemoteDir,
+    remoteCwd: input.spec.remoteCwd,
     timeoutMs,
     apiKey: null,
   };
@@ -603,18 +616,26 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
+          runtimeRootDir: input.runtimeRootDir,
           syncWorkspace: input.syncWorkspace,
           workspaceInboundMode: input.workspaceInboundMode,
           workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceCheckpoint: input.workspaceCheckpoint,
+          onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+          workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+          workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
           workspaceBaseline: input.workspaceBaseline,
           workspaceGitSnapshot: input.workspaceGitSnapshot,
+          workspaceRepositories: input.workspaceRepositories,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+          workspaceFileMode: input.workspaceFileMode,
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
           additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
           runtimeSpan: input.runtimeSpan,
+          workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
         });
       }
     }
@@ -646,17 +667,25 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
+    runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+    workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
     runtimeSpan: input.runtimeSpan,
+    workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
   });
 }

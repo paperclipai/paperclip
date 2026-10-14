@@ -37,6 +37,7 @@ import type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   PluginManagedAgentResolution,
@@ -143,6 +144,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   Agent,
@@ -406,8 +408,7 @@ export interface PluginExecutionWorkspaceMetadata {
   id: string;
   /** UUID of the owning company. */
   companyId: string;
-  /** UUID of the parent project. */
-  projectId: string;
+  projectId: string | null;
   /** UUID of the backing project workspace, when present. */
   projectWorkspaceId: string | null;
   /** Absolute filesystem path to the workspace when locally realized. */
@@ -544,6 +545,15 @@ export interface PluginLocalFoldersClient {
  * @see PLUGIN_SPEC.md §16 — Event System
  */
 export interface PluginEventsClient {
+  /** Read durable resource hooks. Requires events.subscribe and a company scope.
+   * Creation is delivered first, then the remaining events in id order.
+   * Prefer manifest resourceLifecycle + onResourceLifecycle for automatic delivery.
+   * Manual consumers page using afterId and restart pagination to revisit unacknowledged events.
+   * Events repeat until acknowledged; use a company-scoped provider idempotency key.
+   */
+  listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
+  /** Acknowledge only after the provider operation succeeds. */
+  acknowledgeLifecycle(companyId: string, eventId: string): Promise<void>;
   /**
    * Subscribe to a core Paperclip domain event or a plugin-namespaced event.
    *
@@ -579,6 +589,25 @@ export interface PluginEventsClient {
    * @param payload - JSON-serializable event payload
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
+}
+
+export type ResourceLifecycleEvent = {
+  id: string;
+  companyId: string;
+  resourceId: string;
+  createdAt: string;
+} & (
+  | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" | "delete" }
+);
+
+/** Return acknowledged only after durable effects finish. Retry unfinished work;
+ * defer when configuration is missing (replayed on configuration changes or startup).
+ * Both retry and deferred leave the event unacknowledged.
+ */
+export interface ResourceLifecycleResult {
+  eventId: string;
+  status: "acknowledged" | "retry" | "deferred";
 }
 
 /**
@@ -1544,7 +1573,7 @@ export interface PluginIssuesClient {
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,
-    interaction: CreateIssueThreadInteraction,
+    interaction: CreateIssueThreadInteractionInput,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueThreadInteraction>;
@@ -1556,7 +1585,7 @@ export interface PluginIssuesClient {
   ): Promise<SuggestTasksInteraction>;
   askUserQuestions(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "ask_user_questions" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<AskUserQuestionsInteraction>;

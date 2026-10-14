@@ -46,6 +46,55 @@ afterEach(async () => {
   await Promise.all(tempPaths.splice(0).map((tempPath) => fs.rm(tempPath, { recursive: true, force: true })));
 });
 
+it("streams with backpressure and waits for an active sink before releasing cancellation", async () => {
+  const workspace = await makeWorkspace();
+  const entered = deferred();
+  const release = deferred();
+  const scheduler = createWorkspaceGitOperationScheduler({
+    gitBinary: process.execPath,
+    gitArgsPrefix: ["-e", "process.stdout.write(Buffer.alloc(1024*1024)); setInterval(()=>{},1000)", "--"],
+    concurrency: 1,
+    killGraceMs: 10,
+  });
+  const controller = new AbortController();
+  let settled = false;
+  const pending = scheduler.run({
+    ...scanInput(workspace, "stream"), signal: controller.signal, maxStdoutBytes: 1,
+    onStdout: async (chunk) => {
+      expect(chunk.length).toBeLessThanOrEqual(64 * 1024);
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  const observed = pending.catch((error) => { settled = true; return error; });
+  await entered.promise;
+  controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(settled).toBe(false);
+  expect(scheduler.snapshot().activeCount).toBe(1);
+  release.resolve();
+  expect(await observed).toMatchObject({ code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled });
+  expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, inFlightCount: 0 });
+});
+
+it("does not coalesce or cache caller-owned streaming sinks and fails on a sink error", async () => {
+  const workspace = await makeWorkspace();
+  const scheduler = createWorkspaceGitOperationScheduler({
+    gitBinary: process.execPath, gitArgsPrefix: ["-e", "process.stdout.write('path\\0')", "--"], concurrency: 1,
+  });
+  const bytes = [0, 0];
+  await Promise.all(bytes.map((_, index) => scheduler.run({
+    ...scanInput(workspace, "same"), cacheTtlMs: 10000, maxStdoutBytes: 1,
+    onStdout: (chunk) => { bytes[index] += chunk.length; },
+  })));
+  expect(bytes).toEqual([5, 5]);
+  expect(scheduler.snapshot()).toMatchObject({ cacheEntryCount: 0, totals: { started: 2, singleFlightJoins: 0 } });
+  await expect(scheduler.run({
+    ...scanInput(workspace, "same"), onStdout: () => { throw new Error("disk full"); },
+  })).rejects.toMatchObject({ code: WORKSPACE_GIT_SCAN_ERROR_CODES.failed });
+  expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, inFlightCount: 0 });
+});
+
 describe("WorkspaceGitOperationScheduler", () => {
   it("loads bounded process defaults and overrides from the environment", () => {
     expect(workspaceGitSchedulerOptionsFromEnv({})).toEqual({

@@ -62,7 +62,10 @@ it("dispatch retains raw trust before workspace and broker setup", () => {
   const dispatch = heartbeat.slice(start, end);
   expect(start).toBeGreaterThan(0);
   expect(dispatch).toContain(
-    "executionWorkspacePolicy: projectContext.executionWorkspacePolicy",
+    "executionWorkspacePolicy: taskProjectContext.executionWorkspacePolicy",
+  );
+  expect(dispatch).toContain(
+    "executionWorkspacePolicy: workspaceProjectContext.executionWorkspacePolicy",
   );
   expect(dispatch).toContain(
     "context.executionPolicy = retainedTrust.executionPolicy",

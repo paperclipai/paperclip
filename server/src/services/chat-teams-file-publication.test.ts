@@ -29,7 +29,7 @@ const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = external
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
-const suite = support.supported ? describe.sequential : describe.skip;
+const suite = support.supported ? describe : describe.skip;
 suite("Teams same-transaction publication projection (real PostgreSQL)", () => {
   let db: ReturnType<typeof createDb>;
   let temporary:

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -57,9 +57,17 @@ pub enum AcpxProviderStateEvent {
         details: Value,
     },
     InputRequest {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
+    },
+    RuntimeRequestEnded {
+        tool_call_id: Option<String>,
+        request_id: String,
+        question_set: Option<Value>,
+        origin: Option<Value>,
+        status: AcpxTurnStatus,
     },
     SemanticResult(AcpxSemanticResult),
     AssistantMessage {
@@ -81,9 +89,11 @@ pub enum AcpxProviderStateEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 struct PendingInput {
+    tool_call_id: Option<String>,
     runtime_request_id: String,
     value_bytes: usize,
     question_set: Value,
+    origin: Option<Value>,
 }
 
 /// Reduces validated sidecar events into bounded provider state.
@@ -99,12 +109,15 @@ pub struct AcpxProviderState {
     plan_revision: u64,
     assistant_text: String,
     assistant_message_id: Option<String>,
+    pi_assistant_message: Option<String>,
+    pi_assistant_message_ids: BTreeSet<String>,
     pending_tools: BTreeMap<String, AcpxPendingTool>,
     pending_tool_input_bytes: usize,
-    pending_permissions: BTreeMap<String, usize>,
+    pending_permissions: BTreeMap<String, (usize, Value)>,
     pending_inputs: BTreeMap<String, PendingInput>,
     pending_runtime_request_bytes: usize,
     semantic_result: Option<AcpxSemanticResult>,
+    attempted_turn_controls: BTreeSet<String>,
 }
 
 impl AcpxProviderState {
@@ -115,12 +128,15 @@ impl AcpxProviderState {
             plan_revision: 0,
             assistant_text: String::new(),
             assistant_message_id: None,
+            pi_assistant_message: None,
+            pi_assistant_message_ids: BTreeSet::new(),
             pending_tools: BTreeMap::new(),
             pending_tool_input_bytes: 0,
             pending_permissions: BTreeMap::new(),
             pending_inputs: BTreeMap::new(),
             pending_runtime_request_bytes: 0,
             semantic_result: None,
+            attempted_turn_controls: BTreeSet::new(),
         })
     }
 
@@ -165,6 +181,28 @@ impl AcpxProviderState {
             || !self.pending_inputs.is_empty()
     }
 
+    pub(crate) fn reserve_turn_control(
+        &mut self,
+        turn_id: &str,
+        control_id: &str,
+    ) -> Result<(), LocalRunnerError> {
+        if self.active_turn_id() != Some(turn_id) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX turn control named a stale or inactive turn",
+            ));
+        }
+        if self.attempted_turn_controls.contains(control_id) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX turn control was already attempted",
+            ));
+        }
+        if self.attempted_turn_controls.len() >= 1024 {
+            return Err(LocalRunnerError::invalid("ACPX turn control limit reached"));
+        }
+        self.attempted_turn_controls.insert(control_id.to_owned());
+        Ok(())
+    }
+
     pub fn begin_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         if self.scope.active_turn_id().is_some()
             || !self.pending_tools.is_empty()
@@ -184,7 +222,10 @@ impl AcpxProviderState {
         self.plan_revision = 0;
         self.assistant_text.clear();
         self.assistant_message_id = None;
+        self.pi_assistant_message = None;
+        self.pi_assistant_message_ids.clear();
         self.semantic_result = None;
+        self.attempted_turn_controls.clear();
         Ok(())
     }
 
@@ -194,6 +235,16 @@ impl AcpxProviderState {
     ) -> Result<Vec<AcpxProviderStateEvent>, LocalRunnerError> {
         let payload = decode_acpx_event(&self.scope, event)?;
         match payload {
+            AcpxEventPayload::RichActivity {
+                event_type,
+                payload,
+            } => Ok(vec![AcpxProviderStateEvent::Activity(
+                NormalizedProviderEvent {
+                    event_type,
+                    priority: crate::durable::EventPriority::P1,
+                    payload,
+                },
+            )]),
             AcpxEventPayload::Runtime {
                 kind,
                 tool_operation,
@@ -224,7 +275,7 @@ impl AcpxProviderState {
                     ));
                 }
                 self.pending_permissions
-                    .insert(request_id.clone(), value_bytes);
+                    .insert(request_id.clone(), (value_bytes, details.clone()));
                 self.pending_runtime_request_bytes += value_bytes;
                 Ok(vec![AcpxProviderStateEvent::PermissionRequest {
                     request_id,
@@ -234,11 +285,14 @@ impl AcpxProviderState {
                 }])
             }
             AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id,
                 question_set,
                 origin,
             } => {
-                let value_bytes = value_bytes(&question_set)?;
+                let value_bytes = value_bytes(&question_set)?
+                    + tool_call_id.as_ref().map(|value| value.len()).unwrap_or(0)
+                    + origin.as_ref().map(value_bytes).transpose()?.unwrap_or(0);
                 self.admit_runtime_request(&request_id, value_bytes)?;
                 let runtime_request_id = project_acpx_runtime_request_id(&request_id)
                     .expect("a decoded ACPX input request has a bounded identity");
@@ -257,9 +311,11 @@ impl AcpxProviderState {
                     .insert(
                         request_id.clone(),
                         PendingInput {
+                            tool_call_id: tool_call_id.clone(),
                             runtime_request_id,
                             value_bytes,
                             question_set: question_set.clone(),
+                            origin: origin.clone(),
                         },
                     )
                     .is_some()
@@ -270,6 +326,7 @@ impl AcpxProviderState {
                 }
                 self.pending_runtime_request_bytes += value_bytes;
                 Ok(vec![AcpxProviderStateEvent::InputRequest {
+                    tool_call_id,
                     request_id,
                     question_set,
                     origin,
@@ -314,14 +371,20 @@ impl AcpxProviderState {
                 }])
             }
             AcpxEventPayload::TurnTerminal { status, error } => {
+                if status == AcpxTurnStatus::Completed && self.pi_assistant_message.is_some() {
+                    return Err(LocalRunnerError::invalid(
+                        "Pi assistant message ended without its native boundary",
+                    ));
+                }
                 let turn_id = event
                     .turn_id
                     .as_deref()
                     .expect("a decoded terminal event has a turn binding")
                     .to_owned();
                 self.scope.clear_turn(&turn_id)?;
-                self.clear_pending_requests();
-                let mut events = Vec::new();
+                let mut events = self.end_pending_runtime_requests(status);
+                // Dispatched semantic effects outlive the provider turn. Their
+                // authority results, not this terminal event, retire them.
                 if status == AcpxTurnStatus::Completed && !self.assistant_text.is_empty() {
                     events.push(AcpxProviderStateEvent::AssistantMessage {
                         turn_id: turn_id.clone(),
@@ -331,6 +394,8 @@ impl AcpxProviderState {
                     self.assistant_text.clear();
                 }
                 self.assistant_message_id = None;
+                self.pi_assistant_message = None;
+                self.pi_assistant_message_ids.clear();
                 events.push(AcpxProviderStateEvent::TurnTerminal {
                     turn_id,
                     status,
@@ -379,13 +444,19 @@ impl AcpxProviderState {
     }
 
     pub fn complete_permission(&mut self, request_id: &str) -> Result<(), LocalRunnerError> {
-        let value_bytes = self.pending_permissions.remove(request_id).ok_or_else(|| {
+        let (value_bytes, _) = self.pending_permissions.remove(request_id).ok_or_else(|| {
             LocalRunnerError::invalid("ACPX permission result has no pending request")
         })?;
         self.pending_runtime_request_bytes = self
             .pending_runtime_request_bytes
             .saturating_sub(value_bytes);
         Ok(())
+    }
+
+    pub fn pending_permission(&self, request_id: &str) -> Option<&Value> {
+        self.pending_permissions
+            .get(request_id)
+            .map(|(_, details)| details)
     }
 
     pub fn complete_input(&mut self, request_id: &str) -> Result<(), LocalRunnerError> {
@@ -445,7 +516,9 @@ impl AcpxProviderState {
         } else {
             None
         };
-        if kind == AcpxRuntimeEventKind::TextDelta {
+        if kind == AcpxRuntimeEventKind::TextDelta
+            && payload.get("piMessageHistory").and_then(Value::as_bool) != Some(true)
+        {
             let provider_message_id = payload
                 .get("messageId")
                 .and_then(Value::as_str)
@@ -460,12 +533,64 @@ impl AcpxProviderState {
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let mut native_boundary_clears = false;
+            if let Some(boundary) = payload.get("piMessageBoundary") {
+                let phase = boundary.get("phase").and_then(Value::as_str);
+                let reason = boundary.get("stopReason").and_then(Value::as_str);
+                if !raw_text.is_empty() || provider_message_id.is_none() {
+                    return Err(LocalRunnerError::invalid(
+                        "Pi assistant boundary contains invalid content or identity",
+                    ));
+                }
+                match phase {
+                    Some("start") if self.pi_assistant_message.is_none() && reason.is_none() => {
+                        if self.pi_assistant_message_ids.len() >= 4096
+                            || !self
+                                .pi_assistant_message_ids
+                                .insert(provider_message_id.clone().unwrap())
+                        {
+                            return Err(LocalRunnerError::invalid(
+                                "Pi assistant identity is duplicated or exceeds its bound",
+                            ));
+                        }
+                        self.pi_assistant_message = provider_message_id.clone();
+                        native_boundary_clears = true;
+                    }
+                    Some("end")
+                        if self.pi_assistant_message.is_some()
+                            && self.pi_assistant_message == provider_message_id =>
+                    {
+                        if !matches!(
+                            reason,
+                            Some("stop" | "length" | "toolUse" | "error" | "aborted")
+                        ) {
+                            return Err(LocalRunnerError::invalid(
+                                "Pi assistant stop reason is invalid",
+                            ));
+                        }
+                        self.pi_assistant_message = None;
+                        native_boundary_clears = !matches!(reason, Some("stop" | "length"));
+                    }
+                    _ => {
+                        return Err(LocalRunnerError::invalid(
+                            "Pi assistant boundaries are out of order",
+                        ))
+                    }
+                }
+            } else if !self.pi_assistant_message_ids.is_empty()
+                && (self.pi_assistant_message.is_none()
+                    || self.pi_assistant_message != provider_message_id)
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Pi assistant delta has no matching native message",
+                ));
+            }
             // ACP can produce more than one assistant message in a turn. All
             // deltas remain durable progress, but only the latest compatible
             // provider message is eligible to become the terminal reply.
             // Folding earlier messages into it duplicates the transcript in
             // the task UI and can promote intermediate prose as final output.
-            if starts_new_message {
+            if starts_new_message || native_boundary_clears {
                 self.assistant_text.clear();
             }
             if self
@@ -571,12 +696,35 @@ impl AcpxProviderState {
         Ok(())
     }
 
-    fn clear_pending_requests(&mut self) {
-        self.pending_tools.clear();
-        self.pending_tool_input_bytes = 0;
-        self.pending_permissions.clear();
-        self.pending_inputs.clear();
+    pub(crate) fn end_pending_runtime_requests(
+        &mut self,
+        status: AcpxTurnStatus,
+    ) -> Vec<AcpxProviderStateEvent> {
+        let mut events = Vec::new();
+        for (request_id, _) in std::mem::take(&mut self.pending_permissions) {
+            events.push(AcpxProviderStateEvent::RuntimeRequestEnded {
+                request_id,
+                question_set: None,
+                tool_call_id: None,
+                origin: None,
+                status,
+            });
+        }
+        for (request_id, pending) in std::mem::take(&mut self.pending_inputs) {
+            events.push(AcpxProviderStateEvent::RuntimeRequestEnded {
+                request_id,
+                question_set: Some(pending.question_set),
+                tool_call_id: pending.tool_call_id,
+                origin: pending.origin,
+                status,
+            });
+        }
         self.pending_runtime_request_bytes = 0;
+        events
+    }
+
+    pub(crate) fn pending_tool_count(&self) -> usize {
+        self.pending_tools.len()
     }
 }
 

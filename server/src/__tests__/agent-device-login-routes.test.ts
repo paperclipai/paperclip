@@ -77,6 +77,7 @@ const mockSecretService = vi.hoisted(() => ({
   // idempotent-repeat-login and secret-creation-failure paths.
   getByName: vi.fn(async (_companyId: string, _name: string) => null as Record<string, unknown> | null),
   create: vi.fn(async (_companyId: string, _input: Record<string, unknown>) => ({ id: "secret-1" })),
+  hasInstanceAccountHomeClaim: vi.fn(async (_companyId: string, _path: string) => false),
   // The company-wide secret listing the cleanup-safety scan reads. Empty by
   // default, so a cleanup that finds no other claimant removes the
   // directory; a test overrides it with a differently named secret to prove
@@ -1404,6 +1405,27 @@ describe("adapter device-login routes", () => {
     await expect(lstat(accountHomeDir)).resolves.toBeDefined();
   });
 
+  it("keeps a newly promoted account home claimed by an instance secret when company secret creation fails", async () => {
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted", accountId: "acct-instance-owner", accountHomeDir, accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.hasInstanceAccountHomeClaim.mockResolvedValueOnce(true);
+    const app = await createApp();
+    const start = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${start.body.sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+    expect(mockSecretService.hasInstanceAccountHomeClaim).toHaveBeenCalledWith(COMPANY_1, accountHomeDir);
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
   it("does not remove an account home a concurrent login already claimed", async () => {
     // This call created the account home directory (`accountHomeCreated:
     // true`), but a concurrent login for the same account can still create
@@ -1708,4 +1730,11 @@ describe("adapter device-login routes", () => {
     expect(loggedText).not.toContain("SECRET-ACCESS-TOKEN");
     expect(loggedText).not.toContain("provider-lease-");
   });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
 });

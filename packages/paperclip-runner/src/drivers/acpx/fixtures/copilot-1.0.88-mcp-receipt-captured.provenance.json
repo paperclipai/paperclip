@@ -1,0 +1,49 @@
+{
+  "schema": "paperclip.native-mcp-capture-provenance.v1",
+  "nativeVersion": "1.0.88",
+  "nativeExecutableSha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "platform": "darwin-arm64",
+  "sourceCommit": "cd2bd6f755a7685320766a71093320d7221172e9",
+  "captureKind": "real pinned native executable with deterministic loopback model and MCP server",
+  "paidProviderCalls": 0,
+  "credentialReads": false,
+  "qualification": false,
+  "scope": "One small successful two-text-block MCP result, original accepted=false; not native proof for every size/error encoding.",
+  "wireIndices": [
+    9,
+    11
+  ],
+  "sanitization": [
+    "Replaced only params.sessionId in each selected frame with captured-fixture-session.",
+    "Excluded all other wire frames and model/configuration discovery.",
+    "Selected update objects and rawOutput preserved exactly.",
+    "authoritativeReceipt copied from owned fixture carrier.json; it is not an authority inferred from native output."
+  ],
+  "originalEvidence": [
+    {
+      "name": "stdout.json",
+      "sha256": "95deeefff204b8e8db9c46b882cdea6fbe9b5c0de68efb56b4e9359cd0987208"
+    },
+    {
+      "name": "carrier.json",
+      "sha256": "c4f4fc333dfbc5efe33b46435a88c3c8ceff74237083e6eb03ad16bb8e783807"
+    },
+    {
+      "name": "carrier-proof.json",
+      "sha256": "4ed85f32732c2995506e4ffd23e85f79f26388aac6d8f47efefb5258c7b71da5"
+    },
+    {
+      "name": "execution-plan.json",
+      "sha256": "ae4435b5ed2c23a27e2d9c47efe599e3720b800a66e4f9ef56886428f21ee998"
+    },
+    {
+      "name": "probe.py",
+      "sha256": "264d39c1f6c36dadcd343b406a9f3ec851b29a55208c08cc3f6e26640ebeadd7"
+    },
+    {
+      "name": "HANDOFF.json",
+      "sha256": "e9859debd7274b42f5e58c28cc025bb2e3a090bb583e71ad460f2f482f6c3dae"
+    }
+  ],
+  "fixtureSha256": "4af7345f219463813b382e4c6863003f9f957e147a96dc9c197b97ecd3e20cfb"
+}

@@ -21,6 +21,13 @@ GET /api/routines/{routineId}
 
 Returns routine details including triggers.
 
+Routine and trigger resource IDs must be complete UUIDs from the API response.
+Short prefixes and malformed IDs return the same `404` as a missing resource.
+UUID lookup accepts PostgreSQL's existing input forms, including uppercase,
+compact and braced UUIDs; it does not trim whitespace or resolve prefixes.
+Company access and routine-assignee permissions still apply. Public trigger
+IDs in webhook URLs are separate opaque identifiers, not resource UUIDs.
+
 ## Create Routine
 
 ```

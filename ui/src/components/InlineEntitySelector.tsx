@@ -1,8 +1,9 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Check, Search, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { cn } from "../lib/utils";
+import { useMobileEntityPickerViewportStyle } from "../hooks/useMobileEntityPickerViewportStyle";
 
 export interface InlineEntityOption {
   id: string;
@@ -15,6 +16,10 @@ interface InlineEntitySelectorProps {
   options: InlineEntityOption[];
   placeholder: string;
   noneLabel: string;
+  /** Keep the no-selection action before the selected and recent choices. */
+  noneAtTop?: boolean;
+  /** Keep the no-selection action after the project choices. */
+  noneAtEnd?: boolean;
   searchPlaceholder: string;
   emptyMessage: string;
   onChange: (id: string) => void;
@@ -33,9 +38,34 @@ interface InlineEntitySelectorProps {
   triggerTestId?: string;
   /** Optional slot name used by consuming surfaces for scoped presentation rules. */
   triggerDataSlot?: string;
+  /** Runtime geometry variables for the portalled mobile picker sheet. */
+  contentStyle?: CSSProperties;
+  /** Heading for the large mobile selector modal. Defaults to the placeholder. */
+  mobileTitle?: string;
+  /** Own the scroll lock when this picker portals outside a parent dialog. */
+  modal?: boolean;
 }
 
 const EMPTY_RECENT_OPTION_IDS: string[] = [];
+
+function useMobileSelectorModal() {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(max-width: 40rem)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 40rem)");
+    const update = () => setMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return mobile;
+}
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
   function InlineEntitySelector(
@@ -44,6 +74,8 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       options,
       placeholder,
       noneLabel,
+      noneAtTop = false,
+      noneAtEnd = false,
       searchPlaceholder,
       emptyMessage,
       onChange,
@@ -57,30 +89,39 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       disabled = false,
       triggerTestId,
       triggerDataSlot,
+      contentStyle,
+      mobileTitle,
+      modal = false,
     },
     ref,
   ) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [highlightedIndex, setHighlightedIndex] = useState(0);
+    const mobileSelectorModal = useMobileSelectorModal();
+    const mobileViewportStyle = useMobileEntityPickerViewportStyle();
     const highlightedIndexRef = useRef(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
+    const suppressNextTriggerFocusRef = useRef(false);
     const isPointerDownRef = useRef(false);
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
-      return orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
-    }, [noneLabel, options, recentOptionIds, value]);
+      const ordered = orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
+      if (noneAtTop) return [baseOptions[0]!, ...ordered.filter((option) => option.id)];
+      return noneAtEnd ? [...ordered.filter((option) => option.id), baseOptions[0]!] : ordered;
+    }, [noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
       if (!term) return allOptions;
       return allOptions.filter((option) => {
+        if (noneAtTop && !option.id) return true;
         const haystack = `${option.label} ${option.searchText ?? ""}`.toLowerCase();
         return haystack.includes(term);
       });
-    }, [allOptions, query]);
+    }, [allOptions, noneAtTop, query]);
 
     const currentOption = options.find((option) => option.id === value) ?? null;
 
@@ -92,9 +133,14 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     useEffect(() => {
       if (!open) return;
+      const firstSearchResultIndex = noneAtTop && query.trim()
+        ? filteredOptions.findIndex((option) => option.id)
+        : -1;
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
-      setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [filteredOptions, open, setHighlightedIndexValue, value]);
+      setHighlightedIndexValue(
+        firstSearchResultIndex >= 0 ? firstSearchResultIndex : selectedIndex >= 0 ? selectedIndex : 0,
+      );
+    }, [filteredOptions, noneAtTop, open, query, setHighlightedIndexValue, value]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];
@@ -111,6 +157,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     return (
       <Popover
+        // Portalled mobile sheets and modal callers need their own scroll lock
+        // so a parent dialog does not cancel wheel or touch events in the list.
+        modal={mobileSelectorModal || modal}
         open={open}
         onOpenChange={(next) => {
           if (disabled) return;
@@ -132,8 +181,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             onPointerDown={() => { isPointerDownRef.current = true; }}
             onFocus={() => {
               if (disabled) return;
-              if (openOnFocus && !isPointerDownRef.current) setOpen(true);
+              if (openOnFocus && !isPointerDownRef.current && !suppressNextTriggerFocusRef.current) setOpen(true);
               isPointerDownRef.current = false;
+              suppressNextTriggerFocusRef.current = false;
             }}
           >
             {renderTriggerValue
@@ -143,67 +193,94 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         </PopoverTrigger>
         <PopoverContent
           data-mobile-entity-picker=""
+          aria-label={mobileTitle ?? placeholder}
           align="start"
           side="bottom"
           collisionPadding={16}
           className="w-(--sz-calc-6) p-1"
-          disablePortal={disablePortal}
+          disablePortal={disablePortal && !mobileSelectorModal}
+          style={{ ...mobileViewportStyle, ...contentStyle }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
-            if (!shouldPreventCloseAutoFocusRef.current) return;
+            if (!shouldPreventCloseAutoFocusRef.current) {
+              // Radix returns focus to the trigger on Escape/outside dismissal.
+              // That focus must not immediately reopen the picker.
+              suppressNextTriggerFocusRef.current = true;
+              // Non-modal outside dismissal may keep focus on the clicked
+              // element instead. Limit suppression to Radix's synchronous restore.
+              queueMicrotask(() => { suppressNextTriggerFocusRef.current = false; });
+              return;
+            }
             event.preventDefault();
             shouldPreventCloseAutoFocusRef.current = false;
           }}
         >
-          <input
-            ref={inputRef}
-            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
-            placeholder={searchPlaceholder}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                event.stopPropagation();
-                setHighlightedIndexValue((current) =>
-                  filteredOptions.length === 0 ? 0 : (current + 1) % filteredOptions.length,
-                );
-                return;
-              }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                event.stopPropagation();
-                setHighlightedIndexValue((current) => {
-                  if (filteredOptions.length === 0) return 0;
-                  return current <= 0 ? filteredOptions.length - 1 : current - 1;
-                });
-                return;
-              }
-              if (event.key === "Enter") {
-                event.preventDefault();
-                event.stopPropagation();
-                commitSelection(highlightedIndexRef.current, true);
-                return;
-              }
-              if (event.key === "Tab" && !event.shiftKey) {
-                event.preventDefault();
-                event.stopPropagation();
-                commitSelection(highlightedIndexRef.current, true);
-                return;
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
+          <div data-mobile-entity-picker-header="" className="hidden items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-base font-semibold text-foreground">{mobileTitle ?? placeholder}</span>
+            <button
+              type="button"
+              className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Close selector"
+              onClick={() => {
+                shouldPreventCloseAutoFocusRef.current = true;
                 setOpen(false);
-              }
-            }}
-          />
-          <div className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
+              }}
+            >
+              <X className="size-5" />
+            </button>
+          </div>
+          <div className="flex items-center gap-2 border-b border-border px-2">
+            <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <input
+              ref={inputRef}
+              className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
+              placeholder={searchPlaceholder}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setHighlightedIndexValue((current) =>
+                    filteredOptions.length === 0 ? 0 : (current + 1) % filteredOptions.length,
+                  );
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setHighlightedIndexValue((current) => {
+                    if (filteredOptions.length === 0) return 0;
+                    return current <= 0 ? filteredOptions.length - 1 : current - 1;
+                  });
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  commitSelection(highlightedIndexRef.current, true);
+                  return;
+                }
+                if (event.key === "Tab" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  commitSelection(highlightedIndexRef.current, true);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setOpen(false);
+                }
+              }}
+            />
+          </div>
+          <div data-mobile-entity-picker-list="" className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
             {filteredOptions.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
             ) : (
@@ -216,6 +293,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
                     type="button"
                     className={cn(
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
+                      noneAtEnd && !option.id && "mt-1 rounded-none border-t border-border",
                       isHighlighted && "bg-accent",
                     )}
                     onMouseEnter={() => setHighlightedIndexValue(index)}

@@ -1,6 +1,9 @@
+import { SkillBinaryFile } from "../components/SkillBinaryFile";
+import { skillFileLinkHref } from "@/lib/skill-file-links";
+import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -1316,6 +1319,8 @@ export function DiscoveryGrid({
                 <Compass className="mr-2 h-4 w-4" />
                 Discover skills
               </DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/skills/sources/new"><GithubIcon className="mr-2 h-4 w-4" />Import from GitHub</Link></DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/skills/sources">Manage sources</Link></DropdownMenuItem>
               <DropdownMenuItem onSelect={onImport}>
                 <Globe className="mr-2 h-4 w-4" />
                 Import from path or URL
@@ -1441,6 +1446,7 @@ export function DiscoveryGrid({
                       <Compass className="mr-1.5 h-3.5 w-3.5" /> Discover skills
                     </Button>
                   ) : null}
+                  <Button size="sm" variant="outline" asChild><Link to="/skills/sources/new">Import from GitHub</Link></Button>
                   <Button size="sm" variant="ghost" onClick={onCreate}>
                     Create a skill
                   </Button>
@@ -2986,6 +2992,11 @@ export function SkillDetailPage({
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
 
+  const resolveFileLinkHref = useCallback(
+    (href: string) => detail ? skillFileLinkHref(detail, selectedPath, href, routeSkills ?? [detail]) : null,
+    [detail, selectedPath, routeSkills],
+  );
+
   if (!detail) {
     return loading ? <PageSkeleton variant="detail" /> : <EmptyState icon={Boxes} message="Skill not found." />;
   }
@@ -3092,7 +3103,7 @@ export function SkillDetailPage({
                   title={skill.editableReason ?? "Fork this skill to edit it."}
                 >
                   <GitFork className="mr-1.5 h-3.5 w-3.5" />
-                  Fork
+                  {skill.sourceType === "github" ? "Make a copy" : "Fork"}
                 </Button>
               ) : null}
             </div>
@@ -3101,7 +3112,7 @@ export function SkillDetailPage({
             <PageSkeleton variant="detail" />
           ) : !file ? (
             <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
-          ) : editMode && file.editable ? (
+          ) : file.encoding === "base64" ? <SkillBinaryFile file={file} /> : editMode && file.editable ? (
             file.markdown ? (
               <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-(--sz-520px)" />
             ) : (
@@ -3112,7 +3123,13 @@ export function SkillDetailPage({
               />
             )
           ) : file.markdown && viewMode === "preview" ? (
-            <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
+            <MarkdownBody
+              softBreaks={false}
+              linkIssueReferences={false}
+              resolveLinkHref={resolveFileLinkHref}
+            >
+              {body}
+            </MarkdownBody>
           ) : (
             <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
               <code>{file.content}</code>
@@ -3159,7 +3176,7 @@ export function SkillDetailPage({
                   <span>Read only</span>
                   <Button type="button" variant="outline" size="xs" onClick={onFork}>
                     <GitFork className="mr-1 h-3 w-3" />
-                    Fork
+                    {skill.sourceType === "github" ? "Make a copy" : "Fork"}
                   </Button>
                 </>
               )}
@@ -3400,7 +3417,7 @@ export function SkillDetailPage({
                 title="Fork this skill"
               >
                 <GitFork className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Fork</span>
+                <span className="hidden sm:inline">{skill.sourceType === "github" ? "Make a copy" : "Fork"}</span>
                 <span className="font-medium text-foreground">{detail.forkCount}</span>
               </button>
             </div>
@@ -3429,6 +3446,7 @@ export function SkillDetailPage({
         </main>
 
         <aside className="min-w-0 space-y-6 border-t border-border pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+          <SkillSourceProvenance skill={detail} />
           <SkillLocationCard
             folderPath={folderDisplayPath ?? skillFolderPathDisplayFallback(detail.folderPath)}
             onMove={onMoveToFolder}

@@ -24,12 +24,12 @@ describe("GitHub grant metadata", () => {
       }
       if (url.pathname === "/user/installations/101/repositories") {
         return json({ total_count: 2, repositories: secondPage
-          ? [{ id: 2, full_name: "paperclipai/b", private: true, description: "must-not-persist", clone_url: "must-not-persist" }]
-          : [{ id: 1, full_name: "paperclipai/a", private: false }],
+          ? [{ id: 2, full_name: "paperclipai/b", owner: { type: "Organization" }, private: true, description: "must-not-persist", clone_url: "must-not-persist" }]
+          : [{ id: 1, full_name: "paperclipai/a", owner: { type: "Organization" }, private: false }],
         }, !secondPage);
       }
       if (url.pathname === "/user/installations/102/repositories") {
-        return json({ total_count: 1, repositories: [{ id: 3, full_name: "octocat/c" }] });
+        return json({ total_count: 1, repositories: [{ id: 3, full_name: "octocat/c", owner: { type: "User" } }] });
       }
       throw new Error(`Unexpected GitHub path: ${url.pathname}`);
     });
@@ -44,9 +44,9 @@ describe("GitHub grant metadata", () => {
       installationIds: ["101", "102"],
       installationOwnerLogins: ["paperclipai", "octocat"],
       repositories: [
-        { id: "3", fullName: "octocat/c", installationId: "102" },
-        { id: "1", fullName: "paperclipai/a", installationId: "101", private: false },
-        { id: "2", fullName: "paperclipai/b", installationId: "101", private: true },
+        { id: "3", fullName: "octocat/c", installationId: "102", ownerType: "personal" },
+        { id: "1", fullName: "paperclipai/a", installationId: "101", ownerType: "organization", private: false },
+        { id: "2", fullName: "paperclipai/b", installationId: "101", ownerType: "organization", private: true },
       ],
       installationUrl: "https://github.com/apps/paperclip-development/installations/new",
       managementUrl: "https://github.com/settings/installations/101",

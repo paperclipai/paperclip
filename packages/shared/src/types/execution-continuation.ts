@@ -10,6 +10,11 @@ export interface ExecutionContinuationEnvelope {
   };
   originCommentIds: string[];
   objective: string;
+  objectiveSource?: {
+    kind: "comment" | "description" | "title";
+    id: string;
+    revision: string | null;
+  };
   messages: Array<{
     id: string;
     authorType: string;

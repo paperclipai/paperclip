@@ -1,6 +1,30 @@
 # Runner E2E security for a public repository
 
-This suite can spend provider money, expose selected API credentials to isolated
+## Attended connection authentication
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+Provider-connection results may retain closed diagnostic codes and terminal run
+status before managed-instance teardown. Only error records and failed tool
+receipts are inspected; raw error messages, child stderr, model output and
+reasoning are not retained. Unknown causes and unavailable logs stay explicit.
+The optional installed-Gemini filesystem smoke uses synthetic credentials and
+loopback model responses, makes no real provider calls, and removes its
+disposable home/workspace.
+
+The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
+account and OAuth grant. Signup and token exchange use Node fetch, credentials
+stay outside model context, and dynamic cookie/code/token values join the
+attempt's redaction set. Tracing, video and automatic screenshots are disabled
+for that suite; only reviewed fixture task routes may produce public screenshots.
+External API evidence retains visible answers and tool outcomes, never raw model
+reasoning. Empty provider configuration directories prevent operator plugins and
+MCP credentials from being inherited. All grants are revoked during cleanup and
+the launcher removes the isolated database and provider homes.
+
+This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
 prompts, evidence packager, and publisher as security-sensitive production
@@ -63,9 +87,20 @@ rejects mutable tag or branch references.
 
 ## Secrets and protected environments
 
+Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
+protected paid environment. Deliver it only to that subscription profile's paid
+test step. Prefer a dedicated test-account login and refresh it before a campaign.
+The fixture stores only the selected login in its disposable company home, rejects
+ambient/redirected homes, and removes the login during teardown. Token fragments
+and account identifiers inside its JSON join the evidence redaction set. The
+subscription suite remains manual-only and never falls back to `XAI_API_KEY`.
+
 Create `runner-e2e-paid`, restrict deployments to the default branch, and put
 only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, and
-`DAYTONA_API_KEY` in it. Do not duplicate these credentials as repository- or
+`DAYTONA_API_KEY` in it. `KIMI_MODEL_API_KEY` remains a local-only catalog name
+for pending explicit profiles and is intentionally absent from the workflow
+environment. Product E2E pending-profile admission remains gated separately.
+Do not duplicate these credentials as repository- or
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
 from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
@@ -90,6 +125,13 @@ force for every suite.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.
+
+The context-integrity catalog lists six pending Kimi/Grok cells for discovery:
+two cases each across `legacy-kimi-cli`, `legacy-kimi-acp`, and `legacy-grok`.
+The launcher and direct Playwright runner reject these profiles before loading
+credentials. Pi has no qualified model source and is not cataloged. Admission
+remains blocked until identity, authentication, skills, session, and billing
+evidence is qualified together.
 
 Create `runner-e2e-history`, also default-branch-only, for the OIDC publishing
 job. It contains no long-lived AWS key. Required reviewers may be added when a
@@ -260,3 +302,54 @@ specific process signal, never a name-based or machine-wide process kill.
 The bounded fixture command is released even on failure; normal instance cleanup
 still owns all disposable processes and files. No credentials enter the prompt,
 fault metadata, or structured grading fixtures.
+
+### Candidate ACP qualification
+
+The explicit-only `extended-harnesses` launcher removes ambient candidate
+admission, then authorizes only selected candidate/model pairs in its isolated
+server process. The server never reads admission from agent configuration,
+resolved credential bindings, or provider environment. Invalid, duplicate and
+mismatched authorization fails closed. Verified packaging and normal company
+and tool governance still apply. `CURSOR_AUTH_TOKEN` and
+`COPILOT_GITHUB_TOKEN` enter via encrypted company secret references, and all
+Cursor, Copilot, GitHub and GH environment variables are stripped from the
+server environment. GitHub PAT shapes are included in retained-evidence scans.
+Candidates have no automatic infrastructure retries; spending must be reconciled
+before a deliberate repeat.
+
+Copilot protection fixtures use production browser/public API permission and
+cancellation paths. Their local one-shot socket accepts a nonce/PID only and owns
+one fixed bounded child; it cannot select commands, arguments, or paths. The exact
+native client command is supplied by the fixture, while production notices retain
+only its SHA-256. The fixture keeps private process identities local, closes its
+owned socket/child in cleanup, and never signals API-reported PIDs. Directory
+watch loss makes the denial oracle incomplete; it must not become a no-effect pass.
+
+Pi Daytona controls bind process identity to the independent Linux observer's
+PID, start ticks and boot ID within the exact admitted run/lease/sandbox. The
+controller's `processStartedAt` annotations may change as launch metadata settles
+and do not identify a remote process birth. Every remote snapshot and retirement
+seal must retain the original birth identity and complete no-effect journal.
+Local controls retain their separate public process-authority comparison.
+
+Pi provider-death admission accepts the native bootstrap's `/proc/self/fd/3`
+or `/proc/self/fd/7` wrapper launch only after binding that held descriptor and
+the wrapper executable to the sealed snapshot Node inode. Exact guard and
+entrypoint paths, closure hashes, Pi title, run/lease ancestry and fresh process
+birth checks remain required. Other descriptor aliases, missing descriptors and
+foreign inodes fail before any signal. Native Linux calibration exercises both
+descriptor launches with synthetic owned processes and no provider credentials;
+it does not qualify paid Pi behavior or change previous failed grades.
+
+The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
+
+## Task workspace fixture source
+
+The explicit task-workspaces cells fetch the existing public octocat/Hello-World
+repository through normal anonymous repository preparation. They do not clone the
+Paperclip checkout, copy its Git credentials, create remote repositories or push.
+The agent's synthetic commit remains in the disposable task workspace. Independent
+Git reads validate that workspace's canonical path is inside the isolated instance
+before examining history. The existing credential redactor, private evidence
+packager and task-only screenshot allowlist remain authoritative. Each cell has a
+single attempt, three requested turns and company/agent budget hard stops.

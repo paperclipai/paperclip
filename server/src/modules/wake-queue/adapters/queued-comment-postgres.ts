@@ -31,7 +31,9 @@ function toWakeRow(row: WakeRow): QueuedCommentWakeRow {
 }
 
 function toRunRow(row: RunRow): QueuedCommentRunRow {
-  return { id: row.id, status: row.status, runtimeMode: row.runtimeMode, contextSnapshot: parseObject(row.contextSnapshot) };
+  return { id: row.id, status: row.status, runtimeMode: row.runtimeMode,
+    runtimeModeResolvedAt: row.runtimeModeResolvedAt, runnerProfileJson: row.runnerProfileJson,
+    contextSnapshot: parseObject(row.contextSnapshot) };
 }
 
 export type QueuedCommentQueuePostgresAdapterDeps = {

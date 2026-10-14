@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { authorizeSlackDocument } from "./slack-document.js";
 import { slackMessage } from "./slack-message.js";
 import { createHash } from "node:crypto";
@@ -5,6 +6,8 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   assets,
   chatActions,
+  chatEndpoints,
+  chatEndpointResources,
   issueAttachments,
   toolInvocations,
   type Db,
@@ -87,7 +90,7 @@ export async function executeSlackWrite(
     throw forbidden(
       "Create channels in a separate task before reading private research; its content cannot be published to a new destination",
     );
-  if (name !== "slack_create_channel")
+  if (name !== "slack_create_channel" && name !== "slack_open_dm")
     await authorizeSlackWrite(db, authority, api, String(args.channel));
   if (
     name === "slack_invite" &&
@@ -98,28 +101,31 @@ export async function executeSlackWrite(
     .update(JSON.stringify({ name, args }))
     .digest("hex");
   const key = `slack-tool:${binding.issueId}:${args.idempotencyKey}`;
-  const [created] = await db
-    .insert(chatActions)
-    .values({
-      companyId: binding.companyId,
-      endpointId: authority.endpoint.id,
-      conversationId: authority.conversation.id,
-      principalId: authority.principalId,
-      kind: "slack_tool_write",
-      providerActionId: key,
-      status: "received",
-      payload: {
-        name,
-        args,
-        hash,
-        binding,
-        userId: authority.userId,
-        revision: authority.revision,
-        invocationId,
-      },
-    })
-    .onConflictDoNothing()
-    .returning();
+  const [created] = await db.transaction(async (tx) => {
+    await notifyChatPublicationWork(tx);
+    return tx
+      .insert(chatActions)
+      .values({
+        companyId: binding.companyId,
+        endpointId: authority.endpoint.id,
+        conversationId: authority.conversation?.id ?? null,
+        principalId: authority.principalId,
+        kind: "slack_tool_write",
+        providerActionId: key,
+        status: "received",
+        payload: {
+          name,
+          args,
+          hash,
+          binding,
+          userId: authority.userId,
+          revision: authority.revision,
+          invocationId,
+        },
+      })
+      .onConflictDoNothing()
+      .returning();
+  });
   const action =
     created ??
     (
@@ -149,13 +155,16 @@ export async function executeSlackWrite(
       instruction:
         "Do not retry with another key. Inspect delivery before reconciling an uncertain result.",
     };
-  const [claimed] = await db
-    .update(chatActions)
-    .set({ status: "processing", updatedAt: new Date() })
-    .where(
-      and(eq(chatActions.id, action.id), eq(chatActions.status, "received")),
-    )
-    .returning();
+  const [claimed] = await db.transaction(async (tx) => {
+    await notifyChatPublicationWork(tx);
+    return tx
+      .update(chatActions)
+      .set({ status: "processing", updatedAt: new Date() })
+      .where(
+        and(eq(chatActions.id, action.id), eq(chatActions.status, "received")),
+      )
+      .returning();
+  });
   if (!claimed) return { actionId: action.id, state: "processing" };
   try {
     authority = await resolveSlackTaskAuthority(db, binding);
@@ -165,7 +174,7 @@ export async function executeSlackWrite(
       throw forbidden(
         "Slack authorization changed after this operation was queued",
       );
-    if (name !== "slack_create_channel")
+    if (name !== "slack_create_channel" && name !== "slack_open_dm")
       await authorizeSlackWrite(db, authority, api, String(args.channel));
     if (name === "slack_update_message" || name === "slack_delete_message") {
       const message = await slackMessage(api, args);
@@ -175,7 +184,23 @@ export async function executeSlackWrite(
     if (args.file) await authorizeSlackDocument(db, authority, api, args, true);
     let result: SlackObject;
     const { idempotencyKey: _key, thread_ts: _thread, ...parameters } = args;
-    if (name === "slack_upload_file") {
+    if (name === "slack_open_dm") {
+      if (!authority.endpoint.allowDirectMessages)
+        throw forbidden("Direct messages are disabled");
+      const user = object(
+        (await api("users.info", { user: authority.slackUserId })).user,
+      );
+      if (
+        user.id !== authority.slackUserId ||
+        user.deleted === true ||
+        user.is_bot === true ||
+        user.team_id !== authority.endpoint.providerAccountId
+      )
+        throw forbidden(
+          "The linked Slack user is no longer an active workspace member",
+        );
+      result = await api(tool.method, { users: authority.slackUserId });
+    } else if (name === "slack_upload_file") {
       const [attachment] = await db
         .select({ asset: assets })
         .from(issueAttachments)
@@ -234,13 +259,16 @@ export async function executeSlackWrite(
       )
         throw forbidden("Slack returned an unsupported upload destination");
       // Store the provider receipt before transport. An uncertain finish is never blindly retried.
-      await db
-        .update(chatActions)
-        .set({
-          result: { fileId: upload.file_id, phase: "upload_allocated" },
-          updatedAt: new Date(),
-        })
-        .where(eq(chatActions.id, action.id));
+      await db.transaction(async (tx) => {
+        await notifyChatPublicationWork(tx);
+        return tx
+          .update(chatActions)
+          .set({
+            result: { fileId: upload.file_id, phase: "upload_allocated" },
+            updatedAt: new Date(),
+          })
+          .where(eq(chatActions.id, action.id));
+      });
       const uploaded = await fetchImpl(url, {
         method: "POST",
         body: bytes,
@@ -355,7 +383,51 @@ export async function executeSlackWrite(
         channel: args.channel,
         users: (args.users as string[]).join(","),
       });
-    else result = await api(tool.method, parameters);
+    else if (name === "slack_create_channel") {
+      result = await db.transaction(async (tx) => {
+        // Membership callbacks and inbound admission use this same endpoint
+        // lock. Persist the disabled choice before either can discover the new
+        // channel: approval to create it is not approval for ongoing responses.
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(
+            and(
+              eq(chatEndpoints.id, authority.endpoint.id),
+              eq(chatEndpoints.companyId, binding.companyId),
+            ),
+          )
+          .for("update");
+        const created = await api(tool.method, parameters);
+        const channel = object(created.channel);
+        if (typeof channel.id !== "string")
+          throw conflict("Slack did not return the created channel ID");
+        await tx
+          .insert(chatEndpointResources)
+          .values({
+            companyId: binding.companyId,
+            endpointId: authority.endpoint.id,
+            type: "channel",
+            providerResourceId: channel.id,
+            label: `#${String(channel.name ?? args.name)}`,
+            availability: "available",
+            enabled: false,
+            metadata: {
+              source: "slack_tool_create_channel",
+              private: args.is_private === true,
+            },
+          })
+          .onConflictDoUpdate({
+            target: [
+              chatEndpointResources.endpointId,
+              chatEndpointResources.type,
+              chatEndpointResources.providerResourceId,
+            ],
+            set: { enabled: false, updatedAt: new Date() },
+          });
+        return created;
+      });
+    } else result = await api(tool.method, parameters);
     const receipt = {
       channel:
         typeof result.channel === "string"
@@ -374,10 +446,13 @@ export async function executeSlackWrite(
           }
         : {}),
     };
-    await db
-      .update(chatActions)
-      .set({ status: "processed", result: receipt, updatedAt: new Date() })
-      .where(eq(chatActions.id, action.id));
+    await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      return tx
+        .update(chatActions)
+        .set({ status: "processed", result: receipt, updatedAt: new Date() })
+        .where(eq(chatActions.id, action.id));
+    });
     await logActivity(db, {
       companyId: binding.companyId,
       actorType: "agent",
@@ -406,19 +481,22 @@ export async function executeSlackWrite(
             "slack_request_timeout",
             "slack_service_unavailable",
           ].includes(details.code)));
-    await db
-      .update(chatActions)
-      .set({
-        status: definite ? "failed" : "uncertain",
-        result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || ${JSON.stringify({ code: details.code ?? "slack_delivery_uncertain", ...(error instanceof HttpError && error.status === 429 ? { retryAt: new Date(Date.now() + Number(details.retryAfterSeconds ?? 60) * 1000).toISOString() } : {}) })}::jsonb`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(chatActions.id, action.id),
-          eq(chatActions.status, "processing"),
-        ),
-      );
+    await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      return tx
+        .update(chatActions)
+        .set({
+          status: definite ? "failed" : "uncertain",
+          result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || ${JSON.stringify({ code: details.code ?? "slack_delivery_uncertain", ...(error instanceof HttpError && error.status === 429 ? { retryAt: new Date(Date.now() + Number(details.retryAfterSeconds ?? 60) * 1000).toISOString() } : {}) })}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatActions.id, action.id),
+            eq(chatActions.status, "processing"),
+          ),
+        );
+    });
     if (error instanceof HttpError)
       error.details = {
         ...details,

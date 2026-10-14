@@ -1,4 +1,4 @@
-import { probeAcpxClaudeInstallation } from "@paperclipai/paperclip-runner/live";
+import { probeAcpxClaudeInstallation, probeAcpxPiInstallation } from "../vendor/paperclip-runner/live/index.js";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -17,7 +17,20 @@ import {
   setOverridePaused,
 } from "../adapters/registry.js";
 
-vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxPiInstallation: vi.fn(async () => undefined),
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
+}));
+
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -315,7 +328,10 @@ describe("server adapter registry", () => {
     });
   });
 
-  it("keeps the ACPX Pi profile unavailable", async () => {
+  it.each([true, false])("probes the exact Pi installation without qualification opt-in (ready=%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxPiInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Pi closure unavailable"));
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
@@ -327,17 +343,33 @@ describe("server adapter registry", () => {
     });
 
     expect(result).toMatchObject({
-      status: "fail",
-      checks: [{ code: "paperclip_runner_acpx_agent_unavailable" }],
+      status: ready ? "pass" : "fail",
+      checks: [{ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" }],
     });
+    expect(probe).toHaveBeenLastCalledWith("openrouter/deepseek/deepseek-v4-flash-0731");
+  });
+  it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
+    const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
+    const previous = process.env[key];
+    process.env[key] = JSON.stringify([{ agent: "copilot", model: "exact-model" }]);
+    try {
+      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+        companyId: "company-1", adapterType: "paperclip_runner",
+        config: { provider: "acpx", acpxAgent: "copilot", model: "exact-model" },
+      });
+      expect(result).toMatchObject({ status: "warn", checks: [{ code: "acpx_candidate_qualification_only" }] });
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
   });
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
     const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
-    const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.156.0")}; fi`;
-    const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.32")}; fi`;
+    const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.160.0")}; fi`;
+    const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.34")}; fi`;
 
     expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
       command: "claude",

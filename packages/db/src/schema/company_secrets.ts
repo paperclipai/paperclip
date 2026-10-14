@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { check, pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex, foreignKey } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 import { userSecretDefinitions } from "./user_secret_definitions.js";
+import { plugins } from "./plugins.js";
 
 export const companySecrets = pgTable(
   "company_secrets",
@@ -12,6 +13,8 @@ export const companySecrets = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     scope: text("scope").notNull().default("company"),
     ownerUserId: text("owner_user_id"),
+    ownerAgentId: uuid("owner_agent_id"),
+    ownerPluginId: uuid("owner_plugin_id").references(() => plugins.id, { onDelete: "cascade" }),
     userSecretDefinitionId: uuid("user_secret_definition_id").references(() => userSecretDefinitions.id, { onDelete: "set null" }),
     key: text("key").notNull(),
     name: text("name").notNull(),
@@ -21,6 +24,7 @@ export const companySecrets = pgTable(
     externalRef: text("external_ref"),
     providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
     providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
+    aiSessionEpoch: integer("ai_session_epoch").notNull().default(0),
     latestVersion: integer("latest_version").notNull().default(1),
     description: text("description"),
     lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
@@ -41,6 +45,9 @@ export const companySecrets = pgTable(
       table.ownerUserId,
     ),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
+    agentOwner: foreignKey({ columns: [table.companyId, table.ownerAgentId], foreignColumns: [agents.companyId, agents.id] }).onDelete("cascade"),
+    instanceOwnerKeyUq: uniqueIndex("company_secrets_instance_owner_key_uq").on(table.companyId, table.ownerAgentId, table.ownerPluginId, table.key)
+      .where(sql`${table.scope} = 'instance' and ${table.deletedAt} is null`),
     providerConfigIdx: index("company_secrets_provider_config_idx").on(table.providerConfigId),
     companyNameUq: uniqueIndex("company_secrets_company_name_uq")
       .on(table.companyId, table.name)
@@ -57,10 +64,16 @@ export const companySecrets = pgTable(
         ${table.scope} = 'company'
         and ${table.ownerUserId} is null
         and ${table.userSecretDefinitionId} is null
+        and ${table.ownerAgentId} is null and ${table.ownerPluginId} is null
       ) or (
         ${table.scope} = 'user'
         and ${table.ownerUserId} is not null
         and ${table.userSecretDefinitionId} is not null
+        and ${table.ownerAgentId} is null and ${table.ownerPluginId} is null
+      ) or (
+        ${table.scope} = 'instance'
+        and ${table.ownerUserId} is null and ${table.userSecretDefinitionId} is null
+        and ${table.ownerAgentId} is not null and ${table.ownerPluginId} is not null
       )`,
     ),
   }),

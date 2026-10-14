@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
 const captureExceptionMock = vi.hoisted(() => vi.fn());
@@ -119,6 +120,35 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("keeps HTTP failures and existing telemetry for proven external MCP outages while skipping Sentry", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const original = mcpDiscoveryHttpFailure(new Response(null, { status: 503 }), "Remote app returned HTTP 503");
+    const err = retainMcpConnectionFailure(original, new HttpError(502, original.message));
+
+    errorHandler(err, req, res, vi.fn());
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect(res.json).toHaveBeenCalledWith({ error: original.message });
+    expect(res.err).toBe(err);
+    expect(res.__errorContext.error.message).toBe(original.message);
+    expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledOnce();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("reports copied connection markers and unrelated database failures", () => {
+    for (const err of [
+      Object.assign(new HttpError(502, "Remote app returned HTTP 503", { status: 503 }), {
+        connectionFailure: { schemaVersion: 1, provider: "mcp_http", operation: "discover_tools", reason: "remote_unavailable" },
+      }),
+      new HttpError(500, "database unavailable"),
+    ]) {
+      errorHandler(err, makeReq(), makeRes(), vi.fn());
+    }
+    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledTimes(2);
   });
 
   it("sanitizes chat setup errors before logs and crash reporting", () => {

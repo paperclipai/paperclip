@@ -17,241 +17,7 @@ concurrency:
 
 jobs:
   gate:
-    name: Select trusted runner
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      runner: ${{ steps.route.outputs.runner }}
-      full_ci: ${{ steps.scope.outputs.full_ci }}
-
-    steps:
-      - name: Validate PR identity and select runner
-        id: route
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AWS_CI_ENABLED: ${{ vars.AWS_CI_ENABLED }}
-          TRUSTED_USER_IDS: ${{ vars.AWS_CI_TRUSTED_USER_IDS }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_REPOSITORY: ${{ github.repository }}
-          EVENT_REPOSITORY_ID: ${{ github.repository_id }}
-          EVENT_ACTION: ${{ github.event.action }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
-          EVENT_SENDER_ID: ${{ github.event.sender.id }}
-          EVENT_BASE_REPOSITORY_ID: ${{ github.event.pull_request.base.repo.id }}
-          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          EVENT_MERGE_SHA: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -u
-
-          github_runner='ubuntu-latest'
-          aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
-
-          fail_closed() {
-            echo "runner=$github_runner" >> "$GITHUB_OUTPUT"
-            echo "::notice title=AWS CI routing::Using GitHub-hosted runner: $1"
-            exit 0
-          }
-
-          is_positive_integer() {
-            [[ "$1" =~ ^[1-9][0-9]*$ ]]
-          }
-
-          is_commit_sha() {
-            [[ "$1" =~ ^[0-9a-f]{40}$ ]]
-          }
-
-          is_allowed() {
-            local user_id="$1"
-            jq -e --argjson user_id "$user_id" 'index($user_id) != null' \
-              <<< "$TRUSTED_USER_IDS" >/dev/null
-          }
-
-          [[ "$AWS_CI_ENABLED" == 'true' ]] || fail_closed 'AWS_CI_ENABLED is not true'
-          # Reusable workflows retain the caller's github context and event
-          # payload, so a pull_request caller must still report pull_request.
-          [[ "$EVENT_NAME" == 'pull_request' ]] || fail_closed 'event is not pull_request'
-          [[ "$EVENT_REPOSITORY" == 'paperclipai/paperclip' ]] || fail_closed 'unexpected repository'
-          [[ "$EVENT_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected repository ID'
-          [[ "$EVENT_BASE_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected base repository ID'
-          [[ -n "$EVENT_BASE_REF" ]] || fail_closed 'missing base branch'
-          [[ "$EVENT_ACTION" =~ ^(opened|reopened|synchronize)$ ]] || fail_closed 'unsupported pull_request action'
-
-          jq -e '
-            type == "array" and
-            length > 0 and
-            all(.[]; type == "number" and . > 0 and floor == .)
-          ' <<< "$TRUSTED_USER_IDS" >/dev/null 2>&1 || fail_closed 'trusted user ID list is malformed'
-
-          for user_id in "$EVENT_PR_AUTHOR_ID" "$EVENT_SENDER_ID"; do
-            is_positive_integer "$user_id" || fail_closed 'event contains a malformed user ID'
-            is_allowed "$user_id" || fail_closed "GitHub user ID $user_id is not allowlisted"
-          done
-
-          for commit_sha in "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" "$EVENT_MERGE_SHA"; do
-            is_commit_sha "$commit_sha" || fail_closed 'event contains a malformed commit SHA'
-          done
-
-          pr_json="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/pulls/$EVENT_PR_NUMBER" 2>/dev/null)" \
-            || fail_closed 'could not refresh pull request state'
-
-          jq -e \
-            --argjson repository_id 1170821064 \
-            --argjson author_id "$EVENT_PR_AUTHOR_ID" \
-            --arg base_ref "$EVENT_BASE_REF" \
-            --arg head_sha "$EVENT_HEAD_SHA" \
-            '
-              .state == "open" and
-              .user.id == $author_id and
-              .base.repo.id == $repository_id and
-              .base.ref == $base_ref and
-              .head.sha == $head_sha
-            ' <<< "$pr_json" >/dev/null 2>&1 \
-            || fail_closed 'current pull request state does not match the triggering event'
-
-          live_merge_sha="$(jq -r '.merge_commit_sha // empty' <<< "$pr_json")"
-          is_commit_sha "$live_merge_sha" || fail_closed 'current pull request has no valid merge SHA'
-
-          base_ref_json="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/git/ref/heads/$EVENT_BASE_REF" 2>/dev/null)" \
-            || fail_closed 'could not inspect the current base branch'
-          live_base_ref_sha="$(jq -r '.object.sha // empty' <<< "$base_ref_json")"
-          is_commit_sha "$live_base_ref_sha" || fail_closed 'current base branch has no valid commit SHA'
-
-          base_comparison="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$live_base_ref_sha" 2>/dev/null)" \
-            || fail_closed 'could not compare the triggering and current base branches'
-          jq -e \
-            --arg event_base_sha "$EVENT_BASE_SHA" '
-              .merge_base_commit.sha == $event_base_sha and
-              (.status == "ahead" or .status == "identical")
-            ' <<< "$base_comparison" >/dev/null 2>&1 \
-            || fail_closed 'current base branch does not descend from the triggering base snapshot'
-
-          event_merge_json="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/git/commits/$EVENT_MERGE_SHA" 2>/dev/null)" \
-            || fail_closed 'could not inspect the event merge commit'
-
-          live_merge_json="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/git/commits/$live_merge_sha" 2>/dev/null)" \
-            || fail_closed 'could not inspect the current merge commit'
-
-          validate_merge_commit() {
-            local merge_json="$1"
-            local expected_sha="$2"
-            jq -e \
-              --arg expected_sha "$expected_sha" \
-              --arg head_sha "$EVENT_HEAD_SHA" '
-                .sha == $expected_sha and
-                (.parents | length) == 2 and
-                .parents[1].sha == $head_sha and
-                (.parents[0].sha | test("^[0-9a-f]{40}$")) and
-                (.tree.sha | test("^[0-9a-f]{40}$"))
-              ' <<< "$merge_json" >/dev/null 2>&1
-          }
-
-          validate_merge_commit "$event_merge_json" "$EVENT_MERGE_SHA" \
-            || fail_closed 'event merge commit does not match the current base and head'
-          validate_merge_commit "$live_merge_json" "$live_merge_sha" \
-            || fail_closed 'current merge commit does not match the triggering base and head'
-
-          event_merge_parent="$(jq -r '.parents[0].sha' <<< "$event_merge_json")"
-          live_merge_parent="$(jq -r '.parents[0].sha' <<< "$live_merge_json")"
-          [[ "$event_merge_parent" == "$live_merge_parent" ]] \
-            || fail_closed 'current merge commit uses a different base merge parent'
-
-          if [[ "$event_merge_parent" != "$live_base_ref_sha" ]]; then
-            base_merge_json="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "/repos/paperclipai/paperclip/git/commits/$event_merge_parent" 2>/dev/null)" \
-              || fail_closed 'could not inspect the stacked base merge commit'
-            jq -e \
-              --arg expected_sha "$event_merge_parent" \
-              --arg live_base_ref_sha "$live_base_ref_sha" '
-                .sha == $expected_sha and
-                (.parents | length) == 2 and
-                any(.parents[]; .sha == $live_base_ref_sha) and
-                (.tree.sha | test("^[0-9a-f]{40}$"))
-              ' <<< "$base_merge_json" >/dev/null 2>&1 \
-              || fail_closed 'stacked base merge commit does not contain the current base branch'
-          fi
-
-          event_merge_tree="$(jq -r '.tree.sha' <<< "$event_merge_json")"
-          live_merge_tree="$(jq -r '.tree.sha' <<< "$live_merge_json")"
-          [[ "$event_merge_tree" == "$live_merge_tree" ]] \
-            || fail_closed 'current merge tree differs from the triggering merge tree'
-
-          run_json="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/actions/runs/$RUN_ID" 2>/dev/null)" \
-            || fail_closed 'could not refresh workflow run state'
-
-          triggering_actor_id="$(jq -r '.triggering_actor.id // empty' <<< "$run_json")"
-          is_positive_integer "$triggering_actor_id" || fail_closed 'workflow run has no valid triggering actor ID'
-          is_allowed "$triggering_actor_id" || fail_closed "triggering GitHub user ID $triggering_actor_id is not allowlisted"
-
-          jq -e \
-            --argjson repository_id 1170821064 \
-            --arg event_name "$EVENT_NAME" '
-              .repository.id == $repository_id and
-              .event == $event_name
-            ' <<< "$run_json" >/dev/null 2>&1 \
-            || fail_closed 'current workflow run does not match the expected repository event'
-
-          echo "runner=$aws_runner" >> "$GITHUB_OUTPUT"
-          echo '::notice title=AWS CI routing::Using an ephemeral RunsOn Fleet runner'
-
-      - name: Select stacked PR CI scope
-        id: scope
-        shell: bash
-        env:
-          STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -euo pipefail
-
-          full_ci='true'
-          reason='ordinary pull request'
-
-          if jq -e 'type == "object"' <<< "$STACK_JSON" >/dev/null 2>&1; then
-            stack_position="$(jq -r '.position // empty' <<< "$STACK_JSON")"
-            stack_size="$(jq -r '.size // empty' <<< "$STACK_JSON")"
-            stack_base_ref="$(jq -r '.base.ref // empty' <<< "$STACK_JSON")"
-
-            if [[ ! "$stack_position" =~ ^[1-9][0-9]*$ ]] ||
-               [[ ! "$stack_size" =~ ^[1-9][0-9]*$ ]] ||
-               (( stack_position > stack_size )) ||
-               [[ -z "$stack_base_ref" ]]; then
-              reason='malformed stack metadata; defaulting to full CI'
-            elif (( stack_position == stack_size )); then
-              reason='top pull request in stack'
-            elif [[ "$stack_base_ref" == "$PR_BASE_REF" ]]; then
-              reason='lowest unmerged pull request in stack'
-            else
-              full_ci='false'
-              reason='middle pull request in stack'
-            fi
-          fi
-
-          echo "full_ci=$full_ci" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Stacked PR CI scope::$reason; full_ci=$full_ci"
+    uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
 
   policy:
     needs: [gate]
@@ -384,7 +150,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -407,6 +173,28 @@ jobs:
       # rebuilds the Runner release binary; without the shared Rust cache that
       # is a ~3m40s cold compile of all third-party crates (run 35036001734,
       # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -445,13 +233,49 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
           # Restore only. Never let a pull request evict master's entry.
           save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
@@ -480,6 +304,15 @@ jobs:
           # across three dedicated runners (~143s each), and the remaining
           # ~2755s levels across twelve duration-balanced shards at ~230s
           # each, in line with the other ~200-290s lanes.
+          #
+          # The balance only holds while the manifest is fresh. By 2026-10-10
+          # the without-chat group had grown to 871 suites and ~5031s of serial
+          # vitest time (mean of runs 38076844891 and 38076972444), 230 of
+          # them unrecorded and weighted at the median, so the twelve shards
+          # ran 313-554s of tests (server 2/12 at 618s was the slowest check
+          # in the run). Re-recorded durations level them to ~415s each; the
+          # shard count stays at twelve because Build and workspaces-b sit
+          # above that already.
           - group: general-server-without-chat
             group_label: server (1/12)
             shard_index: 0
@@ -554,8 +387,16 @@ jobs:
             group_label: workspaces-a (2/2)
             shard_index: 1
             shard_count: 2
+          # workspaces-b became the slowest check (499-593s) once the server
+          # shards were rebalanced: the db project alone was 168-250s of its
+          # 436-513s of vitest time (PR runs 38084171761, 38083084276 and
+          # 38083020834, 2026-10-10). The db project now runs as its own
+          # workspaces-c lane; the rest of workspaces-b is ~265-275s of
+          # vitest time, so both jobs land near 300-350s with setup.
           - group: general-workspaces-b
             group_label: workspaces-b
+          - group: general-workspaces-c
+            group_label: workspaces-c
 
     steps:
       - name: Checkout repository
@@ -587,7 +428,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -710,10 +551,12 @@ jobs:
             command: check:static
           - lane_label: rust
             command: check:runner
+            release_crate: true
           - lane_label: vitest 1/2
             command: test:typescript:vitest --shard=1/2
           - lane_label: vitest 2/2
             command: test:typescript:vitest --shard=2/2
+            release_crate: true
 
     steps:
       - name: Checkout repository
@@ -745,7 +588,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -766,11 +609,33 @@ jobs:
 
       # Same restore-only contract as the pnpm store above, for the Rust
       # dependency tree: master's post-merge verification is the sole writer
-      # of release-runner-v1, and PR merge refs must not save branch-scoped
+      # of release-runner-v2, and PR merge refs must not save branch-scoped
       # copies of a ~680MB target directory. Every key input below has to
       # match that writer in release-verify.yml exactly or each PR misses and
       # recompiles all 313 third-party crates in both profiles. A miss is a
       # slow run, never a wrong one.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -809,13 +674,56 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
           # Restore only. Never let a pull request evict master's entry.
           save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      #
+      # Only the lanes that build the release crate restore it: the Rust
+      # lane's release tests link the lib, and the final vitest shard hosts
+      # the server's native-runner suite, which builds the binary in its
+      # beforeAll. The static and first vitest lanes run no cargo at all.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        if: ${{ matrix.release_crate == true }}
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        if: ${{ matrix.release_crate == true }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Verify Paperclip Runner
         # pnpm appends trailing args to the end of the script's shell chain,
@@ -861,7 +769,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -880,10 +788,51 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
+      # The public-install verifier at the end of this lane downloads the whole
+      # public registry graph into an empty npm cache: its consumer install
+      # took 119-129s of the 226-241s step, more than half of this ~415-446s
+      # lane, in runs 38426120144, 38432086560 and 38423713537 (2026-10-13).
+      # That graph is fixed by source manifests, so this fetches it in the
+      # background while the Rust restore, Evalbook and `pnpm build` run, about
+      # 150s before the verifier installs anything. Only the cache is handed
+      # over, and the verify step waits for this first. A failed or partial
+      # warm-up leaves the verifier to fetch what is missing as before.
+      - name: Start warming the public-install npm cache
+        if: ${{ hashFiles('scripts/warm-public-install-npm-cache.mjs') != '' }}
+        run: |
+          (
+            # The default `bash -e` would skip the status line on a failure.
+            set +e
+            PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache" node scripts/warm-public-install-npm-cache.mjs
+            echo $? > "$RUNNER_TEMP/public-install-npm-cache.status"
+          ) > "$RUNNER_TEMP/public-install-npm-cache.log" 2>&1 &
+
       # pnpm build reaches the Runner package's build:binary step; without the
       # shared Rust cache that is a ~3m40s cold compile of all third-party
       # crates (run 35036001734, 2026-09-15). Same restore-only contract as
       # Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -922,19 +871,82 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
           # Restore only. Never let a pull request evict master's entry.
           save-if: false
 
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
+
       - name: Build Runner Evalbook viewer
         run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
 
       - name: Build
         run: pnpm build
+
+      # This verification only needs `pnpm build` output (the verifier stages
+      # the public packages' dist and reuses ui/dist itself), yet it ran at the
+      # end of Canary Dry Run, serially after the ~210-295s release.sh dry run.
+      # That made Canary Dry Run the slowest check in every green PR run:
+      # 484s, 572s and 483s in runs 37310951026, 37309272947 and 37308895471
+      # (2026-10-05), with this step alone at 210-223s of each. The Build lane
+      # finished its `pnpm build` in ~206s total in those same runs, so it
+      # absorbs the step at ~416s while Canary Dry Run drops to ~275-350s and
+      # neither remains the critical path (server 2/12 at ~437-467s is).
+      # docker-runner-check.yml runs the same verifier after `pnpm build`.
+      - name: Verify built-in Grok from a clean public npm install
+        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
+        run: |
+          status="$RUNNER_TEMP/public-install-npm-cache.status"
+          if [ -f "$RUNNER_TEMP/public-install-npm-cache.log" ]; then
+            # Normally finished long before this; never let it hold the lane.
+            for _ in $(seq 180); do [ -f "$status" ] && break; sleep 1; done
+            if [ "$(cat "$status" 2>/dev/null)" = 0 ]; then
+              tail -n 1 "$RUNNER_TEMP/public-install-npm-cache.log"
+            else
+              echo '::notice title=Public-install npm cache::warm-up did not finish cleanly; the verifier fetches what is missing'
+              tail -n 20 "$RUNNER_TEMP/public-install-npm-cache.log"
+            fi
+            export PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache"
+          fi
+          node scripts/verify-grok-npm-install.mjs
 
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
@@ -1012,7 +1024,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -1071,7 +1083,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -1094,6 +1106,28 @@ jobs:
       # build:binary step; without the shared Rust cache that is a ~3m40s cold
       # compile of all third-party crates (run 35036001734, 2026-09-15). Same
       # restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -1132,13 +1166,49 @@ jobs:
       - name: Restore Runner Rust dependencies (read only)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
           # Restore only. Never let a pull request evict master's entry.
           save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
 
       # `release.sh` always executes its Step 2/7 workspace build, even when
       # `--skip-verify` bypasses the initial verification gate. release.sh
@@ -1158,6 +1228,12 @@ jobs:
               commit --no-verify -m "ci(canary): stage regenerated lockfile"
           fi
           ./scripts/release.sh canary --skip-verify --dry-run
+
+      # The clean public npm install verification for the built-in Grok
+      # provider used to run here, after the dry run. It only needs `pnpm
+      # build` output, which the Build lane also produces, so it moved there:
+      # see "Verify built-in Grok from a clean public npm install" in `build`.
+
 
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
@@ -1235,7 +1311,7 @@ jobs:
           echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
 
       - name: Restore pnpm store (read only)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm_store.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}

@@ -879,7 +879,7 @@ describeEmbeddedPostgres("access service", () => {
       .toHaveLength(1);
   });
 
-  it("allows owner and admin role-default grants to manage environments", async () => {
+  it("allows owner, admin, and operator role-default grants to manage environments", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const access = accessService(db);
     const roles = ["admin", "operator", "viewer"] as const;
@@ -919,8 +919,48 @@ describeEmbeddedPostgres("access service", () => {
 
     await expect(access.canUser(company.id, owner.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, admin.principalId, "environments:manage")).resolves.toBe(true);
-    await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(false);
+    await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, viewer.principalId, "environments:manage")).resolves.toBe(false);
+  });
+
+  it("allows default operators to edit agents and company work without administering membership", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const operator = await access.ensureMembership(company.id, "user", `operator-${randomUUID()}`, "operator");
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Operator-editable agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      operator.principalId,
+      grantsForHumanRole("operator"),
+      owner.principalId,
+    );
+
+    for (const permissionKey of [
+      "agents:create", "agents:configure", "skills:create", "environments:manage",
+      "users:invite", "tasks:assign", "pipelines:write", "tools:manage_connections",
+      "tools:manage_profiles", "tools:manage_runtime", "tools:use", "tools:admin",
+      "tools:view_audit", "audit:view_agent_actions",
+    ] as const) {
+      await expect(access.canUser(company.id, operator.principalId, permissionKey)).resolves.toBe(true);
+    }
+    for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+      await expect(access.canUser(company.id, operator.principalId, permissionKey)).resolves.toBe(false);
+    }
+    await expect(access.decide({
+      actor: { type: "board", userId: operator.principalId, source: "session" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: agent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_direct_change" });
+
+    const otherCompany = await createCompanyWithOwner(db);
+    await expect(access.canUser(otherCompany.company.id, operator.principalId, "agents:configure")).resolves.toBe(false);
   });
 
   it("backfills pre-upgrade human memberships with missing role grants without replacing custom grants", async () => {

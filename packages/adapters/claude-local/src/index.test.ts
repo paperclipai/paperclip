@@ -8,10 +8,21 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
+  it.each([
+    "claude-sonnet-5-5",
+    "claude-sonnet-5-5[1m]",
+    "us.anthropic.claude-sonnet-5-5",
+    "global.anthropic.claude-sonnet-5-5[1m]",
+  ])("requires CLI 2.1.284 and offers all efforts for %s", (model) => {
+    expect(minimumClaudeCliVersionForModel(model)).toBe("2.1.284");
+    expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
   it("keeps model-specific Claude reasoning limits", () => {
     expect(claudeLocalReasoningEffortsForModel("claude-fable-5-1")).toContain("xhigh");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-5")).toContain("max");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-4-6")).toEqual(["low", "medium", "high", "max"]);
+    expect(claudeLocalReasoningEffortsForModel("claude-sonnet-4-5")).toEqual(["low", "medium", "high"]);
     expect(claudeLocalReasoningEffortsForModel("claude-haiku-4-5")).toEqual([]);
     expect(claudeLocalReasoningEffortsForModel("custom-model")).toEqual(["low", "medium", "high"]);
   });

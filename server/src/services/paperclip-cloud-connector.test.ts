@@ -7,7 +7,9 @@ import {
   randomBytes,
   type KeyObject,
 } from "node:crypto";
+import { SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   createPaperclipCloudConnector,
@@ -23,6 +25,13 @@ import {
 const instanceId = "inst_test";
 const companyId = "company_test";
 const subject = "user_test";
+
+// Captured from the producer's in-memory HTTP integration test, using synthetic
+// enrollment and a signed request with a callback outside the enrolled origins.
+// Retain only the HTTP status and exact JSON error body, never request data.
+const originRejectionContract = JSON.parse(readFileSync(
+  new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
+)) as { status: number; body: { error: string } };
 
 function rawPrivateKey(key: KeyObject): string {
   const jwk = key.export({ format: "jwk" }) as { d?: string };
@@ -46,6 +55,112 @@ function config() {
 }
 
 describe("Paperclip Cloud connector", () => {
+  it("accepts a managed test identity and rejects other environments at its broker", () => {
+    const identity = config().config;
+    const env = {
+      PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: identity.instanceId,
+      PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: identity.signPrivateKey,
+      PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: identity.sealPrivateKey,
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://test.paperclip.app",
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test",
+    };
+    expect(paperclipCloudConnectorConfigFromEnv(env)).toMatchObject({ environment: "test", baseUrl: env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL });
+    for (const environment of ["development", "staging", "production"]) {
+      expect(() => paperclipCloudConnectorConfigFromEnv({ ...env, PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: environment })).toThrow(/broker and environment do not match/);
+    }
+    for (const baseUrl of ["https://my.paperclip.app", "https://my-staging.paperclip.app"]) {
+      expect(() => paperclipCloudConnectorConfigFromEnv({ ...env, PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: baseUrl })).toThrow(/broker and environment do not match/);
+    }
+  });
+
+  async function rejection(response: Response) {
+    const connector = createPaperclipCloudConnector({
+      config: config().config,
+      request: vi.fn(async () => response) as typeof fetch,
+    });
+    return connector.startAuthorization({
+      subject, companyId, profile: "gmail.read",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "private-state",
+    }).catch((error: unknown) => error);
+  }
+
+  it("accepts the producer's origin-rejection HTTP contract", async () => {
+    expect(await rejection(Response.json(originRejectionContract.body, {
+      status: originRejectionContract.status,
+    }))).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
+    });
+  });
+
+  it("retains an allowlisted rejection reason without broker messages or credentials", async () => {
+    const error = await rejection(Response.json({
+      error: "RETURN_ORIGIN_NOT_ENROLLED",
+      message: "DO_NOT_REPORT private-state access-secret https://private.example.test",
+    }, { status: 400 }));
+    expect(error).toBeInstanceOf(PaperclipCloudConnectorError);
+    expect(error).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
+    });
+    expect(JSON.stringify(error)).not.toMatch(/DO_NOT_REPORT|private-state|access-secret|private\.example/);
+  });
+
+  it.each([
+    JSON.stringify({ error: "CUSTOM_SECRET_ERROR", message: "DO_NOT_REPORT" }),
+    JSON.stringify({ error: { code: "RETURN_ORIGIN_NOT_ENROLLED" } }),
+    "<html>DO_NOT_REPORT</html>",
+    JSON.stringify({ error: "RETURN_ORIGIN_NOT_ENROLLED", padding: "x".repeat(4_096) }),
+  ])("drops unknown, malformed, or oversized rejection bodies", async (body) => {
+    const error = await rejection(new Response(body, { status: 409 }));
+    expect(error).toMatchObject({
+      code: "REAUTHORIZATION_REQUIRED", status: 409,
+      message: "Paperclip Cloud connector rejected the request (operation=session, status=409, reason=UNKNOWN_BROKER_ERROR)",
+    });
+  });
+
+  it("keeps the original status when the error body stream fails", async () => {
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("DO_NOT_REPORT")); },
+    }), { status: 503 });
+    expect(await rejection(response)).toMatchObject({
+      code: "CONNECTOR_REQUEST_FAILED", status: 503,
+      message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+    });
+  });
+
+  it("keeps the original failure when a response body is absent or already locked", async () => {
+    const locked = Response.json({ error: "RETURN_ORIGIN_NOT_ENROLLED" }, { status: 401 });
+    const reader = locked.body!.getReader();
+    try {
+      for (const response of [new Response(null, { status: 401 }), locked]) {
+        expect(await rejection(response)).toMatchObject({
+          code: "CONNECTOR_REQUEST_FAILED", status: 401,
+          message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+        });
+      }
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it("bounds a stalled diagnostic read and does not wait for cancellation", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    try {
+      const pending = rejection(new Response(new ReadableStream({ cancel }), { status: 400 }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await pending).toMatchObject({
+        code: "CONNECTOR_REQUEST_FAILED", status: 400,
+        message: expect.stringContaining("reason=UNKNOWN_BROKER_ERROR"),
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes capabilities after enrollment and rejects stale cache writes", async () => {
     const keys = config().config;
     const env = {
@@ -164,6 +279,27 @@ describe("Paperclip Cloud connector", () => {
     })).resolves.toMatchObject({
       authorizationUrl: "https://github.com/login/oauth/authorize?client_id=client&state=broker-state",
     });
+  });
+
+  it.each([
+    ["https://app.asana.com/-/oauth_authorize", true],
+    ["https://mcp.asana.com/authorize", false],
+    ["https://app.asana.com/other", false],
+  ])("validates Asana's exact v2 authorization endpoint %s", async (authorizationUrl, accepted) => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
+        expect(claims).toMatchObject({ prv: "asana", prf: "asana.mcp", scp: ["default"] });
+        return Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=test",
+          authorizationUrl, expiresAt: "2099-01-01T00:00:00Z" });
+      }) as typeof fetch,
+    });
+    const result = connector.startAuthorization({ subject, companyId, profile: "asana.mcp",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "state" });
+    if (accepted) await expect(result).resolves.toMatchObject({ authorizationUrl });
+    else await expect(result).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
   });
 
   it("accepts the fixed Google authorization endpoint for Google profiles", async () => {
@@ -289,6 +425,16 @@ describe("Paperclip Cloud connector", () => {
     })).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
   });
 
+  it("opens Slack manager handoffs with their exact profile and personal identity", async () => {
+    const keys = config();
+    const credentials = { v: 1, accessToken: "manager-access-canary", refreshToken: "manager-refresh-canary", tokenType: "user", accessTokenExpiresAt: "2030-01-01T00:00:00.000Z", refreshTokenExpiresAt: null,
+      scopes: [...SLACK_MANAGER_SCOPES], subject, companyId, instanceId, environment: "staging", provider: "slack", profile: "slack.manager",
+      slackManager: { appId: "AMANAGER", workspaceId: "TWORKSPACE", workspaceName: "Paperclip", userId: "UOWNER" } };
+    const sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "slack.manager");
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: vi.fn(async () => Response.json({ claimId: "claim", scopes: [...SLACK_MANAGER_SCOPES], sealed })) as typeof fetch });
+    await expect(connector.claim({ subject, companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).resolves.toEqual(credentials);
+    await expect(connector.claim({ subject: "another-user", companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).rejects.toThrow();
+  });
   it("opens an instance-sealed claim and verifies its user, company, and exact scopes", async () => {
     const keys = config();
     const credentials = {
@@ -493,10 +639,12 @@ describe("Paperclip Cloud connector", () => {
 function seal(
   payload: unknown,
   recipientPublicKey: KeyObject,
-  purpose: "initial" | "access",
+  purpose: "initial" | "access" | "events",
   configValue: PaperclipCloudConnectorConfig,
-  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES | "slack.manager" | "github.bot" | "github.code",
 ) {
+  const provider = profile.startsWith("github.") ? "github" : profile === "slack.manager" ? "slack" : "google";
+  const scopes = provider === "github" ? [] : profile === "slack.manager" ? SLACK_MANAGER_SCOPES : GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile as keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES].scopes;
   const ephemeral = generateKeyPairSync("x25519");
   const ephemeralJwk = ephemeral.publicKey.export({ format: "jwk" }) as { x: string };
   const recipientJwk = recipientPublicKey.export({ format: "jwk" }) as { x: string };
@@ -508,9 +656,9 @@ function seal(
     purpose,
     configValue.instanceId,
     configValue.environment,
-    "google",
+    provider,
     profile,
-    [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes].sort().join(" "),
+    [...scopes].sort().join(" "),
   ].join("\n"));
   const key = Buffer.from(hkdfSync(
     "sha256",
@@ -527,10 +675,34 @@ function seal(
     v: 1,
     alg: "X25519-HKDF-SHA256-A256GCM",
     purpose,
-    provider: "google",
+    provider,
     profile,
     epk: ephemeralJwk.x,
     iv: iv.toString("base64url"),
     ct: ciphertext.toString("base64url"),
   };
 }
+
+describe("dedicated App gateway delivery", () => {
+  it.each([1, 2])("requires the stack-owned setup protocol version (%s)", async version => {
+    const connector = createPaperclipCloudConnector({ config: config().config, request: vi.fn(async () => Response.json({active:true,githubApps:{version}})) as typeof fetch });
+    expect(await connector.githubAppsAvailable()).toBe(version === 2);
+  });
+  it("decrypts opaque webhook bytes sealed before Cloud storage", async () => {
+    const keys = config();
+    const rawBody = Buffer.from('{ "comment": { "body": "private comment" } }').toString("base64");
+    const packet = { v:1,instanceId,environment:"staging",registrationId:"route-a",rawBody,headers:{"x-github-event":"issue_comment","x-github-delivery":"delivery-a","x-hub-signature-256":"signature"} };
+    const inner = seal(packet,keys.sealPublicKey,"events",keys.config,"github.bot");
+    const outer = seal({v:1,instanceId,environment:"staging",leaseId:"lease-a",events:[{id:"transport-a",provider:"github",event:"gateway_delivery",payload:{githubApp:{registrationId:"route-a",sealed:inner}},bindingIds:["github-app:route-a"]}]},keys.sealPublicKey,"events",keys.config,"github.code");
+    const connector = createPaperclipCloudConnector({config:keys.config,request:vi.fn(async()=>Response.json({leaseId:"lease-a",sealed:outer})) as typeof fetch});
+    expect((await connector.leaseEvents({subject,companyId}))?.events[0].payload.githubApp).toEqual(packet);
+    expect(JSON.stringify(inner)).not.toContain("private comment");
+  });
+  it("rejects an inner envelope swapped from another opaque route", async () => {
+    const keys = config();
+    const inner = seal({v:1,instanceId,environment:"staging",registrationId:"route-b"},keys.sealPublicKey,"events",keys.config,"github.bot");
+    const outer = seal({v:1,instanceId,environment:"staging",leaseId:"lease-a",events:[{id:"transport-a",provider:"github",event:"gateway_delivery",payload:{githubApp:{registrationId:"route-a",sealed:inner}},bindingIds:["github-app:route-a"]}]},keys.sealPublicKey,"events",keys.config,"github.code");
+    const connector=createPaperclipCloudConnector({config:keys.config,request:vi.fn(async()=>Response.json({leaseId:"lease-a",sealed:outer})) as typeof fetch});
+    await expect(connector.leaseEvents({subject,companyId})).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+  });
+});

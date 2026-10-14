@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -87,7 +87,6 @@ describePg("decisionService", () => {
     options: [{ id: "yes", label: "Yes", effects: [{ type: "comment_on_issue", targetIssueId, staleness, bodyMarkdown: "hello" }] }],
     ...extra,
   });
-
   // Make an existing decision TTL-expired for the next sweep. Creating a
   // decision that is already expired is impossible (create rejects a past
   // expiresAt), and creating one that expires a few milliseconds later races

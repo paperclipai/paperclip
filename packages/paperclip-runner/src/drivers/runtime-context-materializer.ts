@@ -12,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parse as parseToml } from "smol-toml";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { NativeMcpLaunchBinding } from "./native-mcp.js";
@@ -306,6 +307,29 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+/** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
+async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
+  if (!sourceHome?.trim()) return "";
+  const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
+  if (!source) return "";
+  let parsed;
+  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
+  if (parsed.model_provider !== "paperclip") return "";
+  const providers = parsed.model_providers as Record<string, unknown> | undefined;
+  const provider = providers?.paperclip as Record<string, unknown> | undefined;
+  if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
+    || provider.requires_openai_auth !== false
+    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
+    throw new Error("Invalid managed Codex provider configuration");
+  }
+  const url = new URL(provider.base_url);
+  if (url.username || url.password || url.search || url.hash
+    || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
+    throw new Error("Invalid managed Codex provider URL");
+  }
+  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}`;
+}
+
 export async function prepareIsolatedCodexHome(input: {
   context: NativeRuntimeContextSnapshot | null;
   codexHome: string;
@@ -318,9 +342,11 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
+  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   const configPath = join(input.codexHome, "config.toml");
   await rm(configPath, { force: true });
   await writeFile(configPath, [
+    providerConfig,
     // Codex shell snapshots serialize the provider process environment. The
     // native runner injects short-lived provider and MCP bindings, so a
     // snapshot would turn ephemeral credentials into durable session state.
@@ -343,6 +369,7 @@ export async function prepareIsolatedCodexHome(input: {
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
+  if (providerConfig) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its

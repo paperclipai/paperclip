@@ -11,19 +11,22 @@ vi.mock("./issues.js", () => ({
 
 type SelectRow = Record<string, unknown>;
 
-function createSelectChain(rows: SelectRow[]) {
+function createSelectChain(rows: SelectRow[] | ((table: unknown) => SelectRow[])) {
   return {
-    from() {
+    from(table: unknown) {
+      const selectedRows = typeof rows === "function" ? rows(table) : rows;
       const query = {
         innerJoin() {
           return query;
         },
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return query;
+        },
+        for() {
+          return query;
+        },
+        then(callback: (rows: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(selectedRows));
         },
       };
       return query;
@@ -45,7 +48,8 @@ function createFakeDb(args: {
   const db: any = {
     select: vi.fn(() => {
       selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
+      return createSelectChain(table => getTableName(table as never) === "issues" ? [{ status: "in_progress" }] : rows);
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {

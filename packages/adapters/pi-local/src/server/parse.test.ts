@@ -288,3 +288,12 @@ describe("terminal provider failures", () => {
       .toEqual(["Pi provider request failed."]);
   });
 });
+
+describe("Pi price availability", () => {
+  it("retains unpriced usage and counts cache writes without treating a missing price as free", () => {
+    const event = { type: "turn_end", message: { role: "assistant", content: [], usage: { input: 10, output: 3, cacheRead: 100, cacheWrite: 20 } } };
+    expect(parsePiJsonl(JSON.stringify(event)).usage).toEqual({ inputTokens: 30, cachedInputTokens: 100, outputTokens: 3, costUsd: null });
+    event.message.usage = { ...event.message.usage, cost: { total: 0 } } as typeof event.message.usage;
+    expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
+  });
+});

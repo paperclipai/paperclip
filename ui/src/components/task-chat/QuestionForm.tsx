@@ -11,6 +11,7 @@ import type {
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -229,7 +230,13 @@ export function QuestionResponseSummary({
   );
 }
 
-export function QuestionForm({
+export function QuestionForm(props: QuestionFormProps) {
+  // Takeovers can reuse this component for another pending request. Remount
+  // before draft persistence runs so one request cannot overwrite another.
+  return <QuestionFormForRequest key={JSON.stringify([props.id, props.draftKey])} {...props} />;
+}
+
+function QuestionFormForRequest({
   id,
   questionSet,
   initialResponse,
@@ -242,6 +249,14 @@ export function QuestionForm({
   onCancel,
 }: QuestionFormProps) {
   const takeoverActions = useTaskChatComposerTakeoverActions();
+  // A provider default is an editable draft only. An existing response or
+  // saved draft, including an explicitly cleared value, always wins. State
+  // initialization runs once so request refreshes cannot replace user edits.
+  const startingAnswers = initialResponse?.answers ?? Object.fromEntries(
+    questionSet.questions
+      .filter((question) => question.answerMode === "text" && question.initialText !== undefined)
+      .map((question) => [question.id, { text: question.initialText! }]),
+  );
   const initialDraft = draftKey
     ? loadStructuredDraft<{
         page: number;
@@ -249,7 +264,7 @@ export function QuestionForm({
         customActive: Record<string, boolean>;
       }>(draftKey, {
         page: 0,
-        answers: structuredClone(initialResponse?.answers ?? {}),
+        answers: structuredClone(startingAnswers),
         customActive: Object.fromEntries(
           Object.entries(initialResponse?.answers ?? {})
             .filter(([, answer]) => Boolean(answer.customText))
@@ -260,7 +275,7 @@ export function QuestionForm({
   const [page, setPage] = useState(initialDraft?.page ?? 0);
   const [answers, setAnswers] = useState<Record<string, Answer>>(
     () =>
-      initialDraft?.answers ?? structuredClone(initialResponse?.answers ?? {}),
+      initialDraft?.answers ?? structuredClone(startingAnswers),
   );
   const [customActive, setCustomActive] = useState<Record<string, boolean>>(
     () =>
@@ -515,9 +530,14 @@ export function QuestionForm({
       }}
     >
       {questionSet.description ? (
-        <p className="mb-3 text-sm text-muted-foreground">
-          {questionSet.description}
-        </p>
+        <div
+          role="region"
+          aria-label="Question context"
+          tabIndex={0}
+          className="mb-3 max-h-96 overflow-auto text-sm text-muted-foreground"
+        >
+          <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{questionSet.description}</MarkdownBody>
+        </div>
       ) : null}
       {question.answerMode === "text" ? (
         <div className="mb-2 flex items-center gap-3 text-xs text-muted-foreground">

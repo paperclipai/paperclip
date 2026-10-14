@@ -1,6 +1,7 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
 import type {
   HarnessRuntimeRequest,
+  HarnessSessionRecoveryOptions,
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   PersistedHarnessSemanticResult,
@@ -89,7 +90,7 @@ export class CodexSessionState {
   readonly normalizedSessionId: string;
   readonly opened: OpenedCodexThread;
   readonly taskEnvelope: CodexTaskEnvelope;
-  readonly conversationMode: "task" | "direct";
+  readonly conversationMode: "task" | "direct" | "prepared";
   readonly now: () => Date;
   readonly runnerInstanceId: string;
   readonly driverKind: string;
@@ -101,6 +102,7 @@ export class CodexSessionState {
   readonly goalReasonCode: string | null;
   readonly goalReason: string | null;
   readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
+  readonly reasoningEffort: string | undefined;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -111,6 +113,7 @@ export class CodexSessionState {
   codexUsageBaseline: CodexUsageBaseline | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
+  readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
   resultCallId: string | null = null;
   resultTurnId: string | null = null;
   turnStartPending = false;
@@ -153,10 +156,11 @@ export class CodexSessionState {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     taskEnvelope: CodexTaskEnvelope;
-    conversationMode: "task" | "direct";
+    conversationMode: "task" | "direct" | "prepared";
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
+    normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
     terminalTurns?: PersistedHarnessTurnTerminal[];
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
@@ -174,6 +178,7 @@ export class CodexSessionState {
     goalReasonCode: string | null;
     goalReason: string | null;
     skillInputs?: CodexAppServerDriverOptions["skillInputs"];
+    reasoningEffort?: string;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -198,6 +203,7 @@ export class CodexSessionState {
     this.goalReasonCode = input.goalReasonCode;
     this.goalReason = input.goalReason;
     this.skillInputs = structuredClone(input.skillInputs ?? []);
+    this.reasoningEffort = input.reasoningEffort;
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;
@@ -211,6 +217,7 @@ export class CodexSessionState {
         structuredClone(input.opened.lineage),
       );
     }
+    this.normalizeReplayPayload = input.normalizeReplayPayload;
     if (input.semanticResult) {
       const validation = validatePrpStructuredRunResult(
         input.semanticResult.result,

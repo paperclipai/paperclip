@@ -51,11 +51,16 @@ async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[n
   await page.addInitScript(`{
     const fixedNow = ${FIXED_TIME.getTime()};
     const RealDate = Date;
+    // Speko play functions exercise quiet-period gates. Keep a fixed calendar
+    // origin while advancing elapsed time, so settling those gates is real.
+    const advanceDate = ${storyId.startsWith("connections-speko-")};
+    const began = performance.now();
+    const stableNow = () => fixedNow + (advanceDate ? Math.floor(performance.now() - began) : 0);
     class FixedDate extends RealDate {
       constructor(...args) {
-        if (args.length === 0) { super(fixedNow); } else { super(...args); }
+        if (args.length === 0) { super(stableNow()); } else { super(...args); }
       }
-      static now() { return fixedNow; }
+      static now() { return stableNow(); }
     }
     FixedDate.parse = RealDate.parse;
     FixedDate.UTC = RealDate.UTC;
@@ -77,6 +82,10 @@ async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[n
   });
   const errored = await page.locator(".sb-show-errordisplay").count();
   expect(errored, `story ${storyId} threw during render`).toBe(0);
+  if (storyId.startsWith("connections-speko-")) {
+    await page.waitForFunction((id) => document.body.dataset.spekoStoryReady === id, storyId);
+    expect(await page.locator("body").getAttribute("data-speko-story-error")).toBeNull();
+  }
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const settleMs = EXTRA_SETTLE_MS[storyId];
   if (settleMs) await page.waitForTimeout(settleMs);

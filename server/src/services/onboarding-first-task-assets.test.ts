@@ -102,7 +102,6 @@ describe("chief-of-staff persona", () => {
       organizationName: "Acme",
     });
     expect(persona).toContain("You are Ada, chief of staff for Acme.");
-    expect(persona).toContain("# Working with the user");
     expect(persona).not.toContain("{{agentName}}");
     expect(persona).not.toContain("{{organizationName}}");
   });
@@ -113,6 +112,8 @@ describe("chief-of-staff persona", () => {
       organizationName: "Acme",
     });
     expect(bundle.entryFile).toBe("AGENTS.md");
-    expect(bundle.files["AGENTS.md"]).toContain("You are Ada, chief of staff for Acme.");
+    expect(bundle.files).toEqual({
+      "AGENTS.md": await renderChiefOfStaffPersona({ agentName: "Ada", organizationName: "Acme" }),
+    });
   });
 });

@@ -188,9 +188,8 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
-      `Configured Pi model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      `Configured Pi model is unavailable: ${model}. ${models.length} models are available; list them with \`pi --list-models\`.`,
     );
   }
 

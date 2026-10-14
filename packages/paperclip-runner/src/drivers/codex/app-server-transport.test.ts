@@ -16,6 +16,15 @@ function nodeTransport(
 }
 
 describe("Codex app-server transport limits", () => {
+  it("passes the selected managed provider key without admitting arbitrary host secrets", () => {
+    expect(createSanitizedCodexEnvironment({
+      PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key",
+      CODEX_HOME: "/isolated/connection",
+      OPENROUTER_API_KEY: "ambient-other-key",
+      DATABASE_URL: "private-database",
+    })).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key", CODEX_HOME: "/isolated/connection" });
+  });
+
   it("passes only bounded controller-projected GitHub credentials", () => {
     expect(
       createSanitizedCodexEnvironment({
@@ -58,6 +67,14 @@ describe("Codex app-server transport limits", () => {
     expect(redactCodexDiagnostic("Basic API foundation"))
       .toBe("Basic API foundation");
   });
+
+  it.each(["PAPERCLIP_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "CUSTOM_API_KEY"])(
+    "redacts the complete %s environment value through the shared text helper",
+    (key) => {
+      expect(redactCodexDiagnostic(`${key}=private;still-private`))
+        .toBe(`${key}=[REDACTED]`);
+    },
+  );
 
   it("reports restart-safe process-group ownership", async () => {
     const transport = nodeTransport("process.stdin.resume()", { processGroup: true });

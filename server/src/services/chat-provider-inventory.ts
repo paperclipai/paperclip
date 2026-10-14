@@ -81,6 +81,7 @@ export async function listSlackBotChannels(input: {
       channels?: Array<{
         id?: string;
         name?: string;
+        creator?: string;
         is_member?: boolean;
         is_private?: boolean;
         is_archived?: boolean;
@@ -99,6 +100,7 @@ export async function listSlackBotChannels(input: {
         type: "channel",
         label: channel.name ? `#${channel.name}` : channel.id,
         metadata: {
+          ...(channel.creator ? { creator: channel.creator } : {}),
           private: channel.is_private === true,
           ...(channel.context_team_id
             ? { contextTeamId: channel.context_team_id }

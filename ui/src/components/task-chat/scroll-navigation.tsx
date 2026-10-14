@@ -4,6 +4,16 @@ import { createContext, useContext } from "react";
 export const TaskChatScrollNavigation = createContext<{ key: string; restore: boolean; hash: string } | null>(null);
 export const TaskChatScrollReady = createContext(true);
 
+/** Document navigation opens a pane without starting a new thread reading. */
+export function taskChatScrollEntry(location: { key: string; hash: string; pathname: string; state: unknown }): { key: string; hash: string; pathname: string } {
+  const saved = location.state && typeof location.state === "object" && "taskDocumentScrollEntry" in location.state
+    ? location.state.taskDocumentScrollEntry : null;
+  if (saved && typeof saved === "object" && "key" in saved && "hash" in saved && "pathname" in saved && saved.pathname === location.pathname && typeof saved.key === "string" && typeof saved.hash === "string") {
+    return { key: saved.key, hash: saved.hash, pathname: location.pathname };
+  }
+  return { key: location.key, hash: location.hash, pathname: location.pathname };
+}
+
 // Scoped to browser-history entries, not issues: opening the same task from a
 // new Inbox click starts at latest, while Back restores the previous reading.
 const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | null }>();

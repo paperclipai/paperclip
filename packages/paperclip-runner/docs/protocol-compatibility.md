@@ -107,6 +107,21 @@ Codex answer objects, OpenCode answer arrays, and ACP typed content exist only
 inside their adapters; `origin` may retain the provider method and adapter name
 for diagnostics but never provider response data.
 
+Text-mode questions may include `initialText` (at most 100,000 Unicode code points,
+within the existing 196 KiB question-set bound). It supplies an editable starting
+draft, including empty text and whitespace. ACP plain-string `default` values map
+without trimming; numeric defaults become editable numeric text. Select questions
+do not accept this field. The UI preserves saved drafts and existing responses
+ahead of provider defaults. Initial text never submits or resolves a request:
+the operator must explicitly submit, and all existing response validation still
+applies. Canonical text answers retain submitted whitespace and literal escape
+sequences; legacy and select custom answers retain their existing normalization.
+JSON Schema, TypeScript and Rust count draft Unicode code points alike. Existing
+submitted-answer limits still count UTF-16 code units; a draft can require editing
+before it satisfies those limits or field-specific constraints. Required blank
+answers remain invalid. Redaction, company scope and durable
+replay rules remain in force.
+
 Question and option order is significant, while answers are keyed by stable
 question IDs and selections reference stable option IDs. The canonical modes
 are `text`, `single_select`, and `multi_select`. Text validation is repeated at
@@ -139,10 +154,23 @@ policy in the closed provider configuration: `approvalPolicy` for Codex and
 provider-session identity, so an incompatible idle or recovered session is
 replaced on the next execution. An active turn is never mutated in place.
 
-Persisted v1-v3 inputs remain replayable. Missing Codex and OpenCode policy
-fields retain their historical effective behavior. Legacy ACPX
-`permissionPolicy: "interactive"` is interpreted as `approve-reads`, while a
-new v4 ACPX execution defaults to `approve-all` at the server boundary.
+`paperclip.native-execution-input.v5` is the current input format. It retains
+the v4 permission pinning and adds optional completion-source references;
+`paperclip.native-model-envelope.v3` is the corresponding explicit model
+projection. Readers continue to accept persisted v1-v4 inputs, and v5 readers
+must preserve the historical behavior of inputs that do not carry the new
+optional fields. Missing Codex and OpenCode policy fields retain their
+historical effective behavior. Legacy ACPX `permissionPolicy: "interactive"`
+is interpreted as `approve-reads`, while new v4 and v5 ACPX executions default
+to `approve-all` at the server boundary.
+
+When a healthy provider session is resumed, its persisted v4 or v5 input format
+is retained even if the newly built input uses the other format. This avoids
+rotating an active session for a presentation-only schema change. A safe
+rollback from v5 to v4 removes only the optional completion-source references;
+it retains the task, contract, provider, workspace, and permission fields.
+Format changes still go through the normal provider-session identity checks,
+and an active turn is never mutated in place.
 
 See [Adding a harness](adding-a-harness.md) for the permission catalog,
 isolation rules, and provider conformance requirements.
@@ -217,9 +245,10 @@ Runnerd build-metadata contract v2 advertises the exact transport inventory:
 `dial_ws_loopback`, `dial_wss`, and `listen_ws`. Plaintext dial destinations
 must resolve entirely to loopback. Public dial targets require TLS trust and
 hostname validation; a private CA bundle augments the platform roots and must
-be a bounded, private, regular file. Listener mode is fixed to port 43127 and a
-single run-bound path. All modes retain the same message/frame bounds and PRP
-authentication.
+be a bounded, private, regular file. Listener mode binds to `0.0.0.0` and a
+single run-bound path. The optional `--listen-port` selects a port in
+`1..=65535` and defaults to `43127`. Warm attachments retain the existing
+listening port. All modes retain the same message/frame bounds and PRP authentication.
 
 These are package-local Durable recovery and transport rules. Control-plane
 admission and deployment policy remain separately reviewed work.

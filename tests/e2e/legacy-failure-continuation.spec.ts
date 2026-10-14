@@ -27,9 +27,12 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
         name: "Recovery fixture", role: "engineer", adapterType: "claude_local",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
-          env: { PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1" } },
+          // The ACP fixture has no provider login. Use a fixture key to keep setup offline.
+          env: { ANTHROPIC_API_KEY: "acp-stop-fixture-key", PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1" } },
         runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
       } }));
+      await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState,
+        { timeout: 45_000 }).toBe("ready");
       const issue = await json(await request.post(`/api/companies/${company.id}/issues`, { data: {
         title: "Continue after startup failure", description: "Answer the pending follow-up once.",
         status: "backlog", assigneeAgentId: agent.id,
@@ -73,8 +76,11 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       await page.goto(action === "inbox_retry" ? `/${company.issuePrefix}/inbox/all` : taskUrl);
       if (action === "task_retry") {
         const notice = page.getByRole("status", { name: "Task recovery" });
-        await expect(notice).toHaveText("Automatic recovery of this task stopped.Retry");
-        await expect(notice.getByRole("link")).toHaveCount(0);
+        await expect(notice).toContainText("Server restarted during startup");
+        await expect(notice).toContainText("Automatic recovery stopped.");
+        await expect(notice.getByRole("link", { name: "Inspect run" }))
+          .toHaveAttribute("href", new RegExp(`/agents/${agent.id}/runs/${sourceRunId}$`));
+        await expect(notice.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
         const presentation = await notice.evaluate(element => {
           const style = getComputedStyle(element);
           return { border: style.borderTopWidth, background: style.backgroundColor };
@@ -93,9 +99,21 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       } else if (action === "message") {
         await page.getByRole("textbox", { name: "editable markdown" }).fill("Please continue the pending follow-up.");
         await page.getByRole("button", { name: "Send", exact: true }).click();
+      } else if (action === "inbox_retry") {
+        // Navigation can cancel the mutation before its request is sent.
+        const [response] = await Promise.all([
+          page.waitForResponse((response) => {
+            const request = response.request();
+            return request.method() === "POST"
+              && new URL(response.url()).pathname.endsWith(`/agents/${agent.id}/wakeup`)
+              && request.postDataJSON()?.failedRunId === sourceRunId;
+          }),
+          page.getByRole("button", { name: "Retry", exact: true }).click(),
+        ]);
+        expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
+        await page.goto(taskUrl);
       } else {
         await page.getByRole("button", { name: action === "thread_retry" ? "Try again" : "Retry", exact: true }).click();
-        if (action === "inbox_retry") await page.goto(taskUrl);
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 45_000 });
       await expect(page.getByRole("status", { name: "Task recovery" })).toHaveCount(0);

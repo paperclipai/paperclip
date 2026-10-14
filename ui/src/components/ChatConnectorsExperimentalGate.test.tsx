@@ -13,14 +13,19 @@ const api = vi.hoisted(() => ({
   settings: vi.fn(),
   list: vi.fn(),
   binding: vi.fn(),
+  get: vi.fn(),
+  provider: null as string | null,
+  endpointId: undefined as string | undefined,
 }));
 vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: { getExperimental: api.settings },
 }));
 vi.mock("@/api/chatEndpoints", () => ({
-  chatEndpointsApi: { list: api.list, getIssueBinding: api.binding },
+  chatEndpointsApi: { list: api.list, getIssueBinding: api.binding, get: api.get },
 }));
 vi.mock("@/lib/router", () => ({
+  useParams: () => ({ endpointId: api.endpointId }),
+  useSearchParams: () => [new URLSearchParams(api.provider ? { provider: api.provider } : {})],
   Navigate: ({ to }: { to: string }) => <div data-redirect={to} />,
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
     <a href={to}>{children}</a>
@@ -44,6 +49,9 @@ describe("Chat connectors visibility gate", () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     api.settings.mockResolvedValue({ enableChatConnectors: false });
     api.list.mockResolvedValue([]);
+    api.get.mockResolvedValue({ provider: "agentmail" });
+    api.provider = null;
+    api.endpointId = undefined;
     api.binding.mockResolvedValue(null);
   });
   afterEach(() => {
@@ -82,6 +90,45 @@ describe("Chat connectors visibility gate", () => {
       ).toBe("/apps");
     },
   );
+  it("opens AgentMail setup with the experimental flag disabled", async () => {
+    api.provider = "agentmail";
+    await render();
+    expect(container.querySelector("[data-chat-setup]")).not.toBeNull();
+    expect(api.get).not.toHaveBeenCalled();
+  });
+  it.each(["agentmail", "slack"])("admits only default email management when chat is disabled (%s)", async (provider) => {
+    api.endpointId = "endpoint-1";
+    api.get.mockResolvedValue({ provider });
+    await render();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("endpoint-1"));
+    await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "agentmail"));
+    if (provider !== "agentmail") expect(container.querySelector("[data-redirect]")).not.toBeNull();
+  });
+  it.each([true, false])("gates GitHub setup by its own flag, not chat (%s)", async (githubEnabled) => {
+    api.provider = "github";
+    api.settings.mockResolvedValue({ enableChatConnectors: !githubEnabled, enableGitHubReviewBots: githubEnabled });
+    await render();
+    expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(githubEnabled);
+  });
+  it.each(["github", "slack"])("gates each existing endpoint by provider with only GitHub enabled (%s)", async (provider) => {
+    api.endpointId = "endpoint-1";
+    api.get.mockResolvedValue({ provider });
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    await render();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("endpoint-1"));
+    await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "github"));
+  });
+  it("keeps GitHub agent channels visible while hiding Slack under the independent flag", async () => {
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    api.list.mockResolvedValue([
+      { provider: "github", id: "github", assignedAgentId: "agent-1", status: "active" },
+      { provider: "slack", id: "slack", assignedAgentId: "agent-1", status: "active" },
+    ]);
+    flushSync(() => root.render(<QueryClientProvider client={client}><AgentChannelsPanel companyId="company-1" agentId="agent-1" /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/apps/chat/github/settings"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/apps/chat/slack/settings"]')).toBeNull();
+  });
   it("waits without exposing setup, then enables the route after explicit opt-in", async () => {
     let resolve!: (value: unknown) => void;
     api.settings.mockReturnValue(
@@ -127,9 +174,9 @@ describe("Chat connectors visibility gate", () => {
     expect(container.querySelector("[data-chat-setup]")).toBeNull();
     expect(api.settings).not.toHaveBeenCalled();
   });
-  it("hides cached agent channels and task bindings without fetching chat data while disabled", async () => {
+  it("keeps agent email channels available but hides cached experimental chat channels and task bindings", async () => {
     client.setQueryData(queryKeys.chatEndpoints.list("company-1"), [
-      { id: "endpoint-1", assignedAgentId: "agent-1", status: "active" },
+      { provider: "slack", id: "endpoint-1", assignedAgentId: "agent-1", status: "active" },
     ]);
     client.setQueryData(["issue-chat-binding", "company-1", "issue-1"], {
       endpointId: "endpoint-1",
@@ -147,8 +194,9 @@ describe("Chat connectors visibility gate", () => {
       ),
     );
     await flushReact();
-    expect(container.innerHTML).toBe("");
-    expect(api.list).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Connect AgentMail from Connectors.");
+    expect(container.querySelector('a[href="/apps/chat/endpoint-1/settings"]')).toBeNull();
+    expect(api.list).toHaveBeenCalledWith("company-1");
     expect(api.binding).not.toHaveBeenCalled();
   });
 });

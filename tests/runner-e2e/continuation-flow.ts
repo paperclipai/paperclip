@@ -1,9 +1,12 @@
-import { prepareLegacyContinuationSkill } from "./continuation-fixtures.js";
+import { validResumeQuestionForm } from "./question-resume-scoring.js";
+import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
+import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
+import { prepareLegacyContinuationSkill, prepareContinuationBudget } from "./continuation-fixtures.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { answerableRuntimeRunIds, isSingleClaudeQuestion } from "./runtime-question-readiness.js";
 import { expect, type Page } from "@playwright/test";
 import path from "node:path";
-import { continuationAnswerCommitted, continuationInitialReady } from "./continuation-readiness.js";
+import { continuationAnswerCommitted, continuationInitialReady, continuationCheckpointReady } from "./continuation-readiness.js";
 import { captureLoadedContinuation } from "./continuation-screenshot.js";
 import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -46,8 +49,12 @@ export async function runContinuationFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { page, api, fixtures, execution } = input;
-  const scenario = continuationScenario(execution.task.id, input.nonce);
-  const checkpoints: ContinuationCheckpoint[] = [];
+  const lifecycleProbe = lifecycleLiveCase(execution.task.id);
+  const scenario = lifecycleProbe
+    ? lifecycleLiveContinuation(execution.task.id, input.nonce)
+    : continuationScenario(execution.task.id, input.nonce);
+  const checkpoints: LifecycleCheckpoint[] = [];
+  let budgetGuard: Awaited<ReturnType<typeof prepareContinuationBudget>> | undefined;
   let issue: Row | undefined;
   let runs: Row[] = [];
   let checks: ReturnType<typeof gradeContinuation> = [];
@@ -79,6 +86,11 @@ export async function runContinuationFlow(input: {
         const paused = answerableRuntimeRunIds(state.interactions);
         const idle =
           continuationAnswerCommitted(state.interactions, answeredInteractionId) &&
+          continuationCheckpointReady({
+            issue: { status: state.issue.status, executionRunId: state.issue.executionRunId },
+            runs: state.runs.map(r => ({ id: r.id, status: r.status, runtimeMode: r.runtimeMode })),
+            interactions: state.interactions,
+          }) &&
           state.runs.some((r) => !prior.has(r.id) || previousPaused.has(r.id)) &&
           state.runs.every((r) => ["succeeded", "failed", "timed_out", "cancelled"].includes(r.status) ||
             (r.status === "running" && paused.has(r.id))) &&
@@ -86,7 +98,8 @@ export async function runContinuationFlow(input: {
           !state.issue.activeRecoveryAction &&
           (!requireQuestion || continuationInitialReady(state.interactions));
         const key = idle
-          ? state.runs.map((r) => `${r.id}:${r.status}`).join()
+          ? JSON.stringify([state.issue.status, state.issue.executionRunId,
+              state.runs.map(r => [r.id, r.status]), state.interactions.map(i => [i.id, i.status])])
           : "";
         const ready = !!key && key === stable;
         stable = key;
@@ -94,7 +107,7 @@ export async function runContinuationFlow(input: {
         return ready;
       },
       reject: (state) =>
-        state.runs.length > 12
+        state.runs.length > (scenario.id === "question-answer-resume" ? 3 : 12)
           ? "Bounded continuation run count exceeded"
           : state.runs.some((r) =>
                 ["failed", "timed_out", "cancelled"].includes(r.status),
@@ -115,13 +128,14 @@ export async function runContinuationFlow(input: {
     );
   }
   async function snapshot(phase: ContinuationCheckpoint["phase"]) {
-    const [tasks, summaries, comments, interactions, attachments] =
+    const [tasks, summaries, comments, interactions, attachments, activity] =
       await Promise.all([
         api.get<Row[]>(tasksPath),
         api.get<Row[]>(`/api/issues/${issue!.id}/documents`),
         api.get<Row[]>(`/api/issues/${issue!.id}/comments?order=asc`),
         api.get<Row[]>(`/api/issues/${issue!.id}/interactions`),
         captureFirstTaskAttachments(api, [{ id: issue!.id }], input.secrets),
+        api.get<Row[]>(`/api/issues/${issue!.id}/activity`),
       ]);
     const documents = await Promise.all(
       summaries.map((d) =>
@@ -132,18 +146,26 @@ export async function runContinuationFlow(input: {
     );
     checkpoints.push({
       phase,
+      lifecycle: {
+        executionRunId: issue!.executionRunId ?? null,
+        scheduledRetry: issue!.scheduledRetry ?? null,
+        activeRecoveryAction: issue!.activeRecoveryAction ?? null,
+        monitorNextCheckAt: issue!.monitorNextCheckAt ?? null,
+      },
       issue: issue as ContinuationCheckpoint["issue"],
       children: tasks.filter(
         (t) => t.parentId === issue!.id,
       ) as ContinuationCheckpoint["children"],
       documents: documents as ContinuationCheckpoint["documents"],
       comments,
+      activity,
       interactions,
       attachments,
       runs: [...runs] as ContinuationCheckpoint["runs"],
     });
     await input.evidence("continuation.json", {
       ...scenario,
+      budgetGuard,
       checkpoints,
       checks,
     });
@@ -164,7 +186,9 @@ export async function runContinuationFlow(input: {
     );
     expect(questions, "one real question must be shown").toHaveLength(1);
     const set = chatQuestionPresentation(questions[0].payload);
-    if (scenario.id === "provider-question-bridge") {
+    if (scenario.id === "question-answer-resume") {
+      expect(validResumeQuestionForm(checkpoints.at(-1)!, questions[0], !!choice), "a verified native question path and the requested form").toBe(true);
+    } else if (scenario.id === "provider-question-bridge") {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
     } else expect(set.questions, "ask only the requested next question").toHaveLength(1);
     const before = new Set(runs.map((r) => r.id));
@@ -208,11 +232,12 @@ export async function runContinuationFlow(input: {
     expect(c.issue.status, "waiting is not complete").not.toBe("done");
   }
   try {
+    budgetGuard = await prepareContinuationBudget(api, fixtures.company.id, fixtures.agent.id);
     if (execution.profile.generation === "legacy") await prepareLegacyContinuationSkill(api, fixtures.company.id, fixtures.agent.id);
     await api.patch("/api/instance/settings/experimental", {
       enableClassicTaskInterface: false,
     });
-    await createTaskThroughUi({
+    const createdTask = await createTaskThroughUi({
       page,
       issuePrefix: fixtures.company.issuePrefix!,
       agentName: fixtures.agent.name,
@@ -225,7 +250,7 @@ export async function runContinuationFlow(input: {
       deadlineAt: input.deadlineAt,
       load: async () =>
         (await api.get<Row[]>(tasksPath)).find(
-          (t) => t.title === execution.task.buildTitle(input.nonce),
+          (t) => t.id === createdTask.issueId,
         ),
       accept: Boolean,
     });
@@ -245,7 +270,7 @@ export async function runContinuationFlow(input: {
       await input.restart();
       await open();
     }
-    if (scenario.id === "question-tool-documentation") {
+    if (["question-tool-documentation", "question-answer-resume"].includes(scenario.id)) {
       await answer("Afternoon");
       await snapshot("answered");
       assertWaiting();
@@ -268,9 +293,16 @@ export async function runContinuationFlow(input: {
       checkpoints,
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
+    checks.push(...gradeLifecycleBaseline(checkpoints));
+    if (lifecycleProbe) checks.push(gradeLifecycleNarrative({
+      narrative: lifecycleProbe.narrative,
+      agentId: fixtures.agent.id,
+      initial: checkpoints.find(c => c.phase === "initial"),
+    }));
     if (issue) input.observe(issue, runs, checks);
     await input.evidence("continuation.json", {
       ...scenario,
+      budgetGuard,
       checkpoints,
       checks,
     });

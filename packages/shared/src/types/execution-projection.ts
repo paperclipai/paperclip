@@ -5,6 +5,16 @@ export interface ExecutionBlocker {
   agentId: string | null;
   cause: string;
   nextAction: string;
+  runStatus?: string | null;
+  runError?: string | null;
+  /** Candidate only: admission must still verify termination and all gates. */
+  canContinue?: boolean;
+  /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
+  canRetry?: boolean;
+  /** Required workspace files must be recovered before another provider turn. */
+  workspaceRepairRequired?: boolean;
+  canRecordWorkspaceRepair?: boolean;
+  savedMessageCount?: number;
 }
 
 /** Presentation of existing execution records, not a second task status machine. */
@@ -64,4 +74,6 @@ export interface ExecutionReconciliation {
   providerStopped: true;
   actionOutcome: "completed" | "not_performed" | "mixed";
   outcomeEvidence: string;
+  /** Operator evidence bound to this failed run; required after workspace restore failure. */
+  workspaceRepairEvidence?: string;
 }

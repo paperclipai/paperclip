@@ -1,3 +1,5 @@
+import { readTaskQuestionContext } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -124,6 +126,9 @@ export class PaperclipRunnerSemanticAuthority {
                   title: context.agent.title,
                   capabilities: context.agent.capabilities,
                 },
+                taskQuestionContext: await readTaskQuestionContext(this.#db, {
+                  ...this.#binding, conversationMode: isConversation(context.issue),
+                }),
                 activeTask: {
                   id: context.issue.id,
                   identifier: context.issue.identifier,

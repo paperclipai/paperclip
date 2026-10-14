@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, legacyControllerBootId, legacyControllerClaim,
+import { hasLiveLegacyController, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
   renewLegacyControllerLease, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -68,6 +68,8 @@ const support = await getEmbeddedPostgresTestSupport();
     try {
       await expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_rejected");
     } finally { watch.stop(); }
   });
   it("only one competing recovery revokes the observed expired owner", async () => {
@@ -111,10 +113,29 @@ const support = await getEmbeddedPostgresTestSupport();
       await vi.advanceTimersByTimeAsync(101);
       await checked;
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
     } finally { watch.stop(); vi.useRealTimers(); }
   });
 
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
+  });
+});
+
+describe("legacy controller lease loss attribution", () => {
+  it("attributes a failing renewal query to renewal_error", async () => {
+    type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
+    const failingDb = { update: () => ({ set: () => ({ where: () => ({
+      returning: () => Promise.reject(new Error("connection reset")) }) }) }) } as unknown as WatchArgs[0];
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const run = { id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy", controllerBootId: legacyControllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000) } as WatchArgs[1];
+    const watch = watchLegacyControllerLease(failingDb, run, controller);
+    try {
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + 1);
+      expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_error");
+    } finally { watch.stop(); vi.useRealTimers(); }
   });
 });

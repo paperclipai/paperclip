@@ -40,6 +40,19 @@ and ARM64. Canonical master pushes also publish
 for its immutable multi-platform digest. Downstream services can compose their
 own images from this public base without rebuilding Core.
 
+Stamped standard images include the build-owned remote provider pack at
+`/opt/paperclip-runner/provider-pack` and set
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` to that directory. Downstream
+compositions and the explicit `cloud` target inherit both. The pack is required
+on the controller for remote OpenCode and ACPX runs, even when the sandbox has
+preinstalled providers; setting the environment variable alone cannot repair an
+image that omits the pack. Rebuild and redeploy from a standard image containing
+the pack if runs fail with `runner_remote_provider_artifact_incompatible`.
+
+Local Docker builds must supply a full `PAPERCLIP_BUILD_COMMIT` to include a
+qualified pack. Unstamped builds remain usable for local adapters and skip pack
+generation. The pack stays root-owned and readable by remapped runtime UIDs.
+
 The legacy recurring public `-cloud` publisher is retired. Master pushes,
 release tags, and manual `Docker` dispatches no longer build that variant.
 Existing `-cloud` tags and digests remain in the registry for rollback; their
@@ -199,24 +212,25 @@ The image pre-installs:
 
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
+- `python3` (used to run local subscription sign-in in a pseudo-terminal)
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+Start the container, then open **Apps → Connections** to connect a Claude or
+Codex subscription in your browser. You can also enter a provider API key there.
+You do not run a shell command or configure a CLI home.
 
 ```sh
 docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
-  -e OPENAI_API_KEY=... \
-  -e ANTHROPIC_API_KEY=... \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
 
 Notes:
 
-- Without API keys, the app still runs normally.
-- Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
+- The image provides the CLI and Python prerequisites for local subscription sign-in.
+- Adapter environment checks in Paperclip surface missing authentication or CLI prerequisites.
 
 ## Podman Quadlet (systemd)
 
@@ -326,6 +340,8 @@ Notes:
 ## General Notes
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
+- Before it drops privileges, the entrypoint makes sure `PAPERCLIP_HOME` is owned by the `node` user. Each boot checks only the home directory and its first three levels. The first boot (and any boot after a UID/GID change) also checks the full tree, and then writes `PAPERCLIP_HOME/.paperclip-ownership-verified`. While that marker is current, later boots skip the full-tree walk, which can take minutes on homes with many files. A mismatch triggers a recursive `chown`. If files deep in the tree get the wrong owner (for example, after a restore as root), delete the marker and restart to force a full check. If a check fails (for example, with an I/O error), the entrypoint does not write the marker, so the next boot checks again.
+- The entrypoint writes timestamped lines when it starts, around the full ownership check or any repair (with the duration), and just before it starts the server, so you can measure the pre-start time from the container log.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
 
 ## Native Runner build cache

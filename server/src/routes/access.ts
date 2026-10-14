@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import {
   createHash,
   generateKeyPairSync,
@@ -29,6 +30,7 @@ import {
   principalPermissionGrants,
 } from "@paperclipai/db";
 import {
+  EXTERNAL_AGENT_TOOL_GUIDANCE,
   acceptInviteSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
@@ -93,7 +95,7 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
-import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
+import { agentJoinGrantsFromDefaults as standardAgentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
@@ -1770,7 +1772,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your Paperclip API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run `hermes gateway run --replace --accept-hooks`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable Paperclip base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your Paperclip API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run `hermes gateway run --replace --accept-hooks`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable Paperclip base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token." + "\n\n" + EXTERNAL_AGENT_TOOL_GUIDANCE,
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
@@ -1996,6 +1998,9 @@ export function buildInviteOnboardingTextDocument(
     Install path: ${onboarding.skill.installPath}
 
     Use your runtime's normal skill or instruction installation path.
+
+    ## Working through Paperclip
+    ${EXTERNAL_AGENT_TOOL_GUIDANCE}
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -2246,22 +2251,13 @@ function grantsFromDefaults(
 }
 
 export function agentJoinGrantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  agentId: string,
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
-  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    return grants;
-  }
-  return [
-    ...grants,
-    {
-      permissionKey: "tasks:assign",
-      scope: null
-    }
-  ];
+  return standardAgentJoinGrantsFromDefaults(defaultsPayload, agentId);
 }
 
 type JoinRequestManagerCandidate = {
@@ -2649,6 +2645,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const agentsLifecycle = createAgentLifecycle(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -2792,12 +2789,13 @@ export function accessRoutes(
     const token =
       typeof req.query.token === "string" ? req.query.token.trim() : "";
     if (!id || !token) throw notFound("CLI auth challenge not found");
+    if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
     const challenge = await boardAuth.describeCliAuthChallenge(id, token);
     if (!challenge) throw notFound("CLI auth challenge not found");
 
     const isSignedInBoardUser =
       req.actor.type === "board" &&
-      (req.actor.source === "session" || isLocalImplicit(req)) &&
+      (req.actor.source === "session" || req.actor.source === "cloud_tenant" || isLocalImplicit(req)) &&
       Boolean(req.actor.userId);
     const canApprove =
       isSignedInBoardUser &&
@@ -2824,6 +2822,7 @@ export function accessRoutes(
       ) {
         throw unauthorized("Sign in before approving CLI access");
       }
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
 
       const userId = req.actor.userId ?? "local-board";
       const approved = await boardAuth.approveCliAuthChallenge(
@@ -2871,6 +2870,7 @@ export function accessRoutes(
     validate(resolveCliAuthChallengeSchema),
     async (req, res) => {
       const id = (req.params.id as string).trim();
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
       const cancelled = await boardAuth.cancelCliAuthChallenge(id, req.body.token);
       res.json({
         status: cancelled.status,
@@ -3079,6 +3079,15 @@ export function accessRoutes(
       input.allowedJoinTypes === "agent"
         ? null
         : input.humanRole ?? "operator";
+    if (effectiveHumanRole) {
+      // An invitation must not delegate the membership powers its creator lacks.
+      const roleGrants = grantsForHumanRole(effectiveHumanRole);
+      for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+        if (roleGrants.some((grant) => grant.permissionKey === permissionKey)) {
+          await assertCompanyPermission(input.req, input.companyId, permissionKey);
+        }
+      }
+    }
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,
@@ -4265,7 +4274,7 @@ export function accessRoutes(
           }))
         );
 
-        const created = await agents.create(companyId, {
+        const created = await agentsLifecycle.requestHire(companyId, {
           name: agentName,
           role: "general",
           title: null,
@@ -4294,7 +4303,8 @@ export function accessRoutes(
           "active"
         );
         const grants = agentJoinGrantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null
+          invite.defaultsPayload as Record<string, unknown> | null,
+          created.id,
         );
         await access.setPrincipalGrants(
           companyId,

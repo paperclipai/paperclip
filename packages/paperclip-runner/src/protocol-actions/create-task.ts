@@ -109,6 +109,7 @@ export const createTaskAction = {
             "description": "Child task description.",
             "maxLength": 20000
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": [
               "string",
@@ -225,7 +226,8 @@ export const createTaskAction = {
                 "type": "string",
                 "minLength": 1
               },
-              "assigneeActorId": {
+              "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
+          "assigneeActorId": {
                 "type": [
                   "string",
                   "null"
@@ -271,6 +273,7 @@ export const createTaskAction = {
           "description": {
             "type": "string"
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": "string"
           },

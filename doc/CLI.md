@@ -424,7 +424,7 @@ Notes:
 ```sh
 npx paperclipai issue list --company-id <company-id> [--status todo,in_progress] [--assignee-agent-id <agent-id>] [--match text]
 npx paperclipai issue get <issue-id-or-identifier>
-npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
+npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high] [--parent-id <issue-id> | --standalone]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 npx paperclipai issue delete <issue-id> --yes
 npx paperclipai issue comment <issue-id> --body "..." [--attachment-id <id...>] [--reopen]
@@ -439,6 +439,8 @@ npx paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-stat
 npx paperclipai issue release <issue-id>
 npx paperclipai issue force-release <issue-id>
 ```
+
+`issue create` sent from an agent run bound to an ordinary execution task is parented under that task when `--parent-id` is omitted; pass `--standalone` to create intentionally top-level work (`parentId: null`). The two flags are mutually exclusive.
 
 Issue subresources are exposed as Paperclip API wrappers. Commands that map to broad server schemas accept JSON payloads and validate them with shared schemas before sending.
 
@@ -931,6 +933,12 @@ npx paperclipai auth revoke-current
 ```
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
+
+Use the challenge UUID returned by `auth challenge create` for get, approve, and
+cancel. With the required secret and approval authentication present, malformed
+IDs return HTTP 400 before database access. A status request without a secret
+returns HTTP 404. Unknown challenges or incorrect challenge secrets still return
+HTTP 404. Approval requires board authentication, checked before ID validation.
 
 ## Instance Settings Commands
 

@@ -38,17 +38,17 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   }
   return {
     type,
-    ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
-    ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
+    ...(typeof parsed.baseRef === "string" || parsed.baseRef === null ? { baseRef: parsed.baseRef } : {}),
+    ...(typeof parsed.branchTemplate === "string" || parsed.branchTemplate === null ? { branchTemplate: parsed.branchTemplate } : {}),
     ...(typeof parsed.existingBranch === "string" && parsed.existingBranch.trim().length > 0
       ? { existingBranch: parsed.existingBranch.trim() }
       : {}),
-    ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
-    ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
-    ...(typeof parsed.runtimeProvisionCommand === "string"
+    ...(typeof parsed.worktreeParentDir === "string" || parsed.worktreeParentDir === null ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
+    ...(typeof parsed.provisionCommand === "string" || parsed.provisionCommand === null ? { provisionCommand: parsed.provisionCommand } : {}),
+    ...(typeof parsed.runtimeProvisionCommand === "string" || parsed.runtimeProvisionCommand === null
       ? { runtimeProvisionCommand: parsed.runtimeProvisionCommand }
       : {}),
-    ...(typeof parsed.teardownCommand === "string" ? { teardownCommand: parsed.teardownCommand } : {}),
+    ...(typeof parsed.teardownCommand === "string" || parsed.teardownCommand === null ? { teardownCommand: parsed.teardownCommand } : {}),
   };
 }
 
@@ -272,6 +272,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
   | "agent"
   | "instance"
   | "default"
@@ -294,6 +295,8 @@ export class ManagedSandboxUnavailableError extends Error {
 }
 
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
+  lowTrustIssueEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -309,6 +312,9 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.lowTrustIssueEnvironmentId) {
+      return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
+    }
     if (input.agentDefaultEnvironmentId) {
       return {
         environmentId: input.agentDefaultEnvironmentId,
@@ -387,6 +393,29 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+interface ParsedIssueAssigneeAdapterOverrides {
+  adapterConfig: Record<string, unknown> | null;
+  useProjectWorkspace: boolean | null;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
+  raw: unknown,
+): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseObject(raw);
+  const parsedAdapterConfig = parseObject(parsed.adapterConfig);
+  const adapterConfig =
+    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const useProjectWorkspace =
+    typeof parsed.useProjectWorkspace === "boolean"
+      ? parsed.useProjectWorkspace
+      : null;
+  if (!adapterConfig && useProjectWorkspace === null) return null;
+  return {
+    adapterConfig,
+    useProjectWorkspace,
+  };
+}
+
 function parseSharedWorkspaceConcurrency(raw: unknown): SharedWorkspaceConcurrency | undefined {
   return raw === "auto" || raw === "serialize" || raw === "allow" ? raw : undefined;
 }
@@ -402,6 +431,7 @@ export function resolveSharedWorkspaceConcurrency(input: {
 
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
+  adapterConfigOverrides?: Record<string, unknown> | null;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
@@ -418,11 +448,18 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
-        input.issueSettings?.workspaceStrategy ??
-        input.projectPolicy?.workspaceStrategy ??
+      const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
+      const issueStrategy = input.issueSettings?.workspaceStrategy;
+      // An issue that changes its branch still needs the project's setup hooks.
+      // Do not carry those defaults into a different execution strategy.
+      const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
+        ? { ...projectStrategy, ...issueStrategy }
+        : issueStrategy ?? projectStrategy ??
         parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
         ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+      if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
+        delete strategy.branchTemplate;
+      }
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;
@@ -437,5 +474,21 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return nextConfig;
+  return { ...nextConfig, ...input.adapterConfigOverrides };
+}
+
+export function taskWorkspaceRuntimeSelectionEnabled(input: {
+  legacyUiEnabled: boolean;
+  hasTypedSelection: boolean;
+  hasBinding: boolean;
+}): boolean {
+  return input.legacyUiEnabled || input.hasTypedSelection || input.hasBinding;
+}
+
+export function canApplyTaskWorkspaceSelectionAtAdmission(input: {
+  admittedInput: unknown;
+  restarting: boolean;
+  hasLeaseOwner: boolean;
+}): boolean {
+  return input.admittedInput == null && !input.restarting && !input.hasLeaseOwner;
 }

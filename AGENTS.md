@@ -26,6 +26,23 @@ authoring runbook for provider research, supported transport/auth patterns,
 credential handling, branding, implementation, testing, live proof, and PR
 submission.
 
+### Scoped repository rules
+
+Before editing or reviewing files, read the matching rules in `rules/*.mdc`.
+Each rule has Markdown content and YAML frontmatter: `globs` contains
+comma-separated, repository-relative file patterns, and `alwaysApply: true`
+means the rule applies throughout the repository. Read all rules whose scope
+matches the affected files. These rules supplement this file and any applicable
+nested `AGENTS.md` instructions.
+
+For `server/src/services/chat-channels.ts` and everything under
+`server/src/services/chat-channels/`, read
+[`rules/chat-channel-platform-boundaries.mdc`](rules/chat-channel-platform-boundaries.mdc).
+For `server/src/services/heartbeat.ts`, `server/src/services/heartbeat/`,
+heartbeat-prefixed sibling services, and heartbeat regression tests, read
+[`rules/heartbeat-execution-boundaries.mdc`](rules/heartbeat-execution-boundaries.mdc).
+See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
@@ -151,6 +168,24 @@ Notes:
 - `pnpm db:generate` compiles `packages/db` first
 
 ## 7. Verification Before Hand-off
+
+[maps/feature-map/README.md](maps/feature-map/README.md) is an optional reference for user
+entry points, verification recipes, and coverage gaps. The map records coverage
+scope, not proof that a live journey passed.
+
+The sibling [agent access map](maps/agent-access-map/README.md) records APIs,
+agent entry points and permission boundaries using the same capability IDs.
+Follow [the map contract](maps/README.md): update affected entries when mapped
+behavior or access changes, and run `node scripts/check-maps.mjs` after map edits.
+Its structural checks do not prove live behavior or authorization.
+
+Storybook has a downstream [feature catalog](maps/storybook-map/README.md).
+Use `maintain-storybook` for story/fixture drift and `review-storybook` for browser
+evidence. Keep the feature-map skills independent of this catalog. After story or recipe changes, update the affected source annotations or
+recipe and run `node scripts/storybook-catalog.mjs`. Indexes are generated and
+ignored; never commit aggregate catalogs, refresh review fingerprints, or append
+a shared review journal. Use Git diffs and keep review evidence in the PR or issue.
+Structural checks are not production acceptance.
 
 Default local/agent test path:
 

@@ -28,7 +28,12 @@ export async function copyTextToClipboard(text: string): Promise<void> {
   textarea.style.position = "fixed";
   textarea.style.top = "0";
   textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
+  // Keep the fallback inside an open modal's focus trap; otherwise the modal
+  // immediately takes focus back and the browser copies the wrong selection.
+  const container = document.activeElement?.closest('[role="dialog"]')
+    ?? document.querySelector('dialog[open], [role="dialog"][data-state="open"]')
+    ?? document.body;
+  container.appendChild(textarea);
 
   const previouslyFocused = document.activeElement as (Element & {
     focus?: (options?: FocusOptions) => void;
@@ -40,7 +45,7 @@ export async function copyTextToClipboard(text: string): Promise<void> {
     const success = document.execCommand("copy");
     if (!success) throw new Error("execCommand copy failed");
   } finally {
-    document.body.removeChild(textarea);
+    textarea.remove();
     if (previouslyFocused !== document.activeElement && typeof previouslyFocused?.focus === "function") {
       previouslyFocused.focus({ preventScroll: true });
     }

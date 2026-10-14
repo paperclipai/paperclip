@@ -125,6 +125,9 @@ function undeliveredSuffix(delivered: string, final: string): string {
   if (!final) return "";
   if (delivered.length === 0) return final;
   if (final.startsWith(delivered)) return final.slice(delivered.length);
+  // Some providers retain only the last 4 MiB while streaming the full output.
+  // Replaying that captured tail would count its usage receipts a second time.
+  if (delivered.endsWith(final)) return "";
   return final;
 }
 
@@ -481,6 +484,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    commandTimeoutMs: commandInput.commandTimeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and

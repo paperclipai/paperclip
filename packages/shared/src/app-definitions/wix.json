@@ -26,7 +26,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.wix.com/mcp"
+        "serverUrl": "https://mcp.wix.com/mcp",
+        "scopesHint": [
+          "offline_access"
+        ]
       },
       "guidanceMd": "Connect Wix in the browser. A Wix account with access to the relevant sites.",
       "riskTier": "S3",
