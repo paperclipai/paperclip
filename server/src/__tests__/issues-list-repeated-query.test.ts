@@ -47,6 +47,14 @@ describeEmbeddedPostgres("issue list and count with a repeated query parameter",
         priority: "medium",
         parentId: otherParentId,
       },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Second blocked other child",
+        status: "blocked",
+        priority: "medium",
+        parentId: otherParentId,
+      },
     ]);
 
     return { ...company, parentId, otherParentId, alphaChildId, blockedChildId };
