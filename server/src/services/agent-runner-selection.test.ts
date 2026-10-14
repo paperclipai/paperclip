@@ -11,12 +11,12 @@ vi.mock("@paperclipai/adapter-utils/ssh", () => ({ runSshCommand: state.ssh }));
 import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { buildCodexAcpConfig, resolveCodexExecutionEngine } from "@paperclipai/adapter-codex-local/server";
 import { secretService } from "./secrets.js";
-import { localAgentRunnerTarget } from "../lib/agent-runner-platform.js";
+import { localAgentRunnerTarget, resetLocalAgentRunnerTargetCacheForTests } from "../lib/agent-runner-platform.js";
 const target = { driver: "local", platform: "linux", architecture: "x64" };
 const qualifiedTargets = [target, { driver: "local", platform: "linux", architecture: "arm64" }, { driver: "local", platform: "darwin", architecture: "arm64" }, { driver: "local", platform: "darwin", architecture: "x64" }];
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const originalArchitecture = Object.getOwnPropertyDescriptor(process, "arch")!;
-afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", originalPlatform); Object.defineProperty(process, "arch", originalArchitecture); });
+afterEach(() => { vi.restoreAllMocks(); resetLocalAgentRunnerTargetCacheForTests(); Object.defineProperty(process, "platform", originalPlatform); Object.defineProperty(process, "arch", originalArchitecture); });
 
 describe("server-owned Codex runner selection", () => {
   beforeEach(() => { state.disabled = []; state.overridden.clear(); state.settings = {}; state.getEnvironment.mockReset(); state.bindings.mockReset().mockResolvedValue([]); state.managedEnvironment.mockReset(); state.kubernetesEnvironment.mockReset().mockResolvedValue(null); state.ensureKubernetesEnvironment.mockReset(); state.ssh.mockReset().mockResolvedValue({ stdout: "Linux\nx86_64\n" }); state.sandboxQualification.mockReset().mockResolvedValue(null); state.resolveEnvironment.mockReset().mockResolvedValue({ driver: "ssh", config: {} }); });

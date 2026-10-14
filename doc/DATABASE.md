@@ -45,6 +45,24 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-run-history.ts -
 The fixture has 1,400 synthetic runs with 192 KiB contexts. Both queries return
 the same 200 complete rows. This benchmark excludes HTTP and redaction latency.
 
+Workspace reads also compare retained task IDs as guarded, canonical UUIDs.
+This lets PostgreSQL check each source task by primary key before it evaluates
+task privacy. Casting the indexed task ID to text can instead evaluate privacy
+across company history for each workspace. Repository admission repeats these
+reads while holding its company provenance lock, so that plan can delay other
+agent launches. Missing, malformed, noncanonical, and foreign-company source
+IDs still deny access.
+
+To compare this query on a disposable fixture with 13,429 tasks:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-authorization.ts --baseline-ref=5c7a025032
+```
+
+The benchmark loads the baseline authorization module with current dependencies,
+compares complete workspace rows, and prints five warm samples and query plans.
+It measures SQL execution, not the full repository admission or agent startup.
+
 ## 1. Embedded PostgreSQL — zero config
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.

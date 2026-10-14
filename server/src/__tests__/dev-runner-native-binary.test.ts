@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { localPaperclipRunnerSupported } from "../lib/agent-runner-platform.js";
+import { localPaperclipRunnerSupported, resetLocalAgentRunnerTargetCacheForTests } from "../lib/agent-runner-platform.js";
 
 import {
   paperclipRunnerBinaryNeedsBuild,
@@ -16,6 +16,7 @@ const initialArchitecture = Object.getOwnPropertyDescriptor(process, "arch")!;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetLocalAgentRunnerTargetCacheForTests();
   Object.defineProperty(process, "platform", initialPlatform);
   Object.defineProperty(process, "arch", initialArchitecture);
   for (const root of tempRoots) {
