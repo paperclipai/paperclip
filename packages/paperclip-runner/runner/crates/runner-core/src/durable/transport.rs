@@ -2499,12 +2499,6 @@ mod tests {
         handle.join().unwrap();
     }
 
-    /// Linux stores `SO_RCVTIMEO` in whole scheduler ticks and rounds a
-    /// requested timeout up to the next tick, so `read_timeout()` reads back
-    /// the requested value only when it is a whole number of ticks: 250 ms
-    /// reads back as 252 ms on a `CONFIG_HZ=250` kernel (4 ms ticks, 62.5 ticks
-    /// rounded up to 63). A tick is at most 10 ms (`CONFIG_HZ=100`), and other
-    /// platforms return the value unchanged.
     const MAX_KERNEL_TIMER_TICK: Duration = Duration::from_millis(10);
 
     fn is_read_timeout_set_to(actual: Option<Duration>, requested: Duration) -> bool {
