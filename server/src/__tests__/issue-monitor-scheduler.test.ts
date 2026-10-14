@@ -879,6 +879,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: "cleared",
       clearReason: "max_attempts_exhausted",
     });
+    expect(issue.monitorAttemptCount).toBe(1);
 
     const wakeup = await db
       .select()
