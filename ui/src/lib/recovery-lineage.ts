@@ -10,7 +10,7 @@ import { formatMonitorOffset } from "./issue-monitor";
  * therefore the canonical lane signal — every surface reads the same stored value rather
  * than re-deriving liveness on its own.
  */
-export type RecoveryRetryLane = "source_owner" | "recovery_owner" | "board";
+export type RecoveryRetryLane = "source_owner" | "recovery_owner" | "native_run" | "board";
 
 export interface RecoveryRetryLineage {
   lane: RecoveryRetryLane;
@@ -55,6 +55,7 @@ export interface RecoveryRetryLineage {
 const SOURCE_LANE_POLICY = "bounded_owner_disposition_repair";
 const RECOVERY_LANE_POLICY = "bounded_recovery_owner";
 const BOARD_LANE_POLICY = "board_escalation";
+const NATIVE_RESUME_POLICY = "resume_native_run";
 
 /** Scheduled-run states that mean the parked attempt is actually in flight right now. */
 const LIVE_SCHEDULED_RUN_STATUSES = new Set(["queued", "running"]);
@@ -70,7 +71,7 @@ const LIVE_SCHEDULED_RUN_STATUSES = new Set(["queued", "running"]);
 const RETRY_EXPIRY_GRACE_MS = 30_000;
 
 export type RecoveryLineageInput = Pick<IssueRecoveryAction, "wakePolicy"> &
-  Partial<Pick<IssueRecoveryAction, "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt">>;
+  Partial<Pick<IssueRecoveryAction, "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt" | "nativeRunActivity">>;
 
 /**
  * The source issue's scheduled-retry record, which is what lets a surface tell a run that is
@@ -143,13 +144,15 @@ export function readRecoveryRetryLineage(
   const policy = asRecord(action.wakePolicy);
   if (!policy) return null;
   const type = asNonEmptyString(policy.type);
+  const nativeResume = policy.kind === NATIVE_RESUME_POLICY;
   const preservesSourceAssignee = policy.preservesSourceAssignee === true;
   const evidence = asRecord(action.evidence) ?? {};
   const evidenceSourceAttempt = asCount(evidence.sourceAttemptCount);
   const evidenceSourceMaxAttempts = asCount(evidence.sourceMaxAttempts);
 
   let lane: RecoveryRetryLane;
-  if (type === SOURCE_LANE_POLICY) lane = "source_owner";
+  if (nativeResume) lane = "native_run";
+  else if (type === SOURCE_LANE_POLICY) lane = "source_owner";
   else if (type === RECOVERY_LANE_POLICY) lane = "recovery_owner";
   else if (
     type === BOARD_LANE_POLICY &&
@@ -160,11 +163,18 @@ export function readRecoveryRetryLineage(
 
   const attempt = asCount(policy.attempt) ?? asCount(action.attemptCount) ?? 0;
   const maxAttempts = asCount(policy.maxAttempts) ?? asCount(action.maxAttempts);
-  const scheduledRunId = asNonEmptyString(policy.scheduledRunId);
-  const storedRetryAt = asIsoDate(policy.retryAt) ?? asIsoDate(action.timeoutAt);
+  const scheduledRunId = asNonEmptyString(nativeResume ? policy.runId : policy.scheduledRunId);
+  // Native recovery resumes an existing run; its scheduling fields
+  // differ from an agent wake. A retry without that run identity is not a path.
+  if (nativeResume && scheduledRunId === null) return null;
+  const storedRetryAt = nativeResume
+    ? asIsoDate(policy.notBefore)
+    : asIsoDate(policy.retryAt) ?? asIsoDate(action.timeoutAt);
   const exhausted = lane === "board" || (maxAttempts !== null && attempt >= maxAttempts);
   const nextRetryAt = exhausted ? null : storedRetryAt;
-  const liveRunId = resolveLiveRunId(scheduledRunId, context?.scheduledRetry);
+  const liveRunId = nativeResume
+    ? resolveLiveRunId(scheduledRunId, action.nativeRunActivity)
+    : resolveLiveRunId(scheduledRunId, context?.scheduledRetry);
   // A run that is already executing is the reason its due time is behind us, so a confirmed
   // live run is never "missed" — it is the attempt happening.
   const retryExpired =
@@ -184,11 +194,12 @@ export function readRecoveryRetryLineage(
     scheduledRunId,
     liveRunId,
     retryAgentId: asNonEmptyString(policy.retryAgentId) ?? asNonEmptyString(policy.ownerAgentId),
-    preservesSourceAssignee: preservesSourceAssignee || lane === "source_owner",
-    sourceAttempt: lane === "source_owner" ? attempt : evidenceSourceAttempt,
-    sourceMaxAttempts: lane === "source_owner" ? maxAttempts : evidenceSourceMaxAttempts,
+    preservesSourceAssignee: preservesSourceAssignee || lane === "source_owner" || nativeResume,
+    sourceAttempt: nativeResume ? null : lane === "source_owner" ? attempt : evidenceSourceAttempt,
+    sourceMaxAttempts: nativeResume ? null : lane === "source_owner" ? maxAttempts : evidenceSourceMaxAttempts,
     hasDurablePath:
-      !exhausted && (liveRunId !== null || (nextRetryAt !== null && !retryExpired)),
+      (nativeResume && liveRunId !== null) ||
+      (!exhausted && (liveRunId !== null || (nextRetryAt !== null && !retryExpired))),
   };
 }
 

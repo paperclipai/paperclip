@@ -300,6 +300,107 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  describe("partial issue workspace strategies", () => {
+    const projectStrategy = {
+      type: "git_worktree" as const,
+      baseRef: "origin/main",
+      branchTemplate: "{{issue.identifier}}-{{slug}}",
+      worktreeParentDir: ".paperclip/worktrees",
+      provisionCommand: "true",
+      runtimeProvisionCommand: "npm run setup:runtime",
+      teardownCommand: "npm run teardown",
+    };
+
+    function resolveStrategy(
+      strategy: Record<string, unknown>,
+      enabled = true,
+    ) {
+      return buildExecutionWorkspaceAdapterConfig({
+        agentConfig: { workspaceStrategy: { type: "git_worktree", provisionCommand: "agent-setup" } },
+        projectPolicy: parseProjectExecutionWorkspacePolicy({
+          enabled,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: projectStrategy,
+        }),
+        issueSettings: parseIssueExecutionWorkspaceSettings({
+          mode: "isolated_workspace",
+          workspaceStrategy: strategy,
+        }),
+        mode: "isolated_workspace",
+        legacyUseProjectWorkspace: null,
+      }).workspaceStrategy;
+    }
+
+    it("retains project hooks when an issue changes only its base branch", () => {
+      expect(resolveStrategy({ type: "git_worktree", baseRef: "origin/release" })).toEqual({
+        ...projectStrategy,
+        baseRef: "origin/release",
+      });
+    });
+
+    it.each(["npm run issue-setup", "", null])("honors an explicit provisioning override of %j", (provisionCommand) => {
+      expect(resolveStrategy({ type: "git_worktree", provisionCommand })).toEqual({
+        ...projectStrategy,
+        provisionCommand,
+      });
+    });
+
+    it("preserves explicit null clears through persisted JSON parsing", () => {
+      const strategy = {
+        type: "git_worktree",
+        baseRef: null,
+        branchTemplate: null,
+        worktreeParentDir: null,
+        provisionCommand: null,
+        runtimeProvisionCommand: null,
+        teardownCommand: null,
+      };
+      expect(resolveStrategy(strategy)).toEqual(strategy);
+    });
+
+    it.each(["cloud_sandbox", "adapter_managed", "project_primary"])("does not carry project hooks into %s", (type) => {
+      expect(resolveStrategy({ type })).toEqual({ type });
+    });
+
+    it("does not inherit a disabled project strategy", () => {
+      expect(resolveStrategy({ type: "git_worktree", baseRef: "origin/release" }, false)).toEqual({
+        type: "git_worktree",
+        baseRef: "origin/release",
+      });
+      expect(resolveStrategy({}, false)).toEqual({
+        type: "git_worktree",
+        provisionCommand: "agent-setup",
+      });
+    });
+
+    it("keeps project hooks for an exact branch pin without inheriting a branch template", () => {
+      const resolved = resolveStrategy({ type: "git_worktree", existingBranch: "fix/existing" });
+      expect(resolved).toEqual({
+        ...projectStrategy,
+        branchTemplate: undefined,
+        existingBranch: "fix/existing",
+      });
+      expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+        mode: "isolated_workspace",
+        workspaceStrategy: resolved,
+      }).success).toBe(true);
+    });
+
+    it("does not mutate the project or issue strategy", () => {
+      const issueStrategy = { type: "git_worktree" as const, baseRef: "origin/release" };
+      const result = buildExecutionWorkspaceAdapterConfig({
+        agentConfig: {},
+        projectPolicy: { enabled: true, workspaceStrategy: Object.freeze({ ...projectStrategy }) },
+        issueSettings: { workspaceStrategy: Object.freeze(issueStrategy) },
+        mode: "isolated_workspace",
+        legacyUseProjectWorkspace: null,
+      });
+      expect(result.workspaceStrategy).not.toBe(issueStrategy);
+      expect(issueStrategy).toEqual({ type: "git_worktree", baseRef: "origin/release" });
+      expect(projectStrategy.baseRef).toBe("origin/main");
+    });
+  });
+
   it("preserves project authorization policy for trust-preset resolution", () => {
     expect(parseProjectExecutionWorkspacePolicy({
       enabled: true,
@@ -654,5 +755,13 @@ describe("operator default isolated execution workspaces", () => {
         resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
       }),
     ).toBe(false);
+  });
+});
+
+ describe("task-scoped low-trust environment", () => {
+  it("uses the explicit phone-task sandbox while preserving ordinary agent defaults", () => {
+    const defaults = {agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env"};
+    expect(resolveExecutionWorkspaceEnvironmentId({...defaults, lowTrustIssueEnvironmentId: "phone-sandbox"})).toEqual({environmentId: "phone-sandbox", source: "issue"});
+    expect(resolveExecutionWorkspaceEnvironmentId(defaults)).toEqual({environmentId: "agent-env", source: "agent"});
   });
 });

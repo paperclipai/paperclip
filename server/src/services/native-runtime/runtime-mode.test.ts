@@ -43,10 +43,47 @@ describe("resolveNativeRuntimeMode", () => {
     }
   });
 
-  it("rejects a fresh Paperclip Runner start while the rollout flag is disabled", () => {
+  it("admits fresh native Codex when the experimental rollout is disabled", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
+  });
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+  ])("retains the Grok Bot gate with runner enabled=%s and Grok enabled=%s", (enabled, grokEnabled) => {
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      enabled,
+      grokEnabled,
+      adapterConfig: {
+        provider: "grok_bot",
+        externalBindingId: "00000000-0000-4000-8000-000000000001",
+        allowUnmeteredProvider: true,
+      },
+    })).toThrow(expect.objectContaining({ code: "paperclip_runner_grok_disabled" }));
+  });
+
+  it("admits a bound Grok Bot when its existing experimental gates are enabled", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      grokEnabled: true,
+      adapterConfig: {
+        provider: "grok_bot",
+        externalBindingId: "00000000-0000-4000-8000-000000000001",
+        allowUnmeteredProvider: true,
+      },
+    })).toMatchObject({ kind: "native", profile: { backend: "grok_bot_mcp" } });
+  });
+
+  it("still rejects experimental providers while the rollout flag is disabled", () => {
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       enabled: false,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_rollout_disabled",
     }));
@@ -116,16 +153,14 @@ describe("resolveNativeRuntimeMode", () => {
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_opencode_model_invalid",
     }));
-    expect(() => resolveNativeRuntimeMode({
-      ...eligible,
-      adapterConfig: {
-        provider: "acpx",
-        acpxAgent: "pi",
-        model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_acpx_agent_unavailable",
-    }));
+    for (const acpxAgent of ["copilot"]) {
+      expect(() => resolveNativeRuntimeMode({
+        ...eligible,
+        adapterConfig: { provider: "acpx", acpxAgent, model: "explicit-provider-model" },
+      })).toThrow(expect.objectContaining({
+        code: "paperclip_runner_acpx_agent_unavailable",
+      }));
+    }
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },
@@ -189,14 +224,17 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("keeps a persisted active run native while the global flag rejects a fresh runner start", () => {
-    const disabled = { ...eligible, enabled: false };
+  it("keeps a persisted experimental run native while the flag rejects a fresh start", () => {
+    const disabled = { ...eligible, enabled: false,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    };
     expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
       persisted: {
         runtimeMode: "native",
         runtimeModeReason: "eligible_opt_in",
         runtimeModeResolvedAt: new Date(),
+        driverKind: "opencode_server",
       },
     })).toEqual(expect.objectContaining({
       kind: "native",
@@ -460,6 +498,7 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
       ...compatibilityInput,
       enabled: false,
       adapterType: "paperclip_runner",
+      adapterConfig: { provider: "opencode", model: "opencode/gpt-5" },
     })).toThrow(NativeRunnerSelectionError);
   });
 });

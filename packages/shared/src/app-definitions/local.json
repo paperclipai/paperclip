@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "local",
+  "name": "Local endpoint",
+  "description": "Use a local model server in the agent’s execution environment.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/api-key-generic.svg"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Local endpoint API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openai",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a local model server in the agent’s execution environment.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENAI_API_KEY"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}

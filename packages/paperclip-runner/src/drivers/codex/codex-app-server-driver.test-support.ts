@@ -1,4 +1,7 @@
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll } from "vitest";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -45,7 +48,10 @@ import {
   type CodexTraceInterpretation,
 } from "./app-server-transport.js";
 
-export const WORKSPACE = realpathSync.native(process.cwd());
+// Tests run in managed worktrees beneath sensitive Codex state. Use a real
+// disposable workspace instead of weakening production host-path admission.
+export const WORKSPACE = realpathSync.native(mkdtempSync(join(tmpdir(), "paperclip-codex-test-workspace-")));
+afterAll(() => rmSync(WORKSPACE, { recursive: true, force: true }));
 
 export class TestQueue<T> implements AsyncIterable<T> {
   values: T[] = [];

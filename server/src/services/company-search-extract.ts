@@ -151,7 +151,11 @@ function extractMatches(sources: ExtractSource[], query: CompanySearchExtractQue
 
 export function companySearchExtractService(db: Db) {
   return {
-    extract: async (companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse> => {
+    extract: async (
+      companyId: string,
+      query: CompanySearchExtractQuery,
+      options?: { issueReadCondition?: SQL<boolean> },
+    ): Promise<CompanySearchExtractResponse> => {
       const containsPattern = `%${escapeLikePattern(query.contains)}%`;
       const urlPattern = urlContainsPattern(query.contains);
       const scopeConditions: SQL[] = [];
@@ -198,6 +202,7 @@ export function companySearchExtractService(db: Db) {
         visibleIssueCondition(),
         or(...scopeConditions)!,
       ];
+      if (options?.issueReadCondition) conditions.push(options.issueReadCondition);
       if (query.status.length > 0) conditions.push(inArray(issues.status, query.status));
       const updatedWithin = updatedWithinStart(query.updatedWithin);
       if (updatedWithin) conditions.push(gte(issues.updatedAt, updatedWithin));

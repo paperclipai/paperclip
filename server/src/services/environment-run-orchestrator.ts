@@ -25,6 +25,7 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
+import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -265,21 +266,29 @@ export function environmentRunOrchestrator(
     selectedEnvironmentId: string;
     localEnvironmentId: string;
     adapterType: string;
+    adapterConfig?: Record<string, unknown>;
+    admittedLifecycleMode?: "warm" | "per_turn";
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
+    reattachRemoteLease?: { leaseId: string; providerLeaseId: string; remoteCwd: string };
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
-    const environment = await resolveEnvironment({
+    const selectedEnvironment = await resolveEnvironment({
       companyId: input.companyId,
       selectedEnvironmentId: input.selectedEnvironmentId,
       localEnvironmentId: input.localEnvironmentId,
     });
 
+    const environment = resolveRunnerEnvironmentForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
+
     // Step 2: Acquire lease
-    const leaseRecord = await acquireLease({
+    const acquisitionInput = {
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
@@ -288,7 +297,29 @@ export function environmentRunOrchestrator(
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
-    });
+    };
+    let leaseRecord: EnvironmentRuntimeLeaseRecord;
+    if (input.reattachRemoteLease) {
+      // Reattachment is inspection of an already running sandbox, never a new
+      // acquisition or a lifecycle resume. Those paths can create a replacement
+      // when the admitted per-turn policy deliberately disables reusable leases.
+      const expected = input.reattachRemoteLease;
+      const lease = await environmentsSvc.getLeaseById(expected.leaseId);
+      if (!lease || environment.driver !== "sandbox" ||
+          lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
+          lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
+          lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
+          lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
+          lease.releasedAt !== null || lease.cleanupStatus !== null ||
+          (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
+          lease.provider !== environment.config.provider || lease.providerLeaseId !== expected.providerLeaseId ||
+          lease.metadata?.remoteCwd !== expected.remoteCwd) {
+        throw new Error("native_remote_recovery_lease_mismatch");
+      }
+      leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
+    } else {
+      leaseRecord = await acquireLease(acquisitionInput);
+    }
 
     // Step 3: Log lease acquisition activity
     await logActivity(db, {

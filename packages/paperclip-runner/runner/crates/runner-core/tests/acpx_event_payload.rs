@@ -176,7 +176,7 @@ fn rejects_unclassified_and_malformed_runtime_payloads() {
 #[test]
 fn decodes_tool_and_permission_requests_after_scope_validation() {
     let scope = active_scope();
-    let tool = decode_acpx_event(
+    let decoded = decode_acpx_event(
         &scope,
         &event(
             GeneratedAcpxSidecarEventType::RuntimeToolCalled,
@@ -188,13 +188,8 @@ fn decodes_tool_and_permission_requests_after_scope_validation() {
         ),
     )
     .unwrap();
-    assert!(matches!(
-        tool,
-        AcpxEventPayload::ToolCalled { call_id, operation_id, input, .. }
-            if call_id == "call-1"
-                && operation_id == "get_issue"
-                && input["apiToken"] == "[REDACTED]"
-    ));
+    assert!(matches!(decoded, AcpxEventPayload::ToolCalled {input, ..}
+        if input == json!({"issueId":"issue-1", "apiToken":"secret-value"})));
 
     let permission = decode_acpx_event(
         &scope,
@@ -405,4 +400,61 @@ fn rejects_payloads_before_decoding_when_scope_or_size_is_invalid() {
     oversized.turn_id = None;
     let error = decode_acpx_event(&scope, &oversized).unwrap_err();
     assert!(error.to_string().contains("256 KiB"));
+}
+
+#[test]
+fn input_parent_tool_is_bounded_scope_checked_and_provider_neutral() {
+    let input = json!({"requestId":"input-1","toolCallId":"tool with spaces",
+        "questionSet":{"schema":"paperclip.question_set.v1","questions":[{"id":"q","prompt":"Proceed?","required":true,"answerMode":"text"}]},
+        "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}});
+    let decode = |payload| {
+        decode_acpx_event(
+            &active_scope(),
+            &event(
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                payload,
+            ),
+        )
+    };
+    let AcpxEventPayload::InputRequested { tool_call_id, .. } = decode(input.clone()).unwrap()
+    else {
+        panic!("input expected")
+    };
+    assert_eq!(tool_call_id.as_deref(), Some("tool with spaces"));
+    for bad in [
+        json!(null),
+        json!(""),
+        json!("x".repeat(241)),
+        json!("bad\u{0000}id"),
+        json!(["tool-1"]),
+    ] {
+        let mut changed = input.clone();
+        changed["toolCallId"] = bad;
+        assert!(decode(changed).is_err());
+    }
+    // Vendor method recognition belongs to the adapter. Neither a provider name
+    // nor an RPC spelling changes how this scoped opaque reference is decoded.
+    for (field, value) in [("provider", "other-provider"), ("method", "other/plan")] {
+        let mut changed = input.clone();
+        changed["origin"][field] = json!(value);
+        assert!(decode(changed).is_ok());
+    }
+    for (run, turn) in [("foreign-run", "turn-1"), ("run-1", "foreign-turn")] {
+        let mut scoped = event(
+            GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+            input.clone(),
+        );
+        scoped.run_id = Some(run.to_owned());
+        scoped.turn_id = Some(turn.to_owned());
+        assert!(decode_acpx_event(&active_scope(), &scoped).is_err());
+    }
+    let mut legacy = input;
+    legacy.as_object_mut().unwrap().remove("toolCallId");
+    assert!(matches!(
+        decode(legacy).unwrap(),
+        AcpxEventPayload::InputRequested {
+            tool_call_id: None,
+            ..
+        }
+    ));
 }

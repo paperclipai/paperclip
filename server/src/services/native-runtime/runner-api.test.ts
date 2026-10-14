@@ -11,6 +11,7 @@ import {
   validateRunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
+import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 const context = {
   companyId: "company-a",
@@ -32,12 +33,51 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
   }),
   saveResponse: async (bytes, contentType) => ({
     artifactId: "artifact-a",
-    byteSize: bytes.length,
+    byteSize: Buffer.isBuffer(bytes) ? bytes.length : bytes.byteSize,
     contentType,
   }),
 });
 
+describe("bounded response capture receipts", () => {
+  it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
+    const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
+    const result = await executeRunnerApi({ operationId }, context, io(fetcher));
+    expect(result).toMatchObject({ ok: false, error: "api_response_too_large", maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES,
+      outcome: operationId === projects ? "read_failed" : "unknown" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("settles the budget and removes the file even when saving fails", async () => {
+    const bytes = Buffer.alloc(32 * 1024);
+    const settle = vi.fn(async () => {});
+    const input = io(async () => new Response(bytes));
+    input.reserveResponseCapture = async () => settle;
+    input.saveResponse = async () => { throw new Error("storage unavailable"); };
+    await expect(executeRunnerApi({ operationId: projects }, context, input)).rejects.toThrow("storage unavailable");
+    expect(settle).toHaveBeenCalledExactlyOnceWith(bytes.length, true);
+  });
+});
+
 describe("runner API catalog", () => {
+  it.each(["standard", "ask", "planning", "skill_test"])("permits the title-only API in %s mode", workMode => {
+    const operationId = "PUT /api/issues/{id}/title";
+    const { operation } = validateRunnerApiCall({
+      operationId,
+      pathParams: { id: context.issueId },
+      body: { title: "Fix sign-in redirect", onlyIfProvisional: true },
+    }, { ...context, workMode });
+    expect(operation.allowedModes).toContain(workMode);
+    expect(operation.dedicatedTools).toEqual(["set_task_title"]);
+    expect(operation.requestBody?.content["application/json"].schema.additionalProperties).toBe(false);
+  });
+  it("advertises the conversational recording exception without general approval authority", () => {
+    const operationId = "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment";
+    const operation = runnerApiOperation(operationId);
+    expect(operation.allowedModes).toContain("planning");
+    expect(operation.allowedModes).not.toContain("ask");
+    expect(operation.runnerRestrictions?.join(" ")).toContain("conversational confirmation");
+    expect(runnerApiOperation("POST /api/issues/{id}/interactions/{interactionId}/accept").callPolicy).toBe("rest");
+    expect(runnerApiOperation(createProject).allowedModes).not.toContain("planning");
+  });
   it("accounts for unique operations with resolved request contracts", () => {
     const catalog = runnerApiCatalog();
     expect(catalog.length).toBeGreaterThan(400);
@@ -52,6 +92,10 @@ describe("runner API catalog", () => {
     expect(runnerApiOperation(createProject).dedicatedTools).toEqual(["create_project"]);
     expect(runnerApiOperation(projects).dedicatedTools).toEqual(["list_projects"]);
     expect(runnerApiOperation("GET /api/companies/{companyId}/project-repositories").dedicatedTools).toEqual(["list_project_repositories"]);
+    expect(runnerApiOperation("GET /api/agents/{id}/instructions-bundle/file").dedicatedTools).toEqual(["read_agent_instructions"]);
+    expect(runnerApiOperation("PUT /api/agents/{id}/instructions-bundle/file").dedicatedTools).toEqual(["update_agent_instructions"]);
+    expect(runnerApiOperation("GET /api/agents/{id}/instructions-bundle/history").dedicatedTools).toEqual(["get_agent_instruction_history"]);
+    expect(runnerApiOperation("POST /api/agents/{id}/instructions-bundle/restore").dedicatedTools).toEqual(["restore_agent_instructions"]);
     expect(runnerApiOperation("POST /api/companies/{companyId}/agent-hires").dedicatedTools).toEqual(["hire_agent"]);
     expect(runnerApiOperation("POST /api/companies/{companyId}/agent-hires").dedicatedToolGuidance).toContain("inherits the caller's native runtime");
   });
@@ -63,31 +107,7 @@ describe("runner API catalog", () => {
     expect(operation.responses).toBeDefined();
     expect(operation.authorization.actor).toBeTruthy();
   });
-  it.each(
-    runnerApiCatalog().filter((operation) => operation.transport === "rest"),
-  )(
-    "resolves the catalog route $operationId inside the bound origin",
-    (operation) => {
-      const pathParams = Object.fromEntries(
-        operation.parameters
-          .filter((parameter) => parameter.in === "path")
-          .map((parameter) => [
-            parameter.name,
-            parameter.name === "companyId" ? context.companyId : "fixture-id",
-          ]),
-      );
-      const url = runnerApiUrl(
-        operation,
-        { operationId: operation.operationId, pathParams },
-        context,
-        "https://paperclip.test",
-      );
-      expect(url.origin).toBe("https://paperclip.test");
-      expect(url.pathname).not.toContain("{");
-      expect(operation.responses).toBeDefined();
-      expect(operation.authorization.actor).toBeTruthy();
-    },
-  );
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
@@ -118,21 +138,25 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
-  it.each([
-    "POST /api/execution-workspaces/{id}/runtime-commands/{action}",
-    "POST /api/projects/{id}/workspaces/{workspaceId}/runtime-services/{action}",
-    "POST /api/tool-gateway/runtime-slots/{slotId}/restart",
-    "POST /api/cases/{caseId}/automation/current-stage/rerun",
-    "POST /api/companies/{companyId}/skills/{skillId}/test-runs",
-    "POST /api/tool-gateway/sessions",
-  ])(
-    "keeps execution and gateway control %s out of generic dispatch",
-    async (operationId) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi({ operationId }, context, io(request)),
-      ).rejects.toThrow(/cannot bypass|credential broker/);
-      expect(request).not.toHaveBeenCalled();
+  it.each(runnerApiCatalog().filter(operation => operation.transport === "rest"))(
+    "dispatches $operationId with agent identity and preserves route authorization",
+    async operation => {
+      const request = vi.fn<typeof fetch>(async () =>
+        Response.json({ error: "Route permission required" }, { status: 403 }),
+      );
+      const pathParams = Object.fromEntries(
+        [...operation.path.matchAll(/\{([^}]+)\}/g)].map(([, name]) =>
+          [name, name === "companyId" ? context.companyId : "fixture"]),
+      );
+      const result = await executeRunnerApi(
+        { operationId: operation.operationId, pathParams }, context, io(request),
+      );
+      expect(operation.callPolicy).toBe("rest");
+      expect(result).toMatchObject({ ok: false, status: 403, data: { error: "Route permission required" } });
+      expect(request).toHaveBeenCalledOnce();
+      const headers = new Headers(request.mock.calls[0][1]?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer private-agent-token");
+      expect(headers.get("X-Paperclip-Run-Id")).toBe(context.runId);
     },
   );
   it.each([
@@ -149,28 +173,6 @@ describe("runner API request boundary", () => {
         executeRunnerApi({ operationId }, context, io(request)),
       ).rejects.toThrow("existing protocol client");
       expect(request).not.toHaveBeenCalled();
-    },
-  );
-  it.each(
-    runnerApiCatalog().filter(
-      (operation) =>
-        !["GET", "HEAD", "OPTIONS"].includes(operation.method) &&
-        /\/(routines|routine-triggers)(\/|$)/.test(operation.path) &&
-        !operation.path.includes("/description/annotations"),
-    ),
-  )(
-    "keeps scheduled execution $operationId behind its existing client",
-    async (operation) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi(
-          { operationId: operation.operationId },
-          context,
-          io(request),
-        ),
-      ).rejects.toThrow(/cannot bypass|credential broker/);
-      expect(request).not.toHaveBeenCalled();
-      expect(operation.callPolicy).toBe("restricted");
     },
   );
   it.each(
@@ -206,51 +208,16 @@ describe("runner API request boundary", () => {
       ).operation.callPolicy,
     ).toBe("rest");
   });
-  it.each(["reopen", "resume", "interrupt"])(
-    "cannot hide lifecycle intent %s in an ordinary issue patch",
-    async (field) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi(
-          {
-            operationId: "PATCH /api/issues/{id}",
-            pathParams: { id: "other-issue" },
-            body: { [field]: true, billingCode: "safe-extra-field" },
-          },
-          context,
-          io(request),
-        ),
-      ).rejects.toThrow("lifecycle changes");
-      expect(request).not.toHaveBeenCalled();
-    },
-  );
   it.each([
-    "POST /api/agents/me/secrets/{key}/value",
-    "POST /api/agents/{id}/keys",
-    "DELETE /api/agents/{id}/keys/{keyId}",
-    "POST /api/companies/{companyId}/secret-proposals/{id}/approve",
-    "POST /api/agents/me/secret-proposals",
-    "PATCH /api/secrets/{id}",
-    "POST /api/companies/{companyId}/exports",
-    "GET /api/secret-provider-configs/{id}",
-    "POST /api/chat-endpoints/{endpointId}/setup-secret",
-    "POST /api/chat-endpoints/{endpointId}/principals/{principalId}/link-intent",
-    "DELETE /api/chat-endpoints/{endpointId}/principals/{principalId}/link",
-    "POST /api/chat-identity-links/confirm",
-    "GET /api/chat-identity-links/preview",
-  ])(
-    "keeps sensitive operation %s out of model results and receipts",
-    async (operationId) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi({ operationId }, context, io(request)),
-      ).rejects.toThrow("credential broker");
-      expect(request).not.toHaveBeenCalled();
-      expect(searchRunnerApi({ query: operationId }).results[0]).toMatchObject({
-        callPolicy: "restricted",
-      });
-    },
-  );
+    ["PATCH /api/issues/{id}", { status: "blocked", assigneeAgentId: "teammate", blockedByIssueIds: ["dependency"], reopen: true }],
+    ["PATCH /api/agents/{id}", { status: "idle" }],
+    ["POST /api/issues/{id}/comments", { body: "Continue", resume: true }],
+  ])("passes REST payload fields to route authorization for %s", async (operationId, body) => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ accepted: true }));
+    expect(await executeRunnerApi({ operationId: operationId as string, pathParams: { id: "fixture" }, body }, context, io(request)))
+      .toMatchObject({ ok: true, status: 200 });
+    expect(JSON.parse(request.mock.calls[0][1]?.body as string)).toEqual(body);
+  });
   it("retains safe secret metadata discovery", () => {
     for (const operationId of [
       "GET /api/agents/me/secrets",
@@ -321,39 +288,34 @@ describe("runner API request boundary", () => {
       ).toBe("GET");
     }
   });
-  it("retains API-only issue options while guarding lifecycle fields", () => {
-    const input = {
-      operationId: "PATCH /api/issues/{id}",
-      pathParams: { id: context.issueId },
-      body: { billingCode: "cost-center" },
-    };
-    expect(validateRunnerApiCall(input, context).operation.method).toBe(
-      "PATCH",
-    );
-    expect(() =>
-      validateRunnerApiCall({ ...input, body: { status: "done" } }, context),
-    ).toThrow("dedicated");
-    expect(() =>
-      validateRunnerApiCall(
-        {
-          operationId: "POST /api/issues/{id}/checkout",
-          pathParams: { id: context.issueId },
-        },
-        context,
-      ),
-    ).toThrow("lifecycle");
+  it.each([
+    ["POST /api/agents/me/secrets/{key}/value", { key: "FIXTURE_TOKEN" }],
+    ["POST /api/companies/{companyId}/exports", {}],
+    ["POST /api/companies/{companyId}/export", {}],
+  ])("returns credential responses for %s above the inline limit without plaintext artifacts", async (operationId, pathParams) => {
+    const value = "fixture-credential-".repeat(3000);
+    const transport = io(async () => Response.json({ value }));
+    const save = vi.fn(transport.saveResponse);
+    const reserve = vi.fn(async () => vi.fn(async () => {}));
+    const result = await executeRunnerApi({ operationId, pathParams }, context, { ...transport, saveResponse: save, reserveResponseCapture: reserve });
+    expect(result).toMatchObject({ ok: true, status: 200, data: { value } });
+    expect(result).not.toHaveProperty("artifact");
+    expect(save).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
   });
-  it.each(["issue-a", "ISSUE-A", "API-1", "api-1", " api-1 "])(
-    "cannot delete its active task using the route identity alias %s",
-    (id) => {
-      expect(() =>
-        validateRunnerApiCall(
-          { operationId: "DELETE /api/issues/{id}", pathParams: { id } },
-          context,
-        ),
-      ).toThrow("cannot delete itself");
-    },
-  );
+  it("withholds a credential response when the run is revoked during HTTP", async () => {
+    let authorized = true;
+    const request = vi.fn<typeof fetch>(async () => {
+      authorized = false;
+      return Response.json({ value: "private-fixture-value" });
+    });
+    const result = await executeRunnerApi({ operationId: "POST /api/agents/me/secrets/{key}/value", pathParams: { key: "fixture-key" } }, context, {
+      ...io(request), beforeDispatch: async () => { if (!authorized) throw new Error("Run revoked"); },
+    });
+    expect(result).toMatchObject({ ok: false, error: "api_transport_failure", outcome: "unknown" });
+    expect(JSON.stringify(result)).not.toContain("private-fixture-value");
+    expect(request).toHaveBeenCalledOnce();
+  });
   it("forwards only server-owned authentication and preserves API denials", async () => {
     const request = vi.fn<typeof fetch>(async () =>
       Response.json({ error: "Board access required" }, { status: 403 }),
@@ -539,29 +501,11 @@ describe("runner API request boundary", () => {
       ),
     ).rejects.toThrow();
   });
-  it("classifies protocols and prevents execution control through alternate routes", () => {
-    const protocols = runnerApiCatalog().filter(
-      (operation) => operation.transport === "protocol",
-    );
-    expect(
-      protocols.some((operation) => operation.path.endsWith("/events/ws")),
-    ).toBe(true);
-    for (const operation of protocols)
-      expect(() =>
-        validateRunnerApiCall({ operationId: operation.operationId }, context),
-      ).toThrow("protocol client");
-    for (const operationId of [
-      "POST /api/issues/{id}/tree-holds",
-      "POST /api/issues/{id}/stalled-review-decision",
-      "POST /api/agents/{id}/runtime-state/reset-session",
-      "POST /api/approvals/{id}/resubmit",
-    ]) {
-      expect(() =>
-        validateRunnerApiCall(
-          { operationId, pathParams: { id: "fixture" } },
-          context,
-        ),
-      ).toThrow("cannot bypass");
+  it("keeps protocol clients separate from REST dispatch", () => {
+    const protocols = runnerApiCatalog().filter(operation => operation.transport === "protocol");
+    expect(protocols.some(operation => operation.path.endsWith("/events/ws"))).toBe(true);
+    for (const operation of protocols) {
+      expect(() => validateRunnerApiCall({ operationId: operation.operationId }, context)).toThrow("protocol client");
     }
   });
   it("keeps skill-test mode consistent with the advertised tool contract", () => {
@@ -572,24 +516,134 @@ describe("runner API request boundary", () => {
       ).operation.method,
     ).toBe("POST");
   });
-  it("cannot hide lifecycle mutations in a raw uploaded JSON body", () => {
-    for (const operationId of [
-      "PATCH /api/issues/{id}",
-      "PATCH /api/agents/{id}",
-      "POST /api/issues/{id}/comments",
-    ]) {
-      expect(() =>
-        validateRunnerApiCall(
-          {
-            operationId,
-            pathParams: { id: "fixture" },
-            files: [{ path: "hidden-status.json" }],
-            contentType: "application/json",
-          },
-          context,
-        ),
-      ).toThrow("inline JSON object");
+  it("passes uploaded JSON bodies through the same route validation as REST", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ error: "Board access required" }, { status: 403 }));
+    const transport = io(request);
+    transport.readFile = async () => ({ bytes: Buffer.from('{"status":"idle"}'), filename: "update.json", contentType: "application/json" });
+    expect(await executeRunnerApi({ operationId: "PATCH /api/agents/{id}", pathParams: { id: "fixture" }, files: [{ path: "update.json" }], contentType: "application/json" }, context, transport))
+      .toMatchObject({ ok: false, status: 403 });
+    expect(Buffer.from(request.mock.calls[0][1]?.body as Uint8Array).toString()).toBe('{"status":"idle"}');
+  });
+  it("reads text windows from a live response and supplies stable snapshots", async () => {
+    const text = "prefix\n" + "🧭é\n".repeat(6000) + "END-OF-EVIDENCE";
+    const saveResponse = vi.fn(io(fetch).saveResponse);
+    const request = vi.fn<typeof fetch>(async () => new Response(text, { headers: { "content-type": "application/json" } }));
+    let offsetBytes = 0;
+    let received = "";
+    do {
+      const result = await executeRunnerApi({ operationId: projects, responseText: { offsetBytes, limitBytes: 4096 } }, context, { ...io(request), saveResponse }) as any;
+      expect(result).toMatchObject({ ok: true, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
+      expect(Buffer.byteLength(result.data)).toBeLessThanOrEqual(4096);
+      received += result.data;
+      offsetBytes = result.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(received).toBe(text);
+    expect(saveResponse).toHaveBeenCalled();
+    expect(request.mock.calls.every(([, options]) => new Headers(options?.headers).get("Authorization") === "Bearer private-agent-token")).toBe(true);
+  });
+  it.each(["text/plain", "application/octet-stream"])("does not duplicate an unpaged multi-gigabyte asset (%s)", async contentType => {
+    const totalBytes = 3 * 1024 * 1024 * 1024;
+    const saveResponse = vi.fn(io(fetch).saveResponse);
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("range")).toBe("bytes=0-24576");
+      return new Response(Buffer.alloc(24577, 65), { status: 206, headers: {
+        "content-type": contentType, "content-range": `bytes 0-24576/${totalBytes}`, etag: `"${"a".repeat(64)}"`,
+      } });
+    });
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "existing" } }, context, { ...io(request), saveResponse });
+    expect(result).toMatchObject({ ok: true, status: 206, byteSize: totalBytes, artifact: { artifactId: "existing", byteSize: totalBytes, sha256: "a".repeat(64) } });
+    expect(saveResponse).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("reads a page beyond ten MiB in a multi-gigabyte asset", async () => {
+    const offsetBytes = 3 * 1024 * 1024 * 1024;
+    const totalBytes = offsetBytes + 100;
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("range")).toBe(`bytes=${offsetBytes - 1}-${offsetBytes + 4}`);
+      return new Response("abcdef", { status: 206, headers: {
+        "content-type": "text/plain", "content-range": `bytes ${offsetBytes - 1}-${offsetBytes + 4}/${totalBytes}`,
+      } });
+    });
+    expect(await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "large" }, responseText: { offsetBytes, limitBytes: 4 } }, context, io(request))).toMatchObject({
+      ok: true, data: "bcde", responseText: { offsetBytes, nextOffsetBytes: offsetBytes + 4, totalBytes },
+    });
+  });
+  it.each([true, false])("saves responses above ten MiB (known length: %s)", async knownLength => {
+    const bytes = Buffer.alloc(12 * 1024 * 1024, 65);
+    const request = vi.fn<typeof fetch>(async () => new Response(bytes, { headers: {
+      "content-type": "text/plain", ...(knownLength ? { "content-length": String(bytes.length) } : {}),
+    } }));
+    const result = await executeRunnerApi({ operationId: projects }, context, io(request));
+    expect(result).toMatchObject({ ok: true, artifact: { byteSize: bytes.length }, byteSize: bytes.length });
+  });
+  it("pages a twelve MiB asset with linear transfer and UTF-8 boundaries", async () => {
+    const bytes = Buffer.from("🧭é".repeat(Math.floor(12 * 1024 * 1024 / 6)));
+    let transferred = 0;
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      const range = new Headers(init?.headers).get("range");
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? "");
+      if (!match) { transferred += bytes.length; return new Response(bytes, { headers: { "content-type": "text/plain" } }); }
+      const start = Number(match[1]), end = Math.min(Number(match[2]), bytes.length - 1);
+      const part = bytes.subarray(start, end + 1); transferred += part.length;
+      return new Response(part, { status: 206, headers: { "content-type": "text/plain", "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+    });
+    let offsetBytes: number | null = 0;
+    const parts: string[] = [];
+    do {
+      const page: any = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "large" }, responseText: { offsetBytes } }, context, io(request));
+      expect(page.ok).toBe(true);
+      parts.push(page.data); offsetBytes = page.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(parts.join("")).toBe(bytes.toString());
+    expect(transferred).toBeLessThan(bytes.length + request.mock.calls.length * 5);
+    expect(request.mock.calls.every(([, init]) => new Headers(init?.headers).has("range"))).toBe(true);
+  });
+  it.each([
+    ["bytes 4-8/20", "12345"], // wrong start
+    ["bytes 3-7/20", "12345"], // early end
+    ["bytes 3-8/20", "12345"], // truncated body
+    ["bytes 3-8/9007199254740992", "123456"], // imprecise total
+    ["bytes 3-8/*", "123456"], // unknown total
+    [null, "123456"],
+  ])("rejects inconsistent partial asset receipts: %s", async (range, body) => {
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { offsetBytes: 4, limitBytes: 4 } }, context, io(async () => new Response(body, { status: 206, headers: { "content-type": "text/plain", ...(range ? { "content-range": range } : {}) } })));
+    expect(result).toMatchObject({ ok: false, error: "response_text_invalid_range" });
+  });
+  it("accepts EOF and rejects an offset inside a UTF-8 code point in ranged assets", async () => {
+    const call = (offsetBytes: number, bytes: Buffer, range: string) => executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { offsetBytes, limitBytes: 4 } }, context, io(async () => new Response(new Uint8Array(bytes), { status: 206, headers: { "content-type": "text/plain", "content-range": range } })));
+    expect(await call(2, Buffer.from([0xa9]), "bytes 1-1/2")).toMatchObject({ ok: true, data: "", responseText: { nextOffsetBytes: null, totalBytes: 2 } });
+    expect(await call(1, Buffer.from("é"), "bytes 0-1/2")).toMatchObject({ ok: false, error: "response_text_invalid_offset" });
+  });
+  it("does not silently accept an asset server that ignores the byte range", async () => {
+    const result = await executeRunnerApi({ operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: "saved" }, responseText: { limitBytes: 4 } }, context, io(async () => new Response("unbounded", { headers: { "content-type": "text/plain" } })));
+    expect(result).toMatchObject({ ok: false, error: "api_transport_failure" });
+  });
+  it.each([{ offsetBytes: -1 }, { limitBytes: 0 }, { limitBytes: 3 }, { limitBytes: 24577 }, { offsetBytes: 0.5 }, { offsetBytes: Number.MAX_SAFE_INTEGER + 1 }])("rejects invalid text windows before dispatch: %j", async responseText => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: projects, responseText }, context, io(request))).rejects.toThrow("Invalid call_api arguments");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("does not page mutation responses by repeating the mutation", async () => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: {} }, context, io(request))).rejects.toThrow("GET");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("rejects binary, invalid UTF-8 and offsets that split text", async () => {
+    for (const [body, type, offsetBytes] of [
+      [Buffer.from("binary"), "application/octet-stream", 0],
+      [Buffer.from([0xff]), "text/plain", 0],
+      [Buffer.concat([Buffer.from([0xc2]), Buffer.alloc(24576, 0x80)]), "text/plain", 0],
+      [Buffer.from("é"), "text/plain", 1],
+      [Buffer.from("short"), "text/plain", 6],
+    ] as const) {
+      const saveResponse = vi.fn(io(fetch).saveResponse);
+      const result = await executeRunnerApi({ operationId: projects, responseText: { offsetBytes } }, context, { ...io(async () => new Response(body, { headers: { "content-type": type } })), saveResponse });
+      expect(result).toMatchObject({ ok: false, error: expect.stringContaining("response_text") });
+      expect(saveResponse).not.toHaveBeenCalled();
     }
+  });
+  it("preserves denials for bounded text reads", async () => {
+    expect(await executeRunnerApi({ operationId: projects, responseText: {} }, context, io(async () => Response.json({ error: "denied" }, { status: 403 })))).toMatchObject({ ok: false, status: 403, data: '{"error":"denied"}' });
   });
   it("bounds streamed responses even without content-length", async () => {
     await expect(

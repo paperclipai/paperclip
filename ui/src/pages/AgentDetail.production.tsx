@@ -1,3 +1,4 @@
+import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
@@ -64,7 +65,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
@@ -380,7 +381,7 @@ function runMetrics(run: HeartbeatRun) {
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    totalTokens: visibleRunTokenTotal(usage),
     provider,
     model,
   };
@@ -769,7 +770,8 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const { enabled: chatConnectorsEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
+  const { enabled: chatEnabled, githubEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
+  const chatConnectorsEnabled = chatEnabled || githubEnabled;
   const activeView = urlRunId ? "runs" as AgentDetailView
     : urlTab === "channels" && !chatConnectorsEnabled ? "dashboard" : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
@@ -935,6 +937,8 @@ export function AgentDetail() {
       metric: "billed_cents",
       windowKind: "calendar_month_utc",
       amount: budgetMonthlyCents,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: spentMonthlyCents,
       remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
       utilizationPercent:
@@ -3150,7 +3154,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
-function RunsTab({
+export function RunsTab({
   runs,
   companyId,
   agentId,
@@ -3169,10 +3173,6 @@ function RunsTab({
 }) {
   const { isMobile } = useSidebar();
 
-  if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
-  }
-
   // Sort by created descending
   const sorted = [...runs].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -3180,7 +3180,16 @@ function RunsTab({
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
   const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
+  const selectedRun = selection.run;
+  if (selectedRunId && !selectedRun) {
+    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    return <div role="alert">
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+    </div>;
+  }
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {

@@ -73,6 +73,31 @@ function runResult(summary: string): Record<string, unknown> {
 }
 
 describe("provider notice presentation", () => {
+  it("omits unrelated information from saved chat without removing warnings or responses", () => {
+    const legacyNotice = {
+      schema: "paperclip.provider.notice.v1",
+      noticeId: "codex-warning",
+      severity: "warning",
+      category: "warning",
+      summary: "ignored unrelated provider information",
+      userActionable: true,
+    };
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", legacyNotice),
+      event(2, "harness.diagnostic", { code: "codex_unrelated_information" }),
+      event(3, "provider.notice.recorded", { ...legacyNotice, summary: "Repository is not trusted" }),
+      event(4, "provider.notice.recorded", { ...legacyNotice, severity: "error" }),
+      event(5, "provider.notice.recorded", { ...legacyNotice, category: "configWarning" }),
+      event(6, "item.completed", { kind: "agentMessage", channel: "final", text: "Here is the answer." }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", summary: "Repository is not trusted" },
+      { kind: "provider_activity", status: "failed", summary: legacyNotice.summary },
+      { kind: "provider_activity", summary: legacyNotice.summary },
+      { kind: "assistant", text: "Here is the answer." },
+    ]);
+  });
+
   it("preserves notice text as a notice rather than a synthetic tool call", () => {
     const entries = nativeRunEventsToTranscript([
       event(1, "provider.notice.recorded", {
@@ -280,6 +305,16 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
     expect(transcript.filter((entry) => entry.kind === "run_result")).toHaveLength(1);
     expect(transcript.filter((entry) => entry.kind === "run_terminal")).toHaveLength(1);
+  });
+
+  it("preserves buffered output tails when a native turn ends", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "item.delta", { itemId: "reasoning-1", kind: "reasoning", text: "Thinking" }),
+      event(2, "turn.completed", { status: "completed", outputTails: [
+        { itemId: "reasoning-1", payload: { kind: "reasoning", text: "-" } },
+      ] }),
+    ]);
+    expect(transcript.filter(entry => entry.kind === "thinking").map(entry => "text" in entry ? entry.text : "").join("")).toBe("Thinking-");
   });
 
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {

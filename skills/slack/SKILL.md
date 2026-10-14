@@ -80,3 +80,13 @@ On a Slack-linked task, human messages sent from Paperclip and your final respon
 are mirrored into its Slack thread. Do not manually send the same final response
 again. Ordinary tasks and routines have no automatic Slack destination: perform the
 requested Slack send explicitly and report whether delivery was confirmed.
+
+On a Slack-linked task, when results are ready, include the outcome and accessible
+deliverable links or supported attachments in your final response to the originating
+Slack conversation.
+Do not leave the result only on the Paperclip task. When the user must review a
+plan, approve an action, or review a result, save the artifact and create the
+required review interaction through the normal Paperclip workflow. Tell the user
+what needs review and what action to take in the same Slack conversation. A saved
+plan or an `in_review` status alone is not a review request. Keep approval gates
+in place and do not claim delivery without a successful receipt.

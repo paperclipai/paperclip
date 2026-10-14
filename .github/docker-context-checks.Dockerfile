@@ -22,6 +22,8 @@
 FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
 WORKDIR /context
 COPY . .
+# Verify ACPX release declarations against the exact Docker context.
+RUN node packages/paperclip-runner/scripts/generate-acpx-profiles.mjs --check
 # Committed artifacts the image build reads whose drift checks cannot run
 # here (they need the locked dependency tree or compiled dist/). Existence
 # in the context is the property this probe guards; content correctness is

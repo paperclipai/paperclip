@@ -50,6 +50,7 @@ export async function syncSlackBotTools(
       .update(
         JSON.stringify({
           name: tool.name,
+          description: tool.description,
           inputSchema: tool.inputSchema,
           risk: tool.risk,
           scopes: tool.scopes,

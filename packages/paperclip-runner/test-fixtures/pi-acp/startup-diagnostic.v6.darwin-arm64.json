@@ -1,0 +1,137 @@
+{
+  "schema": "paperclip.pi-startup-diagnostic.v2",
+  "recordedAt": "2026-09-29",
+  "profileVersion": 6,
+  "profileDigest": "sha256:d2b470e940115a1cd8a31cd5d2ddde2837912e965d3475deede09d67bff6346f",
+  "baselineSourceRevision": "edf14a067ee7fba8d472d3cd9143f724fd51f4b5",
+  "platform": "darwin-arm64",
+  "nodeVersion": "24.21.0",
+  "paidFailure": {
+    "reservationId": "pi-v6-local-hello-20260929-02",
+    "cell": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+    "providerPackDigest": "sha256:fcf9802008195797fc5e8f69954ff6d238a3b7518bd21af12e625d7549462145",
+    "sidecarSha256": "788ec4fe2e4280181fe8fb22784253727ca52e3d81893e15a6e9dab6f853f61c",
+    "nodeSha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+    "daemonSha256": "06343113009a039be6b69523c1a4d37009f52d1af1d13cab1a8a33b61dffe2ea",
+    "result": "runner_local_connect_failed: PRP command session.open timed out",
+    "runCount": 1,
+    "durationMs": 121752,
+    "terminalUsage": "unavailable",
+    "exclusiveKeyDeltaUsd": 0,
+    "delayedKeyDeltaUsd": 0,
+    "delayedObservationAt": "2026-09-29T15:22:15.704922+00:00",
+    "cleanup": "passed; all 40 owned process identities gone"
+  },
+  "baselineNoKey": {
+    "durationMs": 35629,
+    "result": "PRP command session.open timed out",
+    "promptCalls": 0
+  },
+  "baselineStages": [
+    {
+      "stage": "verifyPiInstallation",
+      "durationMs": 70458
+    },
+    {
+      "stage": "openCommand-snapshot",
+      "durationMs": 51936
+    },
+    {
+      "stage": "close-snapshot",
+      "durationMs": 4469
+    }
+  ],
+  "diagnosticBuild": {
+    "baseSourceRevision": "edf14a067ee7fba8d472d3cd9143f724fd51f4b5",
+    "changedFiles": [
+      {
+        "path": "packages/paperclip-runner/src/drivers/acpx/native-distribution-integrity.test.ts",
+        "sha256": "fb574b6636dfcebd45fb0be826d3b12cc8411dc90139b85816d1aefad9cceb2d"
+      },
+      {
+        "path": "packages/paperclip-runner/src/drivers/acpx/native-distribution-integrity.ts",
+        "sha256": "b5beb5043242c69e50775a900465a3fe0bed5e2cfa2a36b8db9c8cc02be53196"
+      },
+      {
+        "path": "packages/paperclip-runner/src/drivers/acpx/pi-verified-runtime.test.ts",
+        "sha256": "15a3be4df8edfe8b195ca4c49218b06e82198483a8d2bdaea8518ed89c5b4f09"
+      },
+      {
+        "path": "packages/paperclip-runner/src/drivers/acpx/pi-verified-runtime.ts",
+        "sha256": "6a08420964ac3f8c91a248b90098cd025a47612ed4060de43db30d1ef80be296"
+      }
+    ],
+    "sidecarSha256": "7c1cb521d8b02afb7cea85d3f55c91b37c4a2cdfcccb2e72f7cde7eb478cf3cb",
+    "dependencies": "pristine private copy-import dependencies from frozen baseline; no ambient ACPX inputs",
+    "providerClosureUnchanged": true,
+    "newProviderPackBuilt": false
+  },
+  "controlledPoolBenchmark": {
+    "baseSource": "edf14a067ee7fba8d472d3cd9143f724fd51f4b5",
+    "diagnosticSource": "uncommitted bounded-concurrency verifier changes",
+    "credentials": "none",
+    "providerProcesses": 0,
+    "providerCalls": 0,
+    "times": [
+      {
+        "stage": "Pi-inventory-eight-hash-streams",
+        "durationMs": 24429
+      },
+      {
+        "stage": "native-snapshot-8-workers",
+        "durationMs": 30413
+      },
+      {
+        "stage": "native-snapshot-8-cleanup",
+        "durationMs": 1926
+      },
+      {
+        "stage": "native-snapshot-32-workers",
+        "durationMs": 9815
+      },
+      {
+        "stage": "native-snapshot-32-cleanup",
+        "durationMs": 3475
+      }
+    ]
+  },
+  "pooledStages": [
+    {
+      "stage": "verifyPiInstallation",
+      "durationMs": 1329
+    },
+    {
+      "stage": "openCommand-snapshot",
+      "durationMs": 2569
+    },
+    {
+      "stage": "close-snapshot",
+      "durationMs": 975
+    }
+  ],
+  "pooledNoKey": {
+    "requestSettledMs": 9772,
+    "includingCloseMs": 9899,
+    "result": "terminal nonretryable session_ensure_failed rejection",
+    "deadlineMs": 30000,
+    "promptCalls": 0,
+    "credentials": "none",
+    "authenticatedSuccess": false
+  },
+  "regressions": {
+    "integrityAndInstallation": "19 passed, 1 optional installed-runtime skip",
+    "actualImmutableAcpInstallation": "5 passed, including exact missing-bound-credential error",
+    "actualRunnerPrp": "1 passed; terminal rejection 10656 ms, closed 10756 ms, daemon exit 0, no active turn or identity, child environment only LANG/PATH",
+    "typescriptBuild": "passed"
+  },
+  "limits": [
+    "Timings are observations under different filesystem cache/load conditions, not a latency guarantee or a controlled speedup ratio.",
+    "Neither no-key diagnostic proves authenticated Product success. Current v6 Product 0/5 and Runner 0/7 remain unqualified.",
+    "All file reads, digests, held-descriptor and link checks remain; no cache or timeout change. Profile declaration binds provider closure, not host verifier implementation, so v6 identity is unchanged while source and sidecar change."
+  ],
+  "inventory32Observation": {
+    "discoveryMs": 9809,
+    "includingHashMs": 13917,
+    "unchangedManifestDigest": "sha256:9c4932e603e2c999d542d39e3a8de107dc8a2aef2576d8339f62d5a93a37869c"
+  }
+}

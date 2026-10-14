@@ -13,12 +13,13 @@ describe("Honeycomb run links", () => {
     ).resolves.toBe("ba7816bf8f01");
   });
 
-  it("builds an exact task.run query with clickable trace-id breakdowns", () => {
+  it("finds native and legacy root spans for the exact run with clickable trace-id breakdowns", () => {
     const url = new URL(buildHoneycombRunQueryUrl("ba7816bf8f01"));
     const query = JSON.parse(url.searchParams.get("query") ?? "null") as {
       calculations: Array<{ op: string }>;
       breakdowns: string[];
-      filters: Array<{ column: string; op: string; value: string }>;
+      filters: Array<{ column: string; op: string; value: string | string[] }>;
+      filter_combination: string;
     };
 
     expect(url.origin).toBe("https://ui.honeycomb.io");
@@ -27,9 +28,10 @@ describe("Honeycomb run links", () => {
     );
     expect(query.calculations).toEqual([{ op: "COUNT" }]);
     expect(query.breakdowns).toEqual(["trace.trace_id"]);
+    expect(query.filter_combination).toBe("AND");
     expect(query.filters).toEqual([
       { column: "service.name", op: "=", value: "paperclip" },
-      { column: "name", op: "=", value: "task.run" },
+      { column: "name", op: "in", value: ["task.run", "task.provider_session"] },
       {
         column: HONEYCOMB_RUN_HASH_ATTRIBUTE,
         op: "=",

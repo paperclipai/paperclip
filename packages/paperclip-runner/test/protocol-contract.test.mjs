@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 25);
+  assert.equal(schemas.length, 28);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -59,7 +59,7 @@ test("unknown required versions and schemas fail closed", async () => {
   const unsupported = await fixture("replay/unsupported-required-version.json");
   assert.throws(
     () => assertReplayFixtureCompatibility(unsupported),
-    /unsupported_required_version: protocolVersion=3; supported=1-2/,
+    /unsupported_required_version: protocolVersion=4; supported=1-3/,
   );
 
   const eventVersion = structuredClone(await fixture("replay/happy-path.json"));
@@ -67,7 +67,7 @@ test("unknown required versions and schemas fail closed", async () => {
   assert.throws(() => assertReplayFixtureCompatibility(eventVersion), /unsupported_required_version/);
 
   const commandSchema = structuredClone(await fixture("replay/happy-path.json"));
-  commandSchema.commands[0].schema = "paperclip.prp.command.v3";
+  commandSchema.commands[0].schema = "paperclip.prp.command.v4";
   assert.throws(() => assertReplayFixtureCompatibility(commandSchema), /unsupported_required_schema/);
 });
 
@@ -86,6 +86,31 @@ test("accepted fixtures satisfy the complete JSON Schemas", async () => {
 
   const unsupported = await fixture("replay/unsupported-required-version.json");
   assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, unsupported, "required-v2", false));
+});
+
+test("PRP v3 external operations are closed and Dot has no native model or thread", async () => {
+  const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
+  const validators = compileProtocolValidators(schemas);
+  const happy = await fixture("replay/happy-path.json");
+  const binding = { companyId: "company", agentId: "agent", bindingId: "binding", bindingGeneration: 1,
+    runId: happy.identity.runId, normalizedSessionId: happy.identity.normalizedSessionId, turnId: "turn", assignmentRevision: 1 };
+  const { companyId, agentId, ...commandBinding } = binding;
+  const command = { ...happy.commands[0], schema: "paperclip.prp.command.v3", type: "external_provider.operation",
+    payload: { ...commandBinding, requestId: "request", digest: "sha256:" + "a".repeat(64), action: "tool", input: { name: "write_document", arguments: {} } } };
+  assert.equal(validators.commandV3(command), true);
+  assert.equal(validators.commandV3({ ...command, payload: { ...command.payload, apiKey: "hidden" } }), false);
+  assert.equal(validators.commandV3({ ...command, payload: { ...command.payload, input: { ...command.payload.input, unexpected: true } } }), false);
+  const event = { ...happy.events[0], schema: "paperclip.prp.event.v3", schemaVersion: 3,
+    eventType: "external_provider.dispatch_requested", payload: { binding, kind: "authority_revoked", externalStopConfirmed: false } };
+  assert.equal(validators.eventV3(event), true);
+  assert.equal(validators.eventV3({ ...event, payload: { ...event.payload, externalStopConfirmed: true } }), false);
+  const replay = { ...happy, protocolVersion: 3, commands: [...happy.commands, command], events: [event, ...happy.events.slice(1)] };
+  assert.doesNotThrow(() => assertReplayFixtureCompatibility(replay));
+  assert.equal(validators.fixture(replay), true);
+  const descriptor = { provider: "openai_dot", driver: "openai_dot_mcp", executionKind: "remote_service", service: "openai_dot", model: null, providerSessionId: null, providerVersion: "unknown" };
+  assert.equal(validators.providerDescriptor(descriptor), true);
+  assert.equal(validators.providerDescriptor({ ...descriptor, model: "invented" }), false);
+  assert.equal(validators.providerDescriptor({ ...descriptor, providerSessionId: "invented-thread" }), false);
 });
 
 test("provider descriptors require coherent provider, driver, and execution combinations", async () => {

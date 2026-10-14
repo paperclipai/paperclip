@@ -171,6 +171,8 @@ export async function testEnvironment(
           runId, target, adapterKey: "grok",
           workspaceLocalDir: runtimeWorkspaceLocalDir,
           workspaceRemoteDir: cwd,
+          // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+          workspaceRestoreRetryDelaysMs: [],
           assets: [{ key: "home", localDir: stagedHome, followSymlinks: true,
             restore: async ({ assetDir, readFile }) => { await copyBackGrokAuth({
               readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),

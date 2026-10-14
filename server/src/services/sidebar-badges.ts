@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, not } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
-import type { SidebarBadges } from "@paperclipai/shared";
+import { isHeartbeatRunVisibleInMine, type SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
@@ -27,6 +27,7 @@ export function sidebarBadgeService(db: Db) {
     get: async (
       companyId: string,
       extra?: {
+        currentUserId?: string | null;
         dismissals?: ReadonlyMap<string, number>;
         joinRequests?: Array<{ id: string; updatedAt: Date | string | null; createdAt: Date | string }>;
         unreadTouchedIssues?: number;
@@ -49,6 +50,7 @@ export function sidebarBadgeService(db: Db) {
         .selectDistinctOn([heartbeatRuns.agentId], {
           id: heartbeatRuns.id,
           runStatus: heartbeatRuns.status,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
           createdAt: heartbeatRuns.createdAt,
         })
         .from(heartbeatRuns)
@@ -64,6 +66,7 @@ export function sidebarBadgeService(db: Db) {
 
       const failedRuns = latestRunByAgent.filter((row) =>
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
+        && (extra?.currentUserId === undefined || isHeartbeatRunVisibleInMine(row, extra.currentUserId))
         && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
       ).length;
 

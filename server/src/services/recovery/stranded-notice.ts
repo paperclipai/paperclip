@@ -113,6 +113,14 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_base_ref_unresolved") {
+    return {
+      title: "Workspace base ref unavailable",
+      body: "Paperclip stopped before the agent started because the configured workspace base ref could not be resolved to a Git commit. The task is blocked until its workspace configuration or repository access is repaired.",
+      nextAction: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",

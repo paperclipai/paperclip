@@ -1,5 +1,5 @@
 import type { InteractionResolverGovernance } from "@paperclipai/shared";
-import { pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { numeric, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
   "companies",
@@ -13,7 +13,8 @@ export const companies = pgTable(
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
-    spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    spendMonthUtc: text("spend_month_utc"),
+    spentMonthlyCents: numeric("spent_monthly_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     defaultResponsibleUserId: text("default_responsible_user_id"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()

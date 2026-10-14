@@ -192,10 +192,10 @@ export const companySkillsApi = {
     api.get<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files?path=${encodeURIComponent(relativePath)}`,
     ),
-  updateFile: (companyId: string, skillId: string, path: string, content: string) =>
+  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> = {}) =>
     api.patch<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
-      { path, content },
+      { path, content, ...format },
     ),
   deleteFile: (companyId: string, skillId: string, payload: CompanySkillFileDeleteRequest) =>
     api.deleteWithBody<CompanySkillFileDeleteResult>(

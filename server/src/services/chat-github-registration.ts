@@ -1,12 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import {
   chatEndpoints,
+  chatEndpointResources,
   chatGitHubRegistrations,
   companies,
   companyMemberships,
   type Db,
 } from "@paperclipai/db";
+import type { GitHubAppRegistrationInput } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { githubBotRequest } from "./chat-github-client.js";
 import { logActivity } from "./activity-log.js";
@@ -47,11 +49,30 @@ export function githubChatRegistrationService(
         privateKey: string;
         webhookSecret: string;
         slug: string;
+        clientId?: string;
+        clientSecret?: string;
       },
     ) => Promise<void>;
   },
 ) {
-  async function start(endpointId: string, userId: string, name: string) {
+  async function start(
+    endpointId: string,
+    userId: string,
+    input: string | GitHubAppRegistrationInput,
+  ) {
+    const {
+      name,
+      ownerType = "personal",
+      ownerLogin,
+    } = typeof input === "string" ? { name: input } : input;
+    if (ownerType !== "personal" && ownerType !== "organization")
+      throw badRequest("Choose a GitHub account type");
+    if (
+      ownerType === "organization" &&
+      (!ownerLogin ||
+        !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(ownerLogin))
+    )
+      throw badRequest("Enter the GitHub organization name");
     const origin = httpsOrigin(options.publicOrigin());
     const ingress = httpsOrigin(options.webhookOrigin());
     if (!name.trim() || name.length > 34)
@@ -91,11 +112,25 @@ export function githubChatRegistrationService(
     const state = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 60_000);
     await db.transaction(async (tx) => {
-      await tx
-        .select({ id: chatEndpoints.id })
+      const [lockedEndpoint] = await tx
+        .select()
         .from(chatEndpoints)
         .where(eq(chatEndpoints.id, endpointId))
         .for("update");
+      if (!lockedEndpoint || lockedEndpoint.status === "archived")
+        throw notFound("GitHub bot not found");
+      if (lockedEndpoint.botExternalId)
+        throw conflict("This bot already has a GitHub App. Reconnect its existing credentials.");
+      const [existingResource] = await tx
+        .select({ id: chatEndpointResources.id })
+        .from(chatEndpointResources)
+        .where(eq(chatEndpointResources.endpointId, endpointId))
+        .limit(1);
+      if (!lockedEndpoint.setup.github?.repositorySelectionSaved && !existingResource)
+        await tx.update(chatEndpoints).set({
+          setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github', '{}'::jsonb) || '{"initialRepositoryImportPending":true}'::jsonb)`,
+          updatedAt: new Date(),
+        }).where(eq(chatEndpoints.id, endpointId));
       await tx
         .update(chatGitHubRegistrations)
         .set({ status: "failed", consumedAt: new Date() })
@@ -111,6 +146,14 @@ export function githubChatRegistrationService(
         userId,
         stateHash: digest(state),
         trustedOrigin: origin,
+        ownerType,
+        ownerLogin,
+        appName: name.trim(),
+        handoff: {
+          cloudId: "",
+          redemptionId: randomBytes(32).toString("base64url"),
+          returnState: state,
+        },
         expiresAt,
       });
       await logActivity(tx as unknown as Db, {
@@ -123,23 +166,56 @@ export function githubChatRegistrationService(
         details: { endpointId, expiresAt: expiresAt.toISOString() },
       });
     });
-    const resume = `${origin}/${company!.issuePrefix}/apps/chat/connect?provider=github&resume=${endpointId}`;
-    const callback = new URL("/api/chat-github/manifest/callback", origin);
-    const registrationUrl = new URL("https://github.com/settings/apps/new");
+    return manifest(endpoint, company!.issuePrefix, {
+      trustedOrigin: origin,
+      state,
+      ownerType,
+      ownerLogin,
+      name: name.trim(),
+      expiresAt,
+    });
+  }
+  function manifest(
+    endpoint: typeof chatEndpoints.$inferSelect,
+    prefix: string,
+    values: {
+      trustedOrigin: string;
+      state: string;
+      ownerType: "personal" | "organization";
+      ownerLogin?: string;
+      name: string;
+      expiresAt: Date;
+    },
+  ) {
+    const {
+      trustedOrigin: origin,
+      state,
+      ownerType,
+      ownerLogin,
+      name,
+      expiresAt,
+    } = values;
+    const ingress = httpsOrigin(options.webhookOrigin());
+    const registrationUrl = new URL(
+      ownerType === "organization"
+        ? `https://github.com/organizations/${encodeURIComponent(ownerLogin!)}/settings/apps/new`
+        : "https://github.com/settings/apps/new",
+    );
     registrationUrl.searchParams.set("state", state);
     return {
       expiresAt: expiresAt.toISOString(),
       registrationUrl: registrationUrl.toString(),
       manifest: {
-        name: name.trim(),
+        name,
         url: origin,
         public: false,
         hook_attributes: {
           url: `${ingress}/api/chat-webhooks/${endpoint.publicId}/github`,
           active: true,
         },
-        redirect_url: callback.toString(),
-        setup_url: resume,
+        redirect_url: `${origin}/api/chat-github/manifest/callback`,
+        setup_url: `${origin}/${prefix}/apps/chat/connect?provider=github&resume=${endpoint.id}`,
+        callback_urls: [`${origin}/api/chat-github/identity/callback`],
         setup_on_update: true,
         default_permissions: {
           contents: "read",
@@ -149,12 +225,57 @@ export function githubChatRegistrationService(
           checks: "write",
         },
         default_events: [
+          "issues",
           "issue_comment",
           "pull_request_review_comment",
+          "pull_request_review",
           "pull_request",
         ],
       },
     };
+  }
+  async function resumeRegistration(endpointId: string, userId: string) {
+    const [session] = await db
+      .select()
+      .from(chatGitHubRegistrations)
+      .where(
+        and(
+          eq(chatGitHubRegistrations.endpointId, endpointId),
+          eq(chatGitHubRegistrations.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (
+      !session?.handoff?.returnState ||
+      session.handoff.cloudId ||
+      session.userId !== userId ||
+      session.expiresAt <= new Date() ||
+      session.trustedOrigin !== httpsOrigin(options.publicOrigin())
+    )
+      throw conflict("Resume or recover the existing App registration");
+    const [endpoint] = await db
+      .select()
+      .from(chatEndpoints)
+      .where(
+        and(
+          eq(chatEndpoints.id, endpointId),
+          eq(chatEndpoints.companyId, session.companyId),
+        ),
+      );
+    const [company] = await db
+      .select({ prefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, session.companyId));
+    if (!endpoint || !company || !session.appName)
+      throw notFound("GitHub registration not found");
+    return manifest(endpoint, company.prefix, {
+      trustedOrigin: session.trustedOrigin,
+      state: session.handoff.returnState,
+      ownerType: session.ownerType,
+      ownerLogin: session.ownerLogin ?? undefined,
+      name: session.appName,
+      expiresAt: session.expiresAt,
+    });
   }
   async function complete(state: string, code: string) {
     if (
@@ -164,7 +285,7 @@ export function githubChatRegistrationService(
       throw badRequest("Invalid GitHub registration return");
     const origin = httpsOrigin(options.publicOrigin());
     // Claim before exchange. A timeout is intentionally not retried with a
-    // new exchange: the recovery UI must start a new single-use registration.
+    // new exchange: recovery must reconnect the App already created on GitHub.
     const [session] = await db
       .update(chatGitHubRegistrations)
       .set({ status: "exchanging", consumedAt: new Date() })
@@ -179,7 +300,7 @@ export function githubChatRegistrationService(
       .returning();
     if (!session)
       throw conflict(
-        "This GitHub registration expired or was already used. Resume setup and start registration again.",
+        "This GitHub registration expired or was already used. Resume setup to recover the existing App.",
       );
     try {
       const [member] = await db
@@ -200,6 +321,9 @@ export function githubChatRegistrationService(
         pem?: string;
         webhook_secret?: string;
         slug?: string;
+        client_id?: string;
+        client_secret?: string;
+        owner?: { login?: string; type?: string };
       }>(
         options.fetch ?? fetch,
         null,
@@ -217,11 +341,25 @@ export function githubChatRegistrationService(
         throw badRequest(
           "GitHub registration returned incomplete App credentials",
         );
+      if (
+        session.ownerType === "personal" &&
+        app.owner?.type &&
+        app.owner.type !== "User"
+      )
+        throw badRequest("GitHub returned an App owned by a different account");
+      if (
+        session.ownerType === "organization" &&
+        (app.owner?.type !== "Organization" ||
+          app.owner?.login?.toLowerCase() !== session.ownerLogin?.toLowerCase())
+      )
+        throw badRequest("GitHub returned an App owned by a different account");
       await options.storeApp(session.endpointId, session.userId, {
         appId: String(app.id),
         privateKey: app.pem,
         webhookSecret: app.webhook_secret,
         slug: app.slug,
+        clientId: app.client_id,
+        clientSecret: app.client_secret,
       });
       await db
         .update(chatGitHubRegistrations)
@@ -240,5 +378,5 @@ export function githubChatRegistrationService(
       throw error;
     }
   }
-  return { start, complete };
+  return { start, complete, resumeRegistration };
 }

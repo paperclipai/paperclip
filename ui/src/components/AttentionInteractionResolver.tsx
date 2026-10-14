@@ -5,6 +5,7 @@ import type { Agent } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  interactionReadinessRefetchInterval,
   isIssueThreadInteraction,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
@@ -61,6 +62,7 @@ export function AttentionInteractionResolver({
     queryKey: queryKeys.issues.interactions(issueId),
     queryFn: () => issuesApi.listInteractions(issueId),
     enabled: !!issueId,
+    refetchInterval: (query) => interactionReadinessRefetchInterval(query.state.data),
   });
 
   const interaction = useMemo<IssueThreadInteraction | null>(() => {

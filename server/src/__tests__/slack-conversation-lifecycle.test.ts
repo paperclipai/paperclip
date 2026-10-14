@@ -12,7 +12,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { settleSlackConversation } from "../services/slack-conversation-lifecycle.js";
-import { externalConversationStateSql } from "../services/slack-conversation-state.js";
+import { externalConversationStateSql, resumeExternalConversation } from "../services/slack-conversation-state.js";
 import { executionIssueCondition } from "../services/issue-visibility.js";
 import { dashboardService } from "../services/dashboard.js";
 import { attentionService } from "../services/attention.js";
@@ -88,6 +88,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
     expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");
     expect((await issueService(db).listReviewAttention(f.companyId, [{ id: f.issueId, companyId: f.companyId, status: "in_review" }])).get(f.issueId)?.state).toBe("none");
+  });
+
+  it("settles and resumes Speko-owned tasks without adopting existing task lifecycles", async () => {
+    const f = await fixture(true);
+    await db.update(chatEndpoints).set({ provider: "speko" }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, source: "chat:speko", wakeCommentId: f.wakeId, wakeCommentIds: [f.wakeId] } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await settle(f)).toBe(false);
+    await db.update(issues).set({ originId: f.endpointId }).where(eq(issues.id, f.issueId));
+    expect(await settle(f)).toBe(true);
+    expect(await state(f)).toMatchObject({ status: "in_review", externalConversationState: "waiting" });
+    await db.transaction(tx => resumeExternalConversation(tx as unknown as typeof db, f.companyId, f.issueId));
+    expect(await state(f)).toMatchObject({ status: "todo", externalConversationState: "active" });
   });
 
   it("preserves waiting state in compact list responses used by the Inbox", async () => {

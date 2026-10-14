@@ -4,6 +4,27 @@ The native Runner exposes `create_skill` in Auto and skill-test work. An agent
 can save a reusable, single-file skill directly in the company's skill library.
 The tool is unavailable in Ask and pre-acceptance Plan modes.
 
+The native Runner also exposes `update_skill` in the same modes. Read the
+existing skill and its `currentVersionId` through the company skill API before
+editing. Supply the **complete** primary file, not a fragment:
+
+```json
+{
+  "skillId": "<existing skill UUID>",
+  "expectedVersionId": "<current version UUID>",
+  "markdown": "---\nname: release-review\ndescription: Review release notes.\n---\n\n# Review\nCheck each release note and its tests.\n",
+  "idempotencyKey": "review-update-1"
+}
+```
+
+The tool uses the existing Skill Studio file endpoint and company `skills.edit`
+policy. It returns a skill ID, path, resulting version ID, and Skill Studio
+path. Retry a lost response with **exactly** the same key and inputs; that
+returns the original receipt without another version or activity record.
+Reusing the key with different inputs, or updating after the version changes,
+returns a conflict. After a version conflict, reread the skill and choose a
+new key for the revised edit. Policy is checked again even on exact retries.
+
 ```json
 {
   "name": "release-review",

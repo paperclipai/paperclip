@@ -219,6 +219,15 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(resolved.every((response) => response.status === 200)).toBe(true);
       expect(resolved[0].body.id).toBe(resolved[1].body.id);
       expect(resolved[0].body.conversationUserId).toBe(owner);
+      const listPath = `/api/companies/${companyId}/chats`;
+      const owned = await request(app).get(listPath);
+      expect(owned.status).toBe(200);
+      expect(owned.body.map((chat: { id: string }) => chat.id)).toEqual([resolved[0].body.id]);
+      expect((await request(appFor(colleague)).get(listPath)).body).toEqual([]);
+      expect((await request(appFor(randomUUID(), false)).get(listPath)).status).toBe(403);
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
+      expect((await request(app).get(listPath)).status).toBe(404);
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
       expect(
         (
           await request(appFor(colleague)).get(
@@ -881,6 +890,54 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(action).toMatchObject({ status: "resolved", outcome: scenario.superseded ? "cancelled" : "blocked" });
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
       if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
+    });
+
+    it.each(["answered", "new-message", "response-less", "failed", "stale-session", "failed-gap", "missing-gap"])("settles a historical question using completed conversation progress (%s)", async scenario => {
+      const chat = await create();
+      const svc = issueService(db);
+      const first = await svc.addComment(chat.id, "Which color?", { userId: "local-board" });
+      const original = await runFor(chat.id, first.id);
+      const [question] = await db.insert(issueThreadInteractions).values({ companyId, issueId: chat.id,
+        kind: "ask_user_questions", status: "answered", continuationPolicy: "wake_assignee", sourceRunId: original.id,
+        createdByAgentId: agentId, resolvedByUserId: "local-board", payload: { version: 1, questions: [] }, result: { version: 1, answers: [] } }).returning();
+      if (scenario === "failed-gap" || scenario === "missing-gap") {
+        const skipped = await svc.addComment(chat.id, "This request still needs an answer.", { userId: "local-board" });
+        if (scenario === "failed-gap") {
+          const failed = await runFor(chat.id, skipped.id, { conversationSessionGeneration: 0 });
+          await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failed.id));
+        }
+      }
+      const newer = await svc.addComment(chat.id, "What is the capital of France?", { userId: "local-board" });
+      const replyRun = await runFor(chat.id, newer.id, { conversationSessionGeneration: 0 });
+      if (scenario !== "response-less") await svc.addComment(chat.id, "Paris.", { agentId, runId: replyRun.id });
+      await db.update(heartbeatRuns).set({ status: scenario === "failed" ? "failed" : "succeeded",
+        ...(scenario === "stale-session" ? { contextSnapshot: { ...replyRun.contextSnapshot, conversationSessionGeneration: 99 } } : {}) }).where(eq(heartbeatRuns.id, replyRun.id));
+      const answerRun = await runFor(chat.id, first.id, { source: "issue.interaction.respond", interactionId: question.id,
+        interactionKind: "ask_user_questions", interactionStatus: "answered" });
+      const prepared = await prepareConversationTurn(db, answerRun);
+      expect(prepared.context.wakeCommentId).toBe(first.id);
+      expect(prepared.context.conversationReplyBoundaryCommentId).toBe(["answered", "new-message"].includes(scenario) ? newer.id : first.id);
+      // A retry reuses the frozen boundary, even if another message has arrived.
+      if (scenario === "new-message") await svc.addComment(chat.id, "New instructions while you answer", { userId: "local-board" });
+      const retry = await prepareConversationTurn(db, { ...answerRun, contextSnapshot: prepared.context });
+      expect(retry.context.conversationReplyBoundaryCommentId).toBe(prepared.context.conversationReplyBoundaryCommentId);
+      await svc.addComment(chat.id, "You chose Blue.", { agentId, runId: answerRun.id });
+      expect(await settleConversationTurn(db, { ...answerRun, status: "succeeded", contextSnapshot: prepared.context })).toBe(true);
+      const [settled] = await db.select().from(issues).where(eq(issues.id, chat.id));
+      expect(settled.conversationState).toBe(scenario === "answered" ? "waiting" : "active");
+      expect(retry.context.conversationReplayThroughCommentId).toBe(prepared.context.conversationReplayThroughCommentId);
+      const replay = await conversationReplay(db, companyId, chat.id, first.id,
+        prepared.context.conversationReplayThroughCommentId as string);
+      if (["answered", "new-message"].includes(scenario)) {
+        expect(replay).toContain("What is the capital of France?");
+        expect(replay).toContain("Paris.");
+      } else {
+        expect(replay).not.toContain("What is the capital of France?");
+        expect(replay).not.toContain("Paris.");
+      }
+      expect(replay).not.toContain("This request still needs an answer.");
+      expect(replay).not.toContain("New instructions while you answer");
+      expect(replay).not.toContain("You chose Blue.");
     });
 
     it("only parks answered turns and preserves idle across recovery classification", async () => {

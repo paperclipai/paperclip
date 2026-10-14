@@ -65,14 +65,15 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
-          enableRoutineVisibilityFilter
+          enableAgentCreatedVisibilityFilter
         />,
       );
     });
 
     const popoverContent = container.querySelector("[data-testid='popover-content']");
     expect(popoverContent).not.toBeNull();
+    expect(popoverContent?.querySelector('[data-filter-options="workspaces"]')).toBeNull();
+    expect(popoverContent?.textContent).not.toContain("Workspace");
     expect(popoverContent?.className).toContain("overflow-y-auto");
     expect(popoverContent?.className).toContain("max-h-(--sz-calc-9)");
     expect(popoverContent?.querySelectorAll(".overflow-y-auto").length).toBe(0);
@@ -97,8 +98,7 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
-          enableRoutineVisibilityFilter
+          enableAgentCreatedVisibilityFilter
         />,
       );
     });
@@ -108,6 +108,9 @@ describe("IssueFiltersPopover", () => {
     // Status section still renders, Priority section is gated off (PAP-411).
     expect(popoverContent?.textContent).toContain("Status");
     expect(popoverContent?.textContent).not.toContain("Priority");
+    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("show agent-created tasks"));
+    expect(creationToggle?.textContent).toBe("show agent-created tasks");
+    expect(creationToggle?.querySelector("input")?.checked).toBe(false);
   });
 
   it("searches long option lists while the popover remains the only scroll owner", () => {

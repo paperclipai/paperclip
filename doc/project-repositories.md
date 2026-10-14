@@ -36,6 +36,26 @@ See [Project Repository Checkouts](DEVELOPING.md#project-repository-checkouts) f
 ignore rules, and reuse behavior. Responsible-user credential rules still apply.
 A repository selection never delegates credentials.
 
+Fresh tasks using the default repository workspace can clone the same authorized
+remote into a company- and task-scoped source directory when an existing project
+checkout contains another task's restricted workspace. The clone uses the run's
+Git connection and keeps separate Git metadata. Source access checks still apply
+before the task workspace is published. Low-trust review runs cannot use this
+persistent clone fallback. This fallback does not copy unpublished
+local changes or replace reused workspaces, explicit workspace selections, pinned
+branches, or repositories that only exist on the local filesystem.
+Configured branch templates must derive the branch from the task identifier, ID,
+title, or slug. Literal or task-independent templates retain the source denial,
+so a fresh clone cannot replace a selected local branch with a new empty branch.
+New implicit Git workspace defaults record their project-source provenance.
+An untyped checkout binding from an older task is ambiguous and keeps the denial,
+including explicit checkout IDs and inherited parent sources. Admission rechecks
+the current binding rather than inferring a default from the selected checkout ID.
+Startup validation of these recorded defaults keeps the task's effective workspace
+strategy. It does not substitute the agent's shared strategy or grant project writes.
+Workspace close and reopen use the recorded isolated source. Both operations
+verify its company, task, repository URL, and separate Git storage before use.
+
 ## Discovery and setup
 
 The server checks company membership, grant ownership/status, and organization-grant

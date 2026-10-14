@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -51,6 +52,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  APP_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
@@ -86,6 +88,7 @@ import {
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
+import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
@@ -108,6 +111,17 @@ function createTestToolAccessService(
     remoteHttpRequest: async (url, init) => fetch(url, init),
     ...options,
   });
+}
+
+function optIntoAirtableDcrRegistration() {
+  const method = APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods
+    .find((entry) => entry.key === "mcp-oauth")!;
+  const original = method.oauthClientRegistration;
+  method.oauthClientRegistration = "dcr";
+  return () => {
+    if (original === undefined) delete method.oauthClientRegistration;
+    else method.oauthClientRegistration = original;
+  };
 }
 
 function fakeGoogleWorkspaceConnector(
@@ -341,8 +355,10 @@ async function withGalleryServerUrl<T>(
 ): Promise<T> {
   const definition = getConnectableAppDefinition(slug);
   const methods = definition?.methods ?? [];
-  const method = methodKey
-    ? methods.find((candidate) => candidate.key === methodKey)
+  // Legacy GitHub fixture callers model token auth, not managed OAuth.
+  const fixtureMethodKey = methodKey ?? (slug === "github" ? "mcp-key" : undefined);
+  const method = fixtureMethodKey
+    ? methods.find((candidate) => candidate.key === fixtureMethodKey)
     : definition
       ? getAvailableConnectionMethod(definition, null)
       : undefined;
@@ -797,6 +813,90 @@ async function createRemoteToolFixture(
     application: application!,
     connection: connection!,
     catalogEntry: catalogEntry!,
+  };
+}
+
+type IdRef = { id: string };
+
+function catalogResponse(tools: unknown[]) {
+  return { jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } };
+}
+
+function readTool(name: string, description: string) {
+  return {
+    name: name,
+    description: description,
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  };
+}
+
+function oauthToken(accessToken: string, refreshToken: string) {
+  return {
+    ok: true,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_in: 3600,
+    token_type: "Bearer",
+  };
+}
+
+function memberActor(allowedCompany: IdRef, isInstanceAdmin: boolean): Express.Request["actor"] {
+  return {
+    type: "board",
+    userId: "member-user",
+    userName: "Member User",
+    userEmail: null,
+    companyIds: [allowedCompany.id],
+    memberships: [
+      {
+        companyId: allowedCompany.id,
+        membershipRole: "owner",
+        status: "active",
+      },
+    ],
+    isInstanceAdmin: isInstanceAdmin,
+    source: "session",
+  };
+}
+
+function applicationRow(company: IdRef, name: string): typeof toolApplications.$inferInsert {
+  return {
+    companyId: company.id,
+    name: name,
+    type: "mcp_http",
+    status: "active",
+  };
+}
+
+function personalGrantRow(company: IdRef, connection: IdRef): typeof connectionGrants.$inferInsert {
+  return {
+    companyId: company.id,
+    connectionId: connection.id,
+    kind: "user",
+    subjectUserId: "alice",
+    status: "active",
+    isDefault: false,
+  };
+}
+
+function notionAuthorizationServer() {
+  return {
+    issuer: "https://mcp.notion.com",
+    authorization_endpoint: "https://mcp.notion.com/authorize",
+    token_endpoint: "https://mcp.notion.com/token",
+    registration_endpoint: "https://mcp.notion.com/register",
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  };
+}
+
+function oauthCallbackInput(state: string): Parameters<ReturnType<typeof toolAccessService>["completeOAuthCallback"]>[0] {
+  return {
+    state,
+    code: "oauth-code",
+    redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+    actor: { actorType: "user", actorId: "board" },
   };
 }
 
@@ -1422,14 +1522,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const { connection } = await createBrokerConnection(db, company.id);
     const grant = await db
       .insert(connectionGrants)
-      .values({
-        companyId: company.id,
-        connectionId: connection.id,
-        kind: "user",
-        subjectUserId: "alice",
-        status: "active",
-        isDefault: false,
-      })
+      .values(personalGrantRow(company, connection))
       .returning()
       .then((rows) => rows[0]!);
     const service = createTestToolAccessService(db);
@@ -1502,14 +1595,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const { connection } = await createBrokerConnection(db, company.id);
     const grant = await db
       .insert(connectionGrants)
-      .values({
-        companyId: company.id,
-        connectionId: connection.id,
-        kind: "user",
-        subjectUserId: "alice",
-        status: "active",
-        isDefault: false,
-      })
+      .values(personalGrantRow(company, connection))
       .returning()
       .then((rows) => rows[0]!);
 
@@ -1583,14 +1669,7 @@ describeEmbeddedPostgres("tool access service", () => {
         createdByUserId: "alice",
       })
       .where(eq(toolConnections.id, connection.id));
-    await db.insert(connectionGrants).values({
-      companyId: company.id,
-      connectionId: connection.id,
-      kind: "user",
-      subjectUserId: "alice",
-      status: "active",
-      isDefault: false,
-    });
+    await db.insert(connectionGrants).values(personalGrantRow(company, connection));
 
     const response = await request(
       createRouteApp(db, boardSessionActor(company.id, "member", "mallory")),
@@ -1607,14 +1686,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const { connection } = await createBrokerConnection(db, company.id);
     const grant = await db
       .insert(connectionGrants)
-      .values({
-        companyId: company.id,
-        connectionId: connection.id,
-        kind: "user",
-        subjectUserId: "alice",
-        status: "active",
-        isDefault: false,
-      })
+      .values(personalGrantRow(company, connection))
       .returning()
       .then((rows) => rows[0]!);
     const serviceDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
@@ -2374,11 +2446,7 @@ describeEmbeddedPostgres("tool access service", () => {
       })
       .where(eq(toolCatalogEntries.toolName, "send_email"));
     fetchMock.mockResolvedValueOnce(
-      mcpHttpResponse({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
+      mcpHttpResponse(catalogResponse([
             {
               name: "send_email",
               description: "Send an email with attachments.",
@@ -2391,9 +2459,7 @@ describeEmbeddedPostgres("tool access service", () => {
               },
               annotations: { readOnlyHint: false },
             },
-          ],
-        },
-      }),
+          ])),
     );
 
     const secondRefresh = await service.refreshCatalog(connection.id);
@@ -2408,6 +2474,57 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("persists generic instructions through PATCH with configuration permissions and company isolation", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const settings = { enabled: true, text: "Use the release handbook and cite the checklist." };
+    const app = createRouteApp(db);
+    const endpoint = `/api/tool-connections/${connection.id}`;
+    await request(app).patch(endpoint).send({ agentInstructions: settings }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual(settings);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, text: " " } }).expect(400);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, enabled: false } }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual({ ...settings, enabled: false });
+    const viewer = `viewer-${randomUUID()}`;
+    await grantBoardUser(db, company.id, viewer, [], "viewer");
+    await request(createRouteApp(db, boardSessionActor(company.id, "viewer", viewer))).patch(endpoint).send({ agentInstructions: settings }).expect(403);
+    await request(createRouteApp(db, boardSessionActor(other.id, "owner"))).patch(endpoint).send({ agentInstructions: settings }).expect(404);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, connection.id));
+    expect(events.some(event => event.details?.agentInstructionsChanged === true)).toBe(true);
+  });
+
+  it("persists supplied defaults, retains them on catalog refresh, and requires Honcho workspace at setup", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { workspace_id: { type: "string" } } } }]);
+    await expect(service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" } })).rejects.toMatchObject({ status: 400 });
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" }, configValues: { workspaceId: "fixture-workspace" } });
+    const template = getConnectableAppDefinition("honcho")!.agentInstructions!;
+    expect(connected.connection.agentInstructions).toEqual({ enabled: true, text: template.text, template: { id: template.id, version: template.version } });
+    await service.updateConnection(connected.connectionId, { agentInstructions: { enabled: false, text: "Keep this custom guidance." } });
+    await service.refreshCatalog(connected.connectionId);
+    expect((await service.getConnection(connected.connectionId)).agentInstructions).toEqual({ enabled: false, text: "Keep this custom guidance." });
+  });
+
+  it("preserves custom instructions and opt-outs through OAuth draft recovery and reconnect", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    const settings = { enabled: false, text: "Look up the current decision before editing it." };
+    const input = { galleryKey: "google-chat", connectionMethodKey: "customer-read-oauth", grantKind: "user" as const, oauthClient: { clientId: "instructions-client", clientSecret: "instructions-secret" }, agentInstructions: settings };
+    const initial = await service.connectGalleryApp(company.id, input, actor);
+    const { agentInstructions: _settings, ...retained } = input;
+    const resumed = await service.connectGalleryApp(company.id, { ...retained, resumeConnectionId: initial.connectionId }, actor);
+    expect(resumed.connection.agentInstructions).toEqual(settings);
+    const started = await service.startOAuth(company.id, resumed.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+    expect(started.authorizationUrl).toBeTruthy();
+    expect((await service.getConnection(initial.connectionId)).agentInstructions).toEqual(settings);
+    await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, initial.connectionId));
+    const reconnected = await service.connectGalleryApp(company.id, { ...retained, reconnectConnectionId: initial.connectionId }, actor);
+    expect(reconnected.connection.agentInstructions).toEqual(settings);
   });
 
   it.each(["read", "write"])("requests only reduced Chat scopes for customer-owned %s OAuth, including reconnect", async (capability) => {
@@ -2440,16 +2557,39 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it.each(["airtable", "beehiiv", "miro", "neon", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
+    "requests the reviewed read/write scopes for %s without adopting advertised admin scopes",
+    async (slug) => {
+      const company = await createCompany(db);
+      const actor = { actorType: "user" as const, actorId: "alice" };
+      const service = createTestToolAccessService(db, {
+        remoteHttpRequest: async (url, init) => {
+          const origin = new URL(url).origin;
+          if (init.method === "POST") return Response.json({ client_id: "fixture-client", ...JSON.parse(String(init.body)) });
+          return Response.json({ issuer: origin, authorization_endpoint: `${origin}/authorize`,
+            token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
+            scopes_supported: ["unrelated:admin"], response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+          });
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", grantKind: "user", ...(slug === "supabase" ? { configValues: { projectRef: "abcdefghijklmnopqrst" } } : {}) }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+      const review = JSON.parse(await fs.readFile(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8"))
+        .methods.find((entry: { app: string; method: string }) => entry.app === slug && entry.method === "mcp-oauth");
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")?.split(" ")).toEqual(review.requestedScopes);
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")).not.toContain("unrelated:admin");
+      await expect(service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, scopes: ["unrelated:admin"],
+      })).rejects.toMatchObject({ details: { code: "oauth_scope_widening_rejected" } });
+    },
+  );
+
   it("keeps tools outside a Google Workspace capability profile disabled", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "list_labels",
-        description: "Lists Gmail labels.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("list_labels", "Lists Gmail labels."),
       {
         name: "create_label",
         description: "Creates a Gmail label.",
@@ -2557,19 +2697,13 @@ describeEmbeddedPostgres("tool access service", () => {
               }),
           } as unknown as Response;
         }
-        return mcpSseResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpSseResponse(catalogResponse([
               {
                 name: "kv_get",
                 description: "Read a value.",
                 annotations: { readOnlyHint: true },
               },
-            ],
-          },
-        });
+            ]));
       });
 
     const connection = await service.createConnection(company.id, {
@@ -2881,6 +3015,35 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toThrow(
       "Local stdio MCP connections must use an approved templateId",
     );
+  });
+
+  it("reports persistence failure after a recognized MCP outage instead of suppressing the database error", async () => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, applicationKey: `audit-failure-${randomUUID()}`,
+      name: "MCP audit fixture", type: "mcp_http", status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "MCP audit fixture",
+      uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+      config: { url: "https://audit-failure.example.test/mcp" },
+      transportConfig: { url: "https://audit-failure.example.test/mcp" },
+    }).returning();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 503 }));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    await db.execute(sql`CREATE FUNCTION test_mcp_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'synthetic MCP audit write failure'; END $$`);
+    await db.execute(sql`CREATE TRIGGER test_mcp_audit_failure BEFORE INSERT ON tool_access_audit_events
+      FOR EACH ROW EXECUTE FUNCTION test_mcp_audit_failure()`);
+    try {
+      const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+      expect(response.status).toBe(500);
+      expect(capture).toHaveBeenCalledOnce();
+      expect(capture.mock.calls[0]?.[0]).toMatchObject({ cause: expect.objectContaining({ message: "synthetic MCP audit write failure" }) });
+    } finally {
+      await db.execute(sql`DROP TRIGGER test_mcp_audit_failure ON tool_access_audit_events`);
+      await db.execute(sql`DROP FUNCTION test_mcp_audit_failure()`);
+    }
   });
 
   it.each([
@@ -3495,6 +3658,49 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+
+    const gatewayAudit = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, company.id),
+          eq(activityLog.action, "tool_gateway.approval_requested"),
+        ),
+      );
+    expect(gatewayAudit).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorType: "user",
+          actorId: userId,
+          agentId: agent.id,
+          details: expect.objectContaining({
+            source: "test",
+            actionRequestId: res.body.actionRequestId,
+            invocationId: res.body.invocationId,
+          }),
+        }),
+      ]),
+    );
+
+    const dedicatedAudit = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(dedicatedAudit).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorType: "user",
+          actorId: userId,
+          details: expect.objectContaining({
+            source: "test",
+            agentId: agent.id,
+            actionRequestId: res.body.actionRequestId,
+            runId: null,
+          }),
+        }),
+      ]),
+    );
   });
 
   it("cancels an ask-first test request when approval signing is unavailable", async () => {
@@ -3548,77 +3754,6 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("audits ask-first test calls with the real board actor and selected agent", async () => {
-    const company = await createCompany(db);
-    const userId = `tool-tester-${randomUUID()}`;
-    await grantBoardUser(db, company.id, userId, ["tools:use"]);
-    const agent = await createAgent(db, company.id);
-    const { connection } = await createRemoteToolFixture(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: `Ask first ${randomUUID()}`,
-      policyType: "require_approval",
-      priority: 100,
-      selectors: { connectionId: connection.id },
-    });
-    const app = createRouteApp(
-      db,
-      boardSessionActor(company.id, "operator", userId),
-      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
-    );
-
-    const res = await request(app)
-      .post(`/api/tool-connections/${connection.id}/test-calls`)
-      .send({
-        agentId: agent.id,
-        toolName: "send_email",
-        parameters: { to: "a@example.com" },
-      })
-      .expect(200);
-
-    const gatewayAudit = await db
-      .select()
-      .from(activityLog)
-      .where(
-        and(
-          eq(activityLog.companyId, company.id),
-          eq(activityLog.action, "tool_gateway.approval_requested"),
-        ),
-      );
-    expect(gatewayAudit).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          actorType: "user",
-          actorId: userId,
-          agentId: agent.id,
-          details: expect.objectContaining({
-            source: "test",
-            actionRequestId: res.body.actionRequestId,
-            invocationId: res.body.invocationId,
-          }),
-        }),
-      ]),
-    );
-
-    const dedicatedAudit = await db
-      .select()
-      .from(toolAccessAuditEvents)
-      .where(eq(toolAccessAuditEvents.companyId, company.id));
-    expect(dedicatedAudit).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          actorType: "user",
-          actorId: userId,
-          details: expect.objectContaining({
-            source: "test",
-            agentId: agent.id,
-            actionRequestId: res.body.actionRequestId,
-            runId: null,
-          }),
-        }),
-      ]),
-    );
-  });
 
   it("drives an ask-first test call through its live lifecycle (waiting → approved/done with the real result)", async () => {
     const company = await createCompany(db);
@@ -3653,6 +3788,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .expect(200);
     const actionRequestId = created.body.actionRequestId as string;
     expect(actionRequestId).toEqual(expect.any(String));
+
+    await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-calls/${randomUUID()}`)
+      .expect(404);
 
     // 2. Status starts as "waiting" and surfaces the redacted "Where" snapshot.
     const waiting = await request(app)
@@ -3825,24 +3964,6 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("404s a single-id test-call status fetch for a non-test-origin action request", async () => {
-    const company = await createCompany(db);
-    const userId = `tool-tester-${randomUUID()}`;
-    await grantBoardUser(db, company.id, userId, ["tools:use"]);
-    const { connection } = await createRemoteToolFixture(db, company.id);
-    const gateway = createToolGatewayService(db, {
-      toolActionSigningSecret: "test-secret",
-    });
-    const app = createRouteApp(
-      db,
-      boardSessionActor(company.id, "operator", userId),
-      gateway,
-    );
-
-    await request(app)
-      .get(`/api/tool-connections/${connection.id}/test-calls/${randomUUID()}`)
-      .expect(404);
-  });
 
   it("returns off for blocked test calls without executing the remote tool", async () => {
     const company = await createCompany(db);
@@ -3890,35 +4011,6 @@ describeEmbeddedPostgres("tool access service", () => {
       agentId: agent.id,
       runId: null,
     });
-  });
-
-  it("audits blocked test calls with the real board actor and selected agent", async () => {
-    const company = await createCompany(db);
-    const userId = `tool-tester-${randomUUID()}`;
-    await grantBoardUser(db, company.id, userId, ["tools:use"]);
-    const agent = await createAgent(db, company.id);
-    const { connection } = await createRemoteToolFixture(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: `Block ${randomUUID()}`,
-      policyType: "block",
-      priority: 100,
-      selectors: { connectionId: connection.id },
-    });
-    const app = createRouteApp(
-      db,
-      boardSessionActor(company.id, "operator", userId),
-      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
-    );
-
-    const res = await request(app)
-      .post(`/api/tool-connections/${connection.id}/test-calls`)
-      .send({
-        agentId: agent.id,
-        toolName: "send_email",
-        parameters: { to: "a@example.com" },
-      })
-      .expect(200);
 
     const gatewayAudit = await db
       .select()
@@ -3964,6 +4056,7 @@ describeEmbeddedPostgres("tool access service", () => {
       ]),
     );
   });
+
 
   it("denies test calls through agents the board user cannot task", async () => {
     const company = await createCompany(db);
@@ -4635,22 +4728,7 @@ describeEmbeddedPostgres("tool access service", () => {
       effect: "include",
       toolName: "read_notes",
     });
-    const app = createRouteApp(db, {
-      type: "board",
-      userId: "member-user",
-      userName: "Member User",
-      userEmail: null,
-      companyIds: [allowedCompany.id],
-      memberships: [
-        {
-          companyId: allowedCompany.id,
-          membershipRole: "owner",
-          status: "active",
-        },
-      ],
-      isInstanceAdmin: false,
-      source: "session",
-    });
+    const app = createRouteApp(db, memberActor(allowedCompany, false));
 
     const crossTenantResponses = [
       await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`),
@@ -4714,22 +4792,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const toolGateway = {} as ToolGatewayService;
     const app = createRouteApp(
       db,
-      {
-        type: "board",
-        userId: "member-user",
-        userName: "Member User",
-        userEmail: null,
-        companyIds: [allowedCompany.id],
-        memberships: [
-          {
-            companyId: allowedCompany.id,
-            membershipRole: "owner",
-            status: "active",
-          },
-        ],
-        isInstanceAdmin: true,
-        source: "session",
-      },
+      memberActor(allowedCompany, true),
       toolGateway,
     );
     const foreignOAuthRes = await request(app)
@@ -5069,6 +5132,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual(
       expect.arrayContaining([
+        "browser-use-cloud",
         "agentmail",
         "imessage-photon",
         "jira",
@@ -5089,10 +5153,33 @@ describeEmbeddedPostgres("tool access service", () => {
         "google-people",
         "google-workspace-search",
         "github",
+        "github-code-review-bot",
         "youcom",
+        "enterpret",
+        "openrouter",
+        "bedrock",
+        "responses-api",
+        "messages-api",
+        "chat-completions-api",
+        "local",
+        "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(57);
+    expect(res.body.apps.length).toBeGreaterThanOrEqual(69);
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual(
+      expect.arrayContaining([
+        "calendly",
+        "exa",
+        "firecrawl",
+        "gsc-wizard",
+        "parallel-search",
+        "tavily",
+        "windsor-ai",
+      ]),
+    );
+    for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+      expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
+    }
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -5135,6 +5222,108 @@ describeEmbeddedPostgres("tool access service", () => {
           methods: expect.arrayContaining([
             expect.objectContaining({ key: "local", transport: "local_stdio" }),
           ]),
+        }),
+      ]),
+    );
+  });
+
+  it("quarantines newly discovered Enterpret tools on later refreshes", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "get_organization_details", annotations: { readOnlyHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "enterpret",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "qa-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "enterpret",
+      quarantineNewEntries: true,
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("qa-secret");
+    await service.finishGalleryAppConnection(company.id, result.connectionId, {
+      enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse(catalogResponse([
+            { name: "get_organization_details", annotations: { readOnlyHint: true } },
+            { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+          ])),
+    );
+    const refreshed = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(refreshed.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "get_organization_details", status: "active" }),
+        expect.objectContaining({
+          toolName: "new_enterpret_tool",
+          status: "quarantined",
+          quarantineReason: "pending_review",
+        }),
+      ]),
+    );
+
+    const reconnectFetchMock = mockToolsList([
+      { name: "get_organization_details", annotations: { readOnlyHint: true } },
+      { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+      { name: "reconnect_discovered_tool", annotations: { readOnlyHint: true } },
+    ]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "enterpret",
+        connectionMethodKey: "mcp-api-key",
+        reconnectConnectionId: result.connectionId,
+        credentialValues: { "credentials.authorization": "replacement-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(reconnected.connectionId).toBe(result.connectionId);
+    expect(reconnected.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "get_organization_details", status: "active" }),
+      expect.objectContaining({ toolName: "new_enterpret_tool", status: "quarantined" }),
+      expect.objectContaining({ toolName: "reconnect_discovered_tool", status: "quarantined" }),
+    ]));
+
+    expect(reconnected.connection.config).toMatchObject({ quarantineNewEntries: true });
+    expect(JSON.stringify(reconnected.connection.config)).not.toContain("replacement-secret");
+    await service.finishGalleryAppConnection(company.id, reconnected.connectionId, {
+      enabledCatalogEntryIds: reconnected.catalog
+        .filter((entry) => entry.toolName === "get_organization_details")
+        .map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+
+    reconnectFetchMock.mockResolvedValueOnce(
+      mcpHttpResponse(catalogResponse([
+            { name: "get_organization_details", annotations: { readOnlyHint: true } },
+            { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+            { name: "another_enterpret_tool", annotations: { readOnlyHint: true } },
+          ])),
+    );
+    const afterReplacement = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(afterReplacement.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolName: "another_enterpret_tool",
+          status: "quarantined",
+          quarantineReason: "pending_review",
         }),
       ]),
     );
@@ -5271,7 +5460,6 @@ describeEmbeddedPostgres("tool access service", () => {
       false,
     );
   });
-
 
 
 
@@ -5437,11 +5625,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .mockImplementation(async (_url, init) => {
         const headers = init?.headers as Record<string, string>;
         expect(headers.Authorization).toBe("Bearer imported-token");
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               {
                 name: "kv_get",
                 description: "Read a value.",
@@ -5451,9 +5635,7 @@ describeEmbeddedPostgres("tool access service", () => {
                 },
                 annotations: { readOnlyHint: true },
               },
-            ],
-          },
-        });
+            ]));
       });
 
     const result = await service.connectGalleryApp(
@@ -5586,11 +5768,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () =>
-        mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: { tools },
-        }),
+        mcpHttpResponse(catalogResponse(tools)),
       );
     const service = createTestToolAccessService(db, {
       now: () => currentTime,
@@ -5769,15 +5947,9 @@ describeEmbeddedPostgres("tool access service", () => {
         observedAuthorization.push(
           new Headers(init.headers).get("authorization") ?? "",
         );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "query_insight", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       },
     });
 
@@ -5954,15 +6126,9 @@ describeEmbeddedPostgres("tool access service", () => {
         evict: vi.fn(),
       },
       remoteHttpRequest: async () =>
-        mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        mcpHttpResponse(catalogResponse([
               { name: "search_pages", annotations: { readOnlyHint: true } },
-            ],
-          },
-        }),
+            ])),
     });
     const connected = await service.connectGalleryApp(
       company.id,
@@ -6098,6 +6264,98 @@ describeEmbeddedPostgres("tool access service", () => {
         state: restartedStateRow!.state,
         actor,
       }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("connects Superagent with an organization API key sent as a bearer header", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "list_findings", annotations: { readOnlyHint: true } },
+      { name: "create_repository_report" },
+      { name: "delete_finding", annotations: { destructiveHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "superagent",
+        credentialValues: { "credentials.authorization": "sk_live_test-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://www.superagent.sh/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer sk_live_test-secret",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        url: "https://www.superagent.sh/mcp",
+        sourceTemplateKey: "superagent",
+        connectionMethodKey: "mcp-api-key",
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain(
+      "sk_live_test-secret",
+    );
+    expect(result.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "list_findings", riskLevel: "read", status: "active" }),
+        expect.objectContaining({ toolName: "create_repository_report", riskLevel: "write", status: "active" }),
+        expect.objectContaining({ toolName: "delete_finding", riskLevel: "destructive", status: "active" }),
+      ]),
+    );
+  });
+
+  it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    const pinned = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "neon",
+        connectionMethodKey: "mcp-oauth",
+        name: "Neon pinned",
+        configValues: { projectId: "shy-sun-12345678", readOnly: true },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(pinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp?projectId=shy-sun-12345678&readonly=true",
+      sourceTemplateKey: "neon",
+      connectionMethodKey: "mcp-oauth",
+      methodConfig: { projectId: "shy-sun-12345678", readOnly: true },
+    });
+
+    // The default path sends Neon's own defaults: no pin, no readonly flag.
+    const unpinned = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "neon", connectionMethodKey: "mcp-oauth", name: "Neon unpinned" },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(unpinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp",
+      methodConfig: { readOnly: false },
+    });
+
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "neon",
+          connectionMethodKey: "mcp-oauth",
+          name: "Neon invalid",
+          configValues: { projectId: "Shy Sun!" },
+        },
+        { actorType: "user", actorId: "board" },
+      ),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -6326,6 +6584,67 @@ describeEmbeddedPostgres("tool access service", () => {
         { actorType: "agent", actorId: "agent-1" },
       ),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("keeps a saved Telem.AI header policy when the connection is reconnected", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    mockToolsList([{ name: "telem_search" }]);
+    const first = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_first-key" },
+      },
+      actor,
+    );
+    await service.updateConnection(first.connectionId, {
+      status: "active",
+      config: { ...first.connection.config, headerPolicy: { metadata: { forward: [] } } },
+    });
+
+    mockToolsList([{ name: "telem_search" }]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_second-key" },
+        reconnectConnectionId: first.connectionId,
+      },
+      actor,
+    );
+
+    expect(reconnected.connectionId).toBe(first.connectionId);
+    expect(reconnected.connection.config.headerPolicy).toEqual({ metadata: { forward: [] } });
+  });
+
+  it("forwards Paperclip context headers by default for a Telem.AI connection", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "telem_search" }]);
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_test-secret" },
+        configValues: { tier: "extended" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "telem",
+      methodConfig: { tier: "extended" },
+      headerPolicy: {
+        metadata: {
+          forward: ["company_id", "issue_id", "agent_id", "run_id", "project_id", "correlation_id"],
+        },
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("tlm_test-secret");
   });
 
   it("requires an explicit PostHog method and projects optional validated project filters", async () => {
@@ -6770,12 +7089,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Google Sheets",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Google Sheets"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -7183,12 +7497,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "GitHub authorization fixture",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "GitHub authorization fixture"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -7293,18 +7602,12 @@ describeEmbeddedPostgres("tool access service", () => {
           });
         }
         if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 {
                   name: "get_pull_request",
                   annotations: { readOnlyHint: true },
                 },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
@@ -7554,15 +7857,9 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "get_pull_request", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -8010,7 +8307,6 @@ describeEmbeddedPostgres("tool access service", () => {
           ),
         );
       expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
-        "credentials.oauth.access_token",
         "oauth.access_token",
         "oauth.refresh_token",
       ]);
@@ -9038,6 +9334,125 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(gatewayAuthorization).toBe("Bearer shared-access-token");
   });
 
+  // PAP-18538: Enterpret answers an `mcp:read` request with a token that carries
+  // `mcp:read mcp:write` but omits `scope` from the token response. Recording the request as
+  // the grant made the connection read back a read-only scope the provider never asserted.
+  describe("granted OAuth scope recording", () => {
+    async function connectSlackWithTokenScope(
+      tokenScope: string | null,
+      requestedScopes?: string[],
+    ) {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+      vi.stubEnv(
+        "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+        "slack-client-secret",
+      );
+      const company = await createCompany(db);
+      const userId = `oauth-owner-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [
+        "tools:use",
+        "tools:manage_connections",
+      ]);
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(
+        company.id,
+        { galleryKey: "slack", name: `Scope recording ${randomUUID()}` },
+        { actorType: "user", actorId: userId },
+      );
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          ...(requestedScopes ? { scopes: requestedScopes } : {}),
+        },
+      );
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        const href = String(url);
+        if (href === "https://slack.com/api/oauth.v2.access") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: "shared-access-token",
+              refresh_token: "shared-refresh-token",
+              expires_in: 3600,
+              // A provider that omits `scope` is telling us, per RFC 6749 §5.1, that the
+              // grant equals the request. Not every provider honours that.
+              ...(tokenScope === null ? {} : { scope: tokenScope }),
+            }),
+          } as Response;
+        }
+        if (href === "https://mcp.slack.com/mcp") {
+          return mcpHttpResponse(catalogResponse([]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: "shared-authorization-code",
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      return {
+        authorizationScope: new URL(started.authorizationUrl).searchParams.get(
+          "scope",
+        ),
+        recordedOAuth: (
+          connection.config.providerMetadata as
+            | { oauth?: Record<string, unknown> }
+            | undefined
+        )?.oauth,
+      };
+    }
+
+    it("marks a scope inferred from the request when the provider omits one", async () => {
+      const { authorizationScope, recordedOAuth } =
+        await connectSlackWithTokenScope(null, ["channels:read"]);
+
+      expect(authorizationScope).toBe("channels:read");
+      // No provider scope assertion means extra scopes are unknown, not absent.
+      // An empty comparison cannot establish the token's real capabilities.
+      expect(recordedOAuth).toMatchObject({
+        scope: null,
+        scopeSource: "requested_fallback",
+        unrequestedScopes: [],
+      });
+    });
+
+    it("records the provider's scope and flags anything it granted unasked", async () => {
+      const { recordedOAuth } = await connectSlackWithTokenScope(
+        "channels:read chat:write",
+        ["channels:read"],
+      );
+
+      expect(recordedOAuth).toMatchObject({
+        scope: "channels:read chat:write",
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("treats a scope matching the request as a clean provider assertion", async () => {
+      const { recordedOAuth } = await connectSlackWithTokenScope(
+        "channels:read",
+        ["channels:read"],
+      );
+
+      expect(recordedOAuth).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+    });
+
+
+  });
+
   it("creates and resolves an agent-initiated user authorization grant card", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv(
@@ -9088,11 +9503,7 @@ describeEmbeddedPostgres("tool access service", () => {
         } as Response;
       }
       if (href === "https://mcp.slack.com/mcp") {
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: { tools: [] },
-        });
+        return mcpHttpResponse(catalogResponse([]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -9156,6 +9567,13 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
     expect(grant).toMatchObject({ kind: "user", status: "active" });
+    // PAP-18538: this token response carries no `scope`, so the recorded scope is inferred
+    // from the request rather than asserted by the provider. Keep the distinction visible.
+    expect(grant.providerTenant.oauth).toMatchObject({
+      scopes: ["channels:read"],
+      scopeSource: "requested_fallback",
+      unrequestedScopes: [],
+    });
     expect(
       grant.credentialSecretRefs.map((ref) => ref.configPath).sort(),
     ).toEqual(["oauth.access_token", "oauth.refresh_token"]);
@@ -9395,17 +9813,11 @@ describeEmbeddedPostgres("tool access service", () => {
           const code = (init?.body as URLSearchParams).get("code");
           expect(["personal-code", "personal-reconnect-code"]).toContain(code);
           const reconnecting = code === "personal-reconnect-code";
-          return mcpHttpResponse({
-            ok: true,
-            access_token: reconnecting
+          return mcpHttpResponse(oauthToken(reconnecting
               ? "personal-access-token-2"
-              : "personal-access-token",
-            refresh_token: reconnecting
+              : "personal-access-token", reconnecting
               ? "personal-refresh-token-2"
-              : "personal-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          });
+              : "personal-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
           expect(init?.headers).toEqual(
@@ -9415,19 +9827,13 @@ describeEmbeddedPostgres("tool access service", () => {
               ),
             }),
           );
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 {
                   name: "search_messages",
                   annotations: { readOnlyHint: true },
                 },
                 { name: "send_message", annotations: { readOnlyHint: false } },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
@@ -9746,24 +10152,12 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
       if (href === "https://slack.com/api/oauth.v2.access") {
-        return mcpHttpResponse({
-          ok: true,
-          access_token: "share-access-token",
-          refresh_token: "share-refresh-token",
-          expires_in: 3600,
-          token_type: "Bearer",
-        });
+        return mcpHttpResponse(oauthToken("share-access-token", "share-refresh-token"));
       }
       if (href === "https://mcp.slack.com/mcp") {
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "search_messages", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -9900,35 +10294,17 @@ describeEmbeddedPostgres("tool access service", () => {
           const body = init?.body as URLSearchParams;
           if (body.get("grant_type") === "refresh_token") {
             expect(body.get("refresh_token")).toBe("personal-refresh-token");
-            return mcpHttpResponse({
-              ok: true,
-              access_token: "refreshed-personal-access-token",
-              refresh_token: "rotated-personal-refresh-token",
-              expires_in: 3600,
-              token_type: "Bearer",
-            });
+            return mcpHttpResponse(oauthToken("refreshed-personal-access-token", "rotated-personal-refresh-token"));
           }
-          return mcpHttpResponse({
-            ok: true,
-            access_token: "personal-access-token",
-            refresh_token: "personal-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          });
+          return mcpHttpResponse(oauthToken("personal-access-token", "personal-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 {
                   name: "search_messages",
                   annotations: { readOnlyHint: true },
                 },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
@@ -10001,6 +10377,819 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toHaveLength(2);
   });
 
+  // A refresh has no fresh authorization request, so the standing grant is the baseline the
+  // provider's response is judged against. A provider that widens at refresh must not be able
+  // to do it quietly.
+  it("flags a scope the provider widens at refresh time", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+      "slack-client-secret",
+    );
+    const company = await createCompany(db);
+    const userId = `oauth-refresh-scope-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "slack",
+        name: "Refresh scope widening",
+        grantKind: "user",
+      },
+      { actorType: "user", actorId: userId },
+    );
+    const started = await service.startOAuth(
+      company.id,
+      connected.connectionId,
+      {
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+        subjectUserId: userId,
+        scopes: ["channels:read"],
+      },
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        if (body.get("grant_type") === "refresh_token") {
+          return mcpHttpResponse({
+            ok: true,
+            access_token: "refreshed-access-token",
+            refresh_token: "rotated-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+            // Wider than the grant being refreshed.
+            scope: "channels:read chat:write",
+          });
+        }
+        return mcpHttpResponse(oauthToken("personal-access-token", "personal-refresh-token"));
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse(catalogResponse([]));
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!,
+      code: "personal-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.connectionId, connected.connectionId),
+          eq(connectionGrants.subjectUserId, userId),
+        ),
+      );
+    expect(grant.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read"],
+      scopeSource: "requested_fallback",
+    });
+
+    await db
+      .update(connectionGrants)
+      .set({
+        providerTenant: {
+          ...(grant.providerTenant ?? {}),
+          oauth: {
+            ...(grant.providerTenant?.oauth ?? {}),
+            accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+          },
+        },
+      })
+      .where(eq(connectionGrants.id, grant.id));
+
+    await service.checkHealth(connected.connectionId, {
+      actorType: "system",
+      actorId: "health-check",
+    });
+
+    const [refreshed] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read", "chat:write"],
+      scopeSource: "provider",
+      unrequestedScopes: ["chat:write"],
+    });
+  });
+
+  // A generic MCP connection can request less than discovery advertised. If the connection
+  // records discovery's universe as its scope set, a later refresh compares the provider's
+  // response against the wider list and an asserted extra scope stops looking unrequested.
+  it("keeps the narrowed request as the refresh baseline for a generic MCP connection", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_ID",
+      "narrow-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_SECRET",
+      "narrow-client-secret",
+    );
+    const company = await createCompany(db);
+    const userId = `narrow-scope-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const service = createTestToolAccessService(db);
+    let refreshScope: string | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://narrow.example.test/mcp") {
+        const authorization = (init?.headers as Record<string, string>)?.[
+          "Authorization"
+        ];
+        if (!authorization) {
+          return {
+            ok: false,
+            status: 401,
+            headers: {
+              get: (name: string) =>
+                name.toLowerCase() === "www-authenticate"
+                  ? 'Bearer resource_metadata="https://narrow.example.test/.well-known/oauth-protected-resource"'
+                  : null,
+            },
+            text: async () => "",
+            json: async () => ({}),
+          } as Response;
+        }
+        return mcpHttpResponse(catalogResponse([]));
+      }
+      if (
+        href ===
+        "https://narrow.example.test/.well-known/oauth-protected-resource"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            authorization_endpoint: "https://narrow.example.test/oauth/authorize",
+            token_endpoint: "https://narrow.example.test/oauth/token",
+            // Discovery advertises both; Paperclip will ask for only one.
+            scopes_supported: ["tools.read", "tools.write"],
+          }),
+        } as Response;
+      }
+      if (href === "https://narrow.example.test/oauth/token") {
+        const body = init?.body as URLSearchParams;
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: `access-${randomUUID()}`,
+            refresh_token: `refresh-${randomUUID()}`,
+            expires_in: 3600,
+            token_type: "Bearer",
+            ...(body.get("grant_type") === "refresh_token" && refreshScope
+              ? { scope: refreshScope }
+              : {}),
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: `Narrow generic ${randomUUID()}`,
+      transport: "mcp_remote",
+      config: { url: "https://narrow.example.test/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const started = await service.startOAuth(company.id, connection.id, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+      scopes: ["tools.read"],
+    });
+    expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe(
+      "tools.read",
+    );
+    await service.completeOAuthCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!,
+      code: "narrow-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: userId },
+    });
+
+    const [afterCallback] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id));
+    // Not ["tools.read", "tools.write"] — the connection records what was asked for.
+    expect(
+      (afterCallback.config.oauth as { scopes?: string[] } | undefined)?.scopes,
+    ).toEqual(["tools.read"]);
+
+    refreshScope = "tools.read tools.write";
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    await service.refreshOAuthGrantCredentials({
+      companyId: company.id,
+      connectionId: connection.id,
+      grantId: grant.id,
+      forceRefresh: true,
+      actor: { actorType: "user", actorId: userId },
+    });
+
+    const [refreshed] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.providerTenant?.oauth).toMatchObject({
+      scopeSource: "provider",
+      unrequestedScopes: ["tools.write"],
+    });
+  });
+
+  // Two users can authorize the same connection with different scopes. The connection-level
+  // scope list is whichever callback ran last, so it is the wrong refresh baseline for at
+  // least one of them — the baseline has to live on the grant.
+  it("gives each personal grant its own refresh scope baseline", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+      "slack-client-secret",
+    );
+    const company = await createCompany(db);
+    const wideUser = `oauth-wide-${randomUUID()}`;
+    await grantBoardUser(db, company.id, wideUser, [], "owner");
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "slack",
+        name: `Per-grant baseline ${randomUUID()}`,
+        grantKind: "user",
+      },
+      { actorType: "user", actorId: wideUser },
+    );
+    let tokenScope: string | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return mcpHttpResponse({
+          ok: true,
+          access_token: `access-${randomUUID()}`,
+          refresh_token: `refresh-${randomUUID()}`,
+          expires_in: 3600,
+          token_type: "Bearer",
+          ...(tokenScope === null ? {} : { scope: tokenScope }),
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse(catalogResponse([]));
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    const authorize = async (userId: string, scopes: string[]) => {
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          subjectUserId: userId,
+          scopes,
+        },
+      );
+      tokenScope = scopes.join(" ");
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: `code-${randomUUID()}`,
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const [grant] = await db
+        .select()
+        .from(connectionGrants)
+        .where(
+          and(
+            eq(connectionGrants.connectionId, connected.connectionId),
+            eq(connectionGrants.subjectUserId, userId),
+          ),
+        );
+      return grant;
+    };
+
+    const wideGrant = await authorize(wideUser, ["channels:read", "chat:write"]);
+    expect(wideGrant.providerTenant?.oauth).toMatchObject({
+      requestedScopes: ["channels:read", "chat:write"],
+    });
+
+    // Stand in for a second, narrower authorization on the same connection: the
+    // connection-level scope list is whichever callback ran last, so it drifts away from
+    // what this grant asked for. Written directly because a gallery personal connection
+    // pins one identity; a `per_user` connection reaches the same state through a real
+    // second callback.
+    const [beforeDrift] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    await db
+      .update(toolConnections)
+      .set({
+        config: {
+          ...beforeDrift.config,
+          oauth: {
+            ...(beforeDrift.config.oauth as Record<string, unknown>),
+            scopes: ["channels:read"],
+          },
+        },
+      })
+      .where(eq(toolConnections.id, connected.connectionId));
+
+    // Refresh this grant. The provider asserts exactly what this grant asked for, so
+    // nothing is unrequested — even though the connection now records only
+    // `channels:read`.
+    tokenScope = "channels:read chat:write";
+    await service.refreshOAuthGrantCredentials({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      grantId: wideGrant.id,
+      forceRefresh: true,
+      actor: { actorType: "user", actorId: wideUser },
+    });
+
+    const [refreshedWide] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, wideGrant.id));
+    expect(refreshedWide.providerTenant?.oauth).toMatchObject({
+      scopes: ["channels:read", "chat:write"],
+      scopeSource: "provider",
+      unrequestedScopes: [],
+    });
+  });
+
+  // PAP-18538: an over-grant recorded at authorization has to survive the ordinary life of the
+  // connection. A refresh is the routine event, and the shared organization identity is the
+  // shape the grants API and the Permissions UI read from.
+  describe("over-grant provenance on an organization grant", () => {
+    async function connectSharedSlack(authorizationScope: string | null) {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+      vi.stubEnv(
+        "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
+        "slack-client-secret",
+      );
+      const company = await createCompany(db);
+      const userId = `oauth-shared-scope-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(
+        company.id,
+        { galleryKey: "slack", name: `Shared scope ${randomUUID()}` },
+        { actorType: "user", actorId: userId },
+      );
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: userId },
+          scopes: ["channels:read"],
+        },
+      );
+      const slackToken = (scope: string | null) =>
+        mcpHttpResponse({
+          ok: true,
+          access_token: `access-${randomUUID()}`,
+          refresh_token: `refresh-${randomUUID()}`,
+          expires_in: 3600,
+          token_type: "Bearer",
+          ...(scope === null ? {} : { scope }),
+        });
+      let refreshScope: string | null = null;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://slack.com/api/oauth.v2.access") {
+          const body = init?.body as URLSearchParams;
+          return body.get("grant_type") === "refresh_token"
+            ? slackToken(refreshScope)
+            : slackToken(authorizationScope);
+        }
+        if (href === "https://mcp.slack.com/mcp") {
+          return mcpHttpResponse(catalogResponse([]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      await service.completeOAuthCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: "shared-authorization-code",
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: userId },
+      });
+      const readGrant = async () => {
+        const [grant] = await db
+          .select()
+          .from(connectionGrants)
+          .where(
+            and(
+              eq(connectionGrants.connectionId, connected.connectionId),
+              eq(connectionGrants.kind, "organization"),
+            ),
+          );
+        return grant;
+      };
+      const readConnectionOAuth = async () => {
+        const [connection] = await db
+          .select()
+          .from(toolConnections)
+          .where(eq(toolConnections.id, connected.connectionId));
+        return (
+          connection.config.providerMetadata as {
+            oauth?: Record<string, unknown>;
+          }
+        )?.oauth;
+      };
+      return {
+        service,
+        companyId: company.id,
+        connectionId: connected.connectionId,
+        actor: { actorType: "user" as const, actorId: userId },
+        readGrant,
+        readConnectionOAuth,
+        refreshWithScope: async (scope: string | null) => {
+          refreshScope = scope;
+          const grant = await readGrant();
+          await service.refreshOAuthGrantCredentials({
+            companyId: company.id,
+            connectionId: connected.connectionId,
+            grantId: grant.id,
+            forceRefresh: true,
+            actor: { actorType: "user", actorId: userId },
+          });
+        },
+      };
+    }
+
+    it("records the over-grant on the shared organization grant", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      // The organization grant is created before OAuth has any credentials, so it used to be
+      // the one record with no provenance at all.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read", "chat:write"],
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("keeps the over-grant warning when a refresh asserts no scope", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope(null);
+
+      // The refresh response said nothing about scope. That is not evidence the provider took
+      // `chat:write` away, so the warning stays on both the grant and the connection.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read", "chat:write"],
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+      expect(await lane.readConnectionOAuth()).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("keeps the warning when a refresh re-asserts the same widened scope", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope("channels:read chat:write");
+
+      // Judging the response against the widened grant instead of the original request would
+      // read this back as clean, because the over-grant would have become its own baseline.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: ["chat:write"],
+      });
+    });
+
+    it("clears the warning when a refresh narrows the scope to the request", async () => {
+      const lane = await connectSharedSlack("channels:read chat:write");
+
+      await lane.refreshWithScope("channels:read");
+
+      // A fresh assertion *is* evidence, so the warning is not sticky once the provider says
+      // the grant has narrowed.
+      expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
+        scopes: ["channels:read"],
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+      expect(await lane.readConnectionOAuth()).toMatchObject({
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+    });
+  });
+
+  it("uses Airtable DCR when both DCR and CIMD are advertised", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const restoreMethod = optIntoAirtableDcrRegistration();
+    try {
+      const company = await createCompany(db);
+      let metadataLookups = 0;
+      let registrations = 0;
+      const service = createTestToolAccessService(db, {
+        oauthClientMetadataLookup: async () => {
+          metadataLookups++;
+          return [{ address: "93.184.216.34", family: 4 }];
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable DCR",
+      });
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+          return mcpHttpResponse({
+            resource: "https://mcp.airtable.com",
+            authorization_servers: ["https://airtable.com/oauth2/v1"],
+            scopes_supported: ["data.records:read", "data.records:write"],
+          });
+        }
+        if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+          return mcpHttpResponse({
+            issuer: "https://airtable.com/oauth2/v1",
+            authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+            token_endpoint: "https://airtable.com/oauth2/v1/token",
+            registration_endpoint: "https://airtable.com/oauth2/v1/register",
+            client_id_metadata_document_supported: true,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        if (href === "https://airtable.com/oauth2/v1/register") {
+          registrations++;
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+            application_type: "web",
+          });
+          return mcpHttpResponse({
+            client_id: "airtable-dcr-client",
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+      const start = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+
+      expect(start.registrationSource).toBe("dcr");
+      expect(new URL(start.authorizationUrl).searchParams.get("client_id")).toBe("airtable-dcr-client");
+      expect(registrations).toBe(1);
+      expect(metadataLookups).toBe(0);
+    } finally {
+      restoreMethod();
+    }
+  });
+
+  it("rebinds an Airtable CIMD client through DCR when the curated method opts in", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db, {
+      oauthClientMetadataLookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    });
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable migration",
+    });
+    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+    let registrations = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.airtable.com",
+          authorization_servers: ["https://airtable.com/oauth2/v1"],
+        });
+      }
+      if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+        return mcpHttpResponse({
+          issuer: "https://airtable.com/oauth2/v1",
+          authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+          token_endpoint: "https://airtable.com/oauth2/v1/token",
+          registration_endpoint: "https://airtable.com/oauth2/v1/register",
+          client_id_metadata_document_supported: true,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://airtable.com/oauth2/v1/register") {
+        registrations++;
+        return mcpHttpResponse({
+          client_id: "airtable-rebound-dcr-client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const airtableMethod = APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods
+      .find((entry) => entry.key === "mcp-oauth")!;
+    const originalRegistration = airtableMethod.oauthClientRegistration;
+    try {
+      // Generated Airtable metadata now opts into DCR. Remove that curated
+      // flag here to model an existing client binding created before the opt-in.
+      delete airtableMethod.oauthClientRegistration;
+      const cimdStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+      expect(cimdStart.registrationSource).toBe("cimd");
+
+      airtableMethod.oauthClientRegistration = "dcr";
+      const dcrStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+      expect(dcrStart.registrationSource).toBe("dcr");
+      expect(new URL(dcrStart.authorizationUrl).searchParams.get("client_id")).toBe("airtable-rebound-dcr-client");
+      expect(registrations).toBe(1);
+    } finally {
+      if (originalRegistration === undefined) delete airtableMethod.oauthClientRegistration;
+      else airtableMethod.oauthClientRegistration = originalRegistration;
+    }
+  });
+
+  it("does not fall back to Airtable CIMD when DCR is required but unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const restoreMethod = optIntoAirtableDcrRegistration();
+    try {
+      const company = await createCompany(db);
+      let metadataLookups = 0;
+      const service = createTestToolAccessService(db, {
+        oauthClientMetadataLookup: async () => {
+          metadataLookups++;
+          return [{ address: "93.184.216.34", family: 4 }];
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable DCR unavailable",
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        const href = String(url);
+        if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+          return mcpHttpResponse({
+            resource: "https://mcp.airtable.com",
+            authorization_servers: ["https://airtable.com/oauth2/v1"],
+          });
+        }
+        if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+          return mcpHttpResponse({
+            issuer: "https://airtable.com/oauth2/v1",
+            authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+            token_endpoint: "https://airtable.com/oauth2/v1/token",
+            client_id_metadata_document_supported: true,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+      await expect(service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      })).rejects.toMatchObject({ details: { code: "oauth_dcr_not_supported" } });
+      expect(metadataLookups).toBe(0);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect((connection.config.oauth as Record<string, unknown> | undefined)?.clientId).toBeUndefined();
+    } finally {
+      restoreMethod();
+    }
+  });
+
+  it("registers Linear against its MCP authorization server instead of the pinned console endpoints", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const userId = `linear-owner-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner", userId),
+    );
+    const fetched: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      fetched.push(href);
+      if (href === "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.linear.app/mcp",
+          authorization_servers: ["https://mcp.linear.app"],
+          scopes_supported: ["read", "write"],
+        });
+      }
+      if (href === "https://mcp.linear.app/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://mcp.linear.app",
+          authorization_endpoint: "https://mcp.linear.app/authorize",
+          token_endpoint: "https://mcp.linear.app/token",
+          registration_endpoint: "https://mcp.linear.app/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://mcp.linear.app/register") {
+        return mcpHttpResponse({
+          client_id: "linear-registered-client",
+          redirect_uris: ["https://paperclip.example/api/tools/oauth/callback"],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "linear", connectionMethodKey: "mcp-oauth", name: "Linear", grantKind: "user" })
+      .expect(201);
+
+    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(startUrl.origin + startUrl.pathname).toBe("https://mcp.linear.app/authorize");
+    expect(startUrl.searchParams.get("client_id")).toBe("linear-registered-client");
+    expect(fetched).toContain("https://mcp.linear.app/register");
+    expect(fetched.some((href) => href.startsWith("https://linear.app/"))).toBe(false);
+  });
+
+  it("registers Calendly with a provider-compatible DCR client name", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "calendly", connectionMethodKey: "mcp-oauth", name: "Calendly",
+    });
+    const redirectUri = "http://localhost:3105/api/tools/oauth/callback";
+    let registrationBody: Record<string, unknown> | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href.includes("oauth-protected-resource")) return mcpHttpResponse({
+        resource: "https://mcp.calendly.com/", authorization_servers: ["https://calendly.com/"],
+        scopes_supported: ["mcp:scheduling:read", "mcp:scheduling:write"],
+      });
+      if (href.includes("oauth-authorization-server")) return mcpHttpResponse({
+        issuer: "https://calendly.com/", authorization_endpoint: "https://calendly.com/oauth/authorize",
+        token_endpoint: "https://calendly.com/oauth/token", registration_endpoint: "https://calendly.com/oauth/register",
+        code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+      });
+      if (href === "https://calendly.com/oauth/register") {
+        registrationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return mcpHttpResponse({
+          client_id: "calendly-public-client", redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const result = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri, actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(registrationBody).toMatchObject({
+      client_name: "Paperclip localhost-3105",
+      redirect_uris: [redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      application_type: "web",
+    });
+    expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
+    expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
+  });
+
   it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
@@ -10028,14 +11217,7 @@ describeEmbeddedPostgres("tool access service", () => {
       if (
         href === "https://mcp.notion.com/.well-known/oauth-authorization-server"
       ) {
-        return mcpHttpResponse({
-          issuer: "https://mcp.notion.com",
-          authorization_endpoint: "https://mcp.notion.com/authorize",
-          token_endpoint: "https://mcp.notion.com/token",
-          registration_endpoint: "https://mcp.notion.com/register",
-          code_challenge_methods_supported: ["S256"],
-          token_endpoint_auth_methods_supported: ["none"],
-        });
+        return mcpHttpResponse(notionAuthorizationServer());
       }
       if (href === "https://mcp.notion.com/register") {
         return mcpHttpResponse({
@@ -10064,15 +11246,9 @@ describeEmbeddedPostgres("tool access service", () => {
             Authorization: "Bearer notion-choice-access",
           }),
         );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "notion-search", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -10086,9 +11262,31 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(state).toBeTruthy();
 
+    // The provider's redirect is a cross-site navigation: Paperclip commits a
+    // page at once (Railway's consent page otherwise replaces itself after ~2s)
+    // and leaves the state unconsumed for the same-origin repeat.
+    const interstitialRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .set("Sec-Fetch-Site", "cross-site")
+      .set("Sec-Fetch-Mode", "navigate")
+      .query({ state, code: "notion-choice-code" });
+    expect(interstitialRes.status).toBe(200);
+    expect(interstitialRes.headers["cache-control"]).toBe("no-store");
+    expect(interstitialRes.text).toContain(
+      `<meta http-equiv="refresh" content="0;url=/api/tools/oauth/callback?state=${state}&amp;code=notion-choice-code">`,
+    );
+    const [pendingConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+    expect(pendingConnection?.status).not.toBe("active");
+
     const callbackRes = await request(app)
       .get("/api/tools/oauth/callback")
       .set("Accept", "text/html")
+      .set("Sec-Fetch-Site", "same-origin")
+      .set("Sec-Fetch-Mode", "navigate")
       .query({ state, code: "notion-choice-code" });
 
     expect(callbackRes.status).toBe(303);
@@ -10139,14 +11337,7 @@ describeEmbeddedPostgres("tool access service", () => {
       if (
         href === "https://mcp.notion.com/.well-known/oauth-authorization-server"
       ) {
-        return mcpHttpResponse({
-          issuer: "https://mcp.notion.com",
-          authorization_endpoint: "https://mcp.notion.com/authorize",
-          token_endpoint: "https://mcp.notion.com/token",
-          registration_endpoint: "https://mcp.notion.com/register",
-          code_challenge_methods_supported: ["S256"],
-          token_endpoint_auth_methods_supported: ["none"],
-        });
+        return mcpHttpResponse(notionAuthorizationServer());
       }
       if (href === "https://mcp.notion.com/register") {
         return mcpHttpResponse({
@@ -10201,6 +11392,7 @@ describeEmbeddedPostgres("tool access service", () => {
   ])(
     "starts and completes OAuth with the same redirect URI at %s",
     async (origin) => {
+      const callbackOrigin = origin.replace("http://127.0.0.1:", "http://localhost:");
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
         "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
@@ -10239,7 +11431,7 @@ describeEmbeddedPostgres("tool access service", () => {
         /^[A-Za-z0-9_-]{43}$/,
       );
       expect(startUrl.searchParams.get("redirect_uri")).toBe(
-        `${origin}/api/tools/oauth/callback`,
+        `${callbackOrigin}/api/tools/oauth/callback`,
       );
       const state = startUrl.searchParams.get("state");
       expect(state).toBeTruthy();
@@ -10265,7 +11457,7 @@ describeEmbeddedPostgres("tool access service", () => {
             expect(body.get("client_secret")).toBe("slack-client-secret");
             expect(body.get("code_verifier")).toBeTruthy();
             expect(body.get("redirect_uri")).toBe(
-              `${origin}/api/tools/oauth/callback`,
+              `${callbackOrigin}/api/tools/oauth/callback`,
             );
             return {
               ok: true,
@@ -10283,11 +11475,7 @@ describeEmbeddedPostgres("tool access service", () => {
             expect(init?.headers).toEqual(
               expect.objectContaining({ Authorization: "Bearer access-token" }),
             );
-            return mcpHttpResponse({
-              jsonrpc: "2.0",
-              id: "paperclip-catalog-refresh",
-              result: {
-                tools: [
+            return mcpHttpResponse(catalogResponse([
                   {
                     name: "search_messages",
                     description: "Search messages.",
@@ -10298,16 +11486,14 @@ describeEmbeddedPostgres("tool access service", () => {
                     description: "Send a message.",
                     annotations: { readOnlyHint: false },
                   },
-                ],
-              },
-            });
+                ]));
           }
           throw new Error(`unexpected fetch ${href}`);
         });
 
       const callbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
@@ -10352,7 +11538,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectState).toBeTruthy();
       const redirectCallbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .set("Accept", "text/html")
         .query({ state: redirectState, code: "oauth-code" });
 
@@ -10364,7 +11550,7 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
-      ).resolves.toHaveLength(6);
+      ).resolves.toHaveLength(4);
       const [connection] = await db
         .select()
         .from(toolConnections)
@@ -10387,6 +11573,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
       .set("Host", "127.0.0.1:3200")
+      .set("Origin", "http://127.0.0.1:3200")
       .send({ galleryKey: "slack", name: "Loopback Slack workspace" });
 
     expect(connectRes.status).toBe(201);
@@ -10770,13 +11957,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expect(body.get("code")).toBe("oauth-code");
         return {
           ok: true,
-          json: async () => ({
-            ok: true,
-            access_token: "bound-access-token",
-            refresh_token: "bound-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          }),
+          json: async () => (oauthToken("bound-access-token", "bound-refresh-token")),
         } as Response;
       }
       if (href === "https://mcp.slack.com/mcp") {
@@ -10785,15 +11966,9 @@ describeEmbeddedPostgres("tool access service", () => {
             Authorization: "Bearer bound-access-token",
           }),
         );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "search_messages", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -10836,14 +12011,7 @@ describeEmbeddedPostgres("tool access service", () => {
           href ===
           "https://mcp.notion.com/.well-known/oauth-authorization-server"
         ) {
-          return mcpHttpResponse({
-            issuer: "https://mcp.notion.com",
-            authorization_endpoint: "https://mcp.notion.com/authorize",
-            token_endpoint: "https://mcp.notion.com/token",
-            registration_endpoint: "https://mcp.notion.com/register",
-            code_challenge_methods_supported: ["S256"],
-            token_endpoint_auth_methods_supported: ["none"],
-          });
+          return mcpHttpResponse(notionAuthorizationServer());
         }
         if (href === "https://mcp.notion.com/register") {
           expect(init?.method).toBe("POST");
@@ -10878,13 +12046,13 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(
       new URL(first.authorizationUrl).searchParams.get("scope"),
-    ).toBeNull();
+    ).toBe("default");
     expect(
       new URL(concurrent.authorizationUrl).searchParams.get("client_id"),
     ).toBe("notion-dcr-client");
     expect(registrationBodies).toEqual([
       {
-        client_name: "Paperclip (paperclip-dev.tail29c1aa.ts.net)",
+        client_name: "Paperclip paperclip-dev-tail29c1aa-ts-net",
         redirect_uris: [redirectUri],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
@@ -10971,7 +12139,7 @@ describeEmbeddedPostgres("tool access service", () => {
         clientTokenEndpointAuthMethod: "none",
         clientRedirectUri: redirectUri,
         registrationUrl: "https://mcp.notion.com/register",
-        scopes: [],
+        scopes: ["default"],
       },
     });
     expect(connection.credentialSecretRefs).toEqual([
@@ -11077,16 +12245,10 @@ describeEmbeddedPostgres("tool access service", () => {
               Authorization: "Bearer supabase-access-token",
             }),
           );
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 { name: "list_tables", annotations: { readOnlyHint: true } },
                 { name: "execute_sql", annotations: { readOnlyHint: false } },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
@@ -11142,122 +12304,141 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(completed)).not.toContain("supabase-dcr-secret");
   });
 
-  it("preserves the provider's DCR client-auth ordering for Miro token exchange", async () => {
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
-    const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
-    const service = createTestToolAccessService(db);
-    const connected = await service.connectGalleryApp(company.id, {
-      galleryKey: "miro",
-      connectionMethodKey: "mcp-oauth",
-      name: "Miro DCR",
-    });
-    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      const href = String(url);
-      if (
-        href === "https://mcp.miro.com/.well-known/oauth-protected-resource"
-      ) {
-        return mcpHttpResponse({
-          resource: "https://mcp.miro.com/",
-          authorization_servers: ["https://mcp.miro.com/"],
-        });
+  it.each(["default", "none", "agent", "company"] as const)(
+    "negotiates JSON OAuth tokens and preserves MCP agent reach (%s)", async (reach) => {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+      const company = await createCompany(db);
+      await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "miro",
+        connectionMethodKey: "mcp-oauth",
+        name: "Miro DCR",
+      });
+      const agent = await createAgent(db, company.id);
+      const installs = reach === "company" || reach === "default"
+        ? [{ targetType: "company" as const, targetId: company.id }]
+        : reach === "agent"
+          ? [{ targetType: "agent" as const, targetId: agent.id }]
+          : [];
+      if (reach !== "default") {
+        await service.putConnectionInstalls(connected.connectionId, { installs });
       }
-      if (
-        href === "https://mcp.miro.com/.well-known/oauth-authorization-server"
-      ) {
-        return mcpHttpResponse({
-          issuer: "https://mcp.miro.com/",
-          authorization_endpoint: "https://mcp.miro.com/authorize",
-          token_endpoint: "https://mcp.miro.com/token",
-          registration_endpoint: "https://mcp.miro.com/register",
-          grant_types_supported: ["authorization_code", "refresh_token"],
-          code_challenge_methods_supported: ["S256"],
-          token_endpoint_auth_methods_supported: [
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (
+          href === "https://mcp.miro.com/.well-known/oauth-protected-resource"
+        ) {
+          return mcpHttpResponse({
+            resource: "https://mcp.miro.com/",
+            authorization_servers: ["https://mcp.miro.com/"],
+          });
+        }
+        if (
+          href === "https://mcp.miro.com/.well-known/oauth-authorization-server"
+        ) {
+          return mcpHttpResponse({
+            issuer: "https://mcp.miro.com/",
+            authorization_endpoint: "https://mcp.miro.com/authorize",
+            token_endpoint: "https://mcp.miro.com/token",
+            registration_endpoint: "https://mcp.miro.com/register",
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: [
+              "client_secret_post",
+              "client_secret_basic",
+            ],
+          });
+        }
+        if (href === "https://mcp.miro.com/register") {
+          const requestBody = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          expect(requestBody.token_endpoint_auth_method).toBe(
             "client_secret_post",
-            "client_secret_basic",
-          ],
-        });
-      }
-      if (href === "https://mcp.miro.com/register") {
-        const requestBody = JSON.parse(String(init?.body)) as Record<
-          string,
-          unknown
-        >;
-        expect(requestBody.token_endpoint_auth_method).toBe(
-          "client_secret_post",
-        );
-        return mcpHttpResponse({
-          client_id: "miro-dcr-client",
-          client_secret: "miro-dcr-secret",
-          redirect_uris: [redirectUri],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "client_secret_post",
-        });
-      }
-      if (href === "https://mcp.miro.com/token") {
-        const headers = new Headers(init?.headers);
-        const body = init?.body as URLSearchParams;
-        expect(headers.get("authorization")).toBeNull();
-        expect(body.get("client_id")).toBe("miro-dcr-client");
-        expect(body.get("client_secret")).toBe("miro-dcr-secret");
-        expect(body.get("code")).toBe("miro-code");
-        return mcpHttpResponse({
-          access_token: "miro-access-token",
-          refresh_token: "miro-refresh-token",
-          expires_in: 3600,
-          token_type: "Bearer",
-        });
-      }
-      if (href === "https://mcp.miro.com/") {
-        expect(new Headers(init?.headers).get("authorization")).toBe(
-          "Bearer miro-access-token",
-        );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [{ name: "whoami", annotations: { readOnlyHint: true } }],
-          },
-        });
-      }
-      throw new Error(`unexpected fetch ${href}`);
-    });
+          );
+          return mcpHttpResponse({
+            client_id: "miro-dcr-client",
+            client_secret: "miro-dcr-secret",
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "client_secret_post",
+          });
+        }
+        if (href === "https://mcp.miro.com/token") {
+          const headers = new Headers(init?.headers);
+          const body = init?.body as URLSearchParams;
+          // Match providers that negotiate JSON only when explicitly requested.
+          if (headers.get("accept") !== "application/json") {
+            return new Response("access_token=miro-access-token", {
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+            });
+          }
+          expect(headers.get("authorization")).toBeNull();
+          expect(body.get("client_id")).toBe("miro-dcr-client");
+          expect(body.get("client_secret")).toBe("miro-dcr-secret");
+          expect(body.get("code")).toBe("miro-code");
+          return mcpHttpResponse({
+            access_token: "miro-access-token",
+            refresh_token: "miro-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          });
+        }
+        if (href === "https://mcp.miro.com/") {
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            "Bearer miro-access-token",
+          );
+          return mcpHttpResponse(catalogResponse([{ name: "whoami", annotations: { readOnlyHint: true } }]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
 
-    const started = await service.startOAuth(
-      company.id,
-      connected.connectionId,
-      {
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri,
+          actor: { actorType: "user", actorId: "board" },
+        },
+      );
+      const state = new URL(started.authorizationUrl).searchParams.get("state");
+      expect(state).toBeTruthy();
+      const completed = await service.completeOAuthCallback({
+        state: state!,
+        code: "miro-code",
         redirectUri,
         actor: { actorType: "user", actorId: "board" },
-      },
-    );
-    const state = new URL(started.authorizationUrl).searchParams.get("state");
-    expect(state).toBeTruthy();
-    const completed = await service.completeOAuthCallback({
-      state: state!,
-      code: "miro-code",
-      redirectUri,
-      actor: { actorType: "user", actorId: "board" },
-    });
+      });
 
-    expect(completed.actions.readOnly).toEqual([
-      expect.objectContaining({ toolName: "whoami", riskLevel: "read" }),
-    ]);
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, connected.connectionId));
-    expect(connection.config).toMatchObject({
-      oauth: { clientTokenEndpointAuthMethod: "client_secret_post" },
-    });
-    expect(JSON.stringify(connection.config)).not.toContain("miro-dcr-secret");
-    expect(JSON.stringify(completed)).not.toContain("miro-dcr-secret");
-  });
+      expect(completed.actions.readOnly).toEqual([
+        expect.objectContaining({ toolName: "whoami", riskLevel: "read" }),
+      ]);
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      expect(connection.config).toMatchObject({
+        oauth: { clientTokenEndpointAuthMethod: "client_secret_post" },
+      });
+      expect(JSON.stringify(connection.config)).not.toContain("miro-dcr-secret");
+      expect(JSON.stringify(completed)).not.toContain("miro-dcr-secret");
+      const installed = await db.select().from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connected.connectionId));
+      expect(installed.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(installs);
+      const [profile] = await db.select().from(toolProfiles)
+        .where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+      const bindings = await db.select().from(toolProfileBindings)
+        .where(eq(toolProfileBindings.profileId, profile.id));
+      expect(bindings.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(installs);
+    },
+  );
 
   it("accepts provider-added DCR grants without adopting them", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_HUGGING_FACE_CLIENT_ID", "");
@@ -11506,11 +12687,174 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each(["new", "saved"])("starts Sentry MCP sign-in for a %s connection without a manual OAuth app", async (state) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "sentry", connectionMethodKey: "mcp-oauth", name: "Sentry",
+    });
+    const redirectUri = "http://localhost:3200/api/tools/oauth/callback";
+    const issuer = "https://mcp.sentry.dev";
+    const resource = `${issuer}/mcp`;
+    const scopes = ["org:read", "project:write", "team:write", "event:write", "alerts:write"];
+    if (state === "saved") {
+      const [connection] = await db.select().from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      // An existing MCP registration must survive catalog changes. This is the
+      // state before a reconnect, with endpoints cached by successful discovery.
+      await db.update(toolConnections).set({ config: {
+        ...connection.config,
+        oauth: {
+          ...connection.config.oauth as Record<string, unknown>,
+          provider: "sentry", issuer, resource,
+          authorizationUrl: `${issuer}/oauth/authorize`, tokenUrl: `${issuer}/oauth/token`,
+          metadataUrl: `${issuer}/.well-known/oauth-authorization-server`,
+          clientId: "saved-sentry-client", clientRegistrationSource: "dcr",
+          clientIssuer: issuer, clientResource: resource,
+          clientCompanyId: company.id, clientRedirectUri: redirectUri,
+          clientTokenEndpointAuthMethod: "none",
+        },
+      } }).where(eq(toolConnections.id, connected.connectionId));
+    }
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      calls.push(href);
+      // Both hosts publish valid OAuth metadata. The web/API issuer cannot
+      // register an MCP client; discovery must select the resource's issuer.
+      if (href === "https://sentry.io/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://sentry.io", authorization_endpoint: "https://sentry.io/oauth/authorize/",
+          token_endpoint: "https://sentry.io/oauth/token/", code_challenge_methods_supported: ["S256"],
+        });
+      }
+      if (href === `${issuer}/.well-known/oauth-protected-resource/mcp`) {
+        return mcpHttpResponse({ resource, authorization_servers: [issuer], scopes_supported: scopes });
+      }
+      if (href === `${issuer}/.well-known/oauth-authorization-server`) {
+        return mcpHttpResponse({
+          issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`,
+          registration_endpoint: `${issuer}/oauth/register`, scopes_supported: scopes,
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+          client_id_metadata_document_supported: true,
+        });
+      }
+      if (href === `${issuer}/oauth/register`) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          redirect_uris: [redirectUri], token_endpoint_auth_method: "none",
+        });
+        return mcpHttpResponse({
+          client_id: "new-sentry-client", redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri, actor: { actorType: "user", actorId: "board" },
+    });
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.origin + authorization.pathname).toBe(`${issuer}/oauth/authorize`);
+    expect(authorization.searchParams.get("resource")).toBe(resource);
+    expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(scopes);
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorization.searchParams.get("client_id")).toBe(`${state}-sentry-client`);
+    expect(calls).not.toContain("https://sentry.io/.well-known/oauth-authorization-server");
+    expect(calls.filter((url) => url === `${issuer}/oauth/register`)).toHaveLength(state === "new" ? 1 : 0);
+    const [saved] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(saved.config.oauth).toMatchObject({
+      clientId: `${state}-sentry-client`, clientIssuer: issuer, clientResource: resource,
+      clientCompanyId: company.id, clientRedirectUri: redirectUri,
+    });
+  });
+
+  it("uses Asana v2 metadata instead of stale v1 endpoints for a saved custom app", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    });
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await db.update(toolConnections).set({ config: {
+      ...connection.config,
+      oauth: { ...connection.config.oauth as Record<string, unknown>,
+        issuer: "https://mcp.asana.com", authorizationUrl: "https://mcp.asana.com/authorize",
+        tokenUrl: "https://mcp.asana.com/token", resource: "https://mcp.asana.com",
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback" },
+    } }).where(eq(toolConnections.id, connected.connectionId));
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      calls.push(String(url));
+      if (String(url) === "https://mcp.asana.com/.well-known/oauth-protected-resource/v2") {
+        return mcpHttpResponse({ resource: "https://mcp.asana.com/v2/mcp",
+          authorization_servers: ["https://app.asana.com"], scopes_supported: ["default"] });
+      }
+      if (String(url) === "https://app.asana.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({ issuer: "https://app.asana.com",
+          authorization_endpoint: "https://app.asana.com/-/oauth_authorize",
+          token_endpoint: "https://app.asana.com/-/oauth_token",
+          token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+          code_challenge_methods_supported: ["S256"] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.origin + authorization.pathname).toBe("https://app.asana.com/-/oauth_authorize");
+    expect(authorization.searchParams.get("resource")).toBe("https://mcp.asana.com/v2/mcp");
+    expect(authorization.searchParams.get("scope")).toBe("default");
+    expect(authorization.searchParams.get("client_id")).toBe("asana-client");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(calls).toEqual([
+      "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+      "https://app.asana.com/.well-known/oauth-authorization-server",
+    ]);
+    const migrated = await service.getConnection(connected.connectionId, company.id);
+    expect(migrated.config?.oauth).toMatchObject({
+      clientIssuer: "https://app.asana.com", clientResource: "https://mcp.asana.com/v2/mcp",
+    });
+    expect(migrated.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+    for (const invalidBinding of [
+      { clientIssuer: "https://other.example" },
+      { clientResource: "https://other.example/mcp" },
+      { clientCompanyId: randomUUID() },
+      { clientRedirectUri: "https://other.example/api/tools/oauth/callback" },
+    ]) {
+      await db.update(toolConnections).set({ config: { ...connection.config, oauth: {
+        ...connection.config.oauth as Record<string, unknown>,
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback", ...invalidBinding,
+      } } }).where(eq(toolConnections.id, connection.id));
+      await expect(service.startOAuth(company.id, connection.id, {
+        redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      })).rejects.toMatchObject({ status: 422, details: { code: "oauth_manual_client_rebinding_required" } });
+    }
+    const missingSecret = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "another-client" },
+    });
+    await expect(service.startOAuth(company.id, missingSecret.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("requires an OAuth client secret") });
+  });
+
   it("stores a curated customer-owned OAuth client without exposing its secret", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-customer-client",
@@ -11543,6 +12887,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {
@@ -11558,11 +12903,101 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each([false, true])("finishes a second Asana account with a colliding profile name (installed: %s)", async (installed) => {
+    const company = await createCompany(db);
+    const userId = "asana-owner";
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const actor = { actorType: "user" as const, actorId: userId };
+    const credentials = {
+      v: 1 as const, accessToken: "asana-access", refreshToken: "asana-refresh", tokenType: "Bearer",
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      refreshTokenExpiresAt: null, scopes: ["default"], subject: userId, companyId: company.id,
+      instanceId: "test-instance", environment: "staging" as const,
+      provider: "asana" as const, profile: "asana.mcp" as const,
+    };
+    const connector: PaperclipCloudConnector = {
+      getCapabilities: vi.fn(async () => ["asana.mcp"]),
+      startAuthorization: vi.fn(async ({ returnState }) => ({
+        authorizationUrl: `https://app.asana.com/-/oauth_authorize?state=${encodeURIComponent(returnState)}`,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      })),
+      claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
+      revoke: vi.fn(async () => undefined),
+    };
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const custom = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const first = await service.finishGalleryAppConnection(company.id, custom.connectionId, {
+      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [] },
+    }, actor);
+    await service.updateConnection(custom.connectionId, { name: "Asana custom app" });
+    const managed = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "managed", name: "Asana", grantKind: "user",
+      applicationId: custom.application.id,
+    }, actor);
+    expect(managed.connection.name).toBe("Asana");
+    if (installed) await service.putConnectionInstalls(managed.connectionId, {
+      installs: [{ targetType: "agent", targetId: agent.id }],
+    }, actor);
+    const started = await service.startOAuth(company.id, managed.connectionId, {
+      redirectUri: "https://tenant.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    mockToolsList([{ name: "get_me", annotations: { readOnlyHint: true } }]);
+    const completed = await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "asana-claim", actor,
+    });
+    expect(completed.connection).toMatchObject({ status: "active", enabled: true });
+    expect(completed.catalog).toEqual([expect.objectContaining({ toolName: "get_me", status: "active" })]);
+    const repeat = await service.finishGalleryAppConnection(company.id, managed.connectionId, {
+      enabledCatalogEntryIds: completed.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [],
+      access: { agentIds: installed ? [agent.id] : [] },
+    }, actor);
+    expect(repeat.profile.name).not.toBe(first.profile.name);
+    expect(repeat.profileBindings.map((binding) => binding.targetId)).toEqual(installed ? [agent.id] : []);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).toHaveLength(2);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.id, first.profile.id)))
+      .toEqual([expect.objectContaining({ name: first.profile.name })]);
+  });
+
+  it("resumes personal Asana client credentials with database timestamp precision", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "asana-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const before = await service.listConnectionGrants(connected.connectionId, company.id);
+    const grant = before.grants[0]!;
+    await db.update(connectionGrants).set({ updatedAt: sql`'2026-01-01 12:00:00.123456'::timestamp` })
+      .where(eq(connectionGrants.id, grant.id));
+    await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      resumeConnectionId: connected.connectionId, oauthClient: { clientId: "asana-client" },
+    }, actor);
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(after.grants).toHaveLength(1);
+    expect(after.grants[0]!.credentialSecretRefs).toEqual(grant.credentialSecretRefs);
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.listConnections(company.id, actor.actorId))[0].hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.getConnection(connected.connectionId, company.id, "another-user")).hasSavedOAuthClientSecret).toBe(false);
+    expect((await service.getConnection(connected.connectionId, company.id)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "active", credentialSecretRefs: [] }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
+  });
+
   it("does not retain a customer OAuth secret when the client id changes", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-first-client",
@@ -11572,6 +13007,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {
@@ -11928,13 +13364,7 @@ describeEmbeddedPostgres("tool access service", () => {
         if (body.get("grant_type") === "authorization_code") {
           return {
             ok: true,
-            json: async () => ({
-              ok: true,
-              access_token: "old-access-token",
-              refresh_token: "refresh-token",
-              expires_in: 3600,
-              token_type: "Bearer",
-            }),
+            json: async () => (oauthToken("old-access-token", "refresh-token")),
           } as Response;
         }
         expect(body.get("grant_type")).toBe("refresh_token");
@@ -11943,35 +13373,18 @@ describeEmbeddedPostgres("tool access service", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         return {
           ok: true,
-          json: async () => ({
-            ok: true,
-            access_token: "new-access-token",
-            refresh_token: "new-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          }),
+          json: async () => (oauthToken("new-access-token", "new-refresh-token")),
         } as Response;
       }
       if (href === "https://mcp.slack.com/mcp") {
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "search_messages", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
 
-    await service.completeOAuthCallback({
-      state,
-      code: "oauth-code",
-      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
-      actor: { actorType: "user", actorId: "board" },
-    });
+    await service.completeOAuthCallback(oauthCallbackInput(state));
     const [connected] = await db
       .select()
       .from(toolConnections)
@@ -12041,7 +13454,7 @@ describeEmbeddedPostgres("tool access service", () => {
           outcome: "success",
         }),
         expect.objectContaining({
-          configPath: "credentials.oauth.access_token",
+          configPath: "oauth.access_token",
           outcome: "success",
         }),
       ]),
@@ -12071,29 +13484,14 @@ describeEmbeddedPostgres("tool access service", () => {
       .mockImplementation(async (url) => {
         const href = String(url);
         if (href === "https://slack.com/api/oauth.v2.access") {
-          return mcpHttpResponse({
-            ok: true,
-            access_token: "expired-access-token",
-            refresh_token: "single-use-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          });
+          return mcpHttpResponse(oauthToken("expired-access-token", "single-use-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: { tools: [] },
-          });
+          return mcpHttpResponse(catalogResponse([]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
-    await service.completeOAuthCallback({
-      state,
-      code: "oauth-code",
-      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
-      actor: { actorType: "user", actorId: "board" },
-    });
+    await service.completeOAuthCallback(oauthCallbackInput(state));
     const [connected] = await db
       .select()
       .from(toolConnections)
@@ -12194,29 +13592,14 @@ describeEmbeddedPostgres("tool access service", () => {
       .mockImplementation(async (url) => {
         const href = String(url);
         if (href === "https://slack.com/api/oauth.v2.access") {
-          return mcpHttpResponse({
-            ok: true,
-            access_token: "expired-access-token",
-            refresh_token: "submitted-refresh-token",
-            expires_in: 3600,
-            token_type: "Bearer",
-          });
+          return mcpHttpResponse(oauthToken("expired-access-token", "submitted-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: { tools: [] },
-          });
+          return mcpHttpResponse(catalogResponse([]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
-    await service.completeOAuthCallback({
-      state,
-      code: "oauth-code",
-      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
-      actor: { actorType: "user", actorId: "board" },
-    });
+    await service.completeOAuthCallback(oauthCallbackInput(state));
     const [connected] = await db
       .select()
       .from(toolConnections)
@@ -12380,15 +13763,9 @@ describeEmbeddedPostgres("tool access service", () => {
               Authorization: "Bearer m2m-access-token",
             }),
           );
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 { name: "machine_read", annotations: { readOnlyHint: true } },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
@@ -12453,28 +13830,17 @@ describeEmbeddedPostgres("tool access service", () => {
           } as Response;
         }
         if (href === "https://mcp.slack.com/mcp") {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 {
                   name: "search_messages",
                   annotations: { readOnlyHint: true },
                 },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${href}`);
       });
 
-    await service.completeOAuthCallback({
-      state,
-      code: "oauth-code",
-      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
-      actor: { actorType: "user", actorId: "board" },
-    });
+    await service.completeOAuthCallback(oauthCallbackInput(state));
     const [connected] = await db
       .select()
       .from(toolConnections)
@@ -13057,12 +14423,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .returning();
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Auto app",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Auto app"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -13137,12 +14498,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Attention review app",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Attention review app"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -13315,12 +14671,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "read_items",
-        description: "Read items.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("read_items", "Read items."),
     ]);
 
     const first = await service.connectGalleryApp(
@@ -13732,12 +15083,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "read_items",
-        description: "Read items.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("read_items", "Read items."),
     ]);
 
     const first = await service.connectGalleryApp(
@@ -13776,12 +15122,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "read_items",
-        description: "Read items.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("read_items", "Read items."),
     ]);
 
     const results = await Promise.all([
@@ -13820,12 +15161,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "read_items",
-        description: "Read items.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("read_items", "Read items."),
     ]);
     const first = await service.connectGalleryApp(
       company.id,
@@ -13873,12 +15209,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const fetchMock = mockToolsList([
-      {
-        name: "read_items",
-        description: "Read items.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("read_items", "Read items."),
     ]);
 
     const connect = await service.connectGalleryApp(
@@ -14003,15 +15334,81 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  it.each(
+    (["catalog", "catalog/refresh", "health-check"] as const).flatMap((path) =>
+      ([401, 403] as const).map((upstreamStatus) => ({ path, upstreamStatus })),
+    ),
+  )(
+    "preserves reconnect guidance and degraded health for explicit OAuth scope failure on $path (HTTP $upstreamStatus)",
+    async ({ path, upstreamStatus }) => {
+      const company = await createCompany(db);
+      const [application] = await db.insert(toolApplications).values({
+        companyId: company.id,
+        applicationKey: `scope-status-${randomUUID()}`,
+        name: "OAuth scope fixture",
+        type: "mcp_http",
+        status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id,
+        applicationId: application!.id,
+        name: "OAuth scope fixture",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "draft",
+        enabled: false,
+        config: { url: "https://scope-status.example.test/mcp" },
+        transportConfig: { url: "https://scope-status.example.test/mcp" },
+      }).returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+        JSON.stringify({ error: "private provider details" }),
+        { status: upstreamStatus, headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="tools:read"' } },
+      ));
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const app = createRouteApp(db);
+      const url = `/api/tool-connections/${connection!.id}/${path}`;
+      const response = await (path === "catalog" ? request(app).get(url) : request(app).post(url));
+
+      expect(response.status).toBe(422);
+      expect(response.body).toMatchObject({
+        code: "oauth_insufficient_scope",
+        error: expect.stringContaining("Reconnect this connection"),
+        details: {
+          code: "oauth_insufficient_scope",
+          setupUrl: expect.any(String),
+          reconnectUrl: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(response.body)).not.toContain("private provider details");
+      expect(capture).not.toHaveBeenCalled();
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("degraded");
+      expect(updated?.healthMessage).toBe(response.body.error);
+      await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({
+          action: path === "health-check" ? "tool_connection.health_check" : "tool_connection.catalog_refresh",
+          outcome: "failure",
+          reasonCode: "oauth_insufficient_scope",
+        })]));
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection!.id)))
+        .resolves.toHaveLength(0);
+    },
+  );
+
   it.each([
     ["catalog", 401, 'Bearer realm="app"', 422, false],
     ["catalog/refresh", 401, 'Bearer realm="app"', 422, false],
     ["catalog", 400, null, 502, true],
     ["catalog/refresh", 400, null, 502, true],
-    ["catalog", 503, null, 502, true],
-    ["catalog/refresh", 503, null, 502, true],
+    ["catalog", 503, null, 502, false],
+    ["catalog/refresh", 503, null, 502, false],
+    ["catalog/refresh", 403, null, 502, false],
+    ["health-check", 503, 'Bearer error="insufficient_scope"', 502, false],
+    ["catalog/refresh", 404, null, 502, false],
+    ["catalog/refresh", 429, null, 502, false],
+    ["health-check", 500, null, 502, false],
   ] as const)(
-    "classifies %s upstream HTTP %i without hiding provider failures",
+    "classifies %s upstream HTTP %i while retaining the failed response",
     async (path, upstreamStatus, challenge, expectedStatus, reportable) => {
       const company = await createCompany(db);
       const [application] = await db
@@ -14055,7 +15452,7 @@ describeEmbeddedPostgres("tool access service", () => {
         : request(app).post(url));
 
       expect(res.status).toBe(expectedStatus);
-      if (challenge) {
+      if (challenge && upstreamStatus === 401) {
         expect(res.body).toMatchObject({
           error: "This app needs you to sign in.",
           code: "oauth_challenge",
@@ -14067,10 +15464,99 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       }
       expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("error");
+      expect(updated?.healthMessage).toBe(res.body.error);
       await expect(
         db.select().from(toolCatalogEntries)
           .where(eq(toolCatalogEntries.connectionId, connection!.id)),
       ).resolves.toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["initialize reset", false],
+    ["initialize parser", true],
+    ["initialize internal reader", true],
+    ["notification 503", false],
+    ["notification 400", true],
+  ] as const)("preserves session-required MCP failure reporting: %s", async (scenario, reportable) => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, applicationKey: `session-status-${randomUUID()}`,
+      name: "MCP session fixture", type: "mcp_http", status: "active",
+    }).returning();
+    const config = { url: "https://session-status.example.test/mcp", mcpSessionRequired: true };
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "MCP session fixture",
+      uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+      config, transportConfig: config,
+    }).returning();
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      methods.push(request.method);
+      if (request.method === "notifications/initialized") return new Response(null, { status: scenario === "notification 503" ? 503 : 400 });
+      expect(request.method).toBe("initialize");
+      if (scenario === "initialize parser") return new Response("not JSON");
+      if (scenario === "initialize reset" || scenario === "initialize internal reader") {
+        const error = scenario === "initialize reset"
+          ? new TypeError("body terminated", { cause: { code: "ECONNRESET" } })
+          : new TypeError("internal reader failed");
+        return new Response(new ReadableStream({ start(controller) { controller.error(error); } }));
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-06-18" } }));
+    });
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+    expect(response.status).toBe(502);
+    expect(response.body.error).toBeTruthy();
+    expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+    expect(methods).toEqual(scenario.startsWith("notification") ? ["initialize", "notifications/initialized"] : ["initialize"]);
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(updated?.healthStatus).toBe("error");
+    expect(updated?.healthMessage).toBe(response.body.error);
+    await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+      .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "failure", action: "tool_connection.catalog_refresh" })]));
+  });
+
+  it.each([
+    ["known transport", () => { throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }); }, false],
+    ["direct transport", () => { throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" }); }, false],
+    ["unknown transport", () => { throw new TypeError("ECONNREFUSED"); }, true],
+    ["database code", () => { throw Object.assign(new Error("query failed"), { code: "42P01" }); }, true],
+    ["mixed transport", () => { throw new TypeError("fetch failed", { cause: { errors: [{ code: "ECONNREFUSED" }, { code: "ERR_INTERNAL_ASSERTION" }] } }); }, true],
+    ["forged classification", () => { throw new HttpError(502, "Remote app returned HTTP 503", { status: 503, connectionFailure: { schemaVersion: 1, provider: "mcp_http", operation: "discover_tools", reason: "remote_unavailable" } }); }, true],
+    ["malformed response", () => new Response("not JSON"), true],
+    ["invalid catalog", () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: {} })), true],
+  ] as const)(
+    "preserves MCP diagnostics and reports only unclassified failure: %s",
+    async (_name, reply, reportable) => {
+      const company = await createCompany(db);
+      const [application] = await db.insert(toolApplications).values({
+        companyId: company.id, applicationKey: `transport-status-${randomUUID()}`,
+        name: "MCP transport fixture", type: "mcp_http", status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id, applicationId: application!.id, name: "MCP transport fixture",
+        uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+        config: { url: "https://transport-status.example.test/mcp" },
+        transportConfig: { url: "https://transport-status.example.test/mcp" },
+      }).returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => reply());
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+
+      expect(response.status).toBe(502);
+      expect(response.body.error).toBeTruthy();
+      expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("error");
+      expect(updated?.healthMessage).toBe(response.body.error);
+      await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "failure", action: "tool_connection.catalog_refresh" })]));
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection!.id)))
+        .resolves.toHaveLength(0);
     },
   );
 
@@ -14236,6 +15722,14 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("scope")).toBe("tools.read tools.write");
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
+    // A generic MCP connection has no caller-supplied scopes: the consent screen is asked for
+    // whatever discovery advertised. Persist that, because it is the only baseline the callback
+    // has for judging what the provider comes back with.
+    const [pendingState] = await db
+      .select()
+      .from(toolOauthStates)
+      .where(eq(toolOauthStates.state, state!));
+    expect(pendingState.requestedScopes).toEqual(["tools.read", "tools.write"]);
     expect(connectRes.body.connection.config.oauth).toMatchObject({
       provider: "generic_example_test",
       tokenUrl: "https://generic.example.test/oauth/token",
@@ -14263,15 +15757,9 @@ describeEmbeddedPostgres("tool access service", () => {
             Authorization: "Bearer generic-access-token",
           }),
         );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [
+        return mcpHttpResponse(catalogResponse([
               { name: "read_generic", annotations: { readOnlyHint: true } },
-            ],
-          },
-        });
+            ]));
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -14297,6 +15785,23 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(connection.config)).not.toContain(
       "generic-access-token",
     );
+    // This provider omitted `scope` from the token response, so the discovered scopes the
+    // authorization URL asked for are what gets recorded — not an empty list.
+    expect(
+      (connection.config.providerMetadata as { oauth?: Record<string, unknown> })
+        ?.oauth,
+    ).toMatchObject({
+      scopeSource: "requested_fallback",
+      unrequestedScopes: [],
+    });
+    const [genericGrant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connectRes.body.connectionId));
+    expect(genericGrant.providerTenant?.oauth).toMatchObject({
+      scopes: ["tools.read", "tools.write"],
+      scopeSource: "requested_fallback",
+    });
   });
 
   it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
@@ -14465,15 +15970,9 @@ describeEmbeddedPostgres("tool access service", () => {
           } as Response;
         }
         if (String(url) === "http://smoke-fixture.test/mcp") {
-          return mcpHttpResponse({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
+          return mcpHttpResponse(catalogResponse([
                 { name: "todo.list", annotations: { readOnlyHint: true } },
-              ],
-            },
-          });
+              ]));
         }
         throw new Error(`unexpected fetch ${String(url)}`);
       });
@@ -14541,12 +16040,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const fetchMock = mockToolsList([
-      {
-        name: "list_zaps",
-        description: "List Zapier actions.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("list_zaps", "List Zapier actions."),
       {
         name: "update_zap",
         description: "Update a Zapier action.",
@@ -14743,11 +16237,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .where(eq(toolConnections.id, connect.connectionId));
 
     fetchMock.mockResolvedValueOnce(
-      mcpHttpResponse({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
+      mcpHttpResponse(catalogResponse([
             {
               name: "list_zaps",
               description: "List Zapier actions.",
@@ -14775,9 +16265,7 @@ describeEmbeddedPostgres("tool access service", () => {
               },
               annotations: { readOnlyHint: false },
             },
-          ],
-        },
-      }),
+          ])),
     );
     const rereview = await service.refreshCatalog(connect.connectionId, {
       actorType: "user",
@@ -14948,17 +16436,11 @@ describeEmbeddedPostgres("tool access service", () => {
       .where(eq(toolProfiles.profileKey, `app:${connect.connectionId}`));
     expect(defaultProfile).toBeTruthy();
     fetchMock.mockResolvedValueOnce(
-      mcpHttpResponse({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
+      mcpHttpResponse(catalogResponse([
             { name: "list_zaps", annotations: { readOnlyHint: true } },
             { name: "update_zap", annotations: { readOnlyHint: false } },
             { name: "create_zap", annotations: { readOnlyHint: false } },
-          ],
-        },
-      }),
+          ])),
     );
 
     const refresh = await service.refreshCatalog(connect.connectionId, {
@@ -15294,12 +16776,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
-      {
-        name: "list_zaps",
-        description: "List Zapier actions.",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("list_zaps", "List Zapier actions."),
       {
         name: "update_zap",
         description: "Update a Zapier action.",
@@ -15327,6 +16804,7 @@ describeEmbeddedPostgres("tool access service", () => {
           company.id,
           {
             galleryKey: "github",
+            connectionMethodKey: "mcp-key",
             name: "GitHub rollback",
             credentialValues: { "credentials.authorization": "github-secret" },
           },
@@ -15368,18 +16846,8 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
 
-    await db.insert(toolProfiles).values({
-      companyId: company.id,
-      profileKey: `conflict-${randomUUID()}`,
-      name: "Conflicting app profile",
-      status: "active",
-      defaultAction: "deny",
-    });
-    await db
-      .update(toolConnections)
-      .set({ name: "Conflicting app profile", updatedAt: new Date() })
-      .where(eq(toolConnections.id, connect.connectionId));
-
+    // An absent actor trips the binding's foreign key after profile state is
+    // replaced. Profile-name collisions are now resolved during finalization.
     await expect(
       service.finishGalleryAppConnection(
         company.id,
@@ -15389,7 +16857,7 @@ describeEmbeddedPostgres("tool access service", () => {
           askFirstCatalogEntryIds: [updateEntry.id],
           access: { agentIds: [agent.id] },
         },
-        { actorType: "user", actorId: "board" },
+        { actorType: "agent", actorId: randomUUID() },
       ),
     ).rejects.toThrow();
 
@@ -15432,12 +16900,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const fetchMock = mockToolsList([
-      {
-        name: "list_zaps",
-        description: "List",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("list_zaps", "List"),
       {
         name: "update_zap",
         description: "Update",
@@ -15454,6 +16917,7 @@ describeEmbeddedPostgres("tool access service", () => {
           company.id,
           {
             galleryKey: "github",
+            connectionMethodKey: "mcp-key",
             name: "GitHub reconnect",
             credentialValues: { "credentials.authorization": "old-secret" },
           },
@@ -15508,11 +16972,7 @@ describeEmbeddedPostgres("tool access service", () => {
       })
       .where(eq(toolConnections.id, connect.connectionId));
     fetchMock.mockResolvedValue(
-      mcpHttpResponse({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
+      mcpHttpResponse(catalogResponse([
             {
               name: "list_zaps",
               description: "List",
@@ -15531,9 +16991,7 @@ describeEmbeddedPostgres("tool access service", () => {
               inputSchema: { type: "object", properties: {} },
               annotations: { destructiveHint: true },
             },
-          ],
-        },
-      }),
+          ])),
     );
 
     await expect(
@@ -15544,7 +17002,7 @@ describeEmbeddedPostgres("tool access service", () => {
         { actorType: "user", actorId: "board" },
       ),
     ).rejects.toMatchObject({
-      message: expect.stringContaining("Paste a new key"),
+      message: expect.stringContaining("Enter a replacement credential"),
     });
 
     const result = await service.reconnectGalleryApp(
@@ -15640,12 +17098,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = createTestToolAccessService(db);
     const userId = `personal-key-${randomUUID()}`;
     mockToolsList([
-      {
-        name: "list_zaps",
-        description: "List",
-        inputSchema: { type: "object", properties: {} },
-        annotations: { readOnlyHint: true },
-      },
+      readTool("list_zaps", "List"),
     ]);
 
     const connected = await withGalleryServerUrl(
@@ -15656,6 +17109,7 @@ describeEmbeddedPostgres("tool access service", () => {
           company.id,
           {
             galleryKey: "github",
+            connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
             grantKind: "user",
             credentialValues: {
@@ -15743,6 +17197,7 @@ describeEmbeddedPostgres("tool access service", () => {
           {
             applicationId: connected.application.id,
             galleryKey: "github",
+            connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
             // No grantKind is sent on reconnect: the retained connection owns that
             // decision and must reactivate this same grant rather than insert a new
@@ -16036,22 +17491,7 @@ describeEmbeddedPostgres("tool access service", () => {
         type: "mcp_http",
       },
     );
-    const app = createRouteApp(db, {
-      type: "board",
-      userId: "member-user",
-      userName: "Member User",
-      userEmail: null,
-      companyIds: [allowedCompany.id],
-      memberships: [
-        {
-          companyId: allowedCompany.id,
-          membershipRole: "owner",
-          status: "active",
-        },
-      ],
-      isInstanceAdmin: false,
-      source: "session",
-    });
+    const app = createRouteApp(db, memberActor(allowedCompany, false));
 
     const forbiddenRes = await request(app)
       .patch(`/api/tool-applications/${application.id}`)
@@ -16580,22 +18020,7 @@ describeEmbeddedPostgres("tool access service", () => {
         type: "mcp_http",
       },
     );
-    const app = createRouteApp(db, {
-      type: "board",
-      userId: "member-user",
-      userName: "Member User",
-      userEmail: null,
-      companyIds: [allowedCompany.id],
-      memberships: [
-        {
-          companyId: allowedCompany.id,
-          membershipRole: "owner",
-          status: "active",
-        },
-      ],
-      isInstanceAdmin: false,
-      source: "session",
-    });
+    const app = createRouteApp(db, memberActor(allowedCompany, false));
 
     const forbiddenRes = await request(app).delete(
       `/api/tool-applications/${application.id}`,
@@ -16645,12 +18070,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .returning();
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Governed tools",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Governed tools"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -16824,12 +18244,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .returning();
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "GitHub",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "GitHub"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -17001,12 +18416,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .returning();
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Google Sheets",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Google Sheets"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -17144,12 +18554,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = createTestToolAccessService(db);
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Remote app",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Remote app"))
       .returning();
     const [connection] = await db
       .insert(toolConnections)
@@ -17354,12 +18759,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     const [application] = await db
       .insert(toolApplications)
-      .values({
-        companyId: company.id,
-        name: "Setup apps",
-        type: "mcp_http",
-        status: "active",
-      })
+      .values(applicationRow(company, "Setup apps"))
       .returning();
     await db.insert(toolConnections).values([
       {
@@ -17986,6 +19386,45 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
   });
 
+  it("classifies Superagent mutations whose names read like reads as writes", () => {
+    for (const name of ["list_findings", "get_finding", "get_context_score", "list_agent_alerts"])
+      expect(classifyRisk({ name }, "superagent")).toBe("read");
+    for (const name of [
+      "triage_finding",
+      "restore_agent_builtin_rule",
+      "scan_package",
+      "discover_application_inventory",
+      "trigger_dependency_updates",
+      "test_telemetry_endpoint",
+      "create_repository_report",
+      "set_agent_builtin_rule_mode",
+    ])
+      expect(classifyRisk({ name }, "superagent")).toBe("write");
+    for (const name of ["delete_finding", "delete_agent_rule", "revoke_agent_client"])
+      expect(classifyRisk({ name }, "superagent")).toBe("destructive");
+    // A provider write hint wins over a read-looking name; a read-only hint
+    // opts a tool outside list/get into reads.
+    expect(classifyRisk({ name: "get_finding", annotations: { readOnlyHint: false } }, "superagent")).toBe("write");
+    expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
+    // Without the provider rule, the generic classifier treats these as reads.
+    expect(classifyRisk({ name: "triage_finding" })).toBe("read");
+  });
+
+  it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {
+    expect(
+      classifyRisk(
+        { name: "run_graph_query", annotations: { readOnlyHint: true } },
+        "enterpret",
+      ),
+    ).toBe("write");
+    expect(
+      classifyRisk(
+        { name: "get_organization_details", annotations: { readOnlyHint: true } },
+        "enterpret",
+      ),
+    ).toBe("read");
+  });
+
   const risk = (name: string, annotations?: Record<string, unknown>) =>
     classifyRisk({ name, annotations });
 
@@ -18144,6 +19583,51 @@ describe("normalizeConnectionMethodConfig", () => {
   const shopifyUcpMethod = shopifyMethods.find(
     (method) => method.key === "ucp-commerce",
   )!;
+
+  it("sends Telem settings as headers and leaves unset settings out", () => {
+    const telemMethod = getConnectableAppDefinition("telem")!.methods[0]!;
+    expect(normalizeConnectionMethodConfig(telemMethod, {})).toEqual({
+      values: {},
+      url: "https://mcp.telem.ai/mcp",
+    });
+    expect(
+      normalizeConnectionMethodConfig(telemMethod, {
+        autoRouting: "accuracy",
+        tier: "extended",
+        providersInclude: "brave, exa\nbrave",
+        providersExclude: "serpapi",
+      }),
+    ).toEqual({
+      values: {
+        autoRouting: "accuracy",
+        tier: "extended",
+        providersInclude: "brave,exa",
+        providersExclude: "serpapi",
+      },
+      url: "https://mcp.telem.ai/mcp",
+      headers: {
+        "X-Telem-Auto-Routing": "accuracy",
+        "X-Telem-Tier": "extended",
+        "X-Telem-Providers-Include": "brave,exa",
+        "X-Telem-Providers-Exclude": "serpapi",
+      },
+    });
+    expect(
+      normalizeConnectionMethodConfig(telemMethod, { autoRouting: "off" }),
+    ).toEqual({
+      values: { autoRouting: "off" },
+      url: "https://mcp.telem.ai/mcp",
+      headers: { "X-Telem-Auto-Routing": "off" },
+    });
+    expect(() =>
+      normalizeConnectionMethodConfig(telemMethod, { tier: "premium" }),
+    ).toThrow("Tier has an invalid option");
+    expect(() =>
+      normalizeConnectionMethodConfig(telemMethod, {
+        providersInclude: "brave; drop",
+      }),
+    ).toThrow("Providers to include has an invalid value");
+  });
 
   it("builds a concrete Shopify endpoint from the validated store domain", () => {
     expect(

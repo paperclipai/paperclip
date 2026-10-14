@@ -26,6 +26,13 @@ export const ACPX_HANDSHAKE_TRANSPORT_POLL_MS = 250;
 // much smaller than the whole-adapter execution timeout.
 export const ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS = 30_000;
 
+// The closed ACP `ToolKind` enum. Run diagnostics may report these labels for
+// pending tool calls; tool titles, names, and inputs never leave the run.
+// Any other reported kind is collapsed to "unknown".
+export const ACP_TOOL_KINDS = [
+  "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
+] as const;
+
 export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",
   codex_local: "codex",

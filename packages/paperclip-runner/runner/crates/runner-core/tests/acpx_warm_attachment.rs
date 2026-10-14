@@ -83,7 +83,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
         "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
-        "agentRuntimeVersion": "0.156.0", "commandDigest": PROFILE_DIGEST,
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
         "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
         "instructions": "Complete the supplied work.",

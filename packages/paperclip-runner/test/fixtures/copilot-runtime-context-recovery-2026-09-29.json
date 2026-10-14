@@ -1,0 +1,248 @@
+{
+  "schema": "paperclip.copilot-runtime-context-recovery.v1",
+  "recordedAt": "2026-09-29T15:32:50.799156+00:00",
+  "sourceRevision": "3d0c45920c326821c2f5ff48dc985ef8158b46e4",
+  "providerVersion": "1.0.88",
+  "providerBinarySha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "paidProviderCalls": 0,
+  "loopbackModelResponses": 2,
+  "fixtureMechanism": "env -i; synthetic token; COPILOT_OFFLINE=true; loopback OpenAI fixture. Exact native binary and actual AcpxRuntimeHost; second explicit turn forces lazy native session/load. Test-only gpt-4.1 model option injected into guard metadata because offline native initialization omits model options; actual native mode/allow_all remain unchanged. Not authenticated model qualification.",
+  "modelMetadataFixtureInjected": true,
+  "probeScriptSha256": "e2cf49568c42d8cb0dc3404cd263adfebac5507a6e694faa8f6db948c85ba4e1",
+  "rawPrivateWireSha256": "7d19d4f7dc0c2ad4265a6bd17bb8f25f572b31e409c7745279529b6fc4d9840d",
+  "steps": [
+    "Open native provider with old registered agent-files directory",
+    "Run one deterministic loopback response",
+    "Close native host, delete old directory",
+    "Reopen with old context: ENOENT at bindAcpxAgentFiles lstat",
+    "Reopen with current registered directory: passes with original native session ID",
+    "Start a second explicit fixture turn: native session/load observed, then session/prompt completes end_turn",
+    "Close host; exactly two requested fixture turns and two loopback model responses"
+  ],
+  "staleContextError": {
+    "code": "ENOENT",
+    "phase": "reopen",
+    "operation": "lstat",
+    "path": "<owned-fixture>/agent-copy-old"
+  },
+  "restoredSessionIdentityUnchanged": true,
+  "restoredPhase": "reopen-current-copy",
+  "wireProjection": [
+    {
+      "direction": "outbound",
+      "id": 0,
+      "method": "initialize"
+    },
+    {
+      "direction": "inbound",
+      "id": 0
+    },
+    {
+      "direction": "outbound",
+      "id": 1,
+      "method": "session/new"
+    },
+    {
+      "direction": "inbound",
+      "id": 1,
+      "configOptions": [
+        {
+          "type": "select",
+          "id": "mode",
+          "name": "Mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "options": [
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "name": "Agent",
+              "description": "Default agent mode for conversational interactions"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+              "name": "Plan",
+              "description": "Plan mode for creating and executing multi-step plans"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+              "name": "Autopilot",
+              "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+            }
+          ],
+          "category": "mode",
+          "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+        },
+        {
+          "type": "select",
+          "id": "allow_all",
+          "name": "Allow All",
+          "currentValue": "off",
+          "options": [
+            {
+              "value": "on",
+              "name": "On",
+              "description": "Automatically approve all tool, path, and URL requests"
+            },
+            {
+              "value": "off",
+              "name": "Off",
+              "description": "Require approval for tool, path, and URL requests"
+            }
+          ],
+          "category": "permissions",
+          "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+        }
+      ]
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "available_commands_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "available_commands_update"
+    },
+    {
+      "direction": "outbound",
+      "id": 2,
+      "method": "session/prompt"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "config_option_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "session_info_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "usage_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "agent_message_chunk"
+    },
+    {
+      "direction": "inbound",
+      "id": 2
+    },
+    {
+      "direction": "outbound",
+      "id": 0,
+      "method": "initialize"
+    },
+    {
+      "direction": "inbound",
+      "id": 0
+    },
+    {
+      "direction": "outbound",
+      "id": 1,
+      "method": "session/load"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "user_message_chunk"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "agent_message_chunk"
+    },
+    {
+      "direction": "inbound",
+      "id": 1,
+      "configOptions": [
+        {
+          "type": "select",
+          "id": "mode",
+          "name": "Mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "options": [
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "name": "Agent",
+              "description": "Default agent mode for conversational interactions"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+              "name": "Plan",
+              "description": "Plan mode for creating and executing multi-step plans"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+              "name": "Autopilot",
+              "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+            }
+          ],
+          "category": "mode",
+          "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+        },
+        {
+          "type": "select",
+          "id": "allow_all",
+          "name": "Allow All",
+          "currentValue": "off",
+          "options": [
+            {
+              "value": "on",
+              "name": "On",
+              "description": "Automatically approve all tool, path, and URL requests"
+            },
+            {
+              "value": "off",
+              "name": "Off",
+              "description": "Require approval for tool, path, and URL requests"
+            }
+          ],
+          "category": "permissions",
+          "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+        }
+      ]
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "available_commands_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "available_commands_update"
+    },
+    {
+      "direction": "outbound",
+      "id": 2,
+      "method": "session/prompt"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "usage_update"
+    },
+    {
+      "direction": "inbound",
+      "method": "session/update",
+      "sessionUpdate": "agent_message_chunk"
+    },
+    {
+      "direction": "inbound",
+      "id": 2
+    }
+  ],
+  "limits": [
+    "This reproduces the suspected Product recovery cause; failed Product cleanup did not retain raw session.open cause.",
+    "Live provider context replacement and root retention until active work settles are distinct from closed-provider restoration."
+  ],
+  "continuationResult": {
+    "status": "completed",
+    "stopReason": "end_turn"
+  }
+}

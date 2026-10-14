@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -35,7 +36,7 @@ import {
   parseAgentDetailView,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
-import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 import { RuntimeTestCard } from "../RuntimeTestCard";
 import { type TestOutcome } from "../new-agent-fixtures";
@@ -67,22 +68,43 @@ export function AgentSettingsPreview({
   adapterType = "claude_local",
   testOutcome = "pass",
   saveFails = false,
+  runtimeContent,
 }: {
   initialTab?: AgentLocalDetailView;
   adapterType?: string;
   testOutcome?: TestOutcome;
   saveFails?: boolean;
+  /** Storybook-only extension point for reviewing proposed runtime controls in the existing page. */
+  runtimeContent?: ReactNode;
 }) {
-  const [fixtures] = useState(() =>
-    createSettingsFixtures(adapterType, testOutcome, saveFails),
-  );
+  const [fixtures] = useState(() => {
+    const fixtures = createSettingsFixtures(adapterType, testOutcome, saveFails);
+    if (adapterType === "codex_local" || adapterType === "paperclip_runner") {
+      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-5.6-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+    }
+    return fixtures;
+  });
   const [ready, setReady] = useState(false);
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   useEffect(() => {
     const uninstall = fixtures.install();
+    const previous = window.fetch;
+    const codexFixture: typeof fetch = async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+      if (url.pathname === "/api/adapters" || url.pathname === "/api/health") {
+        const response = await previous(input, init);
+        const data = await response.json();
+        return Response.json(url.pathname === "/api/health" ? { ...data, status: "ok" }
+          : data.map((adapter: { type: string }) => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter));
+      }
+      return previous(input, init);
+    };
+    if (adapterType === "codex_local" || adapterType === "paperclip_runner") window.fetch = codexFixture;
     const fixtureQueryKeys = [
+      queryKeys.health,
+      queryKeys.adapters.all,
       queryKeys.agents.detail(ID),
       queryKeys.agents.detail(REF),
       queryKeys.agents.skills(ID),
@@ -106,16 +128,17 @@ export function AgentSettingsPreview({
     navigate(`/PAP/agents/${REF}/${initialTab}`, { replace: true });
     setReady(true);
     return () => {
+      if (window.fetch === codexFixture) window.fetch = previous;
       uninstall();
       clearFixtureQueries();
     };
-  }, [fixtures, initialTab, queryClient, setSelectedCompanyId]);
+  }, [adapterType, fixtures, initialTab, queryClient, setSelectedCompanyId]);
   if (!ready || selectedCompanyId !== COMPANY) return null;
   return (
     <Routes>
       <Route
         path="/:companyPrefix/agents/:agentId/:tab?"
-        element={<SettingsPage />}
+        element={<SettingsPage runtimeContent={runtimeContent} />}
       />
       <Route
         path="*"
@@ -136,7 +159,7 @@ export function AgentSettingsPreview({
   );
 }
 
-function SettingsPage() {
+function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
   const location = useLocation();
   const view = parseAgentDetailView(
     location.pathname.split("/").pop() ?? "overview",
@@ -212,7 +235,8 @@ function SettingsPage() {
       : AGENT_DETAIL_NAVIGATION.flatMap((s) => s.items).find(
           (t) => t.value === view,
         )?.label;
-  const display = getAdapterDisplay(agent.adapterType);
+  const displayType = agentDisplayAdapterType(agent);
+  const display = getAdapterDisplay(displayType);
   const Icon = display.icon;
   const callbacks = {
     onDirtyChange: onDirty,
@@ -246,7 +270,7 @@ function SettingsPage() {
       </div>
       <div className="flex min-h-screen">
         <div
-          className="w-52 shrink-0"
+          className="hidden w-52 shrink-0 md:block"
           onClickCapture={(event) => {
             if (
               dirty &&
@@ -267,6 +291,16 @@ function SettingsPage() {
         </div>
         <main className="min-w-0 flex-1 px-6 py-8 lg:px-10">
           <div className="mx-auto max-w-5xl space-y-8">
+            <details className="md:hidden">
+              <summary className="cursor-pointer text-sm">
+                {agent.name} · Agent navigation
+              </summary>
+              <AgentContextualSidebar
+                agentRef={REF}
+                agentId={ID}
+                agentName={agent.name}
+              />
+            </details>
             <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
               <div className="flex min-w-0 items-center gap-4">
                 <div
@@ -281,10 +315,10 @@ function SettingsPage() {
                     {agent.name}
                   </h1>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {agent.adapterType === "claude_local" ||
-                    agent.adapterType === "codex_local" ? (
+                    {displayType === "claude_local" ||
+                    displayType === "codex_local" ? (
                       <img
-                        src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`}
+                        src={`/brands/${displayType === "claude_local" ? "claude" : "codex"}-color.svg`}
                         className="size-4"
                         alt=""
                       />
@@ -349,72 +383,76 @@ function SettingsPage() {
               {view === "skills" && (
                 <AgentSkillsTab agent={agent} companyId={COMPANY} />
               )}
-              {(view === "runtime" || view === "secrets") && (
-                <div className="space-y-6">
-                  <div className="agent-settings-form">
-                    <AgentConfigForm
-                      mode="edit"
-                      agent={agent}
-                      onSave={saveAgent}
-                      isSaving={saving}
-                      hideInlineSave
-                      hidePromptTemplate
-                      hideInstructionsFile
-                      content={view === "runtime" ? "configuration" : "secrets"}
-                      environmentVariablesPlacement="secrets"
-                      sectionLayout="cards"
-                      canConfigureProviderTrace
-                      sectionOrder={[
-                        "adapter",
-                        "permissions",
-                        "environment",
-                        "run-policy",
-                        "identity",
-                      ]}
-                      sectionTitles={{
-                        adapter: "Harness",
-                        permissions: "Model & execution",
-                        identity: "Agent identity",
-                      }}
-                      onDirtyChange={onDirty}
-                      onSaveActionChange={onSaveAction}
-                      onCancelActionChange={onCancelAction}
-                      onTestActionChange={onTestAction}
-                      onTestActionStateChange={setTestAction}
-                      onTestFeedbackChange={setFeedback}
-                    />
-                  </div>
-                  {view === "runtime" && (
-                    <>
-                      <RuntimeTestCard
-                        state={
-                          testAction.pending
-                            ? "running"
-                            : feedback.errorMessage ||
-                                feedback.result?.status === "fail"
-                              ? "fail"
-                              : feedback.result?.status === "warn"
-                                ? "warn"
-                                : feedback.result
-                                  ? "pass"
-                                  : "idle"
-                        }
-                        result={feedback.result}
-                        error={feedback.errorMessage}
-                        disabled={testAction.disabled}
-                        onTest={() => test.current?.()}
-                      />
-                      {feedback.login && (
-                        <AdapterLoginPanel
-                          {...feedback.login}
-                          onStored={() => test.current?.()}
-                          onApplyStored={() => test.current?.()}
+              {view === "runtime" && runtimeContent
+                ? runtimeContent
+                : (view === "runtime" || view === "secrets") && (
+                    <div className="space-y-6">
+                      <div className="agent-settings-form">
+                        <AgentConfigForm
+                          mode="edit"
+                          agent={agent}
+                          onSave={saveAgent}
+                          isSaving={saving}
+                          hideInlineSave
+                          hidePromptTemplate
+                          hideInstructionsFile
+                          content={
+                            view === "runtime" ? "configuration" : "secrets"
+                          }
+                          environmentVariablesPlacement="secrets"
+                          sectionLayout="cards"
+                          canConfigureProviderTrace
+                          sectionOrder={[
+                            "adapter",
+                            "permissions",
+                            "environment",
+                            "run-policy",
+                            "identity",
+                          ]}
+                          sectionTitles={{
+                            adapter: "Harness",
+                            permissions: "Model & execution",
+                            identity: "Agent identity",
+                          }}
+                          onDirtyChange={onDirty}
+                          onSaveActionChange={onSaveAction}
+                          onCancelActionChange={onCancelAction}
+                          onTestActionChange={onTestAction}
+                          onTestActionStateChange={setTestAction}
+                          onTestFeedbackChange={setFeedback}
                         />
+                      </div>
+                      {view === "runtime" && (
+                        <>
+                          <RuntimeTestCard
+                            state={
+                              testAction.pending
+                                ? "running"
+                                : feedback.errorMessage ||
+                                    feedback.result?.status === "fail"
+                                  ? "fail"
+                                  : feedback.result?.status === "warn"
+                                    ? "warn"
+                                    : feedback.result
+                                      ? "pass"
+                                      : "idle"
+                            }
+                            result={feedback.result}
+                            error={feedback.errorMessage}
+                            disabled={testAction.disabled}
+                            onTest={() => test.current?.()}
+                          />
+                          {feedback.login && (
+                            <AdapterLoginPanel
+                              {...feedback.login}
+                              onStored={() => test.current?.()}
+                              onApplyStored={() => test.current?.()}
+                            />
+                          )}
+                        </>
                       )}
-                    </>
+                    </div>
                   )}
-                </div>
-              )}
               {view === "permissions" && (
                 <ConfigurationTab
                   agent={agent}
@@ -441,36 +479,37 @@ function SettingsPage() {
             )}
             {(["runtime", "secrets", "instructions"] as string[]).includes(
               view,
-            ) && (
-              <footer className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-                <p role="status" className="text-xs text-muted-foreground">
-                  {saving
-                    ? "Saving changes…"
-                    : dirty
-                      ? "You have unsaved changes."
-                      : saved
-                        ? "Changes saved."
-                        : ""}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    disabled={!dirty || saving}
-                    onClick={() => cancel.current?.()}
-                  >
-                    Discard
-                  </Button>
-                  <Button
-                    disabled={!dirty || saving}
-                    onClick={() => {
-                      Promise.resolve(save.current?.()).catch(() => {});
-                    }}
-                  >
-                    {saving ? "Saving…" : "Save changes"}
-                  </Button>
-                </div>
-              </footer>
-            )}
+            ) &&
+              !(view === "runtime" && runtimeContent) && (
+                <footer className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
+                  <p role="status" className="text-xs text-muted-foreground">
+                    {saving
+                      ? "Saving changes…"
+                      : dirty
+                        ? "You have unsaved changes."
+                        : saved
+                          ? "Changes saved."
+                          : ""}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="ghost"
+                      disabled={!dirty || saving}
+                      onClick={() => cancel.current?.()}
+                    >
+                      Discard
+                    </Button>
+                    <Button
+                      disabled={!dirty || saving}
+                      onClick={() => {
+                        Promise.resolve(save.current?.()).catch(() => {});
+                      }}
+                    >
+                      {saving ? "Saving…" : "Save changes"}
+                    </Button>
+                  </div>
+                </footer>
+              )}
           </div>
         </main>
       </div>

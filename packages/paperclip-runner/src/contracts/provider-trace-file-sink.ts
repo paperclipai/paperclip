@@ -33,6 +33,7 @@ export class ProviderTraceFileSink {
   readonly #channel: string;
   readonly #maxBytes: number;
   readonly #sensitiveValues = new Set<string>();
+  #hasPrivateIdentity = false;
   readonly #queue: string[] = [];
   #nextFrameId: number;
   #nextDebugSequence: number;
@@ -62,6 +63,7 @@ export class ProviderTraceFileSink {
 
   addSensitiveValues(values: readonly (string | undefined)[]): void {
     for (const value of values) {
+      if (value?.includes("-----BEGIN PRIVATE KEY-----")) this.#hasPrivateIdentity = true;
       if (value) this.#sensitiveValues.add(value);
     }
   }
@@ -181,6 +183,9 @@ export class ProviderTraceFileSink {
   }
 
   #redact(raw: Buffer): Buffer {
+    // Raw frames may split a private key at any byte boundary. Keep trace
+    // routing/timing metadata, but never spool raw content for identity runs.
+    if (this.#hasPrivateIdentity) return Buffer.from("[REDACTED: agent identity runtime]");
     if (this.#sensitiveValues.size === 0) return raw;
     let value = raw.toString("utf8");
     for (const sensitive of [...this.#sensitiveValues].sort(

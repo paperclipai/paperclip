@@ -1,0 +1,138 @@
+{
+  "schema": "paperclip.pi-provider-pack-offline-proof.v1",
+  "recordedAt": "2026-09-28T18:38:17.647Z",
+  "classification": "offline_candidate_admission",
+  "source": {
+    "runnerRevision": "58511d79d9c4a1525d98e219d027654902b704e1",
+    "distDigest": "sha256:e465121951d5824d22b64d4d057a280493b5c01a9134ddec3bac1b1741422541",
+    "bridgeDigest": "sha256:4ef5ffcf16a3e7f8e975843d99dc568aed94ca1113e24bfd4174237d92d8ecca",
+    "productionLockDigest": "sha256:650e23d20e967bcfbfced888e131199b9a06e66a1ba4f64cfb68383b59def4a8",
+    "note": "Built after the final-spawn credential-marker preservation and direct candidate-admission fixes, including the Node engine policy, Pi v2 fixture, HTTPS and failed-turn receipt repairs. This probe executed the deployed generic installation registry and immutable snapshot. Every capability field below was read and asserted from this actual initialize response. No prompt was sent."
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeVersion": "24.19.0",
+    "execution": "local macOS ARM64; immutable guarded provider snapshot",
+    "packageManager": "pnpm@9.15.4"
+  },
+  "candidate": {
+    "agent": "pi",
+    "qualification": "pending",
+    "agentProfileVersion": 2,
+    "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "reportedModelId": null,
+    "modelVerification": "not_performed_authentication_missing",
+    "wrapperVersion": "0.0.33",
+    "runtimeVersion": "0.84.2",
+    "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+    "closureDigest": "sha256:b30047dce9c4c25e1fbc88a1aa828690a6a11ebdc3f6fcc083875986eb2d9585",
+    "assetTreeDigest": "sha256:5c046265335d4a6924efcd207f837d5aa0e0fc3baa0bf6ea7059afe8d6ab3939",
+    "distributionManifestDigest": "sha256:406345b3b75d8aee399da886fbdf8566aaaa44ff29fe3462da21f0c29901aecd",
+    "wrapperDigest": "sha256:2eb201c3a931177490a8e18f4a8392f00cbcf21847e9cc171de528da5e253935",
+    "helperDigest": "sha256:4333d284ff06ab1195e49630041f0b03a486a92fc678100525ad107e0982dba1",
+    "extensionDigest": "sha256:0a2ca138d6d87a85498bd982ee64543ea8b14f2ecceded96cfc27b0836cc4254"
+  },
+  "providerPack": {
+    "manifestDigest": "sha256:a9728fe4298a5eee00555382af01e85550820a294957caf2eba0c79bf33c4388",
+    "portableNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "piNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "acpxSidecarDigest": "sha256:a909a86d0c0697697ef9dc8922785648e84e25dd687653b7c7428c863db5856b"
+  },
+  "observed": {
+    "closedSnapshotLaunch": true,
+    "acpInitialize": "passed",
+    "authMethods": [],
+    "capabilities": {
+      "version": 1,
+      "steering": true,
+      "queuedFollowUp": true,
+      "questions": [
+        "select",
+        "confirm",
+        "input",
+        "editor"
+      ],
+      "nativePermissions": true,
+      "promptUsage": true,
+      "nativePlan": false,
+      "pendingRequestRecovery": "live-process-only"
+    },
+    "sessionNew": "rejected_authentication_missing",
+    "expectedError": "Bind the configured OpenRouter API credential to this Paperclip runtime.",
+    "missingCredentialRejected": true,
+    "capabilityProvenance": "Read and asserted in full from this pack launch.",
+    "rpcMethods": [
+      "initialize",
+      "session/new"
+    ]
+  },
+  "usage": {
+    "providerCalls": 0,
+    "promptRequests": 0,
+    "paidProviderCalls": 0,
+    "credentials": "none",
+    "spentUsd": 0
+  },
+  "limitations": [
+    "No provider authentication, model prompt, or reported currentModelId was verified.",
+    "Native tool execution, permissions, questions, and semantic MCP calls were not exercised by this pack-launch probe.",
+    "Linux x64, macOS x64, and Daytona execution were not exercised.",
+    "Production qualification remains pending."
+  ],
+  "verification": {
+    "sourceRevision": "58511d79d9c4a1525d98e219d027654902b704e1",
+    "resolvedSourceLockDigest": "sha256:650e23d20e967bcfbfced888e131199b9a06e66a1ba4f64cfb68383b59def4a8",
+    "lockResolution": "clean tracked input, full workspace resolution, matched reviewed Docker pin before frozen filtered install",
+    "typescriptBuild": "passed",
+    "providerPackBuild": "passed",
+    "launchBoundaryTests": {
+      "files": 3,
+      "passed": 128,
+      "failed": 0,
+      "coverage": "native backend admission, scoped credential environment, durable final processLauncher specification for all candidate providers"
+    },
+    "vitest": {
+      "files": 4,
+      "passed": 31,
+      "failed": 0,
+      "maxWorkers": 1,
+      "hookTimeoutMs": 10000,
+      "actualDistributionInstallation": "enabled; current provider-pack assets"
+    },
+    "nodeTests": {
+      "files": 3,
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "actualPackages": "fresh provider-pack assets"
+    },
+    "precedingFullSuite": {
+      "sourceRevision": "2e65b64d5a2148583109b8157d6e72f54f5ad29b",
+      "fullRunnerVitest": {
+        "filesPassed": 160,
+        "filesSkipped": 1,
+        "passed": 2202,
+        "failed": 0,
+        "skipped": 11,
+        "durationSeconds": 223.84,
+        "attachTransitionRunnerDigest": "sha256:66122cae0160bfa2655d64afb7c7b5c01aa5fa7bba8ad608c7ee768c14f51fec",
+        "note": "Used the matching foundation transition runner plus locally built Rust fake binaries. Optional installed-Pi test runs separately below."
+      },
+      "nativeProviderRustTests": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0
+      },
+      "note": "These broader checks ran before the final shared launch-boundary patch; current-source focused checks are recorded separately above."
+    },
+    "notRun": [
+      "full runner TypeScript suite after the final shared launch-boundary patch",
+      "full repository typecheck, build, and tests for this provider branch",
+      "full Rust workspace test suite for this provider branch",
+      "credentialed model evaluation",
+      "Linux x64 or macOS x64 execution",
+      "Daytona deployment"
+    ]
+  }
+}

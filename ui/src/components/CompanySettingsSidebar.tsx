@@ -5,6 +5,7 @@ import {
   Download,
   FlaskConical,
   KeyRound,
+  Link2,
   MonitorCog,
   Puzzle,
   Shield,
@@ -24,6 +25,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { useFastResponsesEnabled } from "@/hooks/useFastResponsesEnabled";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
@@ -44,6 +46,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 export function CompanySettingsSidebar() {
   const { selectedCompanyId } = useCompany();
   const { hidden: hiddenSettings } = useHiddenSettings();
+  const { enabled: fastResponsesEnabled } = useFastResponsesEnabled();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
   const showPlugins = showPage("instance.plugins");
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
@@ -141,6 +144,9 @@ export function CompanySettingsSidebar() {
               icon={MonitorCog}
               end
             />
+          )}
+          {fastResponsesEnabled && (
+            <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
           )}
           {showPage("instance.access") && (
             <SidebarNavItem

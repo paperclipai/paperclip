@@ -1,0 +1,739 @@
+{
+  "schema": "paperclip-runner-rich-acp-validation-checkpoint/v1",
+  "status": "current_candidates_not_qualified",
+  "preparedAt": "2026-09-30T06:58:25.927541+00:00",
+  "artifactPathBase": "campaign artifact root; relative references are evidence identifiers, not public download URLs",
+  "preserveHistoricalEvidence": {
+    "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+    "originalFailuresRemainFailures": true,
+    "existingCapabilityMatrixPreserved": true
+  },
+  "identities": {
+    "controllerSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+    "harnessSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+    "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+    "profiles": {
+      "cursor": 6,
+      "copilot": 6,
+      "pi": 9
+    },
+    "runtimeBuildsRelabeled": false
+  },
+  "verification": {
+    "ci": {
+      "sourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "success": 53,
+      "skipped": 2,
+      "failed": 0,
+      "pending": 0,
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/pr14633-415-ci-final.json",
+        "sha256": "e03ce62df53f739ad8967df07dfe78d9253783862a815dfae2d7b914f801edf4"
+      }
+    },
+    "greptile": {
+      "sourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "score": "5/5",
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/pr14633-415-greptile-final.json",
+        "sha256": "fcda878d5bb7617a6ce04852757a37e315448746ac5c5b609faa454dcd000660"
+      }
+    },
+    "evalDefinitions": {
+      "pr": 33,
+      "state": "merged",
+      "mergeCommit": "7e416976800c799b5b920ec79d6027da5230644d",
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/evals-pr33-merge-receipt.json",
+        "sha256": "3130b74720c95a1451189fa238b1eda5b9f6ba3ab5e6364592a6fb1b83e9b729"
+      }
+    },
+    "local": {
+      "typecheck": "passed",
+      "typecheckReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/full-checks-415/typecheck.meta.txt",
+        "sha256": "9687c8d07a1c6c6f5ba059a70e6b7ce7640bb747cb4a769a9db52a9928b929ba"
+      },
+      "tests": "original_full_command_failed; separate resumed coverage finished; no passing full invocation",
+      "diagnosis": "Original failures remain failed. Approved unchanged isolated cases passed. Workspace B direct invocations included generated duplicates; two legacy ACPX diagnostic failures passed against the separately verified corrected frozen dependency closure.",
+      "fullBuild": "passed",
+      "fullLocalPass": false,
+      "tokenGates": "passed",
+      "initialGeneralServer": {
+        "filesPassed": 713,
+        "filesFailed": 3,
+        "filesSkipped": 4,
+        "testsPassed": 14200,
+        "testsFailed": 4,
+        "testsSkipped": 70
+      },
+      "initialWorkspaceA": {
+        "uiTestsPassed": 6967,
+        "cliTestsPassed": 500,
+        "cliTestsFailed": 2
+      },
+      "unchangedTargetedReruns": {
+        "serverFailuresPassed": 4,
+        "cliTimeoutsPassed": 2,
+        "codexSourceAuthTimeoutPassed": 1,
+        "serializedImportFailuresPassed": 2,
+        "serializedCacheBoundPassed": 1
+      },
+      "originalRunReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/full-checks-415/test-run-supported.meta.txt",
+        "sha256": "77709ae1e56b5389143b9598463e1ecaeb90404559d1c528aa85b0eef503098b"
+      },
+      "resumedWorkspaceB": {
+        "observedPassedIncludingGeneratedDuplicates": 4490,
+        "observedSkipped": 31,
+        "observedFailed": 7,
+        "sourceFailures": 3,
+        "sourceFailureDetails": [
+          "Two legacy ACPX long-diagnostic failures from stale patch metadata; fresh corrected frozen install passes.",
+          "One Codex auth-merge timeout; unchanged isolated source-only case passes."
+        ],
+        "manualInvocationGeneratedDuplicateFailures": 4,
+        "stableWrapperAlreadyExcludesDist": true,
+        "countsAreNotDeduplicatedSourceCoverage": true
+      },
+      "serialized": "Original command stopped in file 39 of 149. Both failed import cases passed unchanged in isolation. All 110 unrun suites then completed separately: 109 files passed, 1 failed; 2,046 tests passed, 1 failed. The remaining cache-bound case passed unchanged in one narrow rerun.",
+      "dependencyClosure": "Existing source415 worktree installation differed from checked-in ACPX patches; corrected frozen-install evidence is separate.",
+      "sourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "resumedSerialized": {
+        "filesPassed": 109,
+        "filesFailed": 1,
+        "testsPassed": 2046,
+        "testsFailed": 1,
+        "testsSkipped": 0,
+        "failure": "Cache expected 256 entries but observed 248 after a 5.484s suite against a 5s TTL; unchanged isolated rerun passed.",
+        "fullInvocationPass": false
+      },
+      "finalVerificationRecord": {
+        "path": "runtime-6-6-9-eof-preparation/full-checks-415/verification-record.json",
+        "sha256": "16731e6e2d45a34876c957dfb863cb54ab3e747170a74bc161e515a607820a77"
+      },
+      "finalCleanSourceReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/full-checks-415/source-clean-receipt.txt",
+        "sha256": "978fbb8e7ef99557759639446bf277d5f16d2aae2d717a3fed13f606f86dc884"
+      },
+      "summaryReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/full-checks-415/qualification-summary.md",
+        "sha256": "4f0205c9f9ff1879c3c9bb8047d17f9073933923312386afeb1ed64434a02315"
+      }
+    },
+    "lockMetadataRepair": {
+      "receipt": {
+        "path": "acpx-lock-metadata-81c20ad/verification-receipt.json",
+        "sha256": "cab86c2725a0b7ddde34a4f8cb18e8789d5aa1b4aa03890ba31d60719d29dcaa"
+      },
+      "frozenInstall": "passed",
+      "vendorBytesVerified": true,
+      "diagnosticCasesPassed": 4,
+      "packageContractsPassed": 25,
+      "dependencyVersionsChanged": false,
+      "nativeRuntimeBytesChanged": false,
+      "revertedSourceCommit": "9d27311635036ea54c9d78c01cc1d9c9489eb7e8",
+      "sourceRestoreCommit": "788e3b88ffe0e66e632fc2811087036dbb756f49",
+      "status": "verified_private_overlay_only_source_lock_restored",
+      "policy": "The repository refresh bot owns pnpm-lock.yaml. The pull request restores the exact prior bytes; the verified hash-only overlay is private qualification-install evidence.",
+      "privateOverlaySha256": "a54b018124b93fabf8e0aac36d8d3d4996b36e23fea8b74c6d0fb093ae596e85"
+    },
+    "latestParentCiBeforeFixtureFixes": {
+      "sourceRevision": "6b1e96af0fc817f9ee4def1de94916503f339575",
+      "success": 49,
+      "skipped": 2,
+      "failed": 4,
+      "pending": 0,
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/pr14633-6b1-ci-before-fixture-fixes.json",
+        "sha256": "0eeac5e0ff847fac404e63f1051920757d6de23b80535dd1e16d24fdd687160b"
+      },
+      "correctionCommit": "f401b831f2bf39b149821ab86bf2dfe55091765b",
+      "targetedEvidence": {
+        "path": "ci-stability-6b1e96af/handoff.receipt.json",
+        "sha256": "dcd2bd549b61b4db3765c809b24dbd8b92c470040971a5f8aa1b36284b05ca9d"
+      },
+      "targetedResults": "26 route tests passed; attachment case passed with real announcement dismissal; no assertion or timeout relaxation. Subsequent aec34c CI completed with 53 successes and two skips.",
+      "unconfirmedOtherBranchFailure": "Cursor branch runtime-exposure firstcase passed unchanged under local instrumentation; CI stall cause is unconfirmed, no runtime change."
+    },
+    "latestParentCiAfterFixtureFixes": {
+      "sourceRevision": "aec34c693f74fd27b97fa9d2e3862cbedbeef2d0",
+      "success": 53,
+      "skipped": 2,
+      "failed": 0,
+      "pending": 0,
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/pr14633-aec34-ci-final.json",
+        "sha256": "1ea6c3a4018350e75c76db7fd69e355a905181f4b7ae02060439f63a1837ffaa"
+      },
+      "doesNotQualifyNewRuntimeCandidates": true
+    },
+    "combinedCandidateDriverProfiles": {
+      "sourceRevision": "ceaf3d7fecefd2f5ae8d460c1812e8ccd563056d",
+      "testsPassed": 97,
+      "filesPassed": 2,
+      "purpose": "Verify both provider changes after retaining adjacent test additions during rebase.",
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/combined-7-7-9-driver-profile-tests.log",
+        "sha256": "6d81472044b2e7397da3bcbd6417891c7d1fdbe1e7ae46b4c754174ca6874009"
+      }
+    },
+    "evalDefinitionsPending": {
+      "pr": 34,
+      "sourceRevision": "08ae9d4a231e52fc54af0821564cded3d3ec7f37",
+      "profiles": {
+        "cursor": 7,
+        "copilot": 7,
+        "pi": 9
+      },
+      "status": "draft",
+      "deterministicTestsPassed": 136,
+      "selectedCellsValidated": 21,
+      "providerCalls": 0
+    }
+  },
+  "platformBuilds": [
+    {
+      "platform": "darwin-arm64",
+      "sourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "built_not_fully_qualified",
+      "receipt": {
+        "path": "combined-local-e822b614f/build-provenance.json",
+        "sha256": "48a57e0fa5961696ed29044a3ff8edba3e0dfb26c2b9a8663ded1c22de195d41"
+      }
+    },
+    {
+      "platform": "darwin-x64",
+      "sourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "built_not_fully_qualified",
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/platform/macos-x64-e822b614f-v6-build/build-provenance.json",
+        "sha256": "fe435c765ffb0f74d0619ded9f2d0c125157671b01b9a6f502dab94812812354"
+      }
+    },
+    {
+      "platform": "linux-x64",
+      "sourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "built_not_fully_qualified",
+      "receipt": {
+        "path": "runtime-6-6-9-eof-preparation/platform/linux-e822b614f-v6-build/build-provenance.json",
+        "sha256": "f8b7c252f1cb683b704982b88bb8b5459c221ad9a45cad657f6cb48ffa1c0dfc"
+      }
+    }
+  ],
+  "paidObservations": [
+    {
+      "provider": "cursor",
+      "profile": 6,
+      "cell": "extended-harnesses.runner-acpx-cursor.daytona.hello-complete",
+      "controllerSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "harnessSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "root_reconciled_with_supervisor_tail_failure",
+      "productBehaviorPassed": true,
+      "matcherCount": 6,
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/daytona-basic-v2/e822-cursor-remote-01/root-reconciliation.private.json",
+        "sha256": "6fc00b657a27090a3e5bad46016dcd1aac3347f71a88165ffe9e1a23aabd4320"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/daytona-basic-v2/e822-cursor-remote-01/result.json",
+        "sha256": "36d28b7955481dde72767a863e3e5b5f4d767c22aaecda74f35b3940b8c47cf9"
+      },
+      "originalSupervisorTailFailureRetained": true,
+      "cleanupAndEndAuditReconciled": true,
+      "newModelRetryForReconciliation": false,
+      "accountObservedChargeUsd": 0,
+      "nativePerRunUsd": null,
+      "infrastructureUpperBoundUsd": 0.086931,
+      "infrastructureAnalyticsFinal": false,
+      "providerQualified": false
+    },
+    {
+      "provider": "copilot",
+      "profile": 6,
+      "cell": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "controllerSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "harnessSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "root_reconciled_after_reader_correction",
+      "productBehaviorPassed": true,
+      "matcherCount": 10,
+      "caseQualified": true,
+      "providerQualified": false,
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v2/controller415-copilot-deny-01/root-reconciliation.private.json",
+        "sha256": "3d273539d36269c2591fda9f117b0f48a0a4dabc70b97131ba5d2e272adaae21"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v2/controller415-copilot-deny-01/result.json",
+        "sha256": "8c169c418575ed12215fd758b578940bb458169ba9a169b305c60690e37692d7"
+      },
+      "additiveReaderCorrection": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v3/retained-product-revalidation.json",
+        "sha256": "850a105a43f50444e3c144e12fb9967300c27367a0e2ed4b5992b61be39639b2"
+      },
+      "originalSupervisorPassed": false,
+      "originalReceiptsModified": false,
+      "newModelCallForReaderCorrection": false,
+      "accountIncludedCreditsBefore": 15,
+      "accountIncludedCreditsAfter": 15,
+      "postingMayLag": true,
+      "accountObservedChargeUsd": 0,
+      "additionalChargeUpperBoundUsd": 0,
+      "nativePerRunUsd": null,
+      "cleanupAndEndAuditPassed": true
+    },
+    {
+      "provider": "cursor",
+      "profile": 6,
+      "cell": "cursor-native.runner-acpx-cursor.local.native-plan-reject-revise-accept",
+      "controllerSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "harnessSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "failed_controller_settlement_repair_pending_paid_requalification",
+      "productBehaviorPassed": false,
+      "caseQualified": false,
+      "providerQualified": false,
+      "nativeBridgeChecksPassed": 21,
+      "observedBridgeBehavior": [
+        "native_plan_display",
+        "rejection_delivery",
+        "feedback",
+        "revised_plan",
+        "acceptance_delivery"
+      ],
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-cursor-plan-01/root-failed-reconciliation.private.json",
+        "sha256": "28cd3097459e79825850786279eb842541c89c7c67ac82c4785c53808d3cd1bd"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-cursor-plan-01/result.json",
+        "sha256": "9cbfa84182790c3d5124da9c0981ab56d009a05a96ae31dd9928c6c484cea0e0"
+      },
+      "bridgeChecks": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-cursor-plan-01/product-results/cursor-native/runner-acpx-cursor/local/native-plan-reject-revise-accept/attempt-1/snapshots/cursor-native-checks.json",
+        "sha256": "461577b0459b56c42d5a68648b7f31538ec0e71787ab8391ff6703411dac1704"
+      },
+      "terminalSnapshot": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-cursor-plan-01/product-results/cursor-native/runner-acpx-cursor/local/native-plan-reject-revise-accept/attempt-1/snapshots/api-state.json",
+        "sha256": "db372b34c3e9c64252d901746630b62412e9a59b4d7881b7e4e91f53b6075e54"
+      },
+      "nativeTerminal": {
+        "eventType": "turn.completed",
+        "seq": 222,
+        "status": "completed",
+        "error": null,
+        "sourceSeq": 196
+      },
+      "controllerFailureLabel": "native_session_interrupted",
+      "controllerError": "native_finalization_missing: session returned no semantic result",
+      "interpretation": "Native planning ended normally. ACP plan acceptance does not start the interactive CLI Agent-mode execution turn. A separate controller fix preserves an in-progress passive wait for explicit task continuation; deterministic checks do not change this original failed case.",
+      "cleanupAndEndAuditPassed": true,
+      "automaticRetries": 0,
+      "nativePerRunUsd": null,
+      "accountObservedChargeUsd": 0,
+      "terminalDiagnosis": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/cursor-plan-terminal-diagnosis/evidence.json",
+        "sha256": "6f9fd527aecee6e79546a264d41f1d79e171cbe5d15af31f2587d05d7fddb7c2"
+      },
+      "checkpointTerminal": {
+        "runTerminalState": "succeeded",
+        "turnTerminalState": "completed",
+        "reportedWorkDisposition": "yielded",
+        "mode": "plan",
+        "semanticResult": null
+      }
+    },
+    {
+      "provider": "copilot",
+      "profile": 6,
+      "cell": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "controllerSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "harnessSourceRevision": "41503eb38f03c436b1569f9f0204625bb4d58782",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "failed_supervision_not_qualified",
+      "productBehaviorPassed": false,
+      "caseQualified": false,
+      "providerQualified": false,
+      "nativeTurnAccepted": true,
+      "completedAttachedCommandBehaviorProven": false,
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-copilot-async-01/root-failed-reconciliation.private.json",
+        "sha256": "81f3eb82e51179d135bedc3b984c436a2e2f6503242858d0f7fffa8b8665a4c9"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/local-single-v4/controller415-copilot-async-01/result.json",
+        "sha256": "a12c689794308c987fe5053e48c75ef79bb7775fe90783e982e4139c7186e246"
+      },
+      "diagnosis": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/copilot-async-failure-diagnosis/evidence.json",
+        "sha256": "5981b70003718c7dc306c0e800f31bec4a2193873abc44c58292dd4d38096dc7"
+      },
+      "postAttemptPackRestoration": {
+        "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/copilot-async-copy-cleanup/receipt.json",
+        "sha256": "b93dc16050c316113fd62dc590bebd0aa5a60fbfbb6a4a80c787e5abc235e2e0"
+      },
+      "originalIpcObservationComplete": false,
+      "originalFullEndAuthorityPassed": false,
+      "laterPackAuthorityRestored": true,
+      "originalFailuresPreserved": true,
+      "ownedProcessesRetired": true,
+      "automaticRetries": 0,
+      "nativePerRunUsd": null,
+      "accountIncludedCreditsBefore": 15,
+      "accountIncludedCreditsAfter": 15,
+      "postingMayLag": true,
+      "additionalChargeUpperBoundUsd": 0
+    },
+    {
+      "provider": "copilot",
+      "profile": 6,
+      "cell": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "sourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+      "controllerSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+      "harnessSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "failed_command_match_and_final_marker_native_message_boundary_under_investigation",
+      "caseQualified": false,
+      "providerQualified": false,
+      "taskDoneObserved": true,
+      "completedAttachedCommandBehaviorProven": false,
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/local-single-v1/controller81-copilot-async-01/root-failed-reconciliation.private.json",
+        "sha256": "d970fca92c4184342f69136140bae2720a02f706dd76fd116d7772f215f8d18c"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/local-single-v1/controller81-copilot-async-01/result.json",
+        "sha256": "0a0cead164531cf56349e2b6851e86dd19b84dc290f84d6db365656f0f50c2ed"
+      },
+      "ownedProcessesRetired": true,
+      "ipcObservationComplete": true,
+      "fullEndAuthorityPassed": true,
+      "accountIncludedCreditsBefore": 15,
+      "accountIncludedCreditsAfter": 16,
+      "postingMayLag": true,
+      "additionalChargeUpperBoundUsd": 0,
+      "nativePerRunUsd": null,
+      "automaticRetries": 0,
+      "commandDiagnosis": "One leading ASCII space changes the raw digest. A later fixture-only commit admits at most eight leading SPACE/TAB bytes with a verified raw-to-canonical relation. The historical case is not regraded.",
+      "settlementEvidenceLimit": "The first assertion preceded independent marker/child/client observations and the post-cleanup marker reread. Native shell exit before terminal and successful process cleanup do not reconstruct the missing proof.",
+      "finalMarkerDiagnosis": "Two provider text-delta bursts bracket shell completion; one persisted final comment concatenates both. Original native message boundaries are absent from retained metadata. No equal-text deduplication is inferred.",
+      "offlineDiagnosis": {
+        "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/copilot-async-command-diagnosis/offline-revalidation-and-proposal.json",
+        "sha256": "fcdb5a3d3601159bca484b3ec26a69a9e914482ef8ddeb4a2012691455ca1fb6"
+      },
+      "assistantBurstOrigin": {
+        "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/copilot-async-command-diagnosis/assistant-burst-origin.json",
+        "sha256": "2c9689f36834de163c87d996486aec488f22d419f049ea557fd6f7c6ac691308"
+      },
+      "fixtureFollowup": {
+        "commit": "c9a0aaffa19510ab4c29924c7097d09121f34b81",
+        "targetedTestsPassed": 97,
+        "productTypecheck": "passed",
+        "rawNativeDigestPreserved": true,
+        "prefixCandidates": 511,
+        "historicalCaseRegraded": false,
+        "capturesIndependentEvidenceBeforeCommandAssertion": true,
+        "finalMarkerAssertionUnchanged": true
+      }
+    },
+    {
+      "provider": "cursor",
+      "profile": 6,
+      "cell": "extended-harnesses.runner-acpx-cursor.local.native-plan-reject-revise-accept",
+      "controllerSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+      "harnessSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+      "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+      "status": "failed_native_plan_tool_identity_lost_before_controller_settlement",
+      "caseQualified": false,
+      "providerQualified": false,
+      "nativeBridgeChecksPassed": 21,
+      "workspaceBefore": {},
+      "workspaceAfter": {},
+      "runCount": 1,
+      "runStatus": "failed",
+      "issueStatus": "in_progress",
+      "nativeTerminal": "turn.completed / completed / no error",
+      "controllerFailure": "native_finalization_missing / native_session_interrupted",
+      "eventOrder": [
+        {
+          "sourceSeq": 275,
+          "type": "runtime_request.created"
+        },
+        {
+          "sourceSeq": 294,
+          "type": "tool.execution.started"
+        },
+        {
+          "sourceSeq": 300,
+          "type": "runtime_request.resolved"
+        },
+        {
+          "sourceSeq": 303,
+          "type": "tool.execution.completed"
+        },
+        {
+          "sourceSeq": 304,
+          "type": "turn.completed"
+        }
+      ],
+      "rootReceipt": {
+        "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/local-single-v1/ca702-cursor-plan-01/root-failed-reconciliation.private.json",
+        "sha256": "cff8f781bf31253b6b89251d0b66cca57c0bf51e5dd75d7df574178b0c9eed6a"
+      },
+      "originalResult": {
+        "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/local-single-v1/ca702-cursor-plan-01/result.json",
+        "sha256": "d888daf34caa0e1bc3fc197375bb8e0f3db74cb64ac2f745f0ce7ed73cb8c0a4"
+      },
+      "diagnosis": {
+        "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/local-single-v1/ca702-cursor-plan-01/diagnosis.json",
+        "sha256": "0560e84990d279a3f00a6b111f581ed3f81bfe46ce8d6a5d4e8e7db1955d9d41"
+      },
+      "nativeChecks": {
+        "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/local-single-v1/ca702-cursor-plan-01/product-results/cursor-native/runner-acpx-cursor/local/native-plan-reject-revise-accept/attempt-1/snapshots/cursor-native-checks.json",
+        "sha256": "65c4807fba8b3458cf22cd8d2a2895f2a53cc1df480802ba979d8268dcf25798"
+      },
+      "fullEnd": {
+        "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/local-single-v1/ca702-cursor-plan-01/full-end-authority.json",
+        "sha256": "5fdb079934188355d88caf12228456a01d7174cfe14420a53538ee3587067c3a"
+      },
+      "ownedProcessesRetired": true,
+      "ipcObservationComplete": true,
+      "fullEndAuthorityPassed": true,
+      "elapsedSeconds": 51.229,
+      "automaticRetries": 0,
+      "nativePerRunUsd": null,
+      "observedCursorOnDemandUsd": 0,
+      "postingMayLag": true,
+      "historicalCaseRegraded": false,
+      "followup": "Cursor7 carries validated originating tool identity to request.itemId; exact successful lifecycle is required. Paid requalification is pending."
+    }
+  ],
+  "pi": {
+    "profile": 9,
+    "qualification": "pending",
+    "optionalBudgetCandidateRevision": "6396fd744c2bf2fbb70c4e40a3d40d026b662ba3",
+    "candidateStatus": "frozen_unintegrated_not_live_qualified",
+    "candidateReceipt": {
+      "path": "runtime-6-6-9-eof-preparation/pi-spend-boundary-review-02/candidate.json",
+      "sha256": "9a6d8c86b17ed35a97925475928e1353dc7122e109db7fafd4262622a2d10599"
+    },
+    "preferredSpendBoundary": "provider_capped_key",
+    "providerCappedKey": "unresolved",
+    "budgetIntegrationReview": {
+      "path": "pi-budget-integration-review/decision.md",
+      "sha256": "864fef69bdfc27d1fb387c2b4d518eabf6829061c7c576f2f1ea0d0274b7a313"
+    },
+    "candidateLimit": "Source review found missing production allocation, launch scope, warm rotation, package closure and Daytona transport. Keep frozen; capped key remains the qualification prerequisite."
+  },
+  "overallProviderQualification": {
+    "cursor": false,
+    "copilot": false,
+    "pi": false
+  },
+  "budget": {
+    "combinedAuthorizationUsd": 100,
+    "providerAllocationsUsd": {
+      "cursor": 25,
+      "copilot": 25,
+      "pi": 25
+    },
+    "sharedReserveUsd": 25,
+    "knownTaskAttributedOpenRouterModelUsd": 0.040507624,
+    "conservativeCloudTotalUpperBoundUsd": 0.387846,
+    "nativeCursorCopilotPerRunUsd": null,
+    "failedAttemptsRetained": true,
+    "uncappedWholeKeyLifetimeUsageExcluded": true,
+    "attemptRecords": 46,
+    "activeReservations": 0,
+    "ledgerReceipt": {
+      "path": "budget-ledger.private.json",
+      "sha256": "2c77159d895e948b8d8b18b0cd8e9c15d53d0a94a2816ad2ff3a48cce0534981"
+    }
+  },
+  "cursorSettlement": {
+    "pr": 14669,
+    "sourceRevision": "770dc88a11c830cc9ad32e9590448d826ec58c97",
+    "status": "cursor7_source_candidate_tested_not_built_or_paid_qualified",
+    "autoImplementation": false,
+    "modePromotion": false,
+    "taskDisposition": "in_progress_waiting_for_explicit_user_message",
+    "catalogUpgradeDoesNotWake": true,
+    "profileVersion": 7,
+    "commandDigest": "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
+    "targetedTestsPassed": 228,
+    "runnerTypeScriptBuild": "passed",
+    "serverTypecheck": "passed",
+    "handoff": {
+      "path": "cursor7-plan-tool-binding-review/HANDOFF.json",
+      "sha256": "dec400c07a80457e65e2139758110e85c8b409ec765ad4ea6df729fbb018cc8c"
+    },
+    "rootReview": {
+      "path": "cursor7-plan-tool-binding-review/root-review.json",
+      "sha256": "8916b1e197a5984849c21993d3c5c40a79923f54a8f46eef7acb2a0b2fd9ea9b"
+    },
+    "historicalCursor6CommittedWaitsPreserved": true,
+    "newCursor6WaitAdmission": false
+  },
+  "historicalReadiness415": {
+    "status": "root_reviewed_credential_free_pass",
+    "receipt": {
+      "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/readiness-01/product-readiness.pending.json",
+      "sha256": "d9946bbab9881d50c46970aaaca9458d933c101a7d2fe28f8a58c770c23909e5"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/root-readiness-review.json",
+      "sha256": "371702b4363fbce6ed96fa823dc48b2566f441b7801250576fa6812f0df65d7f"
+    },
+    "admission": {
+      "path": "runtime-6-6-9-eof-preparation/controller-41503eb/revision-02/readiness-01/admission-01/receipt.json",
+      "sha256": "d7188f37245290389271e6af913f52acf54248b1d15c7676ebad3cbed91423a6"
+    },
+    "freshControllerAndHarness": true,
+    "oldReadinessReused": false,
+    "recoveryReady": true,
+    "ownedProcessesRetired": 37,
+    "ownedIpcRemaining": 0,
+    "providerQualified": false
+  },
+  "readiness": {
+    "status": "root_reviewed_credential_free_pass_historical_cursor6_copilot6_pi9",
+    "controllerSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+    "harnessSourceRevision": "ca7026182c2b861e3badbcb7e5b733445a6ee403",
+    "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+    "receipt": {
+      "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/product-readiness.pending.json",
+      "sha256": "99b3bba9cbed5f3b5cff71663debb88739a4ac39f7258f4108e0e6d537a8ffd5"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/controller-ca7026182/revision-02/root-launch-readiness-review.json",
+      "sha256": "e2cab22219829940bda3fd0f07b9362fa4c54c559293de8f6506a551ceb253a2"
+    },
+    "freshControllerAndHarness": true,
+    "oldReadinessReused": false,
+    "ownedProcessesRetired": 31,
+    "ownedIpcRemaining": 0,
+    "providerQualified": false,
+    "notValidForProfiles7": true
+  },
+  "copilotMessageIdentityCandidate": {
+    "pr": 14676,
+    "sourceRevision": "70b186b3c26a30a9f69f2d8bfd9e6024f9784e0f",
+    "profileVersion": 7,
+    "commandDigest": "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
+    "status": "draft_source_candidate_not_built_or_paid_qualified",
+    "change": "Extract and patch verified owned inner distribution so ordered ACP start/delta/history updates preserve real native message IDs, including empty starts. Keep native executable unchanged and native IDs distinct even for identical text.",
+    "focusedJavaScriptTypeScriptTestsPassed": 49,
+    "runnerTypecheck": "passed",
+    "rustExactAdmissionTestsPassed": 1,
+    "nativeExecution": "ARM64 loopback only; three distinct equal-text native message IDs, empty starts and attached shell settlement",
+    "platformClosuresVerified": [
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-x64"
+    ],
+    "fullRepoGate": "pending",
+    "newPacksAndImages": "not built",
+    "paidQualification": "not run",
+    "originalPaidAsyncFailureRegraded": false,
+    "handoff": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/review-fixes-01/ROOT-REVIEW-HANDOFF.json",
+      "sha256": "6f85b0f8ff963edff6836906c0aa95cf72e146a1d07189b7ef21195d4d1c941d"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/review-fixes-01/root-review.json",
+      "sha256": "c781c30816159699aa4faa1d6b6746571fe893e336c18291f04c6b74567c9fce"
+    },
+    "nativeLoopback": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/native-loopback-01.json",
+      "sha256": "fd44e4e3ccba573a45c867205f91e2dcce01d603ab59fe513e8c4278f0833a90"
+    },
+    "integratedSourceRevision": "ceaf3d7fecefd2f5ae8d460c1812e8ccd563056d",
+    "originalSourceFocusedTestsPassed": 212,
+    "currentTestsMeaning": "23 Node materialization/rollback tests, 24 profile tests, two actual ACPX fresh/resumed transport tests; earlier native loopback remains separate unchanged-asset evidence.",
+    "prUpdate": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/review-fixes-01/pr-update-receipt.json",
+      "sha256": "de68251eafa25b4d6c3c9357399fbc78b3782618d5b81c50ecd590ba3d53f5ea"
+    },
+    "reviewFixes": "Owned partial-output rollback preserves preexisting/replaced entries; replay IDs and empty-message starts are tested before fresh warm turns."
+  },
+  "historicalController81Preparation": {
+    "controllerSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+    "harnessSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+    "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+    "change": "Replace a static UI demo string that matches the evidence secret detector; runtime source and profile pins unchanged.",
+    "readiness": {
+      "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/readiness-02/product-readiness.pending.json",
+      "sha256": "af88ba11f8db713faa5694d5714dd677b5bddbf822e254128f02c94eb3561e3f"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/root-readiness-review.json",
+      "sha256": "90a0aeebb6a0195ddd640fb2dc84e2e2d1edbba65baae443178decaf159e0dc3"
+    },
+    "providerCalls": 0,
+    "providerQualified": false
+  },
+  "nextControllerPreparation": {
+    "profiles": {
+      "cursor": 7,
+      "copilot": 7,
+      "pi": 9
+    },
+    "status": "fresh_combined_runtime_pack_controller_catalog_and_readiness_pending",
+    "historicalEvidenceReusedAsQualification": false,
+    "paidAuthorized": false
+  },
+  "historicalReadiness81": {
+    "status": "root_reviewed_credential_free_pass",
+    "controllerSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+    "harnessSourceRevision": "81c20ad22723a2d35d7bd693cc6a47002fb46125",
+    "runtimeSourceRevision": "e822b614fc368043f4b3d5e34a8d9bbda644e055",
+    "receipt": {
+      "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/readiness-02/product-readiness.pending.json",
+      "sha256": "af88ba11f8db713faa5694d5714dd677b5bddbf822e254128f02c94eb3561e3f"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/controller-81c20ad/revision-01/root-readiness-review.json",
+      "sha256": "90a0aeebb6a0195ddd640fb2dc84e2e2d1edbba65baae443178decaf159e0dc3"
+    },
+    "freshControllerAndHarness": true,
+    "oldReadinessReused": false,
+    "ownedProcessesRetired": 36,
+    "ownedIpcRemaining": 0,
+    "providerQualified": false
+  },
+  "historicalCopilotMessageIdentityCandidate": {
+    "pr": 14676,
+    "sourceRevision": "8e104372f2e68b397dee7cfea0836ec085243f66",
+    "profileVersion": 7,
+    "commandDigest": "sha256:9f98bf11135944aa8df56635d5c2e24b6a073e23a752cdf86cb9c044bfea74a5",
+    "status": "draft_source_candidate_not_built_or_paid_qualified",
+    "change": "Extract and patch verified owned inner distribution so ordered ACP start/delta/history updates preserve real native message IDs, including empty starts. Keep native executable unchanged and native IDs distinct even for identical text.",
+    "focusedJavaScriptTypeScriptTestsPassed": 212,
+    "runnerTypecheck": "passed",
+    "rustExactAdmissionTestsPassed": 1,
+    "nativeExecution": "ARM64 loopback only; three distinct equal-text native message IDs, empty starts and attached shell settlement",
+    "platformClosuresVerified": [
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-x64"
+    ],
+    "fullRepoGate": "pending",
+    "newPacksAndImages": "not built",
+    "paidQualification": "not run",
+    "originalPaidAsyncFailureRegraded": false,
+    "handoff": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/pr-handoff-01.json",
+      "sha256": "b6bf8db199d946335e532b7202ea7e30e4e3a2a4c874b070ad800d1e9a48adb1"
+    },
+    "rootReview": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/root-review-01.json",
+      "sha256": "f27fafdf88c89af3123a13f153dc87f17ba05a6c72b92ccbfb6a46de1791ea0c"
+    },
+    "nativeLoopback": {
+      "path": "runtime-6-6-9-eof-preparation/copilot-message-identity-candidate/native-loopback-01.json",
+      "sha256": "fd44e4e3ccba573a45c867205f91e2dcce01d603ab59fe513e8c4278f0833a90"
+    }
+  }
+}

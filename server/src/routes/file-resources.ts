@@ -355,7 +355,7 @@ export function fileResourceRoutes(db: Db, opts: {
   availabilityLimiter?: FileResourceLimiter;
 } = {}) {
   const router = Router();
-  const svc = opts.service ?? workspaceFileResourceService(db);
+  const serviceFor = (req: Request) => opts.service ?? workspaceFileResourceService(db, req.actor);
   const limiter = opts.limiter ?? createFileResourceLimiter();
   const listLimiter = opts.listLimiter ?? createFileResourceListLimiter();
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
@@ -468,7 +468,7 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
 
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     if (!hasCompanyAccess(req, issue.companyId)) {
       const error = notFound("Issue not found");
@@ -501,7 +501,7 @@ export function fileResourceRoutes(db: Db, opts: {
     let release: (() => void) | null = null;
     try {
       release = availabilityLimiter.acquire(limiterKey(issue.companyId, actor.actorId, req.params.issueId));
-      const result = await svc.availability(req.params.issueId, body, { issue });
+      const result = await serviceFor(req).availability(req.params.issueId, body, { issue });
       await logAvailabilityAttempt({
         companyId: issue.companyId,
         actor,
@@ -544,7 +544,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -595,7 +595,7 @@ export function fileResourceRoutes(db: Db, opts: {
 
     const requestAbort = requestAbortController(req, res);
     try {
-      const result = await svc.list(req.params.issueId, query, {
+      const result = await serviceFor(req).list(req.params.issueId, query, {
         issue,
         scanContext: {
           signal: requestAbort.signal,
@@ -677,7 +677,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -730,7 +730,7 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
     try {
-      const result = await svc.resolve(req.params.issueId, query, { issue });
+      const result = await serviceFor(req).resolve(req.params.issueId, query, { issue });
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -789,7 +789,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -842,7 +842,7 @@ export function fileResourceRoutes(db: Db, opts: {
       if (parseBooleanQuery(req.query.download)) {
         let result: Awaited<ReturnType<WorkspaceFileResourceService["prepareDownload"]>> | null = null;
         try {
-          result = await svc.prepareDownload(req.params.issueId, query, { issue });
+          result = await serviceFor(req).prepareDownload(req.params.issueId, query, { issue });
         } catch (error) {
           await logDeniedAttempt({
             companyId: issue.companyId,
@@ -892,7 +892,7 @@ export function fileResourceRoutes(db: Db, opts: {
 
       let result: WorkspaceFileContent | null = null;
       try {
-        result = await svc.readContent(req.params.issueId, query, { issue });
+        result = await serviceFor(req).readContent(req.params.issueId, query, { issue });
       } catch (error) {
         await logDeniedAttempt({
           companyId: issue.companyId,

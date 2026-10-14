@@ -7,6 +7,7 @@ interface WorkflowJob {
   name: string;
   run_attempt: number;
   started_at: string;
+  status?: string;
 }
 
 interface WorkflowJobsResponse {
@@ -130,7 +131,17 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     // current attempt's trusted run_started_at, so they are not real reruns.
     if (jobStartedAt < attemptStartedAt.get(attempt)!) continue;
     const attempts = attemptsByExecution.get(candidate.name) ?? new Map();
-    if (attempts.has(attempt)) {
+    const previous = attempts.get(attempt);
+    if (previous) {
+      const hasStarted = (job: WorkflowJob) => job.status === "in_progress" || job.status === "completed";
+      // GitHub can retain a queued placeholder with a different job ID even
+      // after its replacement starts. It has no execution evidence. Keep a
+      // lone queued latest attempt, however, so an older pass cannot mask it.
+      if (previous.status === "queued" && hasStarted(candidate)) {
+        attempts.set(attempt, candidate);
+        continue;
+      }
+      if (hasStarted(previous) && candidate.status === "queued") continue;
       throw new Error(
         `workflow attempt ${attempt} contains duplicate job ${candidate.name}`,
       );

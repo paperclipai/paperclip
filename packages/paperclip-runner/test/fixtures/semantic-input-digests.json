@@ -1,0 +1,42 @@
+[
+  {
+    "name": "plain document",
+    "input": {
+      "body": "Plain fixture document"
+    },
+    "digest": "sha256:2ba38770004c4e7672a5097c4d8e3241c62750b21e034903796fb035fcf9a2a4"
+  },
+  {
+    "name": "protected fields",
+    "input": {
+      "password": "fixture-only-not-a-real-credential",
+      "safe": true
+    },
+    "digest": "sha256:98ecc80f0e6d2d4b99ce3620d18a21392356f99def55ed599c1b1c002ccd2d47"
+  },
+  {
+    "name": "credential-like document text",
+    "input": {
+      "body": "Example Bearer fixture_token_123456\nhttps://example.test/callback?token=fixture-only"
+    },
+    "digest": "sha256:aa7f429cc5dd63e85fd11aa93e0659fa1c7d5041f5f35843fef62092ff86fdc0"
+  },
+  {
+    "name": "canonical Unicode and numbers",
+    "input": {
+      "": "private-use key",
+      "😀": "astral key",
+      "values": [
+        -0,
+        0.000001,
+        9.99999e-7,
+        100000000000000000000,
+        1e+21,
+        true,
+        null,
+        "日本語\n\"text\""
+      ]
+    },
+    "digest": "sha256:3104a5e5db1fe2c6dcdaa0bfcf362d7bd36441e7e08905a48ae03be06eea9dc4"
+  }
+]

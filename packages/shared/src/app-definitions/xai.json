@@ -70,5 +70,8 @@
         "name": "XAI_API_KEY"
       }
     }
+  ],
+  "tags": [
+    "model-provider"
   ]
 }

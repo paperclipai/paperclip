@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "allowJs": true,
+    "types": ["node"],
+    "typeRoots": ["../../cli/node_modules/@types", "../../server/node_modules/@types"]
+  },
+  "include": ["./*.ts", "../../server/test-baselines/*.ts"]
+}

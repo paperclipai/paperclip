@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -8,6 +9,7 @@ import {
   budgetPolicies,
   companies,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -15,6 +17,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
+import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,6 +43,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
     await db.delete(agents);
@@ -61,11 +65,36 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     return companyId;
   }
 
+  it("resolves internal Codex creation once and preserves legacy agents through ordinary edits", async () => {
+    const companyId = await seedCompany();
+    const service = agentService(db);
+    const lifecycle = createAgentLifecycle(db);
+    const native = await lifecycle.requestHire(companyId, { name: "New Codex", adapterType: "codex_local", adapterConfig: { modelReasoningEffort: "high" }, status: "pending_approval" });
+    const legacy = await lifecycle.requestHire(companyId, { name: "Legacy Codex", adapterType: "codex_local", runner: "legacy", adapterConfig: { extraArgs: ["--search"] }, status: "pending_approval" });
+    const reviewedLegacy = await lifecycle.requestHire(companyId, { name: "Historical approved hire", adapterType: "codex_local", adapterConfig: {}, status: "pending_approval" }, { runnerResolved: true });
+    if (paperclipRunnerSupportsPlatform("codex_local", process.platform, process.arch)) {
+      expect(native).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", modelReasoningEffort: "high" } });
+    } else {
+      expect(native).toMatchObject({ adapterType: "codex_local", adapterConfig: { modelReasoningEffort: "high" } });
+    }
+    expect(legacy.adapterType).toBe("codex_local");
+    expect(reviewedLegacy.adapterType).toBe("codex_local");
+    for (const agent of [native, legacy, reviewedLegacy]) {
+      expect(agent).not.toHaveProperty("runner");
+      await lifecycle.approveHire(agent.id);
+      await service.update(agent.id, { title: "Updated title" });
+      const saved = await service.getById(agent.id);
+      expect(saved?.adapterType).toBe(agent.adapterType);
+      expect(saved?.adapterConfig).toEqual(agent.adapterConfig);
+    }
+  });
+
   it("freezes generic pending hire config and reapplies the approval snapshot on activation", async () => {
     const companyId = await seedCompany();
     const agentSvc = agentService(db);
+    const agentSvcLifecycle = createAgentLifecycle(db);
     const approvalSvc = approvalService(db);
-    const pending = await agentSvc.create(companyId, {
+    const pending = await agentSvcLifecycle.requestHire(companyId, {
       name: "Pending Coder",
       role: "engineer",
       title: "Software Engineer",
@@ -143,7 +172,8 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await approvalSvc.approve(approval.id, "board-user", "Approved generic hire");
 
     await expect(agentSvc.getById(pending.id)).resolves.toMatchObject({
-      status: "idle",
+      status: "paused",
+      lifecycleState: "preparing",
       appearance: pending.appearance,
       name: "Pending Coder",
       role: "engineer",

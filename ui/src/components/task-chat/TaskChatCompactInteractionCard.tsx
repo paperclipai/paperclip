@@ -26,6 +26,7 @@ import type {
   PaperclipQuestionResponse,
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
+import { InteractionPreparationNotice } from "@/components/InteractionPreparationNotice";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -42,6 +43,7 @@ import {
   saveStructuredDraft,
 } from "@/lib/composer-draft";
 import {
+  isInteractionPreparingApproval,
   buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -273,9 +275,11 @@ function targetLabel(
 ) {
   const target = interaction.payload.target;
   if (!target) return null;
-  const label =
-    target.label ??
-    (target.type === "issue_document" ? target.key : target.key);
+  // A custom target key is a machine identifier for idempotency and stale
+  // detection (e.g. `github:org/repo:pull:16`), not display copy. Only show a
+  // custom target when the agent supplied a human label.
+  if (target.type === "custom" && !target.label) return null;
+  const label = target.label ?? target.key;
   const revision =
     target.revisionNumber == null ? null : `v${target.revisionNumber}`;
   return [label, revision].filter(Boolean).join(" · ");
@@ -757,7 +761,7 @@ function AskUserQuestionsCard({
             const answer = response.answers[question.id];
             const otherText =
               question.answerMode === "text"
-                ? answer?.text?.trim()
+                ? (interaction.payload.questionSet ? answer?.text : answer?.text?.trim())
                 : answer?.customText?.trim();
             return {
               questionId: question.id,
@@ -813,6 +817,7 @@ function ConfirmationCard({
   onUploadImage?: SharedInteractionProps["onUploadImage"];
   mentions?: MentionOption[];
 }) {
+  const preparingApproval = isInteractionPreparingApproval(interaction);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState(() =>
     draftKey ? loadStructuredDraft(draftKey, "") : "",
@@ -859,8 +864,8 @@ function ConfirmationCard({
           planDocument={planDocument}
         />
       ) : isPlanConfirmation && rejecting ? null : (
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <p className="min-w-0 flex-1 text-sm leading-5 text-foreground">
+        <div className="space-y-2">
+          <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
@@ -986,6 +991,7 @@ function ConfirmationCard({
         </div>
       ) : null}
       <InteractionActionError message={actionError} />
+      {preparingApproval ? <InteractionPreparationNotice /> : null}
       <ActionRow>
         {rejecting ? (
           <>
@@ -1037,7 +1043,7 @@ function ConfirmationCard({
             <Button
               type="button"
               size="sm"
-              disabled={working !== null || !onAcceptInteraction}
+              disabled={working !== null || preparingApproval || !onAcceptInteraction}
               onClick={() => void resolve("accept")}
             >
               {working === "accept" ? (
@@ -1081,6 +1087,7 @@ function CheckboxConfirmationCard({
           [],
       ),
   );
+  const preparingApproval = isInteractionPreparingApproval(interaction);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState(restored?.reason ?? "");
   const [filter, setFilter] = useState("");
@@ -1147,8 +1154,8 @@ function CheckboxConfirmationCard({
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="min-w-0 flex-1 text-sm leading-5 text-foreground">
+      <div className="space-y-2">
+        <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
           {interaction.payload.prompt}
         </p>
         <CompactTarget interaction={interaction} />
@@ -1225,6 +1232,7 @@ function CheckboxConfirmationCard({
         </div>
       ) : null}
       <InteractionActionError message={actionError} />
+      {preparingApproval ? <InteractionPreparationNotice /> : null}
       <ActionRow hint={countHint}>
         {rejecting ? (
           <>
@@ -1273,7 +1281,7 @@ function CheckboxConfirmationCard({
             <Button
               type="button"
               size="sm"
-              disabled={working !== null || !validCount || !onAcceptInteraction}
+              disabled={working !== null || preparingApproval || !validCount || !onAcceptInteraction}
               onClick={() => void resolve("accept")}
             >
               {working === "accept" ? (
@@ -1921,17 +1929,12 @@ export function TaskChatCompactInteractionCard({
 
   if (interaction.kind === "connection_intent") {
     return (
-      <InteractionShell
-        interaction={interaction}
-        audienceLabel={audienceLabel}
-        presentation={presentation}
-      >
         <ConnectionIntentInteractionBody
           interaction={interaction}
           currentUserId={currentUserId}
           addresseeLabel={addresseeLabel ?? "the addressed user"}
+          addresseeName={interaction.addresseeUserId ? userLabelMap?.get(interaction.addresseeUserId) : undefined}
         />
-      </InteractionShell>
     );
   }
 

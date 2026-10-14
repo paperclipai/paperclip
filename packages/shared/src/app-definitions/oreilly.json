@@ -25,7 +25,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://api.oreilly.com/api/content-discovery/v1/mcp/"
+        "serverUrl": "https://api.oreilly.com/api/content-discovery/v1/mcp/",
+        "scopesHint": [
+          "openid",
+          "offline_access"
+        ]
       },
       "guidanceMd": "Connect O'Reilly in the browser. An O'Reilly Learning subscription with MCP or API access.",
       "riskTier": "S2",
@@ -58,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your O'Reilly API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "None: content discovery and retrieval. A read-only key is sufficient."
         }
       ],
       "keyPlacement": {

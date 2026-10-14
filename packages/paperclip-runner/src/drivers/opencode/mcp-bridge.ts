@@ -4,8 +4,10 @@ import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
   PRP_COMPLETION_TOOL_NAME,
 } from "../../contracts/completion-result.js";
 
@@ -117,8 +119,8 @@ function normalizeTools(
     seen.add(name);
   }
   if (includeTerminalTools) for (const terminal of [
-    { name: PRP_COMPLETION_TOOL_NAME, description: "Return the semantic completion result.", inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
-    { name: PRP_BLOCK_TOOL_NAME, description: "Return the semantic blocked result.", inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
+    { name: PRP_COMPLETION_TOOL_NAME, description: PRP_COMPLETION_TOOL_DESCRIPTION, inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
+    { name: PRP_BLOCK_TOOL_NAME, description: PRP_BLOCK_TOOL_DESCRIPTION, inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
   ]) {
     if (!seen.has(terminal.name)) tools.push(terminal);
   }

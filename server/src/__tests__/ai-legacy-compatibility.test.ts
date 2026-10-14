@@ -4,14 +4,24 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, companyMemberships, adapterAuthSessions, environments, connectionGrants, toolConnections, activityLog } from "@paperclipai/db";
+import { createDb, companies, agents, companyMemberships, adapterAuthSessions, environments, connectionGrants, toolConnections, activityLog, companySecrets } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { secretService } from "../services/secrets.js";
 import { aiConnectionService } from "../services/ai-connections.js";
-import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+
+const browserLogin = vi.hoisted(() => ({ submitCode: vi.fn(), abort: vi.fn() }));
+vi.mock("../services/local-ai-browser-login.js", () => ({
+  startLocalBrowserLogin: () => ({
+    authorizationUrl: "https://auth.openai.com/codex/device",
+    code: "TEST-CODE",
+    submitCode: browserLogin.submitCode,
+    abort: browserLogin.abort,
+  }),
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
@@ -39,12 +49,25 @@ it("reconnect detaches an indexed credential without changing unadopted legacy a
   const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
   await db.execute(sql.raw(migration.slice(migration.indexOf("DO $$", migration.indexOf("-- Only declared")))));
   const connection = (await service.list(companyId, owner)).find(c => c.name === secret.name)!;
+  const input = { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: { provider: "anthropic", method: "api_key", mode: "delegated", connectionId: connection.id, grantId: connection.grantId } as const, config: {}, allowLegacyValidation: true };
+  const before = await prepareManagedAiRuntime(db, input);
+  await before.cleanup();
   const resolve = () => vault.resolveUserSecretValue(companyId, { definitionId: definition.id, responsibleUserId: owner, required: true, version: "latest" }, { companyId, responsibleUserId: owner, actorType: "system" });
   expect((await resolve())?.value).toBe("fixture-original");
   await service.save(companyId, owner, { provider: "anthropic", method: "api_key", name: connection.name, ownership: "personal", agentIds: [], allAgents: true, connectionId: connection.id, apiKey: "fixture-new-account" }, "fixture-new-account");
   expect((await resolve())?.value).toBe("fixture-original");
   const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, connection.grantId));
   expect(grant.credentialSecretRefs[0].secretId).not.toBe(secret.id);
+  const [oldSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+  const [newSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, grant.credentialSecretRefs[0].secretId));
+  expect(oldSecret.aiSessionEpoch).toBe(0);
+  expect(newSecret.aiSessionEpoch).toBe(0);
+  const after = await prepareManagedAiRuntime(db, input);
+  try {
+    expect(after.attribution.grantId).toBe(before.attribution.grantId);
+    expect(after.sessionIdentity).not.toBe(before.sessionIdentity);
+    expect(managedAiSessionFingerprintConfig(after.config, after.home)).not.toEqual(managedAiSessionFingerprintConfig(before.config, before.home));
+  } finally { await after.cleanup(); }
   const selected = await service.select({ companyId, agentId, userId: owner, adapterType: "claude_local", binding: { provider: "anthropic", method: "api_key", mode: "responsible_user" } });
   expect(await service.credential(selected)).toBe("fixture-new-account");
   await service.save(companyId, owner, { provider: "anthropic", method: "api_key", name: connection.name, ownership: "personal", agentIds: [], allAgents: true, connectionId: connection.id, apiKey: "fixture-second" }, "fixture-second");
@@ -59,6 +82,35 @@ const loginIntent = () => ({ ...intent, agentIds: [] });
 const auth = (mark: string, hour = 10) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${mark}`, access_token: `access-${mark}`, refresh_token: `refresh-${mark}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
 const directoryFor = (id: string) => path.join(resolvePaperclipInstanceRoot(), "ai-local-logins", id);
 
+it("accepts a Claude code once, only from its owner, and audits without the code", async () => {
+  const login = localAiLoginService(db);
+  const intent = { ...loginIntent(), provider: "anthropic" as const };
+  const attempt = await login.start(companyId, owner, intent);
+  browserLogin.submitCode.mockClear();
+  await expect(login.submitCode(companyId, "another-owner", attempt.sessionId, "fixture-secret-code")).rejects.toThrow("not found");
+  await expect(login.submitCode(randomUUID(), owner, attempt.sessionId, "fixture-secret-code")).rejects.toThrow("not found");
+  expect(browserLogin.submitCode).not.toHaveBeenCalled();
+  await login.submitCode(companyId, owner, attempt.sessionId, "fixture-secret-code");
+  expect(browserLogin.submitCode).toHaveBeenCalledExactlyOnceWith("fixture-secret-code");
+  await expect(login.submitCode(companyId, owner, attempt.sessionId, "fixture-secret-code")).rejects.toThrow("cannot accept a code");
+  const events = await db.select().from(activityLog).where(eq(activityLog.entityId, attempt.sessionId));
+  expect(events.filter(event => event.action === "ai_connection.local_login_code_submitted")).toHaveLength(1);
+  expect(JSON.stringify(events)).not.toContain("fixture-secret-code");
+  await login.cancel(companyId, owner, attempt.sessionId);
+});
+
+it.each(["cancelled", "expired"])("rejects code submission to a %s Claude attempt", async state => {
+  const login = localAiLoginService(db);
+  const intent = { ...loginIntent(), provider: "anthropic" as const };
+  const attempt = await login.start(companyId, owner, intent);
+  browserLogin.submitCode.mockClear();
+  if (state === "cancelled") await login.cancel(companyId, owner, attempt.sessionId);
+  else await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, attempt.sessionId));
+  await expect(login.submitCode(companyId, owner, attempt.sessionId, "fixture-code")).rejects.toThrow("expired or was cancelled");
+  expect(browserLogin.submitCode).not.toHaveBeenCalled();
+  await login.reapExpired();
+});
+
 it("isolates sign-in and refresh from the host, survives restart, and completes only once", async () => {
   const hostHome = path.join(home, "host-codex");
   await mkdir(hostHome);
@@ -69,15 +121,17 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
   const attempt = await login.start(companyId, owner, loginIntent());
   const directory = directoryFor(attempt.sessionId);
   expect(await localAiLoginService(db).start(companyId, owner, loginIntent())).toEqual(attempt);
-  expect(attempt.command).toContain(`(export CODEX_HOME='${directory}' && mkdir -p "$CODEX_HOME" && codex`);
+  expect(attempt.command).toBeUndefined();
   expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
-  expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "sign_in_required" });
+  expect(await localAiLoginService(db).check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({
+    status: "sign_in_required", authorizationUrl: "https://auth.openai.com/codex/device", code: "TEST-CODE",
+  });
   // Resuming a valid attempt also repairs a missing directory without changing its ID.
   await rm(directory, { recursive: true });
   expect(await login.start(companyId, owner, loginIntent())).toEqual(attempt);
   expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
   // A valid host login cannot satisfy an unfinished connection-specific login.
-  await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("sign-in command shown");
+  await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("Finish browser sign-in");
   expect((await aiConnectionService(db).list(companyId, owner)).filter(c => c.provider === "openai")).toHaveLength(0);
   await writeFile(path.join(directory, "auth.json"), auth("independent-login"));
   expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "ready" });

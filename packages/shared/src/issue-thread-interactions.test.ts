@@ -18,6 +18,59 @@ import {
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("derives every legacy question from a complete mixed canonical form", () => {
+    const questionSet = paperclipQuestionSetPayloadSchema.parse({
+      schema: "paperclip.question_set.v1",
+      questions: [
+        { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text", textValidation: { minLength: 1 } },
+        { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All changes", recommended: true }, { id: "selected", label: "Selected changes" }] },
+        { id: "hosting", prompt: "Preview hosting?", required: false, answerMode: "multi_select", options: [{ id: "paperclip_custom_answer", label: "Existing host" }, { id: "new", label: "New host" }], customAnswer: { enabled: true } },
+      ],
+    });
+    const parsed = createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    if (parsed.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+    expect(parsed.payload.questions).toMatchObject([
+      { id: "repo", required: true, selectionMode: "single", options: [{ id: "paperclip_text_answer", freeText: true }] },
+      { id: "scope", required: true, selectionMode: "single", allowOther: false, options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+      { id: "hosting", required: false, selectionMode: "multi", allowOther: true, options: [{ id: "paperclip_custom_answer" }, { id: "new" }, { id: "paperclip_custom_answer_2", freeText: true }] },
+    ]);
+    expect(askUserQuestionsPayloadSchema.parse(parsed.payload)).toEqual(parsed.payload);
+  });
+
+  it("rejects canonical-only forms with invalid modes or missing questions", () => {
+    for (const questionSet of [
+      { schema: "paperclip.question_set.v1", questions: [] },
+      { schema: "paperclip.question_set.v1", questions: [{ id: "repo", prompt: "Repository?", required: true, answerMode: "text", options: [{ id: "a", label: "A" }] }] },
+    ]) expect(createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1, questionSet } }).success).toBe(false);
+    expect(createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1 } }).success).toBe(false);
+  });
+
+  it("preserves canonical display whitespace while deriving trimmed storage fields", () => {
+    const questionSet = { schema: "paperclip.question_set.v1", questions: [
+      { id: "scope", prompt: "  Review scope? \n", required: true, answerMode: "single_select", options: [{ id: "all", label: " All changes " }, { id: "selected", label: " Selected changes " }] },
+      { id: "repo", prompt: " Repository URL? ", required: true, answerMode: "text" },
+    ] };
+    const parsed = createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    if (parsed.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+    expect(parsed.payload.questions[0]).toMatchObject({ prompt: "Review scope?", options: [{ label: "All changes" }, { label: "Selected changes" }] });
+    expect(parsed.payload.questions[1].prompt).toBe("Repository URL?");
+  });
+
+  it("rejects dual choice forms that disagree about written alternatives", () => {
+    const options = [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }];
+    for (const storage of [
+      { options: [...options, { id: "other", label: "Other", freeText: true }] },
+      { options, allowOther: true },
+    ]) {
+      const parsed = createIssueThreadInteractionSchema.safeParse({ kind: "ask_user_questions", payload: { version: 1,
+        questions: [{ id: "scope", prompt: "Scope?", required: true, selectionMode: "single", ...storage }],
+        questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options }] },
+      } });
+      expect(parsed.success).toBe(false);
+    }
+  });
   it("defines canonical resolver policies and normalizes compatibility aliases", () => {
     expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
       "anyone",

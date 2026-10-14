@@ -59,7 +59,7 @@ export interface UserProfileActivitySummary {
 }
 
 export interface UserProfileAgentUsage {
-  agentId: string;
+  agentId: string | null;
   agentName: string | null;
   costCents: number;
   inputTokens: number;

@@ -91,4 +91,57 @@ describe("MarkdownBody external object decoration", () => {
     });
     expect(html).toContain('aria-label="HubSpot Reconnect (Requires auth): Acme deal"');
   });
+
+  it("labels detected-but-unresolved GitHub objects as not yet refreshed, not not yet resolved", () => {
+    const html = render("See https://github.com/acme/web/pull/241", {
+      "https://github.com/acme/web/pull/241": {
+        providerKey: "github",
+        objectType: "pull_request",
+        displayKey: "Github Pull Request",
+        iconKey: "github",
+        statusCategory: "unknown",
+        liveness: "unknown",
+        statusLabel: null,
+        displayTitle: "acme/web#241",
+      },
+    });
+    expect(html).toContain("data-external-link=\"resolved\"");
+    expect(html).toContain('aria-label="Github Pull Request Not yet refreshed: acme/web#241"');
+    expect(html).not.toContain("Not yet resolved");
+  });
+
+  it("does not repeat the liveness label when the status label equals it", () => {
+    const html = render("Auth-blocked: https://github.com/acme/web/pull/241", {
+      "https://github.com/acme/web/pull/241": {
+        providerKey: "github",
+        objectType: "pull_request",
+        displayKey: "Github Pull Request",
+        iconKey: "github",
+        statusCategory: "unknown",
+        liveness: "auth_required",
+        statusLabel: null,
+        displayTitle: "acme/web#241",
+      },
+    });
+    expect(html).toContain('aria-label="Github Pull Request Requires auth: acme/web#241"');
+    expect(html).not.toContain("Requires auth (Requires auth)");
+    expect(html).not.toContain("(Requires auth)");
+  });
+
+  it("does not repeat the liveness label when the status label equals it for unreachable", () => {
+    const html = render("Down: https://github.com/acme/web/pull/241", {
+      "https://github.com/acme/web/pull/241": {
+        providerKey: "github",
+        objectType: "pull_request",
+        displayKey: "Github Pull Request",
+        iconKey: "github",
+        statusCategory: "unknown",
+        liveness: "unreachable",
+        statusLabel: null,
+        displayTitle: "acme/web#241",
+      },
+    });
+    expect(html).toContain('aria-label="Github Pull Request Unreachable: acme/web#241"');
+    expect(html).not.toContain("(Unreachable)");
+  });
 });

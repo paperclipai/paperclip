@@ -6,6 +6,7 @@ import { TaskChatThreadView } from "./TaskChatThreadView";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
+import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatExpansionState } from "./expansion-state";
 import type {
   TaskChatActivityPhaseItem,
@@ -72,6 +73,29 @@ describe("TaskChatRunnerActivityGroup", () => {
     )!;
   const viewport = () =>
     container.querySelector('[data-testid="task-chat-activity-viewport"]')!;
+
+  it("aligns runner commentary with the following agent reply", () => {
+    act(() => root.render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <TaskChatRunnerActivityGroup item={{
+            id: "commentary:phase",
+            kind: "activity_phase",
+            interstitial: { id: "commentary", kind: "message", author: "agent", text: "First line" },
+            items: [],
+            active: false,
+            summary: "",
+          }} />
+          <TaskChatBubble item={{ id: "reply", kind: "message", author: "agent", text: "Later reply" }} />
+        </ThemeProvider>
+      </MemoryRouter>,
+    ));
+
+    const commentary = container.querySelector('[data-testid="task-chat-phase-interstitial"]');
+    const reply = container.querySelector('[data-testid="task-chat-agent-bubble"]');
+    expect(commentary?.classList.contains("px-1")).toBe(true);
+    expect(reply?.classList.contains("px-1")).toBe(true);
+  });
 
   it("rolls to each new item once while status and token updates keep the current row mounted", () => {
     render([tool("one")]);

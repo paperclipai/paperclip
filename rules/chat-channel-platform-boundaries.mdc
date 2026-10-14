@@ -1,0 +1,60 @@
+---
+description: Keep chat channel platform implementations in their own folders and shared orchestration independent of platform details.
+globs: "server/src/services/chat-channels/**,server/src/services/chat-channels.ts"
+alwaysApply: false
+---
+
+# Chat channel platform boundaries
+
+## Scope and purpose
+
+This rule applies to `server/src/services/chat-channels/` and its sibling
+`server/src/services/chat-channels.ts` service entry point. Keep each platform's
+implementation cohesive while letting common workflows support different
+platforms through explicit contracts.
+
+## Required structure
+
+- Put platform-specific code in `chat-channels/<platform>/`. This includes
+  payload parsing, SDK and transport calls, protocol details, credential and
+  setup behavior, message formatting, and platform-specific workarounds.
+- Use the existing platform directories, such as `telegram/`, `slack/`,
+  `discord/`, `github/`, `microsoft-teams/`, and `imessage-photon/`. Organize files
+  within each directory by responsibility, such as `messages.ts` or `setup.ts`.
+- Keep shared product behavior in the service or cohesive workflow modules,
+  such as `inbound/`, `interactions/`, and `publications/`. Shared code owns common
+  company isolation, authorization, task lifecycle, ordering, and persistence
+  invariants. Provider details must not bypass those invariants.
+- Use explicit typed inputs, outputs, capabilities, or callbacks at the boundary.
+  Shared workflows should consume normalized values rather than interpret one
+  platform's raw payloads. Pass the dependencies a module needs instead of a
+  large mutable service context.
+- Reuse existing contracts and shared implementations when their behavior is
+  actually common. Preserve meaningful platform differences. Add a new
+  abstraction only when a concrete workflow needs it.
+- When extracting code, preserve transaction ownership, queue ordering,
+  idempotency, runtime state lifetime, and callback timing. Moving code must not
+  create duplicate state or a second owner for a side effect.
+
+## Examples and allowed exceptions
+
+- Telegram edited-message parsing belongs in `telegram/messages.ts`; a shared
+  delivery workflow can consume its normalized message or lifecycle event.
+- Shared orchestration may import platform modules and select an implementation
+  by provider name. Small registration tables and dispatch branches are valid;
+  the selected branch should delegate protocol behavior to the platform module.
+- Keep behavior used by several platforms in a shared module when its inputs and
+  semantics are independent of those platforms. Do not make one platform import
+  another platform's implementation merely to reuse a helper.
+- Existing code outside these boundaries can be migrated incrementally. Apply
+  the rule to new or materially changed behavior; an unrelated fix does not
+  require moving the whole subsystem.
+
+## Review criteria
+
+Flag new or expanded platform-specific implementation in the service entry
+point or shared workflow modules, direct dependencies between unrelated
+platform implementations, and shared contracts that expose a platform's raw
+payload or SDK types. Identify the behavior and the appropriate owning folder.
+Allow the registration and dispatch exceptions above, and do not request an
+abstract provider framework solely to remove a small dispatch branch.

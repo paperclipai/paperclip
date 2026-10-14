@@ -245,13 +245,30 @@ describe("managed Codex credentials", () => {
     }
   });
 
+  it("prepares two occupied candidates without disturbing a foreign collision", async () => {
+    const foreign = await silentPrimaryQuorumFixture();
+    const nextFixture = vi.fn().mockResolvedValueOnce(foreign.fixture).mockImplementation(credentialFixture);
+    let prepared: Awaited<ReturnType<typeof silentPrimaryQuorumFixture>> | undefined;
+    try {
+      prepared = await silentPrimaryQuorumFixture(nextFixture, "quorum");
+      expect(nextFixture.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(nextFixture.mock.calls.length).toBeLessThanOrEqual(8);
+      expect(prepared.fixture.home).not.toBe(foreign.fixture.home);
+      await expect(listenSilently(credentialLeasePorts(foreign.fixture.home)[0])).rejects.toMatchObject({ code: "EADDRINUSE" });
+      const destination = join(prepared.fixture.home, "auth.json");
+      await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
+      await expect(stageManagedCodexCredential({ agentHomeDirectory: prepared.fixture.home, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}' } })).rejects.toThrow("already has an active lease");
+      await expect(readFile(destination, "utf8")).resolves.toBe('{"sentinel":true}');
+    } finally {
+      await prepared?.occupied.close();
+      await foreign.occupied.close();
+    }
+  });
+
   it("fails before auth mutation when two quorum candidates are occupied", async () => {
-    const fixture = await credentialFixture();
+    const { fixture, occupied } = await silentPrimaryQuorumFixture(credentialFixture, "quorum");
     const destination = join(fixture.home, "auth.json");
     await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
-    const ports = credentialLeasePorts(await realpath(fixture.home));
-    const first = await listenSilently(ports[0]);
-    const second = await listenSilently(ports[1]);
     try {
       await expect(
         stageManagedCodexCredential({
@@ -265,7 +282,7 @@ describe("managed Codex credentials", () => {
         '{"sentinel":true}',
       );
     } finally {
-      await Promise.all([first.close(), second.close()]);
+      await occupied.close();
     }
   });
 
@@ -1654,7 +1671,7 @@ async function credentialFixture(): Promise<{ root: string; home: string }> {
 
 async function silentPrimaryQuorumFixture(
   nextFixture = credentialFixture,
-  occupiedIndex: 0 | 1 = 0,
+  occupiedIndex: 0 | 1 | "quorum" = 0,
 ) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const fixture = await nextFixture();
@@ -1674,22 +1691,27 @@ async function silentPrimaryQuorumFixture(
         continue;
       throw error;
     }
-    // Only fixture preparation may retry. Release the two free candidates
-    // immediately before the caller stages once. A foreign bind racing this
-    // handoff remains a visible production-call failure, never a hidden retry.
+    const occupiedIndices = occupiedIndex === "quorum" ? [0, 1] : [occupiedIndex];
+    const occupied = {
+      close: async () => {
+        const closed = await Promise.allSettled(owned.filter((_, index) => occupiedIndices.includes(index)).map(listener => listener.close()));
+        const failure = closed.find(result => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
+      },
+    };
     const released = await Promise.allSettled(
       owned
-        .filter((_, index) => index !== occupiedIndex)
+        .filter((_, index) => !occupiedIndices.includes(index))
         .map((listener) => listener.close()),
     );
     const releaseFailure = released.find(
       (result) => result.status === "rejected",
     );
     if (releaseFailure?.status === "rejected") {
-      await owned[occupiedIndex]!.close();
+      await occupied.close();
       throw releaseFailure.reason;
     }
-    return { fixture, occupied: owned[occupiedIndex]! };
+    return { fixture, occupied };
   }
   throw new Error("Silent-primary credential fixture reservation exhausted.");
 }

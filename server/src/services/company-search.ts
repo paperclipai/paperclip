@@ -539,7 +539,11 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+    ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
       const hasSearchText = normalizedQuery.length > 0;
@@ -718,7 +722,7 @@ export function companySearchService(db: Db) {
         }
 
         const resultRows = await db.execute(sql`
-          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters))}
+          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), options?.issueReadCondition)}
           ${sql.join(branches, sql` UNION ALL `)}
         `) as unknown as Array<SearchAggregateRow & Omit<IssueSearchRow, "commentSnippet" | "commentId" | "documentSnippet" | "documentTitle" | "documentKey">>;
 
@@ -868,6 +872,7 @@ export function companySearchService(db: Db) {
         sql`${projects.name}`,
         sql`${projects.description}`,
       ], containsPattern, tokenPatternArray);
+      const projectReadCondition = options?.projectReadCondition ?? sql<boolean>`true`;
 
       async function fetchAgentRows() {
         if (!hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
@@ -897,7 +902,7 @@ export function companySearchService(db: Db) {
             updatedAt: projects.updatedAt,
           })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition))
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition))
           .orderBy(desc(projects.updatedAt), desc(projects.id))
           .limit(fetchLimit);
       }
@@ -984,7 +989,7 @@ export function companySearchService(db: Db) {
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition));
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition));
         return Number(rows[0]?.count ?? 0);
       }
 

@@ -134,8 +134,11 @@ export function mergePendingIssueQueuedComments(params: {
   const fallbackTargetRunId =
     params.pendingComments.find((entry) => entry.targetRunId)?.targetRunId ??
     null;
-  const protocol =
-    params.authoritativeQueue?.protocol ?? params.fallbackProtocol;
+  // An empty snapshot predating this submission does not own its runtime.
+  // Use the active run until the server acknowledges an actual queue.
+  const protocol = authoritativeOwnsQueue
+    ? params.authoritativeQueue!.protocol
+    : params.fallbackProtocol;
   const targetRunId = authoritativeOwnsQueue
     ? (params.authoritativeQueue?.targetRunId ?? null)
     : fallbackTargetRunId;
@@ -151,7 +154,7 @@ export function mergePendingIssueQueuedComments(params: {
     revision: params.authoritativeQueue?.revision ?? "awaiting-server",
     protocol,
     steeringDisposition:
-      params.authoritativeQueue?.steeringDisposition ??
+      (authoritativeOwnsQueue ? params.authoritativeQueue?.steeringDisposition : undefined) ??
       (protocol === "paperclip_runner_v1" && targetRunId
         ? "temporarily_unavailable"
         : "unsupported"),

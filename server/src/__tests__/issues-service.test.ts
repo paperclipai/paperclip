@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -18,13 +18,16 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueAccessGrants,
   issuePlanDecompositions,
   issueReadStates,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
   projectWorkspaces,
+  projectAccessMembers,
   projects,
   workspaceOperations,
   toolApplications,
@@ -41,7 +44,11 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  readIssueCommentRunLogText,
 } from "../services/issues.ts";
+import { getRunLogStore } from "../services/run-log-store.js";
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -147,6 +154,155 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
       },
     });
   }, 20_000);
+});
+
+describe("readIssueCommentRunLogText", () => {
+  it("cancels timed-out storage reads so later listings can recover", async () => {
+    let active = 0;
+    const cleanups: Array<() => void> = [];
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation((_handle, options) =>
+      new Promise((_resolve, reject) => {
+        active += 1;
+        let settled = false;
+        const abort = () => {
+          if (settled) return;
+          settled = true;
+          active -= 1;
+          reject(new DOMException("Read aborted", "AbortError"));
+        };
+        cleanups.push(abort);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+      }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const firstBatch = Array.from({ length: 8 }, () => readIssueCommentRunLogText(run));
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await Promise.all(firstBatch)).toEqual(Array(8).fill(""));
+      expect(active).toBe(0);
+      read.mockResolvedValueOnce({ content: "storage recovered" });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("storage recovered");
+      expect(read).toHaveBeenCalledTimes(9);
+    } finally {
+      for (const cleanup of cleanups) cleanup();
+      await Promise.allSettled(firstBatch);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
+  it("keeps readable attribution evidence for concurrent listings", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(getRunLogStore(), "read").mockImplementation(async () => {
+      await gate;
+      return { content: "comment id: legacy-comment" };
+    });
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null };
+    const listings = Array.from({ length: 2 }, () =>
+      Promise.all(Array.from({ length: 8 }, () => readIssueCommentRunLogText(run))),
+    );
+    try {
+      release();
+      for (const listing of listings) {
+        expect(await listing).toEqual(Array(8).fill("comment id: legacy-comment"));
+      }
+      expect(read).toHaveBeenCalledTimes(16);
+    } finally {
+      release();
+      await Promise.allSettled(listings);
+      read.mockRestore();
+    }
+  });
+
+  it.each([null, 128])("keeps partial attribution evidence when storage fails with logBytes=%s", async (logBytes) => {
+    const read = vi.spyOn(getRunLogStore(), "read").mockRejectedValue(new Error("Storage gateway unavailable"));
+    const run = { runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes };
+    try {
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("");
+      read.mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 });
+      await expect(readIssueCommentRunLogText(run)).resolves.toBe("earlier evidence");
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("bounds reads that ignore cancellation and stops late pagination after the deadline", async () => {
+    let release!: (value: { content: string; nextOffset: number }) => void;
+    const stalled = new Promise<{ content: string; nextOffset: number }>((resolve) => {
+      release = resolve;
+    });
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "earlier evidence", nextOffset: 16 })
+      .mockReturnValueOnce(stalled);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let result: string | undefined;
+    const pending = readIssueCommentRunLogText({
+      runId: "run", logStore: "local_file", logRef: "test/run.ndjson", logBytes: null,
+    }).then((value) => { result = value; });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(result).toBe("earlier evidence");
+      expect(read.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
+      release({ content: "too late", nextOffset: 24 });
+      await pending;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(result).toBe("earlier evidence");
+    } finally {
+      release({ content: "", nextOffset: 0 });
+      await pending.catch(() => {});
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+
+  it.each([null, 128, 0])("reads existing attribution markers with logBytes=%s", async (logBytes) => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+    const read = vi.spyOn(getRunLogStore(), "read")
+      .mockResolvedValueOnce({ content: "comment id: ", nextOffset: 12 })
+      .mockResolvedValueOnce({ content: commentId + "\n" });
+    try {
+      const logContent = await readIssueCommentRunLogText({
+        runId, logStore: "local_file", logRef: "test/run.ndjson", logBytes,
+      });
+      const derived = deriveIssueCommentRunLogAttribution(
+        [{
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2020-01-01T00:00:01Z"),
+        }],
+        [{
+          runId,
+          agentId,
+          createdAt: new Date("2020-01-01T00:00:00Z"),
+          startedAt: new Date("2020-01-01T00:00:00Z"),
+          finishedAt: new Date("2020-01-01T00:00:02Z"),
+          logContent,
+        }],
+      );
+      if (logBytes === 0) {
+        expect(read).not.toHaveBeenCalled();
+        expect(derived.size).toBe(0);
+      } else {
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(read.mock.calls[1]?.[1]?.offset).toBe(12);
+        expect(derived.get(commentId)).toEqual({
+          derivedAuthorAgentId: agentId,
+          derivedCreatedByRunId: runId,
+          derivedAuthorSource: "run_log_comment_post",
+        });
+      }
+    } finally {
+      read.mockRestore();
+    }
+  });
 });
 
 describe("deriveIssueCommentRunLogAttribution", () => {
@@ -387,6 +543,34 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await ensureIssueRelationsTable(db);
   }, 20_000);
 
+  it("rejects stale monitor cancellation under the task lock and preserves saved policy settings", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Monitor cancellation", issuePrefix: "MCL", requireBoardApprovalForNewAgents: false });
+    const oldPolicy = {
+      mode: "normal" as const, commentRequired: true, stages: [],
+      monitor: { nextCheckAt: "2026-10-10T12:00:00.000Z", notes: "Check status", scheduledBy: "board" as const },
+    };
+    const savedPolicy = {
+      ...oldPolicy,
+      stages: [{ type: "review" as const, approvalsNeeded: 1 as const, participants: [{ type: "user" as const, userId: "reviewer" }] }],
+      maxReviewRounds: 4,
+      authorizationPolicy: { assignmentPolicy: { mode: "protected" as const } },
+    };
+    await db.insert(issues).values({ id: issueId, companyId, title: "Monitored task", executionPolicy: oldPolicy });
+    await svc.update(issueId, { executionPolicy: savedPolicy });
+    const { monitor: _oldMonitor, ...staleCancellation } = oldPolicy;
+    await expect(svc.update(issueId, { executionPolicy: staleCancellation, expectedExecutionPolicy: oldPolicy }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(savedPolicy);
+    const { monitor: _savedMonitor, ...cancellation } = savedPolicy;
+    await svc.update(issueId, { executionPolicy: cancellation, expectedExecutionPolicy: savedPolicy });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(cancellation);
+    await expect(svc.update(issueId, { executionPolicy: null, expectedExecutionPolicy: null }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(cancellation);
+  });
+
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueThreadInteractions);
@@ -485,6 +669,39 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([
       expect.objectContaining({ id: issueId }),
     ]);
+  });
+
+  it("ignores historical reader-attributed recovery cleanup without hiding explicit recovery decisions", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const old = new Date("2026-03-26T10:00:00Z");
+    const recent = new Date("2026-03-26T15:00:00Z");
+    const variants = [
+      { id: randomUUID(), details: { source: "source_revalidation", trigger: "read_projection" }, counts: false },
+      { id: randomUUID(), details: null, counts: true },
+      { id: randomUUID(), details: { outcome: "restored" }, counts: true },
+      { id: randomUUID(), details: { source: "source_revalidation", trigger: "issue_update" }, counts: true },
+    ];
+    await db.insert(issues).values(variants.map(({ id }) => ({
+      id, companyId, title: "Recovery audit", status: "done", updatedAt: old,
+    })));
+    await db.insert(activityLog).values(variants.map(({ id, details }) => ({
+      companyId, actorType: "user", actorId: userId, action: "issue.recovery_action_resolved",
+      entityType: "issue", entityId: id, details, createdAt: recent,
+    })));
+    await db.insert(issueComments).values(variants.map(({ id }) => ({
+      companyId, issueId: id, authorUserId: "other-user", body: "An older update", createdAt: old,
+    })));
+
+    const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
+    expect((await svc.list(companyId, { touchedByUserId: userId })).map(v => v.id).sort()).toEqual(expectedIds);
+    expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
+    const rows = await svc.list(companyId, {});
+    for (const variant of variants) {
+      expect(rows.find(v => v.id === variant.id)?.lastActivityAt).toEqual(variant.counts ? recent : old);
+    }
+    // Audit evidence is preserved, including the wrongly attributed old row.
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
   });
 
   function agentRow(companyId: string, input: {
@@ -3129,6 +3346,121 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.responsibleUserId).toBe(responsibleUserId);
   });
 
+  it("creates children under a private issue in the same private subtree", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Private subtree company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Private root",
+      visibility: "private",
+      privacyRootIssueId: parentIssueId,
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Inherited private child",
+      visibility: "open",
+    });
+
+    expect(child.visibility).toBe("private");
+    expect(child.privacyRootIssueId).toBe(parentIssueId);
+  });
+
+  it("creates one personal private project and parks private tasks there", async () => {
+    const companyId = randomUUID();
+    const responsibleUserId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Personal private tasks company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+
+    const [first, second] = await Promise.all([
+      svc.create(companyId, {
+        title: "First personal private task",
+        visibility: "private",
+        createdByUserId: responsibleUserId,
+      }),
+      svc.create(companyId, {
+        title: "Second personal private task",
+        visibility: "private",
+        createdByUserId: responsibleUserId,
+      }),
+    ]);
+
+    const personalProjects = await db.select().from(projects)
+      .where(eq(projects.personalOwnerUserId, responsibleUserId));
+    expect(personalProjects).toHaveLength(1);
+    expect(personalProjects[0]).toMatchObject({
+      companyId,
+      name: "My private tasks",
+      visibility: "private",
+    });
+    expect(first.projectId).toBe(personalProjects[0]!.id);
+    expect(second.projectId).toBe(personalProjects[0]!.id);
+    expect(first.privacyRootIssueId).toBe(first.id);
+    expect(second.privacyRootIssueId).toBe(second.id);
+    await expect(db.select().from(projectAccessMembers)
+      .where(eq(projectAccessMembers.projectId, personalProjects[0]!.id)))
+      .resolves.toEqual([
+        expect.objectContaining({ subjectType: "user", subjectId: responsibleUserId }),
+      ]);
+  });
+
+  it("keeps a responsible human and grants an agent access to its explicitly private task", async () => {
+    const companyId = randomUUID();
+    const responsibleUserId = randomUUID();
+    const creatorAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Agent private task company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Private task creator",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Agent email scratch task",
+      visibility: "private",
+      createdByAgentId: creatorAgentId,
+      actorResponsibleUserId: responsibleUserId,
+    });
+
+    expect(issue.responsibleUserId).toBe(responsibleUserId);
+    const personalProject = await db.select().from(projects)
+      .where(eq(projects.id, issue.projectId!))
+      .then((rows) => rows[0]!);
+    expect(personalProject.personalOwnerUserId).toBe(responsibleUserId);
+    await expect(db.select().from(projectAccessMembers)
+      .where(eq(projectAccessMembers.projectId, personalProject.id)))
+      .resolves.toEqual([
+        expect.objectContaining({ subjectType: "user", subjectId: responsibleUserId }),
+      ]);
+    await expect(db.select().from(issueAccessGrants)
+      .where(eq(issueAccessGrants.issueId, issue.id)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          subjectType: "agent",
+          subjectId: creatorAgentId,
+          source: "explicit",
+        }),
+      ]);
+  });
+
   it("only honors explicit responsibleUserId for trusted issue create callers", async () => {
     const companyId = randomUUID();
     const creatorUserId = randomUUID();
@@ -4891,82 +5223,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
-  it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const parentIssueId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const executionWorkspaceId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-      isPrimary: true,
-      sharedWorkspaceKey: "workspace-key",
-    });
-
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "Issue worktree",
-      status: "active",
-      providerType: "git_worktree",
-      providerRef: `/tmp/${executionWorkspaceId}`,
-    });
-
-    await db.insert(issues).values({
-      id: parentIssueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      title: "Parent issue",
-      status: "in_progress",
-      priority: "medium",
-      executionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-        workspaceRuntime: { profile: "agent" },
-      },
-    });
-
-    const child = await svc.create(companyId, {
-      parentId: parentIssueId,
-      projectId,
-      title: "Child issue",
-    });
-
-    expect(child.parentId).toBe(parentIssueId);
-    expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
-    expect(child.executionWorkspaceSettings).toEqual({
-      mode: "isolated_workspace",
-      workspaceRuntime: { profile: "agent" },
-    });
-  });
-
   it("preserves the parent project when a generic child create inherits workspace linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -5167,105 +5423,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const parentIssueId = randomUUID();
-    const parentProjectWorkspaceId = randomUUID();
-    const parentExecutionWorkspaceId = randomUUID();
-    const explicitProjectWorkspaceId = randomUUID();
-    const explicitExecutionWorkspaceId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-    });
-
-    await db.insert(projectWorkspaces).values([
-      {
-        id: parentProjectWorkspaceId,
-        companyId,
-        projectId,
-        name: "Parent workspace",
-      },
-      {
-        id: explicitProjectWorkspaceId,
-        companyId,
-        projectId,
-        name: "Explicit workspace",
-      },
-    ]);
-
-    await db.insert(executionWorkspaces).values([
-      {
-        id: parentExecutionWorkspaceId,
-        companyId,
-        projectId,
-        projectWorkspaceId: parentProjectWorkspaceId,
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        name: "Parent worktree",
-        status: "active",
-        providerType: "git_worktree",
-      },
-      {
-        id: explicitExecutionWorkspaceId,
-        companyId,
-        projectId,
-        projectWorkspaceId: explicitProjectWorkspaceId,
-        mode: "shared_workspace",
-        strategyType: "project_primary",
-        name: "Explicit shared workspace",
-        status: "active",
-        providerType: "local_fs",
-      },
-    ]);
-
-    await db.insert(issues).values({
-      id: parentIssueId,
-      companyId,
-      projectId,
-      projectWorkspaceId: parentProjectWorkspaceId,
-      title: "Parent issue",
-      status: "in_progress",
-      priority: "medium",
-      executionWorkspaceId: parentExecutionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-      },
-    });
-
-    const child = await svc.create(companyId, {
-      parentId: parentIssueId,
-      projectId,
-      title: "Child issue",
-      projectWorkspaceId: explicitProjectWorkspaceId,
-      executionWorkspaceId: explicitExecutionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "shared_workspace",
-      },
-    });
-
-    expect(child.projectWorkspaceId).toBe(explicitProjectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(explicitExecutionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
-    expect(child.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-    });
-  });
-
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -5337,7 +5494,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("derives project identity when an update adds workspace linkage to a projectless issue", async () => {
+  it("preserves projectless organization when an update adds workspace linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -5378,7 +5535,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       projectWorkspaceId,
     });
 
-    expect(updated?.projectId).toBe(projectId);
+    expect(updated?.projectId).toBeNull();
     expect(updated?.projectWorkspaceId).toBe(projectWorkspaceId);
   });
 
@@ -5517,7 +5674,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
       .then((rows) => rows[0] ?? null);
 
-    expect(workspace?.metadata).toEqual({
+    expect(workspace?.metadata).toMatchObject({
       config: {
         environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",
@@ -6894,6 +7051,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -6981,6 +7139,67 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
 
     return { issueId, assigneeAgentId, actorAgentId, staleRunId, actorRunId };
   }
+
+  it.each(["succeeded", "failed"])("preserves a human handoff when the outgoing legacy run later %s", async status => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    const original = await svc.getById(seeded.issueId);
+    await db.insert(companyMemberships).values({
+      companyId: original!.companyId,
+      principalType: "user",
+      principalId: "handoff-reviewer",
+      status: "active",
+    });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: seeded.issueId },
+    }).where(eq(heartbeatRuns.id, seeded.actorRunId));
+    await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    const handoff = await svc.update(seeded.issueId, {
+      assigneeAgentId: null,
+      assigneeUserId: "handoff-reviewer",
+      status: "in_review",
+      actorAgentId: seeded.actorAgentId,
+      actorRunId: seeded.actorRunId,
+    });
+    expect(handoff).toMatchObject({
+      assigneeAgentId: null,
+      assigneeUserId: "handoff-reviewer",
+      status: "in_review",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.actorRunId));
+    expect(run!.status).toBe("running");
+    await expect(svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(svc.update(seeded.issueId, {
+      title: "Late outgoing edit",
+      actorAgentId: seeded.actorAgentId,
+      actorRunId: seeded.actorRunId,
+    })).rejects.toMatchObject({ status: 403, details: { code: "issue_handed_off" } });
+
+    await terminalizeLegacyExecution({
+      db,
+      run: run!,
+      status,
+      fromStatuses: ["running"],
+      reconcileIfNeeded: true,
+      patch: { finishedAt: new Date(), ...(status === "failed" ? { errorCode: "process_lost" } : {}) },
+    });
+    await settleUnrecoverableExecutions(db);
+    await expect(svc.update(seeded.issueId, {
+      status: "done",
+      actorAgentId: seeded.actorAgentId,
+      actorRunId: seeded.actorRunId,
+    })).rejects.toMatchObject({ status: 403, details: { code: "issue_handed_off" } });
+    expect(await svc.getById(seeded.issueId)).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "handoff-reviewer",
+    });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId)))
+      .toHaveLength(0);
+  });
 
   it("lets the current assignee adopt a stale terminal checkout owner", async () => {
     const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });

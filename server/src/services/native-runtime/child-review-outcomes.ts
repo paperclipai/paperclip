@@ -1,12 +1,14 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, issueThreadInteractions, statusDecisions, type Db } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import { issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 
 /** Recorded decisions are evidence for the parent, never new review authority. */
 export async function childReviewOutcomes(
   db: Db,
   companyId: string,
   parentIssueId: string,
+  actor?: AuthorizationActor,
 ): Promise<ExecutionContinuationEnvelope["interactionOutcomes"]> {
   const rows = await db.select({
     id: issueThreadInteractions.id,
@@ -40,6 +42,7 @@ export async function childReviewOutcomes(
     .where(and(
       eq(issues.companyId, companyId),
       eq(issues.parentId, parentIssueId),
+      actor ? await issueReadSqlCondition(db, actor) : undefined,
       eq(issueThreadInteractions.kind, "request_confirmation"),
       inArray(issueThreadInteractions.status, ["accepted", "rejected"]),
       sql`${issueThreadInteractions.payload}->'target'->>'type' = 'custom'`,

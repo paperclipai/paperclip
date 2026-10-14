@@ -4,7 +4,7 @@ import { Link } from "@/lib/router";
 import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
@@ -61,7 +61,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           </PropertyRow>
         )}
         <PropertyRow label="Adapter">
-          <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
+          <span className="text-sm font-mono">{getAdapterLabel(agentDisplayAdapterType(agent))}</span>
         </PropertyRow>
       </div>
 

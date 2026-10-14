@@ -33,6 +33,8 @@ export interface PaperclipQuestion {
   helpText?: string;
   required: boolean;
   answerMode: PaperclipQuestionAnswerMode;
+  /** Editable starting text, never an implicit or submitted answer. Text mode only. */
+  initialText?: string;
   options?: PaperclipQuestionOption[];
   customAnswer?: PaperclipQuestionCustomAnswer;
   textValidation?: PaperclipQuestionTextValidation;
@@ -182,6 +184,17 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
     if (answerMode === "text" && options !== undefined && options.length > 0) {
       throw new PaperclipQuestionValidationError(`${path}/options`, "text questions cannot define options");
     }
+    const initialText = question.initialText;
+    if (initialText !== undefined && (
+      typeof initialText !== "string"
+      || initialText.length > 200_000
+      || Array.from(initialText).length > 100_000
+    )) {
+      throw new PaperclipQuestionValidationError(`${path}/initialText`, "must be a string of at most 100000 Unicode code points");
+    }
+    if (initialText !== undefined && answerMode !== "text") {
+      throw new PaperclipQuestionValidationError(`${path}/initialText`, "only text questions can define initial text");
+    }
     const custom = record(question.customAnswer);
     const customAnswer = custom === null
       ? undefined
@@ -252,6 +265,7 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
         : {}),
       required: question.required,
       answerMode,
+      ...(initialText !== undefined ? { initialText } : {}),
       ...(options !== undefined ? { options } : {}),
       ...(customAnswer !== undefined ? { customAnswer } : {}),
       ...(textValidation !== undefined ? { textValidation } : {}),
@@ -262,8 +276,8 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
     ...(optionalText(candidate.title, "/input/title", 1_000) !== undefined
       ? { title: optionalText(candidate.title, "/input/title", 1_000) }
       : {}),
-    ...(optionalText(candidate.description, "/input/description") !== undefined
-      ? { description: optionalText(candidate.description, "/input/description") }
+    ...(optionalText(candidate.description, "/input/description", 100_000) !== undefined
+      ? { description: optionalText(candidate.description, "/input/description", 100_000) }
       : {}),
     ...(optionalText(candidate.submitLabel, "/input/submitLabel", 200) !== undefined
       ? { submitLabel: optionalText(candidate.submitLabel, "/input/submitLabel", 200) }

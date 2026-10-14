@@ -253,6 +253,125 @@ describe("codex remote environment diagnostics", () => {
     expect(probeCall?.[3]).toContain("--skip-git-repo-check");
   });
 
+  // `sandboxTarget()` is declared later in this describe block; function
+  // declarations hoist, so the version-floor cases below reuse it.
+  function versionProbeResult(stdout: string) {
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 111,
+      startedAt: new Date().toISOString(),
+    };
+  }
+
+  it("fails before the hello probe when the sandbox Codex CLI is older than the model's floor", async () => {
+    // A sandbox image baked before gpt-6.1-sol reached the catalog still runs
+    // Codex 0.156.0. The backend would reject every turn with "not supported
+    // when using Codex with a ChatGPT account"; the Test must name the real
+    // gap (the CLI in the image) instead of running that doomed probe.
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.156.0\n"));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const incompatible = result.checks.find((check) => check.code === "codex_cli_version_incompatible");
+    expect(incompatible).toMatchObject({
+      level: "error",
+      message: "gpt-6.1-sol requires Codex CLI 0.159.0 or newer with ChatGPT sign-in.",
+      detail: "Detected Codex CLI 0.156.0.",
+    });
+    expect(incompatible?.hint).toContain("sandbox image");
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_skipped_cli_version")).toBe(true);
+    expect(result.checks.some((check) => check.code.startsWith("codex_hello_probe_") && !check.code.includes("skipped"))).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const versionCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, AdapterExecutionTarget, string, string[]];
+    expect(versionCall[2]).toBe("codex");
+    expect(versionCall[3]).toEqual(["--version"]);
+    expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+  });
+
+  it("runs the hello probe when the sandbox Codex CLI satisfies the model's floor", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.find((check) => check.code === "codex_cli_version_compatible")).toMatchObject({
+      level: "info",
+      message: "Codex CLI 0.160.0 satisfies the 0.159.0 minimum for gpt-6.1-sol.",
+    });
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the version probe for models without a verified floor", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-5.6-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.some((check) => check.code.startsWith("codex_cli_version_"))).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const helloCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, AdapterExecutionTarget, string, string[]];
+    expect(helloCall[3]).not.toEqual(["--version"]);
+  });
+
+  it("names the backend's ChatGPT model rejection instead of a generic probe failure", async () => {
+    // The CLI is new enough, but the account's plan or rollout does not include
+    // the model. The backend answers with one fixed sentence; surface it with
+    // the detected CLI version so the operator can tell the two causes apart.
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}",
+      pid: 222,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find((check) => check.code === "codex_hello_probe_model_rejected");
+    expect(rejected).toMatchObject({
+      level: "error",
+      message: "The Codex backend rejected gpt-6.1-sol for this ChatGPT account.",
+      detail: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account. Detected Codex CLI 0.160.0.",
+    });
+    expect(rejected?.hint).toContain("0.159.0");
+    expect(rejected?.hint).toContain("plan");
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_failed")).toBe(false);
+    // Not an auth failure: the managed-connection flow must not invalidate the credential.
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_auth_required")).toBe(false);
+  });
+
   it("emits the canonical adapter_auth_missing check when a sandbox hello probe reports missing auth", async () => {
     // The sandbox has no seedable credentials, so the hello probe returns an
     // authentication-required error. The Test must emit the neutral canonical

@@ -734,6 +734,21 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         entityRefs.push(`skill:${skill.id}`);
         break;
       }
+      case "update_skill": {
+        const skill = this.#state.skills?.find(candidate => candidate.id === command.skillId && candidate.companyId === run.companyId);
+        if (!skill) throw new CapabilityMockControlPlaneError("fixture_state_invalid", "Skill not found");
+        if (skill.versionId !== command.expectedVersionId) throw new CapabilityMockControlPlaneError("fixture_state_invalid", "Skill version changed");
+        const document = parseFrontmatterMarkdown(command.markdown);
+        if (!document.hasFrontmatter || !validateSkillFrontmatter(document.frontmatter) || !document.body.trim()) {
+          throw new CapabilityMockControlPlaneError("invalid_skill_document", "Provide a complete SKILL.md with valid frontmatter and a nonempty body");
+        }
+        skill.name = String(document.frontmatter.name);
+        skill.description = String(document.frontmatter.description);
+        skill.markdown = command.markdown;
+        skill.versionId = this.#id("skill-version");
+        entityRefs.push(`skill:${skill.id}`);
+        break;
+      }
       case "write_document": {
         requireText(command.key, "document key");
         requireText(command.title, "document title");

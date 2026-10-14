@@ -200,6 +200,7 @@ export async function reconcileAbandonedExecutionControl(
                 eq(agents.id, run.agentId),
                 eq(agents.companyId, run.companyId),
                 eq(agents.status, "running"),
+                eq(agents.lifecycleState, "ready"),
                 sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${run.agentId} and ${heartbeatRuns.status} = 'running')`,
               ),
             );

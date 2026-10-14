@@ -1,3 +1,4 @@
+import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
   CODEX_INVALID_REQUEST,
@@ -862,4 +863,159 @@ describe("Codex app-server Codex driver", () => {
         ?.payload,
     ).toMatchObject({ reportedWorkDisposition: "blocked" });
   });
+  it("exposes and dispatches only explicit chat tools across fresh and resumed direct chat", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const registerDeliverable = {
+      name: "register_deliverable",
+      description: "Prepare one requested file.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readCurrentWakeComments = {
+      name: "read_current_wake_comments",
+      description: "Read only comments bound into the current wake.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const requestHumanInput = {
+      name: "request_human_input",
+      description: "Ask one structured question through Paperclip.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const listChatAttachments = {
+      name: "list_chat_attachments",
+      description: "List same-conversation attachment metadata.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const reuseChatAttachment = {
+      name: "reuse_chat_attachment",
+      description: "Prepare one same-conversation attachment again.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readChatAttachment = {
+      name: "read_chat_attachment",
+      description: "Read one same-conversation file without resending it.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const handler = vi.fn(async (call) => ({
+      interaction: { id: "interaction-direct-question", status: "pending" },
+      callId: call.callId,
+    }));
+    const driver = makeDriver([first, second], {
+      conversationMode: "direct",
+      dynamicTools: [
+        registerDeliverable,
+        readCurrentWakeComments,
+        requestHumanInput,
+        listChatAttachments,
+        reuseChatAttachment,
+        readChatAttachment,
+        {
+          name: "report_progress",
+          description: "Must remain unavailable in direct chat.",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      dynamicToolHandler: handler,
+    });
+    const original = await driver.openSession({
+      runId: "run-direct-file",
+      normalizedSessionId: "normalized-direct-file",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Please return one file." },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    expect(
+      first.calls.find((call) => call.method === "thread/start")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+
+    const freshQuestion = await first.invoke({
+      id: "rpc-direct-question-fresh",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-fresh",
+        tool: "request_human_input",
+        arguments: { interactionKind: "questions" },
+      },
+    });
+    expect(freshQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-fresh",
+        arguments: { interactionKind: "questions" },
+      }),
+    );
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    expect(
+      second.calls.find((call) => call.method === "thread/resume")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+    const resumedQuestion = await second.invoke({
+      id: "rpc-direct-question-resumed",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-resumed",
+        tool: "request_human_input",
+        arguments: { interactionKind: "confirmation" },
+      },
+    });
+    expect(resumedQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-resumed",
+        arguments: { interactionKind: "confirmation" },
+      }),
+    );
+    await recovery?.session?.close({ reason: "test complete" });
+  });
+
+  it.each(["unknown", "validation"])("preserves the dynamic tool outcome boundary (%s)", async (outcome) => {
+    const transport = new FakeCodexTransport();
+    const error = outcome === "unknown"
+      ? new SemanticToolOutcomeUnknownError("write may have committed")
+      : new Error("invalid instruction input");
+    const handler = vi.fn(async () => { throw error; });
+    const session = await makeDriver([transport], {
+      dynamicTools: [{ name: "update_agent_instructions", description: "Write instructions.", inputSchema: { type: "object" } }],
+      dynamicToolHandler: handler,
+    }).openSession({ runId: "run-uncertain-write", normalizedSessionId: "session-uncertain-write", workingDirectory: WORKSPACE });
+    await session.startTurn({ message: { role: "user", text: "Update instructions." } });
+    const response = transport.invoke({ id: "rpc-write", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "uncertain-write", tool: "update_agent_instructions", arguments: {},
+    } });
+    if (outcome === "unknown") await expect(response).rejects.toBe(error);
+    else await expect(response).resolves.toMatchObject({ success: false });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const completions = events.filter((event) => event.eventType === "item.completed" && event.itemId === "uncertain-write");
+    expect(completions).toHaveLength(outcome === "unknown" ? 0 : 1);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
 });

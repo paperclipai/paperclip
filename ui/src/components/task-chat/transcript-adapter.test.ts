@@ -24,6 +24,8 @@ import {
   splitTranscriptAtAnchors,
   toolDisplayName,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
   type ThreadBackboneEntry,
 } from "./transcript-adapter";
@@ -32,10 +34,42 @@ import type {
   TaskChatPlanDocumentItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
+import { latestPendingRuntimeRequest } from "./task-chat-model";
 import { providerActivityPresentation } from "./task-chat-activity-presentation";
 import { nativeRunEventsToTranscript } from "../transcript/native-run-events";
 
 const TS = "2026-07-31T12:00:00.000Z";
+
+describe("runtime requests across steering sections", () => {
+  it("selects the newer request when an older pending permission crosses steering", () => {
+    const older: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "older-permission",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Earlier write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const newer: TranscriptEntry = { ...older, ts: "2026-07-31T12:00:02.000Z", requestId: "newer-permission", prompt: "Later write" };
+    const options = { runId: "run-steering", running: true };
+    const context = runtimeRequestSegmentContext([older, newer], options);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([newer], options), [newer], context, true);
+    expect(tail.map(item => item.id)).toEqual(["run-steering:runtime-request:older-permission", "run-steering:runtime-request:newer-permission"]);
+    expect(latestPendingRuntimeRequest(tail)?.requestId).toBe("newer-permission");
+  });
+
+  it.each(["pending", "resolved", "cancelled"] as const)("keeps one %s permission under whole-run authority", status => {
+    const request: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "permission-1",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const after: TranscriptEntry[] = [{ kind: "assistant", ts: "2026-07-31T12:00:01.000Z", text: "Continued.", channel: "progress" }];
+    if (status === "resolved") after.push({ ...request, ts: "2026-07-31T12:00:02.000Z", status, resolvedAction: "decline" });
+    const entries = [request, ...after];
+    const options = { runId: "run-steering", running: status !== "cancelled" };
+    const context = runtimeRequestSegmentContext(entries, options);
+    const history = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([request], { ...options, running: false }), [request], context);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(after, options), after, context, options.running);
+    const cards = [...history, ...tail].filter(item => item.kind === "protocol" && item.surface === "runtime_request");
+    expect(cards).toEqual([expect.objectContaining({ requestId: "permission-1", turnId: "provider-turn", status })]);
+    expect(history.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 0 : 1);
+    expect(tail.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 1 : 0);
+  });
+});
 
 describe("accepted native response-wake answers", () => {
   const runId = "native-response-wake";

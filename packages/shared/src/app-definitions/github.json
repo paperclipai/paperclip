@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "github",
   "name": "GitHub",
-  "description": "Give agents repository tools or let people work with an agent from GitHub issues and pull requests.",
+  "description": "Give agents access to GitHub repositories, issues, and pull requests.",
   "categories": [
     "developer"
   ],
@@ -29,7 +29,7 @@
       },
       "guidanceMd": "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
       "riskTier": "S3",
-      "label": "Use this connection as an agent tool",
+      "label": "Connect GitHub",
       "purpose": "tool",
       "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "github.code",
@@ -67,7 +67,8 @@
           "type": "password",
           "required": true,
           "placeholder": "github_pat_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -75,46 +76,6 @@
         "name": "Authorization",
         "prefix": "Bearer "
       },
-      "requiredResourceFilters": [
-        "organization",
-        "repository"
-      ]
-    },
-    {
-      "key": "chat-agent",
-      "label": "Chat with an agent",
-      "purpose": "channel",
-      "provider": "github",
-      "transport": "chat_sdk",
-      "auth": "api_key",
-      "ownershipModes": [
-        "customer"
-      ],
-      "whenToUse": "Let people in GitHub start and continue work with one Paperclip agent.",
-      "credentialFields": [
-        {
-          "key": "appId",
-          "label": "GitHub App ID",
-          "type": "text",
-          "required": true,
-          "placeholder": "123456",
-          "secret": false
-        },
-        {
-          "key": "privateKey",
-          "label": "Private key (PEM)",
-          "type": "textarea",
-          "required": true,
-          "placeholder": "-----BEGIN RSA PRIVATE KEY-----",
-          "secret": true
-        }
-      ],
-      "guidanceMd": "Generate the webhook secret in Paperclip, then create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the selectable issue_comment and pull_request_review_comment events. GitHub sends installation and installation_repositories automatically. Install the App only on repositories where people may mention the agent.",
-      "consoleLinks": {
-        "register": "https://github.com/settings/apps/new",
-        "docs": "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app"
-      },
-      "riskTier": "S3",
       "requiredResourceFilters": [
         "organization",
         "repository"

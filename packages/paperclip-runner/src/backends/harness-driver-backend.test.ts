@@ -97,6 +97,52 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it.each(["default", "disabled"] as const)("rejects unsupported reasoning %s before starting provider work", async reasoningMode => {
+    const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
+    const session = Object.assign(new FakeHarnessSession(), { startTurn });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect((await opened.capabilities()).perTurnReasoning).toBe(false);
+    const message = { role: "user" as const, text: "Hi" };
+    await expect(opened.startTurn({ message, reasoningMode })).rejects.toThrow("Per-turn reasoning is not supported");
+    expect(startTurn).not.toHaveBeenCalled();
+    await expect(opened.startTurn({ message })).resolves.toEqual({ turnId: "turn-1" });
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
+  });
+
+  it("forwards reasoning when the provider explicitly supports it", async () => {
+    const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
+    const session = Object.assign(new FakeHarnessSession(), { startTurn, supportsTurnReasoning: () => true });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect((await opened.capabilities()).perTurnReasoning).toBe(true);
+    const input = { message: { role: "user" as const, text: "Hi" }, reasoningMode: "disabled" as const };
+    await opened.startTurn(input);
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
+  it("refreshes negotiated controls after a warm handshake and separates follow-ups", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const steer = vi.fn(async () => {});
+    const session = Object.assign(new FakeHarnessSession(), { steer, turnControlCapabilities: () => ({ ...controls }) });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect(await opened.capabilities()).toMatchObject({ steering: false, queuedFollowUp: false });
+    controls = { steering: false, queuedFollowUp: true };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "steer" }, correlationId: "c-1" })).toThrow();
+    await opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-2", mode: "follow_up" });
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ mode: "follow_up" }));
+    controls = { steering: true, queuedFollowUp: false };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-3", mode: "follow_up" })).toThrow();
+  });
   it.each([false, true])("honors driver steering support even when the transport exposes a steer method (%s)", async supported => {
     const steer = vi.fn(async () => { throw new Error("provider does not support steering"); });
     const session = Object.assign(new FakeHarnessSession(), { steer });
@@ -833,7 +879,7 @@ describe("HarnessDriverBackend", () => {
         expect(events.map((event) => event.eventType)).toEqual([
           "runtime_request.created",
           "runtime_request.expired",
-          "turn.interrupted",
+          "turn.failed",
         ]);
       }
       await session.close({ reason: "fixture complete" });
@@ -880,7 +926,7 @@ describe("HarnessDriverBackend", () => {
     await session.close({ reason: "fixture complete" });
   });
 
-  it("emits one non-replayable input expiration and terminal wait after provider loss", async () => {
+  it("expires pending input without converting provider loss into a successful wait", async () => {
     const questionSet = {
       schema: "paperclip.question_set.v1" as const,
       questions: [{ id: "target", prompt: "Which target?", required: true, answerMode: "text" as const }],
@@ -922,11 +968,14 @@ describe("HarnessDriverBackend", () => {
       },
     } });
     await expect(iterator.next()).resolves.toMatchObject({ value: {
-      eventType: "turn.interrupted",
+      eventType: "turn.failed",
       sourceSeq: 3,
       payload: { reason: "provider_process_lost" },
     } });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    await expect(session.snapshot()).resolves.toMatchObject({ terminal: {
+      turnTerminalState: "failed", runTerminalState: "failed",
+    } });
   });
 
   it("does not synthesize a fallback after the input was already resolved", async () => {
@@ -956,6 +1005,28 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toThrow("provider transport lost after resolution");
   });
 
+  it.each([false, true])("retains final usage without accepting late output (journal boundary only: %s)", async journalOnly => {
+    class AccountingAfterCancelSession extends FakeHarnessSession {
+      async interrupt() {}
+      override async *events() {
+        yield prpEvent(1, "item.completed", { kind: "agentMessage", text: "late answer" });
+        yield prpEvent(2, "item.completed", { kind: "usage", usage: { runDelta: { inputTokens: 7, outputTokens: 3 }, runDeltaComplete: true } });
+        yield prpEvent(3, "turn.completed", { status: "completed" });
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new AccountingAfterCancelSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" }, workingDirectory: "/workspace",
+    });
+    if (journalOnly) session.revokeTurnPublication();
+    else await session.cancel({ reason: "durable governed wait", signal: new AbortController().signal }).cleanup;
+    const events = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.filter(event => event.payload.kind === "agentMessage")).toHaveLength(0);
+    expect(events.find(event => event.payload.kind === "usage")?.payload.usage).toMatchObject({ runDelta: { inputTokens: 7, outputTokens: 3 } });
+    expect(events.some(event => event.eventType === "turn.cancelled")).toBe(true);
+  });
+
   it("does not start provider work when Stop arrives before the first turn", async () => {
     const provider = new FakeHarnessSession();
     const start = vi.spyOn(provider, "startTurn");
@@ -968,6 +1039,58 @@ describe("HarnessDriverBackend", () => {
     await expect(session.startTurn({ message: { role: "user", text: "cancelled work" } }))
       .rejects.toThrow("native_session_cancelled");
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it("preserves a failed provider terminal after Stop instead of waiting for timeout", async () => {
+    class FailedAfterStop extends FakeHarnessSession {
+      override async *events() {
+        yield prpEvent(1, "item.delta", { text: "before stop" });
+        yield prpEvent(2, "item.delta", { text: "suppressed after stop" });
+        yield prpEvent(3, "runtime_request.cancelled", { requestId: "permission-1", turnId: "turn-1" });
+        yield prpEvent(4, "turn.failed", { status: "failed" });
+      }
+      async interrupt() {}
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new FailedAfterStop(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+      workingDirectory: "/workspace",
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    await session.cancel({ reason: "operator stop", signal: new AbortController().signal }).cleanup;
+    await expect(iterator.next()).resolves.toMatchObject({ value: { eventType: "runtime_request.cancelled", sourceSeq: 3 } });
+    await expect(iterator.next()).resolves.toMatchObject({ value: { eventType: "turn.failed", sourceSeq: 4 } });
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+  });
+
+  it("settles Stop after provider completion but before its queued terminal is consumed", async () => {
+    class CompletedBeforeStop extends FakeHarnessSession {
+      override async *events() {
+        yield prpEvent(1, "item.delta", { text: "before stop" });
+        yield prpEvent(2, "turn.completed", { status: "completed" });
+        yield prpEvent(3, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed",
+          runTerminalState: "succeeded", reportedWorkDisposition: "done",
+        });
+      }
+      async interrupt() { throw new Error("no active provider turn"); }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new CompletedBeforeStop(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+      workingDirectory: "/workspace",
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    await expect(session.cancel({ reason: "operator stop", signal: new AbortController().signal }).cleanup).rejects.toThrow("no active provider turn");
+    await expect(iterator.next()).resolves.toMatchObject({ value: { eventType: "turn.cancelled", sourceSeq: 2,
+      payload: { status: "cancelled", providerTerminalState: "completed", reason: "cancelled_after_provider_completed" } } });
+    await expect(iterator.next()).resolves.toMatchObject({ value: { eventType: "run.terminal", sourceSeq: 3,
+      payload: { turnTerminalState: "cancelled", runTerminalState: "cancelled", reportedWorkDisposition: "yielded" } } });
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    await expect(session.result()).resolves.toBeNull();
+    await expect(session.snapshot()).resolves.toMatchObject({ terminal: { runTerminalState: "cancelled" } });
   });
 
   it("does not synthesize a fallback after explicit run cancellation", async () => {

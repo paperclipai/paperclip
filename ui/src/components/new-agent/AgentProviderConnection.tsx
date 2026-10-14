@@ -2,7 +2,8 @@ import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
 import type { AiConnectionBinding, AiConnectionLoginIntent } from "@paperclipai/shared";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Cable } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import {
@@ -18,7 +19,7 @@ import {
   OnboardingCardField,
   OnboardingLoginCard,
 } from "../AdapterLoginChrome";
-import { ModelSourceTiles } from "../onboarding/ModelSourceTiles";
+import { ModelSourceTiles, type ModelConnectionMode } from "../onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "../onboarding/CredentialModeLink";
 import { FooterNav } from "../onboarding/FooterNav";
 import { MAKE_ROOM, CARD_ENTER } from "../onboarding/onboarding-motion";
@@ -40,10 +41,12 @@ export function AgentProviderConnection({
   canLogin,
   localEnvironment = false,
   onConnected,
+  onDraftChanged,
   onBack,
   testConnection,
   testError,
   managedAccount,
+  advancedConnection,
 }: {
   companyId: string;
   adapterType: "claude_local" | "codex_local" | "grok_local";
@@ -51,12 +54,15 @@ export function AgentProviderConnection({
   canLogin: boolean;
   localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
+  onDraftChanged?: () => void;
   onBack: () => void;
   testConnection: (connection: ProviderConnection) => Promise<boolean>;
   testError?: string | null;
+  advancedConnection?: { content: ReactNode; value?: AiConnectionBinding };
   /** Connections supplies its access intent; presentation and login controllers stay shared. */
   managedAccount?: {
     intent: AiConnectionLoginIntent;
+    nameForMethod?: (method: "subscription" | "api_key") => string;
     initialMethod?: "subscription" | "api_key";
     fixedMethod?: boolean;
     disabled?: boolean;
@@ -80,7 +86,9 @@ export function AgentProviderConnection({
     setLoginPhase("preparing");
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
-  const [opened, setOpened] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  // Connections already selected the provider before showing this step.
+  const [opened, setOpened] = useState(Boolean(advancedConnection || managedAccount));
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
@@ -119,11 +127,24 @@ export function AgentProviderConnection({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && !savedSubscription && storedLogin.data))
       ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
-  const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
+  const authMethod = method === "api" ? "api_key" : "subscription";
+  // Reconnect preserves an account's method. Choosing another method creates
+  // an account for the same provider; the task host selects it after sign-in.
+  const reconnecting = managedAccount?.intent.connectionId && (
+    managedAccount.fixedMethod !== false || managedAccount.initialMethod === authMethod
+  );
+  const managedIntent: AiConnectionLoginIntent | undefined = managedAccount ? {
+    ...managedAccount.intent,
+    connectionId: reconnecting ? managedAccount.intent.connectionId : undefined,
+    name: reconnecting
+      ? managedAccount.intent.name
+      : managedAccount.nameForMethod?.(authMethod) ?? managedAccount.intent.name,
+  } : undefined;
+  const localLogin = useLocalAiLogin(companyId, managedIntent ?? {
     provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
-  { allowHostClaude: health.data?.deploymentMode === "local_trusted" });
+  }, !advanced && canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
+  );
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -137,7 +158,7 @@ export function AgentProviderConnection({
         environmentId ?? undefined,
       ),
     retry: false,
-    enabled: !managedAccount,
+    enabled: !managedAccount && !advanced,
   });
   async function connect() {
     if (busy || managedAccount?.disabled) return;
@@ -145,11 +166,11 @@ export function AgentProviderConnection({
     setBusy(true);
     setError(null);
     try {
-      if (managedAccount) {
+      if (managedAccount && managedIntent) {
         if (method === "subscription" && !canUseLocalLogin) return;
         const result = savedManagedAccount.current ?? await (method === "api"
-          ? aiConnectionsApi.create(companyId, { ...managedAccount.intent, method: "api_key", apiKey: apiKey.trim() })
-          : localLogin.connect(managedAccount.intent));
+          ? aiConnectionsApi.create(companyId, { ...managedIntent, method: "api_key", apiKey: apiKey.trim() })
+          : localLogin.connect(managedIntent));
         savedManagedAccount.current = result;
         setApiKey("");
         if (run === epoch.current) managedAccount.onComplete({ ...result, method: method === "api" ? "api_key" : "subscription" });
@@ -215,34 +236,58 @@ export function AgentProviderConnection({
     !savedKeys.loading &&
     !storedLogin.data &&
     (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
+  const switchMode = (next: ModelConnectionMode) => {
+    if (advancedConnection && next === (advanced ? "advanced" : method)) return;
+    onDraftChanged?.();
+    cancel();
+    setAdvanced(next === "advanced");
+    setOpened(advancedConnection ? true : opened);
+    savedManagedAccount.current = null;
+    if (next !== "advanced") setMethod(next);
+    setApiKey("");
+    setStoredConnection(null);
+    setError(null);
+  };
   return (
     <div className="min-w-0 max-w-full">
       <ModelSourceTiles
-        label="Connect your model provider"
-        sources={[
+        label={advancedConnection ? "Connection type" : "Connect your model provider"}
+        sources={advancedConnection ? [
+          { id: "subscription", label: provider, icon: <AdapterMark type={adapterType} />, credentialMode: "subscription" },
+          { id: "api", label: provider, icon: <AdapterMark type={adapterType} />, credentialMode: "api" },
+          { id: "advanced", label: "Advanced", icon: <Cable className="size-6 text-muted-foreground" />, credentialMode: "advanced" },
+        ] : [
           {
             id: adapterType,
             label: provider,
             icon: <AdapterMark type={adapterType} />,
           },
         ]}
-        mode={method}
-        selectedId={opened ? adapterType : null}
-        collapsed={opened}
-        onSelect={() => { if (!managedAccount?.disabled) setOpened(true); }}
+        mode={advanced ? "advanced" : method}
+        selectedId={advancedConnection ? (advanced ? "advanced" : method) : opened ? adapterType : null}
+        collapsed={!advancedConnection && opened}
+        onSelect={id => {
+          if (managedAccount?.disabled) return;
+          if (advancedConnection) switchMode(id as ModelConnectionMode);
+          else setOpened(true);
+        }}
       />
-      {!opened && !managedAccount?.fixedMethod && (
+      {!advancedConnection && (!opened || managedAccount) && !managedAccount?.fixedMethod && (
         <div className="-ml-3 mt-1">
-          <CredentialModeLink
-            mode={method}
-            onChange={(next) => {
-              savedManagedAccount.current = null;
-              setMethod(next);
-              setError(null);
-            }}
-          />
+          <CredentialModeLink mode={method} onChange={switchMode} />
         </div>
       )}
+      {advanced && advancedConnection ? <>
+        <div className="pt-5">{advancedConnection.content}</div>
+        <FooterNav
+          onBack={onBack}
+          primaryLabel="Use connection"
+          primaryDisabled={!advancedConnection.value}
+          onPrimary={() => {
+            if (advancedConnection.value) onConnected({ env: {}, aiConnection: advancedConnection.value });
+          }}
+        />
+      </> : <>
       {!opened && savedKeys.options.length > 0 && (
         <p className="mt-2 text-sm text-muted-foreground">
           {savedKeys.options.length} saved API{" "}
@@ -251,15 +296,17 @@ export function AgentProviderConnection({
       )}
       {method === "subscription" &&
         savedKeys.subscriptions.length > 0 && (
-          <SavedProviderKeySelect
-            options={savedKeys.subscriptions}
-            value={savedSubscription?.id ?? ""}
-            onChange={setSubscriptionId}
-            loading={false}
-            error={false}
-            kind="subscription"
-            disabled={busy}
-          />
+          <div className={advancedConnection ? "pt-5" : undefined}>
+            <SavedProviderKeySelect
+              options={savedKeys.subscriptions}
+              value={savedSubscription?.id ?? ""}
+              onChange={(id) => { onDraftChanged?.(); setSubscriptionId(id); }}
+              loading={false}
+              error={false}
+              kind="subscription"
+              disabled={busy}
+            />
+          </div>
         )}
       <motion.div
         initial={false}
@@ -282,6 +329,7 @@ export function AgentProviderConnection({
                   value={selectedKey?.id ?? ""}
                   disabled={busy}
                   onChange={(id) => {
+                    onDraftChanged?.();
                     setSelectedKeyId(id);
                     setApiKey("");
                     setStoredConnection(null);
@@ -300,6 +348,7 @@ export function AgentProviderConnection({
                         : "Enter API key here"
                     }
                     onChange={(value) => {
+                      onDraftChanged?.();
                       setSelectedKeyId("");
                       setApiKey(value);
                       setStoredConnection(null);
@@ -315,7 +364,7 @@ export function AgentProviderConnection({
                 adapterType={adapterType}
                 environmentId={environmentId}
                 chrome="onboarding"
-                aiConnection={managedAccount?.intent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
+                aiConnection={managedIntent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
                 autoStart
                 onStored={() => {}}
                 onPromptReady={(url) => {
@@ -377,7 +426,7 @@ export function AgentProviderConnection({
       )}
       <FooterNav
         onBack={() => {
-          if (opened) cancel();
+          if (opened && !advancedConnection) cancel();
           else onBack();
         }}
         primaryLabel={
@@ -398,10 +447,13 @@ export function AgentProviderConnection({
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
           (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
+          (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
           (!managedAccount && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
-          !opened ||
+          // The saved-subscription chooser renders outside the opened section,
+          // so reusing the visible choice must not wait for a tile click.
+          (!opened && !(method === "subscription" && savedSubscription)) ||
           (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
@@ -418,6 +470,7 @@ export function AgentProviderConnection({
           } else void connect();
         }}
       />
+      </>}
     </div>
   );
 }

@@ -1,0 +1,86 @@
+{
+  "schema": "paperclip.copilot-provider-pack-smoke/v1",
+  "sourceRevision": "8aa867b64d5fc2fd62cff110bd000addf5dc54de",
+  "providerPackDigest": "sha256:627992ea80e8be7154d07cbc9925b781519199e25690b02d4a044f44342e6bd8",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "candidate": {
+    "version": "1.0.88",
+    "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+    "closureDigest": "sha256:fb3b367a45cd76122fe931521fa2a18adf234ba944fc302db9e10e005e57037e",
+    "qualification": "pending",
+    "path": "provider-assets/copilot/darwin-arm64",
+    "sha256": "sha256:49ad871973843e2bfc3ee1d1886f6a1537e887748cc6f3d5148b3ec7f3c7298f"
+  },
+  "executableSha256": "sha256:a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+  "initializeRequestId": 0,
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {}
+      }
+    },
+    "agentInfo": {
+      "name": "Copilot",
+      "title": "Copilot",
+      "version": "1.0.88"
+    },
+    "authMethods": [
+      {
+        "id": "copilot-login",
+        "name": "Log in with Copilot CLI",
+        "description": "Run `copilot login` in the terminal",
+        "_meta": {
+          "terminal-auth": {
+            "command": "/fixture/verified/copilot",
+            "args": [
+              "login"
+            ],
+            "label": "Copilot Login"
+          }
+        }
+      }
+    ]
+  },
+  "missingCredentialPreflight": "COPILOT_AUTH_REQUIRED",
+  "cleanExit": true,
+  "inheritedCredentials": false,
+  "promptSent": false,
+  "networkMode": "COPILOT_OFFLINE=true; loopback metadata-only provider",
+  "fixtureRequests": [],
+  "protocolFixtureModel": "gpt-4.1 (not a qualified GitHub model)",
+  "costUsd": 0,
+  "qualification": "pending: no credential, entitlement, model execution or Daytona",
+  "dependencyResolution": {
+    "source": "committed workspace manifests and tracked lock",
+    "independentCleanResolutions": 2,
+    "identical": true,
+    "resolvedLockSha256": "sha256:aa97f89ba8a7c63573114dda54895523d316df67956c65eeccbc89d3166bb1b4",
+    "frozenFilteredInstallPassed": true
+  },
+  "runnerd": {
+    "buildSourceRevision": "78360fa55adff11da9f200b228467eca782b81e1",
+    "rustTree": "17d327094be5759d80ef5bd02e15c59e78548ea2",
+    "sha256": "sha256:e6a9fb5170b76a49b8411834b3706e8edf8f1a1ae85ad13b55368158aa7f67a0",
+    "sourceTreeMatchesPackRevision": true,
+    "liveTurnAtThisRevision": false
+  },
+  "verification": {
+    "runnerTypeScriptAndVerifiedSidecarBuild": "passed",
+    "providerAndContractTestsPassed": 68,
+    "builderAndScriptTestsPassed": 11
+  }
+}

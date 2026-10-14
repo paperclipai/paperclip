@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildNativeCompletionContract,
+  buildNativeCompletionContractSources,
+  nativeCompletionRequestsWithSources,
+  nativeCompletionSource,
+  nativeImmediateObjectiveSource,
   nativeCompletionRequestsForComments,
   resolveNativeCompletionPolicy,
 } from "./completion-contracts.js";
@@ -173,5 +177,50 @@ describe("resolveNativeCompletionPolicy", () => {
         completionAuthority: "server_arbiter",
       });
     }
+  });
+});
+
+
+describe("completion source ownership", () => {
+  it("selects only an explicitly bound initial description objective", () => {
+    const source = nativeCompletionSource("description", "task", "Same text");
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: source, excluded: false })).toEqual(source);
+    expect(nativeImmediateObjectiveSource({ issueId: "other-task", objectiveSource: source, excluded: false })).toBeNull();
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: source, excluded: true })).toBeNull();
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: nativeCompletionSource("comment", "comment", "Same text"), excluded: false })).toBeNull();
+  });
+
+  it("preserves separate identical comment sources and their criterion order", () => {
+    const comments = [{ id: "first", body: " Repeat. Repeat. " }, { id: "second", body: " Repeat. Repeat. " }];
+    const { requests, sources } = nativeCompletionRequestsWithSources(comments);
+    const issue = { id: "task", title: "Task", description: "Brief" };
+    const contract = buildNativeCompletionContract(issue, { immediateRequests: requests });
+    expect(contract.criteria).toEqual([
+      { id: "pending_comment_1", requirement: "Repeat. Repeat." },
+      { id: "pending_comment_2", requirement: "Repeat. Repeat." },
+    ]);
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: requests, immediateRequestSources: sources })).toEqual([
+      { id: "pending_comment_1", source: nativeCompletionSource("comment", "first", comments[0]!.body) },
+      { id: "pending_comment_2", source: nativeCompletionSource("comment", "second", comments[1]!.body) },
+    ]);
+  });
+
+  it("does not infer comment provenance from identical requirement text", () => {
+    const issue = { id: "task", title: "Task", description: "Same text" };
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: ["Same text"] })).toEqual([]);
+    expect(buildNativeCompletionContractSources({ issue, immediateRequest: "Same text" })).toEqual([]);
+    expect(buildNativeCompletionContractSources({
+      issue,
+      immediateRequest: "Same text",
+      immediateRequestSource: nativeCompletionSource("description", "task", "Same text"),
+    })).toEqual([{ id: "objective", source: nativeCompletionSource("description", "task", "Same text") }]);
+    expect(buildNativeCompletionContractSources({ issue })).toEqual([{ id: "objective", source: nativeCompletionSource("description", "task", "Same text") }]);
+    expect(buildNativeCompletionContractSources({ issue, humanResponseId: "answer" })).toEqual([]);
+  });
+
+  it("keeps attachment-only and incomplete-wake requirements independent", () => {
+    const comments = [{ id: "file", body: "", attachments: [{ id: "attachment" }] }];
+    expect(nativeCompletionRequestsWithSources(comments).sources).toEqual([null]);
+    expect(nativeCompletionRequestsWithSources(comments, { requiredFullWakeCommentCount: 8 }).sources).toEqual([null]);
   });
 });

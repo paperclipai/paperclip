@@ -167,6 +167,9 @@ export interface WakeQueueTransaction {
     commentIds: string[];
   }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  /** Verifies a Done onboarding parent's completion wake against its own completed children. */
+  isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
+    reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
   /**
    * Atomically claims the wake for promotion, guarded on its current
    * `deferred_issue_execution` status. Call this before any other write in

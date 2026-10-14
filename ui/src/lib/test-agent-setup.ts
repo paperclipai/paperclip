@@ -8,13 +8,15 @@ export async function testAgentSetup(input: {
   companyId: string;
   agentId?: string;
   adapterType: string;
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
-  aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
+  aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
   testCredentials?: Record<string, string>;
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
   const payload = {
+    ...(input.runner ? { runner: input.runner } : {}),
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.aiConnection ? { aiConnection: input.aiConnection } : {}),
     adapterConfig: input.adapterConfig,
@@ -27,12 +29,13 @@ export async function testAgentSetup(input: {
     payload,
   );
   if (
+    input.aiConnection?.mode === "router" ||
     runtime.status === "fail" ||
     runtime.checks.some(
       (check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE,
     ) ||
     runtime.checks.some((check) => check.code.includes("hello_probe")) ||
-    !["claude_local", "codex_local"].includes(input.providerAdapter)
+    !["claude_local", "codex_local", "grok_local"].includes(input.providerAdapter)
   )
     return runtime;
   const provider = await agentsApi.testEnvironment(
@@ -40,7 +43,14 @@ export async function testAgentSetup(input: {
     input.providerAdapter,
     {
       ...payload,
-      adapterConfig: { ...input.adapterConfig, engine: "cli" },
+      runner: "legacy",
+      adapterConfig: {
+        ...input.adapterConfig,
+        engine: "cli",
+        ...(input.adapterType === "paperclip_runner" && input.providerAdapter === "grok_local"
+          ? { command: "/opt/paperclip/providers/grok/1.0.13/grok" }
+          : {}),
+      },
     },
   );
   const checks = [
@@ -52,7 +62,7 @@ export async function testAgentSetup(input: {
     ).values(),
   ];
   return {
-    adapterType: input.adapterType,
+    adapterType: runtime.adapterType,
     testedAt: provider.testedAt,
     status:
       provider.status === "fail"

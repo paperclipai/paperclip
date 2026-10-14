@@ -193,6 +193,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
       );
     },
     onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
       queryClient.invalidateQueries({ queryKey });
     },
   });

@@ -12,6 +12,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
   try {
     const tests = path.join(root, "server/src/__tests__");
     mkdirSync(tests, { recursive: true });
+    mkdirSync(path.join(root, "server/scripts"), { recursive: true });
     symlinkSync(path.join(repoRoot, "node_modules"), path.join(root, "node_modules"), "junction");
     writeFileSync(path.join(root, "package.json"), JSON.stringify({ private: true }));
     writeFileSync(path.join(root, "vitest.config.mjs"), `export default {

@@ -1,0 +1,15 @@
+{
+  "commandDigest": "sha256:527f9cbbad2f3e75169cae70d7aa5b189200e57f1ab7f9e1523357b5606b0939",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "copilot",
+    "agentProfileVersion": 3,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "1.0.88",
+    "protocolPolicyRevision": "copilot-agent-manual-v1",
+    "acpxPatchSha256": "a64405199b381688ffd72fdbb88396e423394cb407813d7b6f1db43bae9c3933",
+    "policySha256": "a4be69be43db84052560420a3ca546a665c9165573c24d543eb33d144ba138a3",
+    "distributionSourceSha256": "bb3dcf14972e82f6578c8250540cfbc6ec2ad953bea5d4f10d28c8b461011f3f",
+    "agentFilesBinding": "registered-runtime-context-v1"
+  }
+}

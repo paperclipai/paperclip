@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
 const captureExceptionMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,67 @@ describe("errorHandler", () => {
     expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
   });
 
+  function endedPoolQueryError() {
+    // Drizzle wraps the driver error; postgres.js uses CONNECTION_ENDED for a
+    // query issued after this process called `sql.end()`.
+    const driverError = Object.assign(new Error("write CONNECTION_ENDED db.example:5432"), {
+      code: "CONNECTION_ENDED",
+    });
+    return new Error('Failed query: select "id" from "issues"', { cause: driverError });
+  }
+
+  it("answers 503 without reporting a query that outlived the database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(endedPoolQueryError(), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({ error: "Server is shutting down" });
+    expect(res.err).toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
+  it("only ends the response when headers were already sent during database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = { ...makeRes(), end: vi.fn(), headersSent: true } as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(endedPoolQueryError(), req, res, next);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.end).toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("still reports an ended-pool query error outside database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: {} } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = endedPoolQueryError();
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(captureExceptionMock).toHaveBeenCalledWith(err);
+  });
+
+  it("still reports other connection failures during database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new Error("Failed query", {
+      cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }),
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(captureExceptionMock).toHaveBeenCalledWith(err);
+  });
+
   it("exposes raw 500 messages for trusted Cloud tenant imports", () => {
     const req = {
       ...makeReq(),
@@ -119,6 +181,35 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("keeps HTTP failures and existing telemetry for proven external MCP outages while skipping Sentry", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const original = mcpDiscoveryHttpFailure(new Response(null, { status: 503 }), "Remote app returned HTTP 503");
+    const err = retainMcpConnectionFailure(original, new HttpError(502, original.message));
+
+    errorHandler(err, req, res, vi.fn());
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect(res.json).toHaveBeenCalledWith({ error: original.message });
+    expect(res.err).toBe(err);
+    expect(res.__errorContext.error.message).toBe(original.message);
+    expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledOnce();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("reports copied connection markers and unrelated database failures", () => {
+    for (const err of [
+      Object.assign(new HttpError(502, "Remote app returned HTTP 503", { status: 503 }), {
+        connectionFailure: { schemaVersion: 1, provider: "mcp_http", operation: "discover_tools", reason: "remote_unavailable" },
+      }),
+      new HttpError(500, "database unavailable"),
+    ]) {
+      errorHandler(err, makeReq(), makeRes(), vi.fn());
+    }
+    expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledTimes(2);
   });
 
   it("sanitizes chat setup errors before logs and crash reporting", () => {

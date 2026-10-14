@@ -58,12 +58,13 @@ export function assertInterruptedChat(input: {
   }
 }
 
-export async function prepareChatBrief(workspacePath: string, nonce: string) {
+export async function prepareChatBrief(workspacePath: string, nonce: string, timeoutMs = 120_000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error("Brief wait must be bounded between 1 and 300000ms");
   await mkdir(workspacePath, { recursive: true });
   const gate = path.join(workspacePath, `chat-brief-${nonce}.txt`);
   const ready = `${gate}.waiting`;
   const scriptPath = path.join(workspacePath, `wait-for-brief-${nonce}.cjs`);
-  const script = `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(ready)},"waiting");const end=Date.now()+120000;const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){console.log(fs.readFileSync(${JSON.stringify(gate)},"utf8"));clearInterval(timer)}else if(Date.now()>end){clearInterval(timer);process.exitCode=1}},100);`;
+  const script = `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(ready)},"waiting");const end=Date.now()+${timeoutMs};const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){console.log(fs.readFileSync(${JSON.stringify(gate)},"utf8"));clearInterval(timer)}else if(Date.now()>end){clearInterval(timer);process.exitCode=1}},100);`;
   await writeFile(scriptPath, script, "utf8");
   return { gate, ready, scriptPath };
 }

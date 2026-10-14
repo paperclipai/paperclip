@@ -62,6 +62,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: ["project:read", "issue:read"].includes(input.action),
+      action: input.action,
+      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -119,6 +125,10 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
+
 function buildApp(routerFactory: (app: express.Express) => void) {
   const app = express();
   app.use(express.json());
@@ -147,7 +157,7 @@ function createProjectApp() {
 
 function createIssueApp() {
   issueServer ??= buildApp((expressApp) => {
-    expressApp.use("/api", issueRoutes({} as any, {} as any));
+    expressApp.use("/api", issueRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, {} as any));
   }).listen(0);
   return issueServer;
 }
@@ -164,7 +174,7 @@ async function closeServer(server: Server | null) {
   });
 }
 
-describe.sequential("execution environment route guards", () => {
+describe("execution environment route guards", () => {
   afterAll(async () => {
     await closeServer(projectServer);
     await closeServer(issueServer);

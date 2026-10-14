@@ -25,6 +25,8 @@ function sourceAnchor(path, line, heading) {
 
 function classifyHeading(path, heading) {
   const normalized = heading.toLowerCase();
+  if (normalized === "conversational confirmation answers") return "always_agent_tool";
+  if (normalized === "incidental feedback") return "optional_agent_tool";
   if (/(authentication|identity|checkout|budget|error|wake|heartbeat|approval follow-up|activity|audit|release|terminology)/.test(normalized)) {
     return "control_plane_owned";
   }
@@ -39,6 +41,7 @@ function classifyHeading(path, heading) {
 
 function semanticOperation(disposition, heading) {
   const normalized = heading.toLowerCase();
+  if (normalized === "conversational confirmation answers") return "call_api";
   if (disposition === "control_plane_owned") return "runtime_reconciliation";
   if (normalized.includes("document") || normalized.includes("plan")) return "write_document";
   if (normalized.includes("comment") || normalized.includes("report")) return "report_progress";
@@ -157,7 +160,7 @@ function renderHandoff() {
   ].join("\n") + "\n";
 }
 
-async function buildContract() {
+export async function buildContract() {
   const contract = JSON.parse(await readFile(contractPath, "utf8"));
   const capabilities = await readSkillHeadings(contract.skillSources);
   const discoveredTools = await readLegacyTools();

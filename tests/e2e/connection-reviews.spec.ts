@@ -149,7 +149,6 @@ for (const journey of [
         .getByPlaceholder("https://example.com/actions")
         .fill(provider.url);
       await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page.getByRole("button", { name: "Save and continue" }).click();
       await page.getByRole("button", { name: /Check link/i }).click();
       await expect(
         page.getByRole("heading", { name: /is ready/i }),

@@ -37,9 +37,9 @@ describe("Codex CI sandbox trust boundary", () => {
       [...condition!.matchAll(/matrix\.profileId == '([^']+)'/g)].map((match) => match[1]),
     );
     expect([...provisionedProfiles].sort()).toEqual(
-      [...new Set(runnerMatrix.filter(requiresCodexCiSandbox).map((cell) => cell.profile.id))].sort(),
+      [...new Set(runnerMatrix.filter(cell => cell.task.flow !== "provider_connection").filter(requiresCodexCiSandbox).map((cell) => cell.profile.id))].sort(),
     );
-    for (const cell of runnerMatrix) {
+    for (const cell of runnerMatrix.filter(cell => cell.task.flow !== "provider_connection")) {
       expect(
         cell.environment.id === "local" && provisionedProfiles.has(cell.profile.id),
         cell.id,

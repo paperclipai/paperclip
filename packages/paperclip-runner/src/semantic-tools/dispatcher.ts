@@ -16,7 +16,7 @@ import {
   DEFAULT_CAPABILITY_SCENARIO_POLICY,
 } from "./policy.js";
 import {
-  containsProtectedSemanticData,
+  isPaperclipSemanticValueWithinBounds,
   redactSemanticValue,
 } from "./redaction.js";
 import { discoverCapabilityDefinitions } from "./discovery.js";
@@ -121,11 +121,11 @@ export class CapabilitySemanticDispatcher {
       return result;
     }
 
-    if (containsProtectedSemanticData(call.input)) {
+    if (!isPaperclipSemanticValueWithinBounds(call.input)) {
       const decision = deniedDecision(
         invocation,
-        "protected_data_denied",
-        "Protected data is not accepted by semantic tools.",
+        "input_invalid",
+        "Tool input exceeds safe bounds.",
       );
       const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
       this.#record(policyContext, decision, call.callId, call.input, result);
@@ -188,6 +188,10 @@ export class CapabilitySemanticDispatcher {
           // it must neither advertise nor accept them merely for lacking claims.
           denyOperations: [...new Set([
             ...(scenario.denyOperations ?? []),
+            "get_workspace" as const,
+            "list_workspaces" as const,
+            "select_workspace" as const,
+            "prepare_repository" as const,
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,
@@ -331,6 +335,10 @@ export class CapabilitySemanticDispatcher {
           slug: typeof input.slug === "string" ? input.slug : undefined,
           description: requiredString(input.description), markdown: requiredString(input.markdown) };
         break;
+      case "update_skill":
+        command = { kind: "update_skill", taskId, skillId: requiredString(input.skillId),
+          expectedVersionId: requiredString(input.expectedVersionId), markdown: requiredString(input.markdown) };
+        break;
       case "write_document":
         command = {
           kind: "write_document",
@@ -418,6 +426,13 @@ export class CapabilitySemanticDispatcher {
       if (skill) return readSuccess(outcome.result.stateRevision, {
         id: skill.id, name: skill.name, slug: skill.slug, description: skill.description,
         versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
+      });
+    }
+    if (operationId === "update_skill" && outcome.ok) {
+      const id = outcome.result.entityRefs.find(ref => ref.startsWith("skill:"))?.slice(6);
+      const skill = this.port.snapshot().skills?.find(candidate => candidate.id === id);
+      if (skill) return readSuccess(outcome.result.stateRevision, {
+        skillId: skill.id, path: "SKILL.md", versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
       });
     }
     return commandOutcome(outcome);
@@ -601,7 +616,9 @@ function optionalStringArray(value: unknown): string[] {
 }
 
 function optionalJson(value: unknown): CapabilityJsonValue {
-  return value === undefined ? {} : redactSemanticValue(value);
+  // Admission already validated JSON shape and bounds. Redaction is for
+  // audit copies, never for arguments sent to the control plane.
+  return value === undefined ? {} : value as CapabilityJsonValue;
 }
 
 function deepFreeze<T>(value: T): T {

@@ -9,25 +9,20 @@ import {
 const AGENT_NAME = "CEO";
 const TASK_TITLE = "Paperclip onboarding";
 
-/**
- * The first task opens with the chief of staff's opening card sitting where
- * the composer is. Cancel hands the plain composer back (the card stays
- * pending), and the composer is where the mode toggle lives.
- *
- * The card arrives with the interactions fetch, after the composer's first
- * paint, so a bare `count()` right after navigation sees no card and skips
- * the click; the card then lands on top of the composer and hides the mode
- * toggle. Wait for the card (or, if it is already dismissed, the pending
- * strip it leaves behind) before deciding, and only return once the plain
- * composer is back.
- */
+/** Wait for the saved question before checking its dismissed presentation. */
+async function expectOpeningQuestionDismissed(page: import("@playwright/test").Page) {
+  await expect(page.getByTestId("task-chat-unanswered-question")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("task-chat-composer-takeover")).toHaveCount(0);
+  await expect(page.getByTestId("task-chat-pending-input-indicator")).toHaveCount(0);
+  await expect(page.getByTestId("task-chat-composer-mode")).toBeVisible({ timeout: 30_000 });
+}
+
+/** The opening question arrives after the interactions fetch. Dismiss it once. */
 async function dismissOpeningCard(page: import("@playwright/test").Page) {
   const takeover = page.getByTestId("task-chat-composer-takeover");
-  const pendingStrip = page.getByTestId("task-chat-pending-input-indicator");
-  await expect(takeover.or(pendingStrip).first()).toBeVisible({ timeout: 30_000 });
-  const cancel = takeover.getByRole("button", { name: "Cancel", exact: true });
-  if (await cancel.count()) await cancel.first().click();
-  await expect(page.getByTestId("task-chat-composer-mode")).toBeVisible({ timeout: 30_000 });
+  await expect(takeover).toBeVisible({ timeout: 30_000 });
+  await takeover.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expectOpeningQuestionDismissed(page);
 }
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
@@ -155,6 +150,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(issuePath);
   await dismissOpeningCard(page);
+  await page.reload();
+  await expectOpeningQuestionDismissed(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const desktopPlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(desktopPlanningToggle).toBeVisible();
@@ -174,10 +171,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(issuePath);
-  await dismissOpeningCard(page);
+  await expectOpeningQuestionDismissed(page);
   await page.getByTestId("task-chat-composer-mode").click();
-  await page.getByRole("menuitem", { name: /Auto mode/ }).click();
-  await expect(page.getByTestId("task-chat-composer-mode")).toHaveAttribute("data-pending-work-mode", "standard");
+  await expect(page.getByTestId("task-chat-composer-mode")).toHaveCount(0);
+  await expect(page.getByTestId("task-chat-composer-add")).toBeVisible();
   await page.screenshot({
     path: `${screenshotDir}/desktop-standard-toggle-${timestamp}.png`,
     fullPage: true,
@@ -186,7 +183,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await setMode("planning");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(issuePath);
-  await dismissOpeningCard(page);
+  await expectOpeningQuestionDismissed(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const mobilePlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(mobilePlanningToggle).toBeVisible();

@@ -1,6 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
+export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // The bundled-plugin boot reconcile refreshes the persisted manifest for an
 // existing install only when PLUGIN_VERSION changes. A manifest change without a
 // version bump never reaches an existing install. The reconcile also reads the
@@ -13,7 +14,8 @@ const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 // 0.1.5 adds the `duplexCommandStream` sandbox capability to the driver.
 // 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
 // 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
-const PLUGIN_VERSION = "0.1.7";
+// 0.1.8 declares the default provider acquisition budget to the host.
+const PLUGIN_VERSION = "0.1.8";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -31,6 +33,7 @@ const manifest: PaperclipPluginManifestV1 = {
   environmentDrivers: [
     {
       driverKey: "daytona",
+      defaultAcquireTimeoutMs: DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
       kind: "sandbox_provider",
       displayName: "Daytona Sandbox",
       description:
@@ -139,8 +142,8 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           timeoutMs: {
             type: "number",
-            description: "Timeout for Daytona create/start/stop/execute operations in milliseconds.",
-            default: 300000,
+            description: "Timeout for Daytona operations in milliseconds. Fresh lease acquisition shares one budget across creation, setup, and inline cleanup.",
+            default: DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
           },
           livenessTimeoutMs: {
             type: "number",

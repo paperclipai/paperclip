@@ -9,6 +9,7 @@ import {
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -48,10 +49,16 @@ export async function executionProjectionsForRuns(
   companyId: string,
   runIds: string[],
   now = new Date(),
+  options: { retryDatabaseReads?: boolean } = {},
 ) {
   const projections = new Map<string, ExecutionProjection>();
   if (!runIds.length) return projections;
-  const runs = await db
+  // Opt in only with a pooled Db outside a transaction. Issue enrichment also
+  // calls this helper with a transaction, whose failed reads must not replay.
+  const read = <T>(query: () => Promise<T>) => options.retryDatabaseReads
+    ? retryIdempotentDatabaseOperation(query)
+    : query();
+  const runs = await read(async () => db
     .select(executionRunColumns)
     .from(heartbeatRuns)
     .where(
@@ -59,8 +66,8 @@ export async function executionProjectionsForRuns(
         eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.id, runIds),
       ),
-    );
-  const coordinators = await db
+    ));
+  const coordinators = await read(async () => db
     .select()
     .from(nativeRunFinalizations)
     .where(
@@ -68,7 +75,7 @@ export async function executionProjectionsForRuns(
         eq(nativeRunFinalizations.companyId, companyId),
         inArray(nativeRunFinalizations.runId, runIds),
       ),
-    );
+    ));
   const issueIds = [
     ...new Set(
       runs
@@ -77,7 +84,7 @@ export async function executionProjectionsForRuns(
     ),
   ];
   const pending = issueIds.length
-    ? await db
+    ? await read(async () => db
         .select({
           issueId: issueThreadInteractions.issueId,
           kind: issueThreadInteractions.kind,
@@ -89,10 +96,10 @@ export async function executionProjectionsForRuns(
             inArray(issueThreadInteractions.issueId, issueIds),
             eq(issueThreadInteractions.status, "pending"),
           ),
-        )
+        ))
     : [];
   const recovery = issueIds.length
-    ? await db
+    ? await read(async () => db
         .select({
           issueId: issueRecoveryActions.sourceIssueId,
           cause: issueRecoveryActions.cause,
@@ -112,7 +119,7 @@ export async function executionProjectionsForRuns(
             ]),
           ),
         )
-        .orderBy(desc(issueRecoveryActions.updatedAt))
+        .orderBy(desc(issueRecoveryActions.updatedAt)))
     : [];
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
   for (const run of runs) {

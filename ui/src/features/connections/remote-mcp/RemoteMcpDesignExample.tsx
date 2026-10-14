@@ -8,7 +8,7 @@ function ConnectExample({ providerId }: { providerId: RemoteMcpProviderId }) {
   const provider = remoteMcpProviders[providerId];
   const [state, setState] = useState<RemoteMcpSetupState>({
     step: "access", grantKind: "organization", setupComplete: false, url: provider.defaultUrl,
-    auth: provider.supportsBrowserAuth ? "auto" : "none", token: "", headers: [], advanced: false, connectStatus: "idle",
+    auth: provider.supportsBrowserAuth ? "auto" : "none", token: "", headers: [], connectStatus: "idle",
     connected: false, identity: null, allAgents: true, agentIds: [], permissions: {},
     tools: [], notice: null, refreshing: false,
   });
@@ -17,7 +17,7 @@ function ConnectExample({ providerId }: { providerId: RemoteMcpProviderId }) {
   const actions: RemoteMcpSetupActions = { edit, navigate: (step) => edit({ step }), connect: explain, cancelConnect: explain,
     openProvider: explain, saveExit: explain, resumeDraft: explain, finish: explain, refresh: explain, reconnect: explain, disconnect: explain,
   };
-  return <RemoteMcpConnectionSetup connectionId="design-example" provider={provider} state={state} actions={actions} agents={[]} />;
+  return <RemoteMcpConnectionSetup companyId="" connectionId="design-example" provider={provider} state={state} actions={actions} agents={[]} />;
 }
 
 /** Design-guide specimen; full state matrix is maintained in each provider's Storybook group. */

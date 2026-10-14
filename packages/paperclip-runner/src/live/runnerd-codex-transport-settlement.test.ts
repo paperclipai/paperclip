@@ -273,7 +273,14 @@ it.each([
       builder.queueCommand("turn.stop", {
         reason: "interrupted original close",
       });
-      if (!missingHome) builder.queueCommand("runner.suspend", {});
+      // The outbound-ACK row must reach its injected loss after retained event
+      // commits finish. An already queued suspend starts the real two-second
+      // ACK deadline behind that commit queue and can time out without ever
+      // sending the frame this row is meant to withhold. Maintenance queues its
+      // own suspend after draining; the other rows keep the old pending command.
+      if (!missingHome && completedTerminalAck !== "completed") {
+        builder.queueCommand("runner.suspend", {});
+      }
       // Match the retained production split: runner-owned unacknowledged
       // output plus another full provider-owned prefix behind the old suspend.
       const runnerFile = join(original, "runner/runner-state.json");
@@ -349,7 +356,13 @@ it.each([
           ),
         )
         .digest("hex");
-      const appendEvent = vi.fn(async (_event: PrpEvent) => {});
+      const appendEvent = vi.fn(async (_event: PrpEvent) => {
+        // Reproduce slow durable commits without extending the runtime ACK
+        // deadline: all 218 retained events still have to commit exactly once.
+        if (completedTerminalAck === "completed") {
+          await new Promise((resolveCommit) => setTimeout(resolveCommit, 30));
+        }
+      });
       const maintenanceAbort = new AbortController();
       let finalAuthorityRevoked = false;
       const authorize = vi.fn(async () => {

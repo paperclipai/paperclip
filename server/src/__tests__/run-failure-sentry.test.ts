@@ -71,12 +71,14 @@ async function importFreshSentryWithGateOpen() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
   delete process.env[DSN_ENV];
   delete process.env[FRONTEND_DSN_ENV];
   delete process.env[BACKEND_DSN_ENV];
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (originalDsn === undefined) delete process.env[DSN_ENV];
   else process.env[DSN_ENV] = originalDsn;
   if (originalFrontendDsn === undefined) delete process.env[FRONTEND_DSN_ENV];
@@ -89,6 +91,46 @@ afterEach(() => {
 });
 
 describe("captureRunFailure", () => {
+  it.each([undefined, "off", "true", "invalid"])("keeps ordinary server errors enabled while run reporting is disabled: %s", async mode => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
+    if (mode === undefined) delete process.env.PAPERCLIP_SENTRY_RUN_FAILURES;
+    sentryModule.captureRunFailure(baseEvent());
+    const error = new Error("ordinary server failure");
+    sentryModule.captureException(error);
+    expect(captureException).toHaveBeenCalledExactlyOnceWith(error);
+  });
+
+  it("provides authenticated run references and groups repeated causes without leaking scope", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.com");
+    const event = baseEvent({ companyId: "company", agentId: "agent", taskId: null,
+      diagnostics: { execution: { failurePhase: "setup", originalFailureCode: "tool_name_collision" }, adapter: {}, provider: {}, exceptions: [], truncatedFields: [] } });
+    sentryModule.captureRunFailure(event);
+    sentryModule.captureRunFailure({ ...event, runId: "another-run", errorMessage: "Another tool failed" });
+    sentryModule.captureException(new Error("unrelated"));
+    const first = captureException.mock.calls[0]![1]!;
+    expect(first.tags).toMatchObject({ event_kind: "run_failure", company_id: "company", agent_id: "agent", root_error_code: "tool_name_collision" });
+    expect(first.tags).not.toHaveProperty("task_id");
+    expect(first.contexts.paperclip).toEqual({ schemaVersion: 1, companyId: "company", agentId: "agent",
+      runPath: `/api/heartbeat-runs/${event.runId}`, eventsPath: `/api/heartbeat-runs/${event.runId}/events`, logPath: `/api/heartbeat-runs/${event.runId}/log`,
+      runUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}`, eventsUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}/events`,
+      logUrl: `https://paperclip.example.com/api/heartbeat-runs/${event.runId}/log` });
+    expect(first.fingerprint).toEqual(["process_lost", "claude-code", "setup", "tool_name_collision"]);
+    expect(captureException.mock.calls[1]![1]?.fingerprint).toEqual(first.fingerprint);
+    expect(captureException.mock.calls[2]![1]).toBeUndefined();
+  });
+
+  it.each([undefined, "invalid", "ftp://example.com", "https://user:password@example.com", "https://example.com?token=private", "https://example.com/#private", "https://example.com/private"])("omits unsafe or absent instance URLs: %s", async value => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", value);
+    sentryModule.captureRunFailure(baseEvent({ companyId: "company", agentId: "agent" }));
+    const context = captureException.mock.calls[0]![1]!.contexts.paperclip;
+    expect(context).toHaveProperty("runPath");
+    expect(context).not.toHaveProperty("runUrl");
+    expect(JSON.stringify(context)).not.toMatch(/password|private/);
+  });
+
   it("sets the fingerprint [errorCode, agentAdapter] in that order", async () => {
     const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 
@@ -119,7 +161,7 @@ describe("captureRunFailure", () => {
     expect(captureException.mock.calls[0]![1]?.fingerprint).toEqual(["unknown", "claude-code"]);
   });
 
-  it("sets the five diagnostic values on the run_failure context", async () => {
+  it("keeps missing process exit evidence null on the run_failure context", async () => {
     const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
     const event = baseEvent();
 
@@ -131,7 +173,52 @@ describe("captureRunFailure", () => {
       errorMessage: event.errorMessage,
       errorCode: event.errorCode,
       agentAdapter: event.agentAdapter,
+      exitCode: null,
+      signal: null,
     });
+  });
+
+  it.each([
+    { exitCode: 1, signal: null },
+    { exitCode: 0, signal: null },
+    { exitCode: -1, signal: null },
+    { exitCode: -2147483648, signal: null },
+    { exitCode: 2147483647, signal: null },
+    { exitCode: null, signal: "SIGTERM" },
+    { exitCode: null, signal: "SIGKILL" },
+  ])("retains process exit evidence without changing grouping: %j", async (processExit) => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = baseEvent({ ...processExit, errorMessage: "Adapter failed", errorCode: "adapter_failed" });
+
+    sentryModule.captureRunFailure(event);
+
+    const [error, context] = captureException.mock.calls[0]!;
+    expect((error as Error).message).toBe("Adapter failed");
+    expect(context?.contexts.run_failure).toMatchObject(processExit);
+    expect(context?.fingerprint).toEqual(["adapter_failed", event.agentAdapter]);
+    expect(context?.tags).not.toHaveProperty("exitCode");
+    expect(context?.tags).not.toHaveProperty("signal");
+  });
+
+  it.each([
+    ["private-exit-payload", "SIGTERM private-signal-payload"],
+    ["1", "constructor"],
+    [true, "__proto__"],
+    [1.5, "SIGCUSTOM"],
+    [NaN, ""],
+    [Infinity, 9],
+    [2147483648, { private: "signal-payload" }],
+    [-2147483649, ["SIGTERM"]],
+  ])("rejects malformed process exit fields (%j, %j)", async (exitCode, signal) => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure({ ...baseEvent(), exitCode, signal } as RunFailureEvent);
+
+    expect(captureException.mock.calls[0]![1]?.contexts.run_failure).toMatchObject({
+      exitCode: null,
+      signal: "unknown",
+    });
+    expect(JSON.stringify(captureException.mock.calls)).not.toContain("private-");
   });
 
   it("does not set an instance key on the run_failure context", async () => {
@@ -150,6 +237,7 @@ describe("captureRunFailure", () => {
     sentryModule.captureRunFailure(event);
 
     expect(captureException.mock.calls[0]![1]?.tags).toEqual({
+      event_kind: "run_failure",
       run_id: event.runId,
       task_id: event.taskId,
       error_code: event.errorCode,
@@ -168,6 +256,31 @@ describe("captureRunFailure", () => {
     const [received] = captureException.mock.calls[0]!;
     expect(received).toBeInstanceOf(Error);
     expect((received as Error).message).toBe("boom");
+  });
+
+  it("uses sanitized original stacks and causes instead of the reporting stack", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    sentryModule.captureRunFailure(baseEvent({ diagnostics: {
+      execution: { runtimeMode: "native", failurePhase: "setup" },
+      adapter: {}, provider: {}, truncatedFields: [],
+      exceptions: [
+        { name: "TypeError", message: "setup failed", stack: "TypeError: setup failed\n    at originalSetup (/app/setup.js:42:7)" },
+        { name: "Error", message: "connection reset", stack: "Error: connection reset\n    at socketRead (/app/network.js:9:4)", code: "ECONNRESET", requestId: "req-123" },
+      ],
+    } }));
+    const [error, context] = captureException.mock.calls[0]!;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: "TypeError", message: "setup failed", cause: { message: "connection reset" } });
+    expect((error as Error).stack).toContain("originalSetup");
+    expect((error as Error).stack).not.toContain("captureRunFailure");
+    expect(context?.contexts.run_exception_1).toMatchObject({ code: "ECONNRESET", requestId: "req-123" });
+    expect(context?.contexts.run_execution).toMatchObject({ failurePhase: "setup" });
+  });
+
+  it("does not invent a reporter stack for a saved result with no original exception", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    sentryModule.captureRunFailure(baseEvent());
+    expect((captureException.mock.calls[0]![0] as Error).stack).toBeUndefined();
   });
 
   it("does not throw and captures nothing when the gate is closed", async () => {

@@ -52,3 +52,17 @@ export interface EmailThreadSummary {
   messages: EmailMessage[];
   publications: EmailPublicationSummary[];
 }
+/** A missing inbox is not proof of availability: AgentMail hides other accounts. */
+export interface EmailAddressCheckResult {
+  address: string;
+  status: "taken" | "unknown";
+}
+
+/** Metadata only, filtered by provider and the current user's credential grants. */
+export interface EmailCredentialOption {
+  id: string;
+  label: string;
+  scope: "organization" | "pod" | "inbox" | "unavailable";
+  inboxId: string | null;
+  createdAt: string;
+}

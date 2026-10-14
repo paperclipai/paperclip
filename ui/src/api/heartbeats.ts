@@ -1,4 +1,5 @@
 import type { AgentAppearance } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
@@ -22,6 +23,8 @@ export interface ActiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -55,6 +58,8 @@ export interface LiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -120,7 +125,7 @@ export const heartbeatsApi = {
   list: (
     companyId: string,
     agentId?: string,
-    limit?: number,
+    limit = HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
     options: HeartbeatRunListOptions = {},
   ) => {
     const searchParams = new URLSearchParams();
@@ -232,7 +237,7 @@ export const heartbeatsApi = {
     api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
   liveRunsForCompany: (
     companyId: string,
-    options?: number | { minCount?: number; limit?: number },
+    options?: number | { minCount?: number; limit?: number; distinctTasks?: boolean },
   ) => {
     const searchParams = new URLSearchParams();
     if (typeof options === "number") {
@@ -241,6 +246,7 @@ export const heartbeatsApi = {
       if (options.minCount)
         searchParams.set("minCount", String(options.minCount));
       if (options.limit) searchParams.set("limit", String(options.limit));
+      if (options.distinctTasks) searchParams.set("distinctTasks", "true");
     }
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(

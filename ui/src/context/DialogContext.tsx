@@ -18,6 +18,8 @@ interface NewIssueDefaults {
   assigneeUserId?: string;
   title?: string;
   description?: string;
+  /** Open the created task after submission; disabled unless the caller opts in. */
+  navigateOnCreate?: boolean;
 }
 
 interface NewGoalDefaults {

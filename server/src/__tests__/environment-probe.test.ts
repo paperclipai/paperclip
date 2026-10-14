@@ -6,12 +6,16 @@ const mockProbePluginSandboxProviderDriver = vi.hoisted(() => vi.fn());
 const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 const mockRuntimeAcquireRunLease = vi.hoisted(() => vi.fn());
 const mockRuntimeReleaseRunLease = vi.hoisted(() => vi.fn());
+const mockRuntimeExecute = vi.hoisted(() => vi.fn());
+const mockRecordPlatformProbe = vi.hoisted(() => vi.fn());
 const mockEnvironmentRuntimeService = vi.hoisted(() => vi.fn(() => ({
   acquireRunLease: mockRuntimeAcquireRunLease,
+  execute: mockRuntimeExecute,
   getDriver: vi.fn(() => ({
     releaseRunLease: mockRuntimeReleaseRunLease,
   })),
 })));
+vi.mock("../services/environments.js", () => ({ environmentService: () => ({ recordSandboxPlatformProbe: mockRecordPlatformProbe }) }));
 
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({
   ensureSshWorkspaceReady: mockEnsureSshWorkspaceReady,
@@ -27,18 +31,118 @@ vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: mockEnvironmentRuntimeService,
 }));
 
-import { probeEnvironment } from "../services/environment-probe.ts";
+import { probeEnvironment, readSandboxPlatformQualification, SANDBOX_PLATFORM_PROBE_COMMAND } from "../services/environment-probe.ts";
+import * as configRuntime from "../services/environment-config.js";
+import { SANDBOX_PLATFORM_PROBE_METADATA_KEY, resolveActiveEnvironmentCustomImageTemplateForRuntime } from "../services/environment-custom-image-runtime.js";
 
 describe("probeEnvironment", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    mockRecordPlatformProbe.mockReset().mockResolvedValue(true);
+    mockRuntimeExecute.mockReset();
     mockEnsureSshWorkspaceReady.mockReset();
     mockProbePluginEnvironmentDriver.mockReset();
     mockProbePluginSandboxProviderDriver.mockReset();
     mockResolvePluginSandboxProviderDriverByKey.mockReset();
     mockResolvePluginSandboxProviderDriverByKey.mockResolvedValue(null);
     mockRuntimeAcquireRunLease.mockReset();
-    mockRuntimeReleaseRunLease.mockReset();
+    mockRuntimeReleaseRunLease.mockReset().mockResolvedValue({ id: "lease", companyId: "company", environmentId: "env", status: "released", cleanupStatus: "success" });
     mockEnvironmentRuntimeService.mockClear();
+  });
+
+  it.each(["2.38", "2.39", "musl"])("records actual immutable-image facts for %s and reads them without another lease", async libc => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", image, reuseLease: false }, metadata: null } as any;
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { image, remoteCwd: "/workspace" } } });
+    mockRuntimeExecute.mockResolvedValue({ exitCode: 0, stdout: `Linux\naarch64\n${libc === "musl" ? "musl" : `glibc\nglibc ${libc}`}\n` });
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    expect(result.ok).toBe(true);
+    expect(result.details?.platformQualificationRecorded).toBe(true);
+    expect(mockRuntimeExecute).toHaveBeenCalledWith(expect.objectContaining({ command: "sh", args: ["-c", SANDBOX_PLATFORM_PROBE_COMMAND], timeoutMs: 10_000, bypassSession: true }));
+    const proof = mockRecordPlatformProbe.mock.calls[1]![0].proof;
+    const measured = { platform: "linux", architecture: "arm64", libc: libc === "musl" ? "musl" : "glibc", ...(libc === "musl" ? {} : { glibcVersion: `glibc ${libc}` }) };
+    expect(proof.facts).toEqual(measured);
+    environment.metadata = { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { company: proof } };
+    expect(await readSandboxPlatformQualification({} as any, environment, "company")).toEqual(measured);
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledTimes(1);
+    expect(await readSandboxPlatformQualification({} as any, environment, "foreign-company")).toBeNull();
+    expect(await readSandboxPlatformQualification({} as any, { ...environment, config: { ...environment.config, image: `registry.example.test/runtime@sha256:${"b".repeat(64)}` } }, "company")).toBeNull();
+    vi.mocked(configRuntime.resolveEnvironmentDriverConfigForRuntime).mockImplementation(async (_db, _company, _env, options) => {
+      options?.onResolvedCustomImageTemplate?.({ id: "changed-template", capturedAt: null, templateKind: "image", bindingField: "image" });
+      return { driver: "sandbox", config: environment.config };
+    });
+    expect(await readSandboxPlatformQualification({} as any, environment, "company")).toBeNull();
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledTimes(1);
+  });
+  it.each(["measurement", "cleanup", "config-race"])("does not claim qualification after %s failure while retaining connection readiness", async failure => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", image }, metadata: null } as any;
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { image } } });
+    mockRuntimeExecute.mockResolvedValue({ exitCode: failure === "measurement" ? 1 : 0, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n" });
+    if (failure === "cleanup") mockRuntimeReleaseRunLease.mockRejectedValueOnce(new Error("owned cleanup failed"));
+    if (failure === "config-race") mockRecordPlatformProbe.mockResolvedValue(false);
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    expect(result.ok).toBe(true);
+    expect(result.details?.platformQualificationRecorded).toBe(false);
+    expect(mockRecordPlatformProbe.mock.calls[0]![0].proof).toBeNull();
+    if (failure !== "config-race") expect(mockRecordPlatformProbe).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    null,
+    { id: "lease", companyId: "company", environmentId: "env", status: "released", cleanupStatus: "failed" },
+    { id: "lease", companyId: "company", environmentId: "env", status: "pending_cleanup", cleanupStatus: "failed" },
+    { id: "other-lease", companyId: "company", environmentId: "env", status: "released", cleanupStatus: "success" },
+    { id: "lease", companyId: "foreign-company", environmentId: "env", status: "released", cleanupStatus: "success" },
+    { id: "lease", companyId: "company", environmentId: "other-environment", status: "released", cleanupStatus: "success" },
+  ])("does not record platform evidence without an owned successful cleanup receipt (%j)", async receipt => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", image }, metadata: null } as any;
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { image } } });
+    mockRuntimeExecute.mockResolvedValue({ exitCode: 0, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n" });
+    mockRuntimeReleaseRunLease.mockResolvedValue(receipt);
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    expect(result.ok).toBe(true);
+    expect(result.details?.platformQualificationRecorded).toBe(false);
+    expect(mockRecordPlatformProbe).toHaveBeenCalledTimes(1);
+    expect(mockRecordPlatformProbe.mock.calls[0]![0].proof).toBeNull();
+  });
+  it("reads an effective custom image without touching its usage timestamp", async () => {
+    const update = vi.fn();
+    const capturedAt = new Date("2026-10-12T00:00:00Z");
+    const row = { id: "template", provider: "daytona", templateKind: "image", templateRef: `registry.example.test/runtime@sha256:${"a".repeat(64)}`, capturedAt, metadata: null };
+    const db = { select: () => ({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([row]) }) }) }), update };
+    const identity = vi.fn();
+    const result = await resolveActiveEnvironmentCustomImageTemplateForRuntime(db as never, { environmentId: "env", baseConfig: { provider: "daytona", reuseLease: false }, runtimeConfig: { provider: "daytona", reuseLease: false }, readOnly: true, onResolvedTemplate: identity });
+    expect(result).toMatchObject({ image: row.templateRef });
+    expect(identity).toHaveBeenCalledWith({ id: "template", capturedAt: capturedAt.toISOString(), templateKind: "image", bindingField: "image" });
+    expect(update).not.toHaveBeenCalled();
+  });
+  it.each(["provider_template", "unknown"])("does not qualify a named active %s boot binding over a pinned base image", async templateKind => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", image }, metadata: null } as any;
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockImplementation(async (_db, _company, _env, options) => {
+      const bindingField = templateKind === "provider_template" ? "template" : "templateRef";
+      options?.onResolvedCustomImageTemplate?.({ id: "active-template", capturedAt: null, templateKind, bindingField });
+      return { driver: "sandbox", config: { ...environment.config, [bindingField]: "mutable-template-name" } };
+    });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { image } } });
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    expect(result.ok).toBe(true);
+    expect(result.details?.platformQualificationRecorded).toBe(false);
+    expect(mockRuntimeExecute).not.toHaveBeenCalled();
+    expect(mockRecordPlatformProbe).toHaveBeenCalledTimes(1);
+  });
+  it("returns false when an atomic probe record loses its config comparison", async () => {
+    const { environmentService } = await vi.importActual<typeof import("../services/environments.js")>("../services/environments.js");
+    const returning = vi.fn().mockResolvedValue([]);
+    const where = vi.fn(() => ({ returning }));
+    const db = { update: vi.fn(() => ({ set: vi.fn(() => ({ where })) })) };
+    expect(await environmentService(db as never).recordSandboxPlatformProbe({ environmentId: "env", companyId: "company", config: { provider: "daytona" }, proof: { v: 1 } })).toBe(false);
+    expect(where).toHaveBeenCalledOnce();
+    expect(returning).toHaveBeenCalledOnce();
   });
 
   it("reports local environments as immediately available", async () => {

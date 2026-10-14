@@ -500,6 +500,11 @@ describe("Capability live projection", () => {
       .map((item) => item.body);
     expect(bodies.some((body) => body.includes("semantic-interaction-result"))).toBe(false);
   });
+  it.each([["cursor", "Cursor"], ["copilot", "GitHub Copilot"], ["pi", "Pi"]] as const)("labels the %s provider truthfully", async (agent, label) => {
+    const snapshot = await liveSnapshot();
+    snapshot.config = { ...snapshot.config, provider: "acpx", driver: "acpx_runtime", acpxAgent: agent };
+    expect(projectCapabilityIssueThread({ snapshot }).identity.agentLabel).toBe(`Real ${label} via ACPX`);
+  });
 
   it("separates exposed agent tools from withheld control-plane operations", async () => {
     const view = projectCapabilityIssueThread({ snapshot: await liveSnapshot() });

@@ -266,6 +266,8 @@ describe("native external chat workspace boundary", () => {
       path.join(instanceRoot, "workspaces", agentId),
     ]) {
       const oldInput = { ...execution, workspace: { cwd } };
+      const admittedScope = { ...scopeA, taskRoot: cwd };
+      expect(nativeChatWorkspaceCwd(admittedScope, null, false)).toBeNull();
       expect(
         nativeChatWorkspaceMatches({
           scope: scopeA,
@@ -275,6 +277,8 @@ describe("native external chat workspace boundary", () => {
       ).toBe(false);
       expect(oldInput.workspace.cwd).toBe(cwd);
     }
+    const legacyTaskRoot = path.join(instanceRoot, "chat-workspaces", companyId, agentId, issueA);
+    expect(nativeChatWorkspaceCwd({ ...scopeA, taskRoot: legacyTaskRoot }, null, false)).toBe(legacyTaskRoot);
   });
 
   it("fails closed if an existing task directory is a symlink to another task", async () => {

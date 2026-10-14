@@ -1,7 +1,11 @@
+import { useConnectionModels } from "../ai-connections/useConnectionModels";
 import { AgentCharacter } from "../AgentCharacter";
 import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
+import type { AgentRunnerChoice } from "@paperclipai/shared";
+import { CodexRunnerSelect } from "../CodexRunnerSelect";
+import { SelectPopover } from "../ui/select";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
@@ -49,10 +53,11 @@ import {
 } from "@/lib/provider-credential";
 import { defaultCreateValues } from "../agent-config-defaults";
 import { ModelDropdown } from "../AgentConfigForm";
-import { Field } from "../agent-config-primitives";
+import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect, nativeSelectClassName } from "../ui/select";
 import {
   OnboardingCard,
   OnboardingHeading,
@@ -64,9 +69,9 @@ import {
   AgentProviderConnection,
   type ProviderConnection,
 } from "./AgentProviderConnection";
+import { adapterCuratesModelOrder } from "../../lib/model-utils";
 
-const controlClass =
-  "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const controlClass = nativeSelectClassName;
 const blocking = (result: AdapterEnvironmentTestResult) =>
   result.status === "fail" ||
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
@@ -82,10 +87,12 @@ export function NewAgentSetup() {
     );
   return (
     <Setup
-      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}`}
+      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}`}
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
-      adapterType={params.get("adapterType") ?? ""}
+      adapterType={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "codex_local" : params.get("adapterType") ?? ""}
+      initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "paperclip" : "auto")}
+      preserveNativeCodex={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex"}
       runnerProvider={params.get("runnerProvider") ?? "codex"}
       createdAgentId={params.get("createdAgentId")}
     />
@@ -97,25 +104,34 @@ function Setup({
   name,
   adapterType,
   runnerProvider,
+  initialRunner,
+  preserveNativeCodex,
   createdAgentId,
 }: {
   companyId: string;
   name: string;
   adapterType: string;
   runnerProvider: string;
+  initialRunner: string;
+  preserveNativeCodex: boolean;
   createdAgentId: string | null;
 }) {
   const navigate = useNavigate();
   const cache = useQueryClient();
   const { openNewIssue } = useDialogActions();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
+  const [runner, setRunner] = useState<AgentRunnerChoice>(initialRunner === "legacy" || initialRunner === "paperclip" ? initialRunner : "auto");
+  const requestAdapterType = preserveNativeCodex && runner === "paperclip" ? "paperclip_runner" : adapterType;
   const isRunner = adapterType === "paperclip_runner";
-  const brandType = isRunner
-    ? runnerProvider === "claude"
+  const isDot = isRunner && runnerProvider === "openai_dot";
+  const brandType = isDot ? "openai_dot" : isRunner
+    ? runnerProvider === "grok"
+      ? "grok_local"
+      : runnerProvider === "claude"
       ? "claude_local"
       : runnerProvider === "opencode"
         ? "opencode_local"
-        : "codex_local"
+        : runnerProvider === "codex" ? "codex_local" : runnerProvider
     : adapterType;
   const connectionAdapter =
     brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
@@ -127,7 +143,8 @@ function Setup({
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
     chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
-  const showModel = !["cursor_cloud", "hermes_gateway"].includes(adapterType);
+  const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
+  const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [kimiModel, setKimiModel] = useState("");
   const [kimiBaseUrl, setKimiBaseUrl] = useState("");
@@ -152,6 +169,7 @@ function Setup({
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
+  const connectionModels = useConnectionModels(companyId, aiBinding, brandType);
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
@@ -184,9 +202,15 @@ function Setup({
     setTestState("idle");
     setError(null);
   };
-  const adapters = useQuery({
+  const editConnection = () => {
+    setConnection(null);
+    setRuntimeAiBinding(undefined);
+    resetTest();
+    setScreen("connect");
+  };
+  const adapterInventory = useQuery({
     queryKey: queryKeys.adapters.all,
-    queryFn: adaptersApi.list,
+    queryFn: () => adaptersApi.list(),
   });
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -215,7 +239,7 @@ function Setup({
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
     queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
-    enabled: Boolean(brandType) && showModel,
+    enabled: Boolean(brandType) && showModel && !connectionModels,
     retry: false,
   });
   const companySecrets = useQuery({
@@ -259,6 +283,14 @@ function Setup({
         : "Could not resolve the environment.";
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
+  const adapters = useQuery({
+    queryKey: queryKeys.adapters.availability(companyId, environmentId),
+    queryFn: () => adaptersApi.list({ companyId, environmentId }),
+  });
+  const defaultRunner = adapters.data?.find(adapter => adapter.type === "codex_local")?.defaultRunner;
+  useEffect(() => {
+    resetTest();
+  }, [companyId, environmentId, runner === "auto" ? defaultRunner : undefined]);
   const sandboxProvider =
     typeof environment?.config?.provider === "string"
       ? environment.config.provider
@@ -298,16 +330,19 @@ function Setup({
     isNewAgentAdapterAllowed(adapterType, {
       cloud,
       nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
+      openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
+      runnerProvider,
     }) &&
-    adapters.data?.some(
+    adapterInventory.data?.some(
       (adapter) =>
         adapter.type === adapterType &&
         adapter.loaded &&
         !adapter.disabled &&
         !getAdapterDisplay(adapterType).comingSoon,
-    );
+    ) && (requestAdapterType !== "paperclip_runner" || adapterType === "paperclip_runner" || adapterInventory.data?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled));
   const ready = Boolean(
     available &&
+    (adapterType !== "codex_local" || runner !== "auto" || Boolean(adapters.data)) &&
     !environmentError &&
     !envs.isPending &&
     !settings.isPending &&
@@ -332,25 +367,30 @@ function Setup({
     const values = {
       ...defaultCreateValues,
       adapterType,
+      runner,
       model:
         model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
-      dangerouslyBypassSandbox: adapterType === "codex_local",
+      dangerouslyBypassSandbox: adapterType === "codex_local" && runner === "legacy",
       envBindings: nextConnection?.env ?? {},
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-              ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+              provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+              ...(isDot ? { allowUnmeteredProvider } : {}),
+              ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
     };
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    if (preserveNativeCodex && runner === "paperclip") {
+      Object.assign(config, { provider: "codex", codexPermissionMode: "never", lifecycleMode: "per_turn" });
+    }
     if (isRunner)
       Object.assign(config, {
-        provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
-        ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
+        provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+        ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
@@ -381,6 +421,7 @@ function Setup({
     return config;
   }
   function preparedConfig(nextConnection = connection) {
+    if (isDot && !allowUnmeteredProvider) throw new Error("Acknowledge external provider billing before creating your Dot agent.");
     if (multiProvider && (!model.trim() || !model.includes("/")))
       throw new Error("Choose or enter a model in provider/model format.");
     if (
@@ -430,8 +471,9 @@ function Setup({
       const config = await preparedConfig(nextConnection);
       const tested = await testAgentSetup({
         companyId,
-        adapterType,
+        adapterType: requestAdapterType,
         providerAdapter: brandType,
+        ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
         aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
@@ -475,6 +517,7 @@ function Setup({
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
     let hired = false;
     try {
+      if (connectionAdapter && testState === "idle" && !(await runTest())) return;
       const config = preparedConfig();
       const credentials = pendingCredentials();
       // Untested entered keys must pass a probe before they can be stored.
@@ -502,7 +545,8 @@ function Setup({
         appearance: appearanceDraft.appearance,
         role: existing.length ? "general" : "ceo",
         ...(leader ? { reportsTo: leader.id } : {}),
-        adapterType,
+        adapterType: requestAdapterType,
+        ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
         defaultEnvironmentId:
           environmentOverride ||
@@ -523,7 +567,7 @@ function Setup({
       appearanceDraft.clear();
       setScreen("saved");
       navigate(
-        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, createdAgentId: response.agent.id })}`,
+        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, ...(runner !== "auto" ? { runner } : {}), createdAgentId: response.agent.id })}`,
         { replace: true },
       );
       cache.setQueryData(
@@ -618,6 +662,7 @@ function Setup({
           : "Local machine";
   const setupError =
     adapters.error ??
+    adapterInventory.error ??
     envs.error ??
     settings.error ??
     experimental.error ??
@@ -636,7 +681,7 @@ function Setup({
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AdapterMark type={brandType} />
               <span>{getAdapterDisplay(brandType).label}</span>
-              {isRunner && (
+              {isRunner && !isDot && (
                 <span>
                   ·{" "}
                   {runnerProvider === "codex"
@@ -657,7 +702,7 @@ function Setup({
             {setupError.message}
           </p>
         )}
-        {adapters.data && !available && (
+        {adapterInventory.data && !available && (
           <p role="alert" className="text-sm text-destructive">
             This adapter is unavailable. Choose an enabled adapter.
           </p>
@@ -679,9 +724,9 @@ function Setup({
                     type="button"
                     aria-current={step === screen ? "step" : undefined}
                     disabled={
-                      busy || Boolean(created) || index > steps.indexOf(screen)
+                      busy || Boolean(created) || step === "saved"
                     }
-                    onClick={() => setScreen(step)}
+                    onClick={() => step === "connect" && screen !== "connect" ? editConnection() : setScreen(step)}
                     className={cn(
                       "flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm",
                       step === screen
@@ -713,18 +758,42 @@ function Setup({
                     <div className="mb-8">
                       <OnboardingHeading
                         title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
                         center
                       />
                     </div>
-                    <AgentProviderConnection
+                    {ready ? <AgentProviderConnection
                       key={environmentId ?? "local"}
                       companyId={companyId}
                       adapterType={connectionAdapter}
                       environmentId={environmentId}
                       canLogin={canLogin}
                       localEnvironment={environment?.driver === "local"}
+                      advancedConnection={{
+                        value: aiBinding,
+                        content: (
+                          <AiConnectionField
+                            companyId={companyId}
+                            agentName={name}
+                            adapterType={brandType}
+                            model={model}
+                            environmentId={environmentId ?? undefined}
+                            value={aiBinding}
+                            preferAdvanced
+                            onChange={binding => {
+                              if (binding.mode === "router") return;
+                              setConnection(null);
+                              setRuntimeAiBinding(binding);
+                              resetTest();
+                            }}
+                          />
+                        ),
+                      }}
                       onBack={() => navigate("/agents/all")}
+                      onDraftChanged={() => {
+                        setConnection(null);
+                        setRuntimeAiBinding(undefined);
+                        resetTest();
+                      }}
                       testConnection={runTest}
                       testError={
                         error ??
@@ -741,10 +810,18 @@ function Setup({
                       }
                       onConnected={(next) => {
                         setConnection(next);
-                        resetTest();
+                        setRuntimeAiBinding(undefined);
                         setScreen("runtime");
                       }}
-                    />
+                    /> : <p role="status" className="text-sm text-muted-foreground">Loading connection settings…</p>}
+                    {adapterType === "codex_local" && <details className="mt-5 space-y-3">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                      <CodexRunnerSelect value={runner} disabled={busy}
+                        pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                        defaultRunner={adapters.data?.find(item => item.type === "codex_local")?.defaultRunner}
+                        supportedRunners={adapters.data?.find(item => item.type === "codex_local")?.supportedRunners}
+                        onChange={value => { setRunner(value); resetTest(); }} />
+                    </details>}
                   </OnboardingCard>
                 ) : screen === "saved" && created ? (
                   <div className="space-y-6">
@@ -753,11 +830,11 @@ function Setup({
                         <Check className="size-5" />
                         {created.status === "pending_approval"
                           ? "Agent submitted for approval"
-                          : "Your agent is ready"}
+                          : isDot ? "Your Dot agent has been created" : "Your agent is ready"}
                       </h2>
                       <dl className="grid grid-cols-2 gap-4 text-sm">
                         <dt className="text-muted-foreground">Adapter</dt>
-                        <dd>{getAdapterDisplay(adapterType).label}</dd>
+                        <dd>{getAdapterDisplay(isDot ? "openai_dot" : adapterType).label}</dd>
                         {showModel && (
                           <>
                             <dt className="text-muted-foreground">Model</dt>
@@ -772,27 +849,25 @@ function Setup({
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
                           ? "An organization administrator must approve this agent before it can work."
-                          : "Assign a task when you’re ready for this agent to work."}
+                          : isDot ? "Pair your Dot and test event delivery in configuration before assigning work." : "Assign a task when you’re ready for this agent to work."}
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-between gap-3">
                       <Button
                         variant="outline"
-                        onClick={() => navigate(`${agentUrl(created)}/runtime`)}
+                        onClick={() => navigate(isDot ? "/agents/all" : `${agentUrl(created)}/runtime`)}
                       >
                         <Settings2 className="size-4" />
-                        Edit configuration
+                        {isDot ? "Back to Agents" : "Edit configuration"}
                       </Button>
                       <Button
                         disabled={created.status === "pending_approval"}
-                        onClick={() =>
-                          openNewIssue({
-                            assigneeAgentId: created.id,
-                            status: "todo",
-                          })
+                        onClick={() => isDot
+                          ? navigate(`${agentUrl(created)}/runtime`)
+                          : openNewIssue({ assigneeAgentId: created.id, status: "todo" })
                         }
                       >
-                        Assign {created.name} a Task
+                        {isDot ? "Pair Dot" : `Assign ${created.name} a Task`}
                         <ArrowRight className="size-4" />
                       </Button>
                     </div>
@@ -810,32 +885,30 @@ function Setup({
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
-                        <h3 className="text-sm font-semibold">Runtime</h3>
-                        {aiProviderForAdapter(brandType) && (
-                          connection && !aiBinding ? (
-                            <div className="space-y-3">
-                              <p className="text-sm text-muted-foreground">
-                                Using the connection selected in the Connect step.
-                              </p>
-                              <Button type="button" variant="outline" onClick={() => setScreen("connect")}>
-                                Change connection
-                              </Button>
-                            </div>
-                          ) : (
-                            <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
-                          )
+                        {isDot && <>
+                          <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
+                          {experimental.data?.enablePublicMcp !== true && <p className="text-sm text-muted-foreground">Enable Assistant connections (MCP) in Experimental settings before pairing.</p>}
+                          <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
+                            checked={allowUnmeteredProvider} onChange={value => { setAllowUnmeteredProvider(value); resetTest(); }} />
+                        </>}
+                        {!connectionAdapter && aiProviderForAdapter(brandType) && (
+                          <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                            onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
-                        {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
+                        {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
                             {showModel && !usingKimiApi && (
                               <ModelDropdown
-                                models={models.data ?? []}
+                                presentation={brandType === "codex_local" ? "searchable" : "native"}
+                                models={connectionModels?.models ?? models.data ?? []}
+                                loadingModels={connectionModels?.isLoading ?? models.isLoading}
+                                onRefreshModels={connectionModels?.refreshModels}
+                                refreshingModels={connectionModels?.refreshing}
                                 value={model}
                                 onChange={(value) => {
-                                  setModel(value);
+                                  setModel(connectionModels?.resolveModel(value) ?? value);
                                   if (
                                     effort &&
                                     !setupEfforts(adapterType, value).includes(
@@ -860,14 +933,16 @@ function Setup({
                                 allowDefault={!multiProvider}
                                 required={multiProvider}
                                 creatable
-                                groupByProvider={multiProvider}
+                                groupByProvider={multiProvider && !connectionModels}
+                                preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(brandType)}
                               />
                             )}
                             {efforts.length > 0 && (
                               <Field label="Thinking effort">
-                                <select
+                                {brandType === "codex_local" ? <SelectPopover aria-label="Thinking effort" value={effort}
+                                  onValueChange={value => { setEffort(value); resetTest(); }}
+                                  options={[{ value: "", label: "Auto" }, ...efforts.map(value => ({ value, label: value }))]} /> : <NativeSelect
                                   aria-label="Thinking effort"
-                                  className={controlClass}
                                   value={effort}
                                   onChange={(event) => {
                                     setEffort(event.target.value);
@@ -880,20 +955,14 @@ function Setup({
                                       {value}
                                     </option>
                                   ))}
-                                </select>
+                                </NativeSelect>}
                               </Field>
                             )}
                           </div>
                         )}
-                        {SETUP_LOGIN_HINTS[adapterType] && (
+                        {!aiBinding && SETUP_LOGIN_HINTS[adapterType] && (
                           <p className="text-sm text-muted-foreground">
                             {SETUP_LOGIN_HINTS[adapterType]}
-                          </p>
-                        )}
-                        {showModel && models.error && (
-                          <p className="text-xs text-muted-foreground">
-                            Couldn’t load models. You can enter a model ID
-                            manually.
                           </p>
                         )}
                         {hasCredentialField && !aiBinding && (
@@ -1096,6 +1165,14 @@ function Setup({
                             </Field>
                           </div>
                         )}
+                        {adapterType === "codex_local" && <details className="space-y-3">
+                          <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                          <CodexRunnerSelect value={runner} disabled={busy}
+                            pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                            defaultRunner={adapters.data?.find(item => item.type === "codex_local")?.defaultRunner}
+                            supportedRunners={adapters.data?.find(item => item.type === "codex_local")?.supportedRunners}
+                            onChange={value => { setRunner(value); resetTest(); }} />
+                        </details>}
                       </section>
                       {!["cursor_cloud", "hermes_gateway"].includes(
                         adapterType,
@@ -1106,7 +1183,7 @@ function Setup({
                             aria-label="Environment"
                             className={controlClass}
                             value={environmentOverride}
-                            disabled={forced.forced || managedOnly}
+                            disabled={forced.forced}
                             onChange={(event) => {
                               setEnvironmentOverride(event.target.value);
                               setConnection(null);
@@ -1118,7 +1195,7 @@ function Setup({
                               Default: {environmentLabel}
                             </option>
                             {(envs.data ?? [])
-                              .filter((env) => env.status === "active")
+                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
                               .map((env) => (
                                 <option key={env.id} value={env.id}>
                                   {environmentDisplayLabel(env)}
@@ -1129,10 +1206,11 @@ function Setup({
                       )}
                     </fieldset>
                     <RuntimeTestCard
+                      variant={isDot ? "prerequisites" : "connection"}
                       state={testState}
                       result={result}
                       error={error}
-                      disabled={!ready || busy}
+                      disabled={!ready || busy || Boolean(connectionAdapter && !connection)}
                       onTest={() => void runTest()}
                     />
                     {error && testState !== "fail" && (
@@ -1146,7 +1224,7 @@ function Setup({
                           type="button"
                           variant="ghost"
                           disabled={busy}
-                          onClick={() => setScreen("connect")}
+                          onClick={editConnection}
                         >
                           <ArrowLeft className="size-4" />
                           Connection
@@ -1154,7 +1232,14 @@ function Setup({
                       ) : (
                         <span />
                       )}
-                      <Button
+                      {connectionAdapter && !connection ? <Button
+                        type="button"
+                        disabled={!ready || busy}
+                        onClick={() => setScreen("connect")}
+                      >
+                        Connect model
+                        <ArrowRight className="size-4" />
+                      </Button> : <Button
                         type="submit"
                         disabled={
                           !ready ||
@@ -1165,7 +1250,7 @@ function Setup({
                       >
                         {saving ? "Creating…" : "Finish setup"}
                         <Check className="size-4" />
-                      </Button>
+                      </Button>}
                     </div>
                   </form>
                 )}

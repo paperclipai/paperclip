@@ -113,4 +113,20 @@ describe("deterministic PRP session reducer", () => {
       "Resolved permission: Allow the fake command?",
     ]);
   });
+
+  it.each(["expired", "cancelled"] as const)("replays authoritative ACP request %s before terminal without leaving an actionable prompt", async status => {
+    const fixture = await loadFixture("interrupted-run");
+    const base = fixture.events.find(event => event.eventType === "runtime_request.created")!;
+    const created: PrpEvent = { ...base, sourceEventId: "acpx-created", sourceSeq: 1 };
+    const ended: PrpEvent = { ...base, sourceEventId: "acpx-ended", sourceSeq: 2,
+      eventType: `runtime_request.${status}`,
+      payload: { requestId: "request_interrupted_permission", requestKind: "permission_approval", requestType: "permission",
+        reason: status === "expired" ? "provider_process_lost" : "explicit_cancellation", replayAllowed: false } };
+    const terminal: PrpEvent = { ...base, sourceEventId: "acpx-terminal", sourceSeq: 3, eventType: "run.terminal",
+      payload: { schema: "paperclip.prp.terminal.v1", status: "failed", turnTerminalState: "failed", runTerminalState: "failed", reportedWorkDisposition: "unknown" } };
+    const events = [created, ended, terminal];
+    const result = reduceSessionEvents(createSessionSnapshot(fixture), events);
+    expect(result.requests).toEqual([expect.objectContaining({ requestId: "request_interrupted_permission", status })]);
+    expect(reduceSessionEvents(result, events).requests).toEqual(result.requests);
+  });
 });

@@ -49,7 +49,7 @@ export function SidePanelFrame({
       data-maximized={maximized ? "true" : "false"}
       data-resizing={resizing ? "true" : "false"}
       className={cn(
-        "flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--side-panel-bg) text-(--side-panel-fg)",
+        "relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--side-panel-bg) text-(--side-panel-fg)",
         presentation === "docked" && "h-full border-l border-border",
         presentation === "sheet" && "h-full w-full",
         presentation === "embedded" && "h-full rounded-xl border border-border",

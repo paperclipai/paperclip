@@ -1,3 +1,7 @@
+import { aiConnectionService } from "../services/ai-connections.js";
+import { fastResponseService } from "../services/fast-responses.js";
+import { fastResponseReceipt } from "../services/fast-response-provider.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { renderPaperclipWakePrompt, resolvePaperclipDesiredSkillNames, resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
@@ -5,6 +9,7 @@ import express from "express";
 import type WebSocket from "ws";
 import request from "supertest";
 import { issueRoutes } from "../routes/issues.js";
+import { emailRoutes } from "../routes/email.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { randomUUID } from "node:crypto";
@@ -38,11 +43,13 @@ import {
   emailEndpoints,
   emailMessages,
   emailSends,
+  fastResponseRequests,
   issueComments,
   heartbeatRuns,
   issues,
   authUsers,
   companyMemberships,
+  principalPermissionGrants,
   toolConnections,
   toolConnectionInstalls,
   connectionGrants,
@@ -59,6 +66,7 @@ import {
   agentmailMessageSchema,
   type AgentmailMessage,
 } from "../services/agentmail-api.js";
+import { accessService } from "../services/access.js";
 import { emailConnectionService } from "../services/email-connections.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { emailSendSchema } from "@paperclipai/shared";
@@ -78,7 +86,7 @@ describe("AgentMail durable email pipeline", () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
     db = createDb(database.connectionString);
     await instanceSettingsService(db).updateExperimental({
-      enableChatConnectors: true,
+      enableChatConnectors: false,
     });
     await db.insert(authUsers).values({
       id: "email-board",
@@ -178,12 +186,11 @@ describe("AgentMail durable email pipeline", () => {
     expect((await resolveConnectorAssignments(db, binding))[0].resources).toHaveLength(1);
   });
 
-  it("removes connector contributions when the experimental gate or credential access is revoked", async () => {
+  it("keeps AgentMail available with chat disabled and removes contributions when credential access is revoked", async () => {
     const f = await fixture();
     const binding = { companyId: f.companyId, agentId: f.agentId };
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
-    try { expect(await resolveConnectorAssignments(db, binding)).toEqual([]); }
-    finally { await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true }); }
+    expect((await resolveConnectorAssignments(db, binding)).map(item => item.key)).toEqual(["agentmail"]);
     const endpoint = await f.service.getEndpoint(f.endpointId);
     await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, endpoint.connectionId));
     expect(await resolveConnectorAssignments(db, binding)).toEqual([]);
@@ -191,12 +198,20 @@ describe("AgentMail durable email pipeline", () => {
 
   it("can replay the additive email migration without losing existing data", async () => {
     const migration = readFileSync(new URL("../../../packages/db/src/migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
-    await db.execute(sql.raw(migration));
-    await db.execute(sql.raw(migration));
-    expect(await db.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
+    // Replaying this historical migration reinstates its older connection constraint.
+    // Roll back the probe so later tests keep the current AI-connection schema.
+    const rollback = new Error("migration replay probe complete");
+    await expect(db.transaction(async tx => {
+      await tx.execute(sql.raw(migration));
+      await tx.execute(sql.raw(migration));
+      expect(await tx.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
+      throw rollback;
+    })).rejects.toBe(rollback);
   });
 
-  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService) {
+  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
+    beforeSetup?: (input: { fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+  ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       endpointId = randomUUID();
@@ -309,6 +324,7 @@ describe("AgentMail durable email pipeline", () => {
       storage,
     });
     services.push(service);
+    await beforeSetup?.({ fetcher, wakeup });
     await service.setup(
       companyId,
       {
@@ -371,6 +387,100 @@ describe("AgentMail durable email pipeline", () => {
       setWebhookError: (status: number) => { webhookError = status; },
     };
   }
+  it("activates an empty running worker from another service and drains committed inbound and outbound work", async () => {
+    // Connector setup and tool calls construct short-lived service objects.
+    // Their committed writes must wake the app-owned worker sharing this DB.
+    let running!: EmailChannelService;
+    const f = await fixture("webhook", undefined, async ({ fetcher, wakeup }) => {
+      running = emailChannelService(db, { heartbeat: { wakeup }, fetch: fetcher });
+      services.push(running);
+      await running.start();
+      const select = vi.spyOn(db, "select");
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(select).not.toHaveBeenCalled();
+      select.mockRestore();
+    });
+    await vi.waitFor(async () => {
+      const [config] = await db.select().from(emailEndpoints).where(eq(emailEndpoints.endpointId, f.endpointId));
+      expect(config.lastSyncAt).not.toBeNull();
+    }, { timeout: 5000 });
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await f.service.control(f.endpointId, "resume", { userId: "email-board" });
+    const message = f.message();
+    f.messages.set(message.message_id, message);
+    await f.service.admit(await f.service.getEndpoint(f.endpointId), {
+      event_type: "message.received", message,
+    });
+    await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const [parent] = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, parentIssueId: parent.id,
+      to: ["recipient@example.test"], subject: "Wake on send", text: "Hello", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    await vi.waitFor(async () => expect((await f.service.publication(input.idempotencyKey, f.companyId)).outcome).toBe("sent"), { timeout: 5000 });
+    expect(f.sends).toHaveLength(1);
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("restores a retry deadline without polling replies blocked behind that send", async () => {
+    const f = await fixture();
+    const message = f.message("received", "outbound-thread");
+    await f.receive(message);
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, conversationId: conversation.id,
+      replyToMessageId: message.message_id, text: "First reply", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    const second = { ...input, text: "Second reply", idempotencyKey: randomUUID() };
+    await f.service.queueSend(f.companyId, second, { userId: "email-board" });
+    // Simulate a previous process persisting a provider retry deadline. The
+    // second reply has no deadline but cannot overtake this first reply.
+    await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 5000) })
+      .where(eq(chatPublications.id, input.idempotencyKey));
+    await f.service.start();
+    expect(f.sends).toHaveLength(0);
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(select).not.toHaveBeenCalled();
+    expect(f.sends).toHaveLength(0);
+    await vi.waitFor(() => expect(f.sends).toHaveLength(2), { timeout: 8000 });
+    await f.service.tick();
+    expect(f.sends.map(send => send.key)).toEqual([input.idempotencyKey, second.idempotencyKey]);
+    for (const id of [input.idempotencyKey, second.idempotencyKey])
+      expect((await f.service.publication(id, f.companyId)).outcome).toBe("sent");
+  });
+
+  it("publishes one sponsored fast response only to the originating email sender", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+    const f = await fixture();
+    const binding = await aiConnectionService(db).save(f.companyId, "email-board", { provider: "openrouter", method: "api_key", name: "Fast email", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+    const provider = vi.fn(async () => ({ text: "I’ll check the settings panel border.", receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 9 }, response: { body: { usage: { cost: 0.00001 } } } }) }));
+    const fast = fastResponseService(db, { provider, authorizeExternal: f.service.authorizeFastResponse,
+      publishExternal: async (...args) => { await f.service.publishFastResponse(...args); return true; } });
+    await fast.configure(f.companyId, "email-board", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const incoming = f.message("fast-email", "fast-thread", { text: "Please check the settings panel border.", cc: ["bystander@example.test"] });
+    await f.receive(incoming);
+    const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+    expect(job).toMatchObject({ sponsored: true, responsibleUserId: null });
+    expect(f.wakeup).toHaveBeenCalled();
+    await f.service.start();
+    await fast.process(job);
+    await vi.waitFor(() => expect(f.sends).toHaveLength(1), { timeout: 5000 });
+    await f.service.flushPublications();
+    expect(f.sends).toHaveLength(1);
+    expect(f.sends[0].body.text).toBe("I’ll check the settings panel border.");
+    expect(f.sends[0].body.cc ?? []).not.toContain("bystander@example.test");
+    expect(f.sends[0].path).toContain("fast-email/reply");
+    const [receipt] = await db.select().from(issueComments).where(and(eq(issueComments.issueId, job.issueId!), eq(issueComments.origin, "fast_response")));
+    expect(receipt).toMatchObject({ authorAgentId: f.agentId, createdByRunId: null });
+    expect((await issueService(db).getById(job.issueId!))?.status).not.toBe("done");
+  });
+
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
     const f = await fixture();
     const endpoint = await f.service.getEndpoint(f.endpointId);
@@ -402,6 +512,64 @@ describe("AgentMail durable email pipeline", () => {
       await db.select().from(issues).where(eq(issues.companyId, f.companyId)),
     ).toHaveLength(1);
   });
+  it("snapshots email workspace defaults only when a conversation creates a task", async () => {
+    const f = await fixture();
+    await db.update(chatEndpoints).set({ executionDefaults: { workspace: { kind: "task_directory" } } }).where(eq(chatEndpoints.id, f.endpointId));
+    const first = f.message();
+    await f.receive(first);
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const [task] = await tasks();
+    expect(task.workspaceSelection).toEqual({ version: 1, selection: { kind: "task_directory" }, source: "channel" });
+    expect(task.projectId).toBeNull();
+    await db.update(chatEndpoints).set({ executionDefaults: null }).where(eq(chatEndpoints.id, f.endpointId));
+    await f.receive(f.message(randomUUID(), first.thread_id));
+    expect((await tasks())[0].workspaceSelection).toEqual(task.workspaceSelection);
+    await f.receive(f.message());
+    expect(await tasks()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceSelection: null })]));
+  });
+
+  it("checks sponsor and agent assignment grants for protected email organizational defaults", async () => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected email tasks",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    const fetcher = vi.mocked(f.fetcher);
+    const fetch = fetcher.getMockImplementation()!;
+    let changedDefaults = false;
+    fetcher.mockImplementation(async (...args) => {
+      if (!changedDefaults && String(args[0]).includes("/threads/")) {
+        changedDefaults = true;
+        await db.update(chatEndpoints).set({ executionDefaults: { projectId: project.id, workspace: { kind: "task_directory" } } })
+          .where(eq(chatEndpoints.id, f.endpointId));
+      }
+      return fetch(...args);
+    });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent",
+      principalId: f.agentId, status: "active", membershipRole: "member" });
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    const [sponsorGrant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "user", principalId: "email-board", permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } }).returning();
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } });
+    await f.receive(f.message());
+    expect(await tasks()).toEqual([expect.objectContaining({ projectId: project.id,
+      assigneeAgentId: f.agentId,
+      workspaceSelection: { version: 1, selection: { kind: "task_directory" }, source: "channel" } })]);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, sponsorGrant.id));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(1);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId))).toHaveLength(1);
+  });
+
   it("deduplicates events/messages, keeps identical subjects separate, and never grants sender board identity", async () => {
     const f = await fixture();
     const m = f.message();
@@ -981,6 +1149,57 @@ describe("AgentMail durable email pipeline", () => {
     expect(f.wakeup).toHaveBeenCalledTimes(1);
   });
 
+  it("suggests only same-provider active credentials authorized for this user", async () => {
+    const f = await fixture();
+    const svc = emailConnectionService(db, f.fetcher);
+    const actor = { userId: "email-board" };
+    const own = await svc.connect(f.companyId, { apiKey: "private-key", grantKind: "user", allAgents: false,
+      agentIds: [], idempotencyKey: randomUUID() }, actor);
+    const shared = await svc.connect(f.companyId, { apiKey: "shared-key", grantKind: "organization", allAgents: false,
+      agentIds: [], idempotencyKey: randomUUID() }, actor);
+    const other = await svc.connect(f.companyId, { apiKey: "other-user-key", grantKind: "user", allAgents: false,
+      agentIds: [], idempotencyKey: randomUUID() }, { userId: "different-user" });
+    const choices = await svc.listCredentials(f.companyId, actor);
+    expect(choices.map(option => option.id).sort()).toEqual([own.id, shared.id].sort());
+    expect(JSON.stringify(choices)).not.toMatch(/private-key|shared-key|other-user-key|secretId|api_key_hash/);
+    expect(choices[0]).toMatchObject({ scope: "inbox", inboxId: f.address });
+    expect((await svc.listCredentials(randomUUID(), actor))).toEqual([]);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, own.id));
+    await db.update(toolConnections).set({ config: { provider: "different", emailCredential: true } }).where(eq(toolConnections.id, shared.id));
+    expect(await svc.listCredentials(f.companyId, actor)).toEqual([]);
+    expect((await svc.listCredentials(f.companyId, { userId: "different-user" })).map(option => option.id)).toEqual([other.id]);
+  });
+
+  it("bounds legacy saved-key discovery and checks slow keys concurrently", async () => {
+    const f = await fixture();
+    const actor = { userId: "email-board" };
+    const svc = emailConnectionService(db, f.fetcher);
+    const ids = [];
+    for (let i = 0; i < 2; i++) {
+      const row = await svc.connect(f.companyId, { apiKey: `legacy-key-${i}`, grantKind: "organization", allAgents: false,
+        agentIds: [], idempotencyKey: randomUUID() }, actor);
+      ids.push(row.id);
+      await db.update(toolConnections).set({ config: { provider: "agentmail", emailCredential: true } }).where(eq(toolConnections.id, row.id));
+    }
+    let concurrent = 0, peak = 0;
+    const signals: AbortSignal[] = [];
+    const slowFetch = vi.fn<typeof fetch>(async (_url, init) => {
+      concurrent++; peak = Math.max(peak, concurrent);
+      const signal = init!.signal!; signals.push(signal);
+      try {
+        return await new Promise<Response>((_resolve, reject) => {
+          if (signal.aborted) reject(new Error("Discovery deadline"));
+          else signal.addEventListener("abort", () => reject(new Error("Discovery deadline")), { once: true });
+        });
+      } finally { concurrent--; }
+    });
+    const choices = await emailConnectionService(db, slowFetch).listCredentials(f.companyId, actor);
+    expect(choices.map(option => option.id).sort()).toEqual(ids.sort());
+    expect(choices.every(option => option.scope === "unavailable")).toBe(true);
+    expect(peak).toBe(2);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+  }, 10_000);
+
   it("saves a scoped credential before inbox setup, preserves personal ownership, and adds the chosen agent", async () => {
     const f = await fixture();
     const svc = emailConnectionService(db, f.fetcher);
@@ -1058,6 +1277,214 @@ describe("AgentMail durable email pipeline", () => {
     await expect(
       svc.credential(f.companyId, connection.id, actor),
     ).rejects.toThrow(/revoked/);
+  });
+
+  it.each(["new", "reused"] as const)("finishes a %s account for the final agent with only connection-management permission", async kind => {
+    const f = await fixture("websocket");
+    const actor = { userId: "email-board" };
+    await f.service.control(f.endpointId, "remove", actor);
+    const selectedAgentId = randomUUID();
+    await db.insert(agents).values({ id: selectedAgentId, companyId: f.companyId, name: "Final email agent",
+      role: "engineer", status: "idle", adapterType: "process", permissions: {} });
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user",
+      principalId: actor.userId, permissionKey: "tools:manage_connections" });
+    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "tools:manage_connections")).toBe(true);
+    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "agent_config:update")).toBe(false);
+    const requestId = randomUUID();
+    const svc = emailConnectionService(db, f.fetcher);
+    const connection = await svc.connect(f.companyId, { apiKey: "test-key", grantKind: "organization",
+      allAgents: false, agentIds: [f.agentId], idempotencyKey: kind === "new" ? requestId : randomUUID() }, actor);
+    const server = express();
+    server.use(express.json());
+    server.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: actor.userId, companyIds: [f.companyId] };
+      next();
+    });
+    server.use("/api", emailRoutes(db, f.service));
+    server.use(errorHandler);
+    const input = { assignedAgentId: selectedAgentId, credentialConnectionId: connection.id,
+      inboxId: f.address, receiveMode: "websocket", idempotencyKey: requestId };
+    const route = `/api/companies/${f.companyId}/email/inboxes`;
+    // Keep one listener for this journey instead of racing ephemeral listeners
+    // against Node's HTTP keep-alive socket reuse between requests.
+    const http = server.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => { http.once("listening", resolve); http.once("error", reject); });
+    try {
+      const response = await request(http).post(route).send(input).expect(201);
+      expect(response.body).toMatchObject({ assignedAgentId: selectedAgentId, status: "active", address: f.address });
+      await request(http).post(route).send(input).expect(201);
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+      expect(installs.map(i => i.targetId).sort()).toEqual((kind === "new" ? [selectedAgentId] : [f.agentId, selectedAgentId]).sort());
+      await expect(svc.assertAgentAccess(f.companyId, connection.id, selectedAgentId)).resolves.toBeUndefined();
+      if (kind === "new") await expect(svc.assertAgentAccess(f.companyId, connection.id, f.agentId)).rejects.toThrow(/no longer has access/);
+      await request(http).post(`/api/companies/${randomUUID()}/email/inboxes`).send(input).expect(404);
+    } finally {
+      await new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each([
+    ["before setup", "company"], ["before setup", "agents"],
+    ["after a failed setup", "company"], ["after a failed setup", "agents"],
+  ] as const)("preserves permissions edited %s to include %s access", async (when, scope) => {
+    const f = await fixture("websocket");
+    const actor = { userId: "email-board" };
+    await f.service.control(f.endpointId, "remove", actor);
+    const selectedAgentId = randomUUID(), otherAgentId = randomUUID();
+    await db.insert(agents).values([selectedAgentId, otherAgentId].map(id => ({ id, companyId: f.companyId,
+      name: "Email agent", role: "engineer", status: "idle", adapterType: "process", permissions: {} })));
+    const requestId = randomUUID();
+    const connection = await emailConnectionService(db, f.fetcher).connect(f.companyId, {
+      apiKey: "test-key", grantKind: "organization", allAgents: false, agentIds: [f.agentId], idempotencyKey: requestId,
+    }, actor);
+    const input = { assignedAgentId: selectedAgentId, credentialConnectionId: connection.id,
+      inboxId: f.address, receiveMode: "websocket" as const, idempotencyKey: requestId };
+    if (when === "after a failed setup") {
+      const provider = vi.mocked(f.fetcher).getMockImplementation()!;
+      vi.mocked(f.fetcher).mockImplementation(async (url, init) =>
+        decodeURIComponent(new URL(String(url)).pathname) === `/v0/inboxes/${f.address}`
+          ? new Response(null, { status: 403 }) : provider(url, init));
+      await expect(f.service.setup(f.companyId, input, actor)).rejects.toThrow();
+      vi.mocked(f.fetcher).mockImplementation(provider);
+    }
+    const requestedInstalls = scope === "company"
+      ? [{ targetType: "company" as const, targetId: f.companyId }]
+      : [f.agentId, otherAgentId].map(targetId => ({ targetType: "agent" as const, targetId }));
+    await toolAccessService(db).putConnectionInstalls(connection.id, { installs: requestedInstalls }, { actorType: "user", actorId: actor.userId });
+    const before = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const result = await f.service.setup(f.companyId, input, actor);
+    expect(result.status).toBe("active");
+    const after = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    for (const install of before) expect(after).toContainEqual(install);
+    expect(after.map(i => i.targetId).sort()).toEqual((scope === "company" ? [f.companyId] : [f.agentId, otherAgentId, selectedAgentId]).sort());
+  });
+
+  it.each(["create_inbox", "create_inbox_key", "address_taken"] as const)("reports a provider rejection during %s and resumes the same setup after correction", async (failedOperation) => {
+    const f = await fixture("websocket");
+    await f.service.control(f.endpointId, "remove", { userId: "email-board" });
+    const provider = vi.mocked(f.fetcher).getMockImplementation()!;
+    let denied = true;
+    let createdInboxes = 0;
+    vi.mocked(f.fetcher).mockImplementation(async (url, init) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/v0/auth/me" && new Headers(init?.headers).get("authorization") === "Bearer organization-test-key") {
+        return Response.json({ scope_type: "organization", organization_id: "organization" });
+      }
+      if (pathname === "/v0/inboxes" && init?.method === "POST") {
+        if (failedOperation === "address_taken") {
+          const body = JSON.parse(String(init.body));
+          if (body.username === "ralph") return Response.json({ code: "resource_taken", message: "private provider detail" }, { status: 403 });
+          expect(body.username).toBe("ralph-team");
+        }
+        if (denied && failedOperation === "create_inbox") return new Response("private provider denial", { status: 403 });
+        createdInboxes++;
+        return Response.json({ inbox_id: f.address });
+      }
+      if (pathname.endsWith("/api-keys") && init?.method === "POST") {
+        if (denied && failedOperation === "create_inbox_key") return new Response("private provider denial", { status: 403 });
+        return Response.json({ api_key: "test-key", api_key_id: "inbox-runtime-key" });
+      }
+      return provider(url, init);
+    });
+    const account = await emailConnectionService(db, f.fetcher).connect(f.companyId, {
+      apiKey: "organization-test-key", grantKind: "organization", allAgents: false,
+      agentIds: [f.agentId], idempotencyKey: randomUUID(),
+    }, { userId: "email-board" });
+    const server = express();
+    server.use(express.json());
+    server.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "email-board" };
+      next();
+    });
+    server.use("/api", emailRoutes(db, f.service));
+    server.use(errorHandler);
+    const id = randomUUID();
+    const input = { assignedAgentId: f.agentId, credentialConnectionId: account.id,
+      username: "ralph", domain: "agentmail.to", receiveMode: "websocket", idempotencyKey: id };
+    const route = `/api/companies/${f.companyId}/email/inboxes`;
+    const failure = await request(server).post(route).send(input).expect(failedOperation === "address_taken" ? 409 : 422);
+    expect(failure.body.error).toContain(failedOperation === "address_taken" ? "already in use" : "AgentMail did not allow Paperclip");
+    expect(failure.body.details).toMatchObject({ providerStatus: 403, operation: failedOperation === "address_taken" ? "create_inbox" : failedOperation });
+    expect(failure.text).not.toMatch(/private provider denial|organization-test-key|Internal server error/);
+    const [draft] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, id));
+    expect(draft.status).toBe("draft");
+    expect(draft.botExternalId).toBe(failedOperation === "create_inbox_key" ? f.address : null);
+    denied = false;
+    if (failedOperation === "address_taken") input.username = "ralph-team";
+    const connected = await request(server).post(route).send(input).expect(201);
+    expect(connected.body).toMatchObject({ id, status: "active", address: f.address });
+    await request(server).post(route).send(input).expect(201);
+    expect(createdInboxes).toBe(1);
+    const endpoints = await db.select().from(chatEndpoints).where(and(
+      eq(chatEndpoints.companyId, f.companyId), ne(chatEndpoints.status, "archived"),
+    ));
+    expect(endpoints.map(endpoint => endpoint.id)).toEqual([id]);
+  });
+
+  it.each(["inbox", "organization"] as const)("completes an AgentMail card with a %s key only after its assigned inbox is usable", async (scope) => {
+    const f = await fixture("websocket");
+    const actor = { userId: "email-board" };
+    await f.service.control(f.endpointId, "remove", actor);
+    const provider = vi.mocked(f.fetcher).getMockImplementation()!;
+    const createdInboxes: unknown[] = [];
+    vi.mocked(f.fetcher).mockImplementation(async (url, init) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/v0/auth/me" && new Headers(init?.headers).get("authorization") === "Bearer organization-test-key") {
+        return Response.json({ scope_type: "organization", organization_id: "organization" });
+      }
+      if (pathname === "/v0/inboxes" && init?.method === "POST") {
+        createdInboxes.push(JSON.parse(String(init.body)));
+        return Response.json({ inbox_id: f.address });
+      }
+      if (pathname.endsWith("/api-keys") && init?.method === "POST") {
+        return Response.json({ api_key: "test-key", api_key_id: "inbox-runtime-key" });
+      }
+      return provider(url, init);
+    });
+    const issue = await issueService(db).create(f.companyId, { title: "Acquire an email address", assigneeAgentId: f.agentId, status: "in_progress" });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", responsibleUserId: "email-board", contextSnapshot: { issueId: issue.id } });
+    const claims = { sub: f.agentId, company_id: f.companyId, run_id: runId, responsible_user_id: "email-board" };
+    const intents = connectionIntentService(db);
+    const requested = await intents.request(claims, "agentmail");
+    const id = requested.interactionId!;
+    const account = await emailConnectionService(db, f.fetcher).connect(f.companyId, {
+      apiKey: scope === "organization" ? "organization-test-key" : "test-key", grantKind: "organization", allAgents: false, agentIds: [f.agentId], idempotencyKey: id,
+    }, actor);
+    expect((await intents.setupOptions(id)).emailSetup).toEqual({ credentialConnectionId: account.id, readyConnectionId: null });
+    expect((await intents.search(claims, "agentmail")).results[0].state).not.toBe("ready");
+    await expect(intents.complete(id, account.id, "email-board", { canManageOrganizationGrant: true })).rejects.toThrow(/active inbox/);
+    const inbox = await f.service.setup(f.companyId, { assignedAgentId: f.agentId,
+      credentialConnectionId: account.id, receiveMode: "websocket", idempotencyKey: id }, actor);
+    expect(createdInboxes).toEqual(scope === "organization"
+      ? [{ display_name: "Email agent", client_id: `paperclip-${id}` }] : []);
+    const retry = await f.service.setup(f.companyId, { assignedAgentId: f.agentId,
+      credentialConnectionId: account.id, receiveMode: "websocket", idempotencyKey: id }, actor);
+    expect(retry.connectionId).toBe(inbox.connectionId);
+    expect(createdInboxes).toHaveLength(scope === "organization" ? 1 : 0);
+    expect((await intents.setupOptions(id)).emailSetup?.readyConnectionId).toBe(inbox.connectionId);
+    await expect(intents.complete(id, inbox.connectionId, "someone-else", { canManageOrganizationGrant: true })).rejects.toThrow(/addressed user/);
+    await expect(intents.complete(id, inbox.connectionId, "email-board")).rejects.toThrow(/connection-management/);
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: f.companyId, name: "Other agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.update(chatEndpoints).set({ assignedAgentId: otherAgentId }).where(eq(chatEndpoints.id, id));
+    await expect(intents.complete(id, inbox.connectionId, "email-board", { canManageOrganizationGrant: true })).rejects.toThrow(/active inbox/);
+    await db.update(chatEndpoints).set({ assignedAgentId: f.agentId, status: "paused" }).where(eq(chatEndpoints.id, id));
+    await expect(intents.complete(id, inbox.connectionId, "email-board", { canManageOrganizationGrant: true })).rejects.toThrow(/active inbox/);
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, id));
+    const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, account.id));
+    expect(grants.map(grant => grant.kind)).toEqual(["organization"]);
+    const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.id));
+    expect(installs.map(install => ({ type: install.targetType, id: install.targetId }))).toEqual([{ type: "agent", id: f.agentId }]);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, account.id));
+    await expect(intents.complete(id, inbox.connectionId, "email-board", { canManageOrganizationGrant: true })).rejects.toThrow(/active inbox/);
+    await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.connectionId, account.id));
+    const completed = await intents.complete(id, inbox.connectionId, "email-board", { canManageOrganizationGrant: true });
+    expect(completed).toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId: inbox.connectionId } });
+    expect((await intents.complete(id, inbox.connectionId, "email-board", { canManageOrganizationGrant: true })).id).toBe(id);
+    expect(await intents.request(claims, "agentmail")).toMatchObject({ state: "ready", interactionId: null, connectionId: inbox.connectionId });
+    expect((await intents.search(claims, "agentmail")).results[0]).toMatchObject({ state: "ready", connectionId: inbox.connectionId });
   });
 
   it("checks AgentMail account and inbox health without local stdio or MCP discovery", async () => {

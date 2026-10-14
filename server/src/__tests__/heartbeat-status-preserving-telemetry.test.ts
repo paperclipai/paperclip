@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -143,3 +144,6 @@ describeEmbeddedPostgres(
     });
   },
 );
+
+
+enableRunFailureReporting();

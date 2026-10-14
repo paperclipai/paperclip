@@ -1,5 +1,6 @@
 import { useCompany } from "@/context/CompanyContext";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
+import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -13,6 +14,7 @@ import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { SelectPopover } from "../ui/select";
 import {
   Dialog,
   DialogContent,
@@ -25,62 +27,8 @@ export type AgentBasics = {
   adapterType: string;
   runnerProvider: string;
 };
-const brandMarks: Record<string, { src: string; dark?: string }> = {
-  claude_local: { src: "/brands/claude-color.svg" },
-  codex_local: { src: "/brands/codex-color.svg" },
-  gemini_local: { src: "/brands/adapters/gemini-color.svg" },
-  kimi_local: {
-    src: "/brands/adapters/kimi-color-light.svg",
-    dark: "/brands/adapters/kimi-color.svg",
-  },
-  ...Object.fromEntries(
-    [
-      ["cursor", "cursor"],
-      ["cursor_cloud", "cursor"],
-      ["grok_local", "grok"],
-      ["hermes_local", "hermesagent"],
-      ["hermes_gateway", "hermesagent"],
-      ["pi_local", "pi"],
-    ].map(([type, icon]) => [
-      type,
-      {
-        src: `/brands/adapters/${icon}.svg`,
-        dark: `/brands/adapters/${icon}-dark.svg`,
-      },
-    ]),
-  ),
-};
-export function AdapterMark({
-  type,
-  className = "size-6",
-}: {
-  type: string;
-  className?: string;
-}) {
-  const Icon = getAdapterDisplay(type).icon;
-  const mark = brandMarks[type];
-  if (!mark) return <Icon className={className} />;
-  return (
-    <>
-      <img
-        src={mark.src}
-        className={cn(
-          "shrink-0 object-contain",
-          mark.dark && "dark:hidden",
-          className,
-        )}
-        alt=""
-      />
-      {mark.dark && (
-        <img
-          src={mark.dark}
-          className={cn("hidden shrink-0 object-contain dark:block", className)}
-          alt=""
-        />
-      )}
-    </>
-  );
-}
+export { AdapterMark } from "../AdapterMark";
+
 function AgentBasicsCharacter() {
   const { selectedCompanyId } = useCompany();
   const { appearance } = useAgentAppearanceDraft(`${selectedCompanyId}:new-agent`);
@@ -118,13 +66,14 @@ export function AgentBasicsDialog({
     error,
   } = useQuery({
     queryKey: queryKeys.adapters.all,
-    queryFn: adaptersApi.list,
+    queryFn: () => adaptersApi.list(),
     enabled: open,
   });
   const choices = (adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
       !adapter.disabled &&
+      adapter.type !== "paperclip_runner" &&
       isNewAgentAdapterAllowed(adapter.type, {
         cloud,
         nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
@@ -132,7 +81,10 @@ export function AgentBasicsDialog({
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   );
-  const validAdapter = choices.some((adapter) => adapter.type === adapterType);
+  const experimentalRunnerAvailable = experimental.data?.enableNativeRunner === true
+    && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
+  const validAdapter = choices.some((adapter) => adapter.type === adapterType)
+    || (experimentalRunnerAvailable && adapterType === "paperclip_runner");
   return (
     <Dialog
       open={open}
@@ -169,7 +121,9 @@ export function AgentBasicsDialog({
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
             else if (validAdapter)
-              onContinue({ name: name.trim(), adapterType, runnerProvider });
+              onContinue({ name: name.trim(),
+                adapterType: adapterType === "openai_dot" ? "paperclip_runner" : adapterType,
+                runnerProvider: adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex" });
           }}
         >
           <div className="flex min-h-0 flex-col gap-7 overflow-y-auto px-6 pb-8 sm:px-10">
@@ -262,22 +216,22 @@ export function AgentBasicsDialog({
                     );
                   })}
                 </div>
-                {validAdapter && adapterType === "paperclip_runner" && (
-                  <label className="flex flex-col gap-2 text-sm font-medium">
-                    Runner
-                    <select
-                      className="rounded-md border border-border bg-background px-3 py-2"
-                      value={runnerProvider}
-                      onChange={(event) =>
-                        setRunnerProvider(event.target.value)
-                      }
-                    >
-                      <option value="codex">Codex (app server)</option>
-                      <option value="claude">Claude (ACPX)</option>
-                      <option value="opencode">OpenCode</option>
-                    </select>
-                  </label>
-                )}
+                {experimentalRunnerAvailable && <details className="space-y-3">
+                  <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                  <div className="space-y-2">
+                    <label className="text-sm text-muted-foreground">Experimental harness</label>
+                    <SelectPopover aria-label="Experimental harness"
+                      value={adapterType === "paperclip_runner" ? runnerProvider : ""}
+                      placeholder="Choose a native harness…"
+                      onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
+                      options={[
+                        { value: "codex", label: "Codex (Paperclip Runner)" },
+                        { value: "claude", label: "Claude Code (Paperclip Runner)" },
+                        { value: "grok", label: "Grok Build (Paperclip Runner)" },
+                        { value: "opencode", label: "OpenCode (Paperclip Runner)" },
+                      ]} />
+                  </div>
+                </details>}
               </fieldset>
             )}
           </div>

@@ -1,5 +1,7 @@
+import { registerRuntimeCommands } from "./commands/runtime.js";
 import { registerEmailCommands } from "./commands/client/email.js";
 import { registerTypesafeCommands } from "./commands/client/typesafe.js";
+import { registerMcpCommands } from "./commands/mcp.js";
 import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
@@ -102,6 +104,7 @@ program
   .action(updateCommand);
 
 program.hook("preAction", async (_thisCommand, actionCommand) => {
+  if (actionCommand.parent?.name() === "runtime") return; // Public runtime setup never reads instance config or credentials.
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
   let dataDirOptions: DataDirOptionLike = options;
   if (actionCommand.name() === "test-drive") {
@@ -125,6 +128,7 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
 });
 
 registerTestDriveCommand(program);
+registerRuntimeCommands(program);
 
 program
   .command("onboard")
@@ -278,6 +282,7 @@ auth
   .action(bootstrapCeoInvite);
 
 registerClientAuthCommands(auth);
+registerMcpCommands(program);
 
 async function main(): Promise<void> {
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));

@@ -1,6 +1,9 @@
-import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -16,7 +19,7 @@ export function isConversationAdapter(adapterType: string): boolean {
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
 
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {
-  return result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
+  return result?.workspaceRestoreFailure !== "restore_unsafe_archive" && !hasRequiredWorkspaceRecovery(result) && result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
 
 /** Persisted by the server when it claims the run, before remote provisioning. */
@@ -52,6 +55,7 @@ export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$i
 }
 
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+  if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return false;
   if (hasConversationContinuationPolicy(run.resultJson)) return true;
   const adapterType = await historicalAdapterType(db, run);
   return adapterType !== null && isConversationAdapter(adapterType);
@@ -67,9 +71,14 @@ export function conversationRecoveryActionPredicate() {
     sql`exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
-        and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
-        and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`)}
+        and ${or(
+          eq(heartbeatRuns.nativeIssueId, issueRecoveryActions.sourceIssueId),
+          and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text`),
+        )}
         and ${heartbeatRuns.runtimeMode} = 'legacy'
+        and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+        and coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> 'paperclip.workspace-restore-recovery.v1'
         and ${inArray(heartbeatRuns.status, ['failed', 'timed_out', 'interrupted', 'cancelled'])}
         and ${conversationRunPredicate()}
         and ${or(
@@ -106,11 +115,34 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
-      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+      or(
+        eq(heartbeatRuns.nativeIssueId, canonicalExecutionUuid(sql`${issueId}::text`)),
+        and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+      ),
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
+      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease,
+        sql`${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'`),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
   for (const { run, activeLease: leaseHeld } of candidates) {
+    if (hasRequiredWorkspaceRecovery(run.resultJson)) {
+      const leases = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
+      ));
+      const retainedIds = (run.resultJson!.workspaceRestoreRecovery as { leaseIds?: unknown }).leaseIds;
+      const remoteLeases = leases.filter(lease => lease.provider !== "local");
+      const remoteStopped = Array.isArray(retainedIds) && retainedIds.length > 0
+        && retainedIds.every(id => typeof id === "string" && remoteLeases.some(lease =>
+          lease.id === id && hasRemoteTerminationReceipt(lease)))
+        && remoteLeases.every(hasRemoteTerminationReceipt);
+      if (!remoteStopped) return {
+        runId: run.id, agentId: run.agentId, cause: "execution_owner_active",
+        nextAction: "The retained workspace environment has not confirmed that it stopped. Wait for cleanup before continuing this task.",
+      };
+      // These PIDs came from the sandbox. A matching process on this host is
+      // unrelated and must not hide the repair action or block a repaired task.
+      // A separate local lease keeps the existing host process checks below.
+      if (leases.every(lease => lease.provider !== "local")) continue;
+    }
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity

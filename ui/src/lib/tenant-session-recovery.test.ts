@@ -43,6 +43,36 @@ describe("isArchivedStackRecoveryError", () => {
 });
 
 describe("tenant-session recovery coordinator", () => {
+  it.each(["tenant_session_required", "tenant_session_invalid"])(
+    "leaves public Dot consent mounted after an expected %s background failure",
+    (error) => {
+      const reload = vi.fn();
+      const pathname = `/dot-connect/pcmcp_request_${"a".repeat(43)}`;
+      const recovery = createTenantSessionRecoveryCoordinator(reload, () => pathname);
+
+      expect(recovery.recoverIfNeeded(401, { error })).toBeNull();
+      expect(reload).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/DOT/agents/dot", "/dot-connect/not-a-request", `/dot-connect/pcmcp_request_${"a".repeat(43)}/extra`])(
+    "still recovers tenant sessions outside the public consent route: %s",
+    (pathname) => {
+      const reload = vi.fn();
+      const recovery = createTenantSessionRecoveryCoordinator(reload, () => pathname);
+
+      expect(recovery.recoverIfNeeded(401, { error: "tenant_session_required" })).not.toBeNull();
+      expect(reload).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("still leaves archived stacks from the public Dot consent route", () => {
+    const reload = vi.fn();
+    const recovery = createTenantSessionRecoveryCoordinator(reload, () => `/dot-connect/pcmcp_request_${"a".repeat(43)}`);
+
+    expect(recovery.recoverIfNeeded(423, { statusPage: { code: "archived" } })).not.toBeNull();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
   it("reloads once and shares one never-settling promise across concurrent failures", async () => {
     const reload = vi.fn();
     const recovery = createTenantSessionRecoveryCoordinator(reload);

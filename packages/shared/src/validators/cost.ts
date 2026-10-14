@@ -1,7 +1,9 @@
+import { exactCentsSchema, pricingProvenanceSchema } from "../accounting.js";
 import { z } from "zod";
 import { BILLING_TYPES, COST_STATUSES } from "../constants.js";
 
-export const createCostEventSchema = z.object({
+const costEventFields = z.object({
+  idempotencyKey: z.string().trim().min(1).max(200).optional().nullable(),
   agentId: z.string().guid(),
   issueId: z.string().guid().optional().nullable(),
   projectId: z.string().guid().optional().nullable(),
@@ -13,17 +15,28 @@ export const createCostEventSchema = z.object({
   billingType: z.enum(BILLING_TYPES).optional().default("unknown"),
   costStatus: z.enum(COST_STATUSES).optional().default("reported"),
   model: z.string().min(1),
-  inputTokens: z.number().int().nonnegative().optional().default(0),
-  cachedInputTokens: z.number().int().nonnegative().optional().default(0),
-  outputTokens: z.number().int().nonnegative().optional().default(0),
-  costCents: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative().max(2_147_483_647).optional().default(0),
+  cachedInputTokens: z.number().int().nonnegative().max(2_147_483_647).optional().default(0),
+  outputTokens: z.number().int().nonnegative().max(2_147_483_647).optional().default(0),
+  costCents: exactCentsSchema,
+  providerRequestId: z.string().min(1).max(250).nullable().optional(),
+  pricingProvenance: pricingProvenanceSchema.nullable().optional(),
   occurredAt: z.string().datetime(),
-}).transform((value) => ({
+});
+
+export const createCostEventSchema = costEventFields.transform((value) => ({
   ...value,
   biller: value.biller ?? value.provider,
 }));
 
-export type CreateCostEvent = z.infer<typeof createCostEventSchema>;
+/** Internal service receipts; the public reporting endpoint retains its required agent. */
+export const createServiceCostEventSchema = costEventFields.extend({
+  agentId: z.string().uuid().nullable(),
+  usageKind: z.enum(["decision", "fast_response"]),
+  responsibleUserId: z.string().nullable(),
+}).transform(value => ({ ...value, biller: value.biller ?? value.provider }));
+
+export type CreateCostEvent = z.input<typeof createCostEventSchema>;
 
 export const updateBudgetSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative(),

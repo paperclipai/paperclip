@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
 import {
@@ -124,6 +124,9 @@ function addSeconds(date: Date, seconds: number) {
 }
 
 function visibleLiveness(object: ExternalObjectRecord, now = new Date()): ExternalObjectLivenessState {
+  // Terminal objects are never refreshed again, so "stale" (refresh overdue) is
+  // misleading — their resolved status is final. Keep the last liveness as-is.
+  if (object.isTerminal) return object.liveness;
   if (object.liveness === "fresh" && object.nextRefreshAt && object.nextRefreshAt <= now) {
     return "stale";
   }
@@ -810,7 +813,7 @@ export function externalObjectService(
       const [updated] = await db
         .update(externalObjects)
         .set({
-          liveness: visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
+          liveness: object.isTerminal ? object.liveness : visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
           nextRefreshAt: addSeconds(now, DEFAULT_RETRY_AFTER_SECONDS),
           refreshStartedAt: null,
           refreshToken: null,
@@ -824,10 +827,15 @@ export function externalObjectService(
 
     const result = pluginResult ?? await resolver!.resolve({ companyId: object.companyId, object });
     if (!result.ok) {
+      // A failed refresh means the object's status is currently unknown, not
+      // terminal. Clear a previous terminal verdict so the object keeps being
+      // scheduled for automatic refresh and self-heals (e.g. a GitHub "not
+      // found" that later resolves once repo access improves).
       const [updated] = await db
         .update(externalObjects)
         .set({
           liveness: result.liveness,
+          isTerminal: false,
           lastErrorAt: now,
           lastErrorCode: result.errorCode,
           lastErrorMessage: sanitizeErrorMessage(result.errorMessage),
@@ -1024,13 +1032,33 @@ export function externalObjectService(
 
   async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
     const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_REFRESH_LEASE_SECONDS * 1000);
+    // Terminal objects are usually skipped forever, but a GitHub "not found"
+    // verdict is only trustworthy while the repository is actually visible to
+    // the configured credentials. GitHub hides inaccessible (often private)
+    // repos behind a 404, so a not-found object can become resolvable later
+    // when credentials or repo visibility improve. Re-check objects that were
+    // frozen as "not found" before the repository probe existed so they
+    // self-heal instead of freezing. Once the provider has probed the repo and
+    // confirmed it is visible (data.probeVerified = "true"), the not-found
+    // verdict is definitive, so stop re-polling that object to avoid burning
+    // the company's GitHub API budget on deleted references forever.
+    const probeVerifiedNotFound = sql`coalesce(${externalObjects.data}->>'probeVerified', 'false') = 'true'`;
+    const refreshable = or(
+      eq(externalObjects.isTerminal, false),
+      and(
+        eq(externalObjects.isTerminal, true),
+        eq(externalObjects.providerKey, "github"),
+        eq(externalObjects.statusKey, "not_found"),
+        not(probeVerifiedNotFound),
+      ),
+    )!;
     const due = await db
       .select({ id: externalObjects.id })
       .from(externalObjects)
       .where(
         and(
           eq(externalObjects.companyId, companyId),
-          eq(externalObjects.isTerminal, false),
+          refreshable,
           lte(externalObjects.nextRefreshAt, now),
           or(
             isNull(externalObjects.refreshStartedAt),

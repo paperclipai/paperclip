@@ -28,17 +28,10 @@ const mockSidebarPreferencesApi = vi.hoisted(() => ({
   getCompanyOrder: vi.fn(),
   updateCompanyOrder: vi.fn(),
 }));
-const mockCloudApi = vi.hoisted(() => ({
-  listStacks: vi.fn(),
-}));
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
-}));
-
-vi.mock("@/api/cloud", () => ({
-  cloudApi: mockCloudApi,
 }));
 
 vi.mock("@/lib/browserNavigation", () => ({
@@ -141,29 +134,6 @@ const CLOUD_HEALTH = {
   },
 };
 
-const CLOUD_STACKS = {
-  stacks: [
-    {
-      displayName: "Acme Labs",
-      stackSlug: "acme-labs",
-      primaryHost: "acme-labs.example.test",
-      lifecycleState: "active",
-      sleepState: "awake",
-      role: "owner",
-      isCurrent: true,
-    },
-    {
-      displayName: "Strata Systems",
-      stackSlug: "strata",
-      primaryHost: "strata.example.test",
-      lifecycleState: "active",
-      sleepState: "asleep",
-      role: "member",
-      isCurrent: false,
-    },
-  ],
-};
-
 describe("SidebarCompanyMenu", () => {
   let container: HTMLDivElement;
 
@@ -179,7 +149,6 @@ describe("SidebarCompanyMenu", () => {
       },
     });
     mockAuthApi.signOut.mockResolvedValue(undefined);
-    mockCloudApi.listStacks.mockResolvedValue(CLOUD_STACKS);
     mockSidebarPreferencesApi.getCompanyOrder.mockResolvedValue({
       orderedIds: ["company-1", "company-2", "company-3"],
       updatedAt: null,
@@ -199,7 +168,7 @@ describe("SidebarCompanyMenu", () => {
     vi.clearAllMocks();
   });
 
-  function renderMenu(options: { cloud?: boolean; health?: unknown } = {}) {
+  function renderMenu(options: { cloud?: boolean; health?: unknown; production?: boolean } = {}) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -209,10 +178,11 @@ describe("SidebarCompanyMenu", () => {
       queryClient.setQueryData(queryKeys.health, options.health ?? CLOUD_HEALTH);
     }
     const root = createRoot(container);
+    const Menu = options.production ? SidebarCompanyMenuProduction : SidebarCompanyMenu;
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarCompanyMenu />
+          <Menu />
         </QueryClientProvider>,
       );
     });
@@ -599,7 +569,6 @@ describe("SidebarCompanyMenu", () => {
 
     expect(mockOpenOnboarding).toHaveBeenCalledTimes(1);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
-    expect(mockCloudApi.listStacks).not.toHaveBeenCalled();
 
     act(() => {
       root.unmount();
@@ -661,168 +630,22 @@ describe("SidebarCompanyMenu", () => {
       });
     });
 
-    it("switches organizations instead of companies", async () => {
-      const { root } = renderMenu({ cloud: true });
+    it.each([false, true])("keeps company navigation without local creation when a managed host has no switcher plugin (production=%s)", async (production) => {
+      const { root } = renderMenu({ cloud: true, production });
       await flushReact();
       await flushReact();
-
-      expect(mockCloudApi.listStacks).toHaveBeenCalledTimes(1);
-      await openMenu("Open Acme Labs organization switcher");
-
-      expect(document.body.textContent).toContain("Organizations");
-      expect(document.body.textContent).toContain("Create organization");
-      expect(document.body.textContent).not.toContain("Organization settings");
-      expect(document.body.textContent).not.toContain("Switch company");
-      expect(document.body.textContent).not.toContain("Create new company...");
-      expect(document.body.textContent).not.toContain("Company settings");
-
-      // Stacks, not companies: both rows carry the slug badge, and the current
-      // stack is the checked one.
-      expect(document.body.textContent).toContain("Acme Labs");
-      expect(document.body.textContent).toContain("acme-labs");
-      expect(document.body.textContent).toContain("Strata Systems");
-      expect(document.body.textContent).toContain("strata");
-      expect(document.body.textContent).not.toContain("Anachronist Wiki");
-      expect(document.body.textContent).not.toContain("ANA");
-
-      const currentRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Acme Labs"));
-      expect(currentRow?.classList.contains("bg-accent")).toBe(false);
-
-      // Long slugs must not squeeze the display name out of the row, so the
-      // secondary line truncates and keeps the full slug on hover.
-      const slugBadge = document.body.querySelector('[title="strata"]');
-      expect(slugBadge?.className).toContain("truncate");
-
-      // Drag-to-reorder is self-hosted only in v1.
-      expect(Array.from(document.body.querySelectorAll("button"))
-        .some((element) => element.textContent === "Edit")).toBe(false);
-
-      act(() => {
-        root.unmount();
-      });
-    });
-
-    it("shows the synced company logo on the trigger while stack rows keep monograms", async () => {
-      const { root } = renderMenu({ cloud: true });
-      await flushReact();
-      await flushReact();
-
-      // A Cloud tenant holds exactly one company, and the harness pushes the
-      // stack's uploaded workspace icon into that company's branding — so the
-      // trigger renders the company logo, not the monogram.
-      const trigger = container.querySelector(
-        'button[aria-label="Open Acme Labs organization switcher"]',
-      );
-      expect(trigger).not.toBeNull();
-      expect(
-        trigger?.querySelector('[data-logo-url="/api/assets/logo-asset-1/content"]'),
-      ).not.toBeNull();
-
-      // Other stacks have no hot-linkable icon in the portfolio payload, so
-      // their rows keep the deterministic monogram treatment.
-      await openMenu("Open Acme Labs organization switcher");
-      const strataRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Strata Systems"));
-      expect(strataRow).toBeTruthy();
-      expect(strataRow?.querySelector("[data-logo-url]")).toBeNull();
-
-      act(() => {
-        root.unmount();
-      });
-    });
-
-    it("enters another stack through a full top-level navigation", async () => {
-      const { root } = renderMenu({ cloud: true });
-      await flushReact();
-      await flushReact();
-      await openMenu("Open Acme Labs organization switcher");
-
-      const strataRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Strata Systems"));
-      expect(strataRow).toBeTruthy();
-
-      act(() => {
-        strataRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await flushReact();
-
-      expect(mockNavigateTopLevel).toHaveBeenCalledWith(
-        "https://cloud.example.test/stacks/strata/enter",
-      );
-      // No in-app company selection and no client-side route change.
-      expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
-      expect(mockNavigate).not.toHaveBeenCalled();
-
-      act(() => {
-        root.unmount();
-      });
-    });
-
-    it("does not navigate when the current stack is picked again", async () => {
-      const { root } = renderMenu({ cloud: true });
-      await flushReact();
-      await flushReact();
-      await openMenu("Open Acme Labs organization switcher");
-
-      const currentRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Acme Labs"));
-
-      act(() => {
-        currentRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await flushReact();
-
-      expect(mockNavigateTopLevel).not.toHaveBeenCalled();
-
-      act(() => {
-        root.unmount();
-      });
-    });
-
-    it("sends organization creation to the cloud app, not the in-app wizard", async () => {
-      const { root } = renderMenu({ cloud: true });
-      await flushReact();
-      await flushReact();
-      await openMenu("Open Acme Labs organization switcher");
-
-      const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Create organization"));
-      expect(createItem).toBeTruthy();
-
-      act(() => {
-        createItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await flushReact();
-
-      expect(mockNavigateTopLevel).toHaveBeenCalledWith("https://cloud.example.test/stacks/new");
-      expect(mockOpenOnboarding).not.toHaveBeenCalled();
-
-      act(() => {
-        root.unmount();
-      });
-    });
-
-    it("falls back to the stack slug and hides creation without a cloud base url", async () => {
-      mockCloudApi.listStacks.mockRejectedValue(new Error("portfolio unavailable"));
-      const { root } = renderMenu({
-        cloud: true,
-        health: {
-          status: "ok" as const,
-          cloud: { ...CLOUD_HEALTH.cloud, cloudBaseUrl: null },
-        },
-      });
-      await flushReact();
-      await flushReact();
-
-      await openMenu("Open acme-labs organization switcher");
-
-      expect(document.body.textContent).toContain("Could not load organizations");
+      await openMenu(`Open Acme Labs ${production ? "company" : "organization"} switcher`);
+      expect(document.body.textContent).toContain("Anachronist Wiki");
+      expect(document.body.textContent).toContain("ANA");
       expect(document.body.textContent).not.toContain("Create organization");
-
-      act(() => {
-        root.unmount();
-      });
+      expect(mockOpenOnboarding).not.toHaveBeenCalled();
+      const row = [...document.querySelectorAll('[data-slot="dropdown-menu-item"]')]
+        .find(element => element.textContent?.includes("Anachronist Wiki"));
+      act(() => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-3");
+      expect(mockNavigate).toHaveBeenCalledWith("/ANA/dashboard");
+      expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+      act(() => root.unmount());
     });
   });
 });

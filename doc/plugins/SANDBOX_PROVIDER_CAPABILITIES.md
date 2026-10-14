@@ -10,6 +10,29 @@ Read [Sandbox file-sync lifecycle hooks](./SANDBOX_FILE_SYNC_HOOKS.md) for the
 native file-transfer hooks. Read the driver declaration shape in
 [the plugin specification](./PLUGIN_SPEC.md).
 
+## Fresh lease acquisition timeout
+
+A driver can declare `defaultAcquireTimeoutMs` as a positive integer of at most
+86,400,000 milliseconds. The host uses it for `environmentAcquireLease` when the
+resolved config has no positive finite numeric `timeoutMs`. A positive numeric
+`bridgeRequestTimeoutMs` can extend that budget. The host adds 30 seconds for RPC
+overhead. This applies to both sandbox providers and generic plugin drivers.
+
+Daytona declares 300,000 milliseconds for the entire fresh acquisition. Creation,
+workspace setup, shell detection, expiry setup, and inline failure cleanup share
+that budget. Its host RPC can therefore wait 330 seconds instead of the worker's
+normal 30 seconds. On timeout the provider returns the attempt's scoped cleanup
+record for durable host reconciliation. Late SDK results cannot admit the lease
+or start the next setup phase.
+Drivers that omit the declaration keep the existing fallback. The host does not
+infer this budget from config-schema defaults: a field named `timeoutMs` can
+describe sandbox lifetime instead of the time needed to acquire it.
+
+This declaration does not change provider config, lease expiry, the resume
+deadline, or other lifecycle calls. Providers must still enforce their operation
+timeouts and report uncertain allocations for cleanup. A bundled plugin must bump
+its manifest version when adding the field so existing installations receive it.
+
 ## How the host resolves an effective capability
 
 The host never trusts a declaration alone. For every run it resolves each
@@ -178,3 +201,9 @@ Earlier drafts listed two concurrency keys, `concurrentSyncAndExec` and
 read either key, so a declaration had no effect. The host removed both keys. The
 strict capability validator now rejects them as unknown keys. The host can
 reintroduce a concurrency capability when a runtime path enforces it.
+
+### Preserving an unexported workspace
+
+Native export recovery requires the separately discovered `environmentStopLease` RPC (`onEnvironmentStopLease`). It stops the exact allocation and preserves files regardless of its normal release policy. A failed or unconfirmed stop must throw and must never fall back to deletion. The host uses the recorded plugin ID and defers when that worker does not advertise the hook; a generic release method is insufficient evidence of stop-only support. Normal successful ephemeral release remains destructive after verified copyback.
+
+Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.

@@ -3,11 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { emailSendSchema } from "@paperclipai/shared";
 import { emailChannelService } from "../email-channels.js";
 import { forbidden, notFound } from "../../errors.js";
-import { instanceSettingsService } from "../instance-settings.js";
 
 const AGENTMAIL_EMAIL_CONTRACT = {
   description:
-    "Use an assigned AgentMail inbox for this task. Internal comments and final responses never send email. List inboxes, read the current email thread, explicitly send a new email child task or reply, and inspect delivery. Requires experimental email connections. A send needs a UUID idempotencyKey; preserve it and the identical payload on retry. A reply uses conversationId and replyToMessageId from thread; replyAll defaults false and excludes Bcc. Sending does not close the task.",
+    "Use an assigned AgentMail inbox for this task. Internal comments and final responses never send email. List inboxes, read the current email thread, explicitly send a new email child task or reply, and inspect delivery. A send needs a UUID idempotencyKey; preserve it and the identical payload on retry. A reply uses conversationId and replyToMessageId from thread; replyAll defaults false and excludes Bcc. Sending does not close the task.",
   inputSchema: {
     type: "object",
     properties: {
@@ -118,10 +117,6 @@ export async function executeAgentmailTool(
   },
   value: unknown,
 ) {
-  if (
-    !(await instanceSettingsService(db).getExperimental()).enableChatConnectors
-  )
-    throw forbidden("Experimental email connections are disabled");
   const input = schema.parse(value);
   // This facade only persists intents/reads. The app's durable email worker owns execution.
   const service = emailChannelService(db, {

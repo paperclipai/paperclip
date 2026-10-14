@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/command.schema.json",
+  "title": "PRP v3 runner command",
+  "type": "object",
+  "required": [
+    "schema",
+    "commandId",
+    "controllerSeq",
+    "type",
+    "issuedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.command.v3"
+    },
+    "commandId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "controllerSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "run.prepare",
+        "run.attach",
+        "session.open",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "turn.stop",
+        "request.resolve",
+        "interaction.receipt",
+        "semantic_tool.result",
+        "session.snapshot",
+        "session.close",
+        "session.budget.increase",
+        "session.destroy",
+        "run.cancel",
+        "runner.drain",
+        "runner.suspend",
+        "runner.shutdown",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear",
+        "external_provider.operation"
+      ]
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadlineAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "precondition": {
+      "type": "object",
+      "properties": {
+        "runnerState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessionState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "activeTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.goal.set"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "objective": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              "tokenBudget": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "requestId",
+              "bindingId",
+              "runId",
+              "normalizedSessionId",
+              "turnId",
+              "bindingGeneration",
+              "assignmentRevision",
+              "digest",
+              "action",
+              "input"
+            ],
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "bindingId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "runId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "normalizedSessionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "bindingGeneration": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "assignmentRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "action": {
+                "enum": [
+                  "accept",
+                  "tool",
+                  "progress",
+                  "finish"
+                ]
+              },
+              "input": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "accept"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "tool"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "arguments": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "name",
+                  "arguments"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "progress"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 12000
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "finish"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "additionalProperties": true
+}

@@ -6,6 +6,9 @@ import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as gitSync from "./git-workspace-sync.js";
+import * as restoreMerge from "./workspace-restore-merge.js";
+import { getWorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 import {
   resetLocalGitIndexToHead,
   runLocalGit,
@@ -628,6 +631,9 @@ describe("sandbox managed runtime", () => {
     const localAssetsDir = path.join(rootDir, "local-assets");
     const linkedAssetPath = path.join(rootDir, "linked-skill.md");
     await mkdir(path.join(localWorkspaceDir, ".claude"), { recursive: true });
+    const cloneStaging = path.join(".paperclip-runtime", "repository-staging", "pending.clone-abc", "partial.txt");
+    await mkdir(path.dirname(path.join(localWorkspaceDir, cloneStaging)), { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, cloneStaging), "Incomplete private clone");
     await mkdir(localAssetsDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "._README.md"), "appledouble\n", "utf8");
@@ -661,6 +667,7 @@ describe("sandbox managed runtime", () => {
       },
     };
     const runtimeStatuses: string[] = [];
+    const run = vi.spyOn(client, "run");
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
@@ -688,6 +695,7 @@ describe("sandbox managed runtime", () => {
     });
 
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
+    await expect(readFile(path.join(remoteWorkspaceDir, cloneStaging), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, "._README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, ".claude", "settings.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(prepared.assetDirs.skills, "skill.md"), "utf8")).resolves.toBe("skill body\n");
@@ -716,7 +724,9 @@ describe("sandbox managed runtime", () => {
       expect.stringMatching(/^config_sync:Syncing skills to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
       expect.stringMatching(/^restore:Restoring workspace from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
     ]));
+    await expect(readFile(path.join(localWorkspaceDir, cloneStaging), "utf8")).resolves.toBe("Incomplete private clone");
     expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing workspace");
+    expect(run.mock.calls.some(([command]) => command.includes("workspace-download.tar"))).toBe(true);
   });
 
   it("falls back to the host-known byte count when the provider reports 0 for inbound workspace sync", async () => {
@@ -835,6 +845,93 @@ describe("sandbox managed runtime", () => {
     },
   );
 
+  it("restores a sandbox rebase without merging it with unchanged host history", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-rebase-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "pins.txt"), "base\n");
+    await writeFile(path.join(host, "notes.txt"), "original notes\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const base = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "pins.txt"), "feature\n");
+    await git(host, ["commit", "-am", "feature"]);
+    const startingHead = await git(host, ["rev-parse", "HEAD"]);
+    await git(host, ["checkout", "-b", "upstream", base]);
+    await writeFile(path.join(host, "pins.txt"), "upstream\n");
+    await git(host, ["commit", "-am", "upstream"]);
+    await git(host, ["checkout", "work"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "rebase", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["config", "user.name", "Paperclip Test"]);
+    await git(remote, ["config", "user.email", "test@paperclip.dev"]);
+    await git(remote, ["fetch", "--unshallow", host, "+refs/heads/*:refs/remotes/source/*"]);
+    await expect(git(remote, ["rebase", "refs/remotes/source/upstream"])).rejects.toMatchObject({ code: 1 });
+    await writeFile(path.join(remote, "pins.txt"), "resolved pins\n");
+    await git(remote, ["add", "pins.txt"]);
+    await git(remote, ["-c", "core.editor=true", "rebase", "--continue"]);
+    const rebasedHead = await git(remote, ["rev-parse", "HEAD"]);
+    expect(rebasedHead).not.toBe(startingHead);
+    await writeFile(path.join(host, "notes.txt"), "host edits during the run\n");
+    await writeFile(path.join(host, "local-only.txt"), "local file\n");
+    await writeFile(path.join(remote, "output.txt"), "sandbox output\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(rebasedHead);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "pins.txt"), "utf8")).toBe("resolved pins\n");
+    expect(await readFile(path.join(host, "notes.txt"), "utf8")).toBe("host edits during the run\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("local file\n");
+    expect(await readFile(path.join(host, "output.txt"), "utf8")).toBe("sandbox output\n");
+    expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
+  });
+
+  it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "original\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "original"]);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "tracked.txt"), "change to discard\n");
+    await git(host, ["commit", "-am", "later change"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "reset", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["fetch", "--unshallow", host, "work"]);
+    await git(remote, ["reset", "--hard", ancestor]);
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await git(host, ["status", "--porcelain"])).toBe("");
+  });
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);
@@ -847,7 +944,7 @@ describe("sandbox managed runtime", () => {
     await git(sourceRepoDir, ["checkout", "-b", "main"]);
     await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
     await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
-    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n*.secret\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "tracked.txt"), "base\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "clean.txt"), "from git\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "deleted.txt"), "delete me\n", "utf8");
@@ -859,6 +956,9 @@ describe("sandbox managed runtime", () => {
     await mkdir(path.join(localWorkspaceDir, "node_modules"), { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "dirty local\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "untracked.txt"), "from local\n", "utf8");
+    await mkdir(path.join(localWorkspaceDir, "drafts"));
+    await writeFile(path.join(localWorkspaceDir, "drafts", "report.md"), "draft\n");
+    await symlink("report.md", path.join(localWorkspaceDir, "drafts", "report-link.md"));
     await writeFile(path.join(localWorkspaceDir, "node_modules", "cache.bin"), "do not upload\n", "utf8");
     await rm(path.join(localWorkspaceDir, "deleted.txt"));
 
@@ -914,6 +1014,11 @@ describe("sandbox managed runtime", () => {
       workspaceLocalDir: localWorkspaceDir,
       onRuntimeProgress: async (status) => {
         runtimeStatuses.push({ phase: status.phase, message: status.message });
+        if (status.phase === "config_sync") {
+          // These files appear after the Git snapshot, before the overlay copy.
+          await writeFile(path.join(localWorkspaceDir, "drafts", "late.secret"), "private\n");
+          await writeFile(path.join(localWorkspaceDir, "drafts", "late.txt"), "later work\n");
+        }
       },
     });
 
@@ -936,6 +1041,10 @@ describe("sandbox managed runtime", () => {
     expect(workspaceMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(workspaceMembers).toContain("tracked.txt");
     expect(workspaceMembers).toContain("untracked.txt");
+    expect(workspaceMembers).toContain("drafts/report.md");
+    expect(await readlink(path.join(remoteWorkspaceDir, "drafts", "report-link.md"))).toBe("report.md");
+    expect(workspaceMembers).not.toContain("drafts/late.secret");
+    expect(workspaceMembers).not.toContain("drafts/late.txt");
     expect(workspaceMembers).not.toContain("clean.txt");
     expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
 
@@ -955,6 +1064,7 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "deleted.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(localWorkspaceDir, "node_modules", "cache.bin"), "utf8")).resolves.toBe("do not upload\n");
 
+    expect(runtimeStatuses.at(-1)?.phase).toBe("finalize");
     expect(downloadedTars).toHaveLength(1);
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
@@ -1197,6 +1307,107 @@ describe("sandbox managed runtime", () => {
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
+  });
+
+  it.each(["symlink", "root_symlink", "root_alias", "root_alias_retarget", "case_alias", "EACCES", "EIO", "ENOENT"])("handles an overlay source changed after the snapshot: %s", async (change) => {
+    // The runtime pins a realpath root before staging. Match that spelling so
+    // injected I/O errors also reach the selected file on macOS's /var alias.
+    const rootDir = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-")));
+    cleanupDirs.push(rootDir);
+    const workspaceLocalDir = path.join(rootDir, "workspace");
+    await initGitRepo(workspaceLocalDir);
+    const draftsDir = path.join(workspaceLocalDir, "drafts");
+    const selectedPath = path.join(change === "root_symlink" ? workspaceLocalDir : draftsDir, "report.md");
+    await mkdir(draftsDir);
+    await writeFile(selectedPath, "selected work\n");
+    const workspaceInputDir = change.startsWith("root_alias") ? path.join(rootDir, "workspace-alias") : workspaceLocalDir;
+    if (change.startsWith("root_alias")) await symlink(workspaceLocalDir, workspaceInputDir);
+    const outsideDir = path.join(rootDir, "outside");
+    await mkdir(outsideDir);
+    await writeFile(path.join(outsideDir, "report.md"), "private outside content\n");
+    await mkdir(path.join(outsideDir, "drafts"));
+    await writeFile(path.join(outsideDir, "drafts", "report.md"), "private outside content\n");
+    const syncIn = vi.fn(async (operations: SandboxSyncOperation[]) => {
+      if (change.startsWith("root_alias")) {
+        const overlay = operations.flatMap((operation) => operation.files)
+          .find((file) => path.basename(file.targetPath) === "workspace-upload.tar");
+        expect(overlay).toBeDefined();
+        const contents = await execFile("tar", ["-xOf", overlay!.sourcePath, "drafts/report.md"]);
+        expect(contents.stdout).toBe("selected work\n");
+      }
+      return { operations: [] };
+    });
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async () => {},
+      writeFile: async () => {},
+      readFile: async () => new ArrayBuffer(0),
+      listFiles: async () => [],
+      remove: async () => {},
+      run: async () => {},
+      syncIn,
+    };
+    const realLstat = fsPromises.lstat.bind(fsPromises);
+    const realRealpath = fsPromises.realpath.bind(fsPromises);
+    const failure = Object.assign(new Error(`Cannot inspect overlay: ${change}`), { code: change });
+    let statSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let realpathSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const preparing = prepareSandboxManagedRuntime({
+        spec: {
+          transport: "sandbox",
+          provider: "test",
+          sandboxId: "sandbox-1",
+          remoteCwd: path.join(rootDir, "remote"),
+          timeoutMs: 30_000,
+          apiKey: null,
+        },
+        adapterKey: "test-adapter",
+        client,
+        workspaceLocalDir: workspaceInputDir,
+        onRuntimeProgress: async (status) => {
+          if (status.phase !== "config_sync") return;
+          if (change === "root_alias") return;
+          if (change === "root_alias_retarget") {
+            await rm(workspaceInputDir);
+            await symlink(outsideDir, workspaceInputDir);
+            return;
+          }
+          if (change === "symlink") {
+            await rm(draftsDir, { recursive: true });
+            await symlink(outsideDir, draftsDir);
+          } else if (change === "ENOENT") {
+            await rm(selectedPath);
+          } else if (change === "case_alias") {
+            // Model a case-insensitive filesystem: Git's indexed spelling
+            // still resolves, while realpath reports the directory's new case.
+            realpathSpy = vi.spyOn(fsPromises, "realpath").mockImplementation((async (...args: Parameters<typeof fsPromises.realpath>) => {
+              if (args[0] === draftsDir) return path.join(workspaceLocalDir, "Drafts");
+              return realRealpath(...args);
+            }) as typeof fsPromises.realpath);
+          } else if (change === "root_symlink") {
+            // The root was captured with the snapshot, before config_sync.
+            await fsPromises.rename(workspaceLocalDir, path.join(rootDir, "original-workspace"));
+            await symlink(outsideDir, workspaceLocalDir);
+          } else {
+            statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+              if (args[0] === selectedPath) throw failure;
+              return realLstat(...args);
+            }) as typeof fsPromises.lstat);
+          }
+        },
+      });
+      if (change === "ENOENT" || change === "case_alias" || change.startsWith("root_alias")) {
+        await preparing;
+        expect(syncIn).toHaveBeenCalledOnce();
+      } else {
+        await expect(preparing).rejects.toThrow(change.endsWith("symlink") ? /overlay.*directory/i : failure.message);
+        if (statSpy) expect(statSpy).toHaveBeenCalledWith(selectedPath);
+        expect(syncIn).not.toHaveBeenCalled();
+      }
+    } finally {
+      statSpy?.mockRestore();
+      realpathSpy?.mockRestore();
+    }
   });
 
   it("excludes an anchor-workspace ignored file whose name has leading and trailing whitespace from the staged tree", async () => {
@@ -1563,7 +1774,7 @@ describe("sandbox managed runtime", () => {
     expect(downloadedTars).toHaveLength(1);
     const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
     expect(members).toEqual([]);
-    const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
+    const emptyArchiveCommand = runCommands.find((command) => command.includes("--null -T"));
     expect(emptyArchiveCommand).toBeDefined();
     expect(emptyArchiveCommand).not.toContain("/dev/null");
   });
@@ -3862,6 +4073,57 @@ describe("sandbox managed runtime outbound coordinator", () => {
     ]);
   }
 
+  it.each([false, true])("records each failed restore phase in stable order (shared error: %s)", async (sharedError) => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home", "private-asset"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const workspaceError = Object.assign(new Error("private workspace path"), { code: "EACCES" });
+    control.failWith("workspace", workspaceError);
+    control.failWith("home", sharedError ? workspaceError : Object.assign(new Error("private credential"), { status: 404 }));
+    control.failWith("private-asset", sharedError ? workspaceError : new Error("private asset error"));
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir), adapterKey: "codex", client, workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("home", dirOf("home"), control, gate),
+        makeControlledAsset("private-asset", dirOf("private-asset"), control, gate),
+      ],
+    });
+    const lines: string[] = [];
+    await expect(prepared.restoreWorkspace((line) => { lines.push(line); })).rejects.toBe(workspaceError);
+    const diagnostics = lines.filter((line) => line.includes("Workspace restore diagnostic:"));
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      '[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"workspace_transfer","errorCode":"EACCES"}\n',
+      sharedError ? '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"EACCES"}\n'
+        : '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"unknown","httpStatus":404}\n',
+      sharedError ? '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"EACCES"}\n'
+        : '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"unknown"}\n',
+    ]));
+    expect(diagnostics.join("")).not.toContain("private");
+    expect(getWorkspaceRestoreDiagnostic(workspaceError)).toEqual({ phase: "workspace", step: "workspace_transfer", errorCode: "EACCES" });
+    expect(control.settled).toEqual(expect.arrayContaining(["workspace", "home", "private-asset"]));
+  });
+
+  it("restores non-git workspace bytes through native syncOut without a fallback tar", async () => {
+    const { workspaceDir, remoteWorkspaceDir } = await makeOutboundDirs([]);
+    const client = makeGatedOutboundClient(false, async (_label, run) => run());
+    const syncOut = vi.spyOn(client, "syncOut");
+    const run = vi.spyOn(client, "run");
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: workspaceDir,
+    });
+    await writeFile(path.join(remoteWorkspaceDir, "file.txt"), "updated native bytes\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "native sync\n", "utf8");
+    await prepared.restoreWorkspace();
+    expect(syncOut).toHaveBeenCalledTimes(1);
+    expect(syncOut.mock.calls[0]?.[0].flatMap((operation) => operation.files)).toEqual([
+      expect.objectContaining({ kind: "directory", sourcePath: remoteWorkspaceDir }),
+    ]);
+    await expect(readFile(path.join(workspaceDir, "file.txt"), "utf8")).resolves.toBe("updated native bytes\n");
+    await expect(readFile(path.join(workspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("native sync\n");
+    expect(run.mock.calls.some(([command]) => command.includes("workspace-download.tar"))).toBe(false);
+  });
+
   it("with concurrency permitted, an asset restore starts while the workspace restore is held open", async () => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
     const { control, gate } = makeOutboundControl();
@@ -4213,6 +4475,155 @@ describe("sandbox git-bundle export transport", () => {
       .flatMap((operation) => operation.files)
       .filter((mapping) => path.posix.basename(mapping.sourcePath) === "git-delta.bundle");
   }
+
+  it.each([
+    "git_export", "git_import", "workspace_transfer", "workspace_extract",
+    "directory_merge", "git_integration", "index_reset", "git_ref_cleanup",
+  ] as const)("identifies the actual %s failure during workspace restore", async (step) => {
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-diagnostic-");
+    const client = makeTransportClient(step !== "workspace_extract", { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      workspaceRestoreRetryDelaysMs: [0, 0],
+    });
+    await commitInSandbox(remoteWorkspaceDir);
+    const failure = Object.assign(new Error("private-restore-command /private-restore-path"), { code: 7, stderr: "private-restore-stderr" });
+    // Failures before the first host write are retried, so they must persist.
+    if (step === "git_export") client.run = async () => { throw failure; };
+    if (step === "git_import") vi.spyOn(gitSync, "fetchGitBundleIntoLocalRef").mockRejectedValue(failure);
+    if (step === "directory_merge") vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline").mockRejectedValue(failure);
+    if (step === "git_integration") vi.spyOn(gitSync, "integrateImportedGitHead").mockRejectedValueOnce(failure);
+    if (step === "index_reset") vi.spyOn(gitSync, "resetLocalGitIndexToHead").mockRejectedValueOnce(failure);
+    if (step === "git_ref_cleanup") vi.spyOn(gitSync, "deleteLocalGitRef").mockRejectedValueOnce(failure);
+    if (step === "workspace_transfer") {
+      const syncOut = client.syncOut!;
+      client.syncOut = async (operations) => {
+        if (operations.some((operation) => operation.files.some((file) => file.kind === "directory"))) throw failure;
+        return syncOut(operations);
+      };
+    }
+    if (step === "workspace_extract") {
+      const readRemote = client.readFile;
+      client.readFile = async (remotePath, options) => remotePath.endsWith("workspace-download.tar")
+        ? Buffer.from("invalid archive") : readRemote(remotePath, options);
+    }
+    const lines: string[] = [];
+    try {
+      const thrown = await prepared.restoreWorkspace((line) => { lines.push(line); }).then(() => undefined, (error: unknown) => error);
+      expect(thrown).toBeInstanceOf(Error);
+      if (step !== "workspace_extract") expect(thrown).toBe(failure);
+      expect(getWorkspaceRestoreDiagnostic(thrown)).toMatchObject({ phase: "workspace", step, errorCode: "unknown" });
+      if (step !== "workspace_extract") expect(getWorkspaceRestoreDiagnostic(thrown)?.exitCode).toBe(7);
+      const diagnostics = lines.filter((line) => line.includes("Workspace restore diagnostic:"));
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).not.toContain("private-restore-");
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it.each([
+    ["a dropped transfer", Object.assign(new Error("transfer reset"), { code: "ECONNRESET" })],
+    ["a busy merge lock", Object.assign(new Error("lock busy"), { code: restoreMerge.WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE })],
+  ])("retries the copy-back after %s before any host write", async (_label, failure) => {
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-retry-");
+    const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      workspaceRestoreRetryDelaysMs: [0, 0],
+    });
+    await commitInSandbox(remoteWorkspaceDir);
+    let directoryTransfers = 0;
+    const syncOut = client.syncOut!;
+    client.syncOut = async (operations) => {
+      const directory = operations.some((operation) => operation.files.some((file) => file.kind === "directory"));
+      if (directory && ++directoryTransfers === 1 && failure.code === "ECONNRESET") throw failure;
+      return syncOut(operations);
+    };
+    if (failure.code !== "ECONNRESET") vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline").mockRejectedValueOnce(failure);
+    try {
+      await prepared.restoreWorkspace();
+      expect(directoryTransfers).toBe(2);
+      expect(await git(localWorkspaceDir, ["log", "-1", "--pretty=%s"])).toBe("sandbox update");
+      await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("gives up after three copy-back attempts", async () => {
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-retry-limit-");
+    const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      workspaceRestoreRetryDelaysMs: [0, 0],
+    });
+    await commitInSandbox(remoteWorkspaceDir);
+    const failure = new Error("sandbox unreachable");
+    let directoryTransfers = 0;
+    const syncOut = client.syncOut!;
+    client.syncOut = async (operations) => {
+      if (!operations.some((operation) => operation.files.some((file) => file.kind === "directory"))) return syncOut(operations);
+      directoryTransfers++;
+      throw failure;
+    };
+    await expect(prepared.restoreWorkspace()).rejects.toBe(failure);
+    expect(directoryTransfers).toBe(3);
+  });
+
+  it.each([
+    ["an unsafe archive", Object.assign(new Error("unsafe"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" }), "directory_merge"],
+    ["a permission failure", Object.assign(new Error("denied"), { code: "EACCES" }), "directory_merge"],
+    ["a failure after the merge started writing", new Error("integration failed"), "git_integration"],
+  ] as const)("does not retry %s", async (_label, failure, step) => {
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-no-retry-");
+    const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      workspaceRestoreRetryDelaysMs: [0, 0],
+    });
+    await commitInSandbox(remoteWorkspaceDir);
+    const spy = step === "directory_merge"
+      ? vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline").mockRejectedValue(failure)
+      : vi.spyOn(gitSync, "integrateImportedGitHead").mockRejectedValue(failure);
+    try {
+      await expect(prepared.restoreWorkspace()).rejects.toBe(failure);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("does not retry a non-Git copy-back that failed after writing a host file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-partial-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "base.txt"), "base\n", "utf8");
+    const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      workspaceRestoreRetryDelaysMs: [0, 0],
+    });
+    await writeFile(path.join(remoteWorkspaceDir, "a-first.txt"), "first\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "z-later.txt"), "later\n", "utf8");
+    let directoryTransfers = 0;
+    const syncOut = client.syncOut!;
+    client.syncOut = async (operations) => {
+      if (operations.some((operation) => operation.files.some((file) => file.kind === "directory"))) directoryTransfers++;
+      return syncOut(operations);
+    };
+    // The merge copies entries in path order, so the first file lands before the
+    // later copy fails with an otherwise retryable I/O error.
+    const failure = Object.assign(new Error("i/o error"), { code: "EIO" });
+    const copyFile = fsPromises.copyFile.bind(fsPromises);
+    vi.spyOn(fsPromises, "copyFile").mockImplementation(async (source, target, mode) => {
+      if (path.basename(String(source)) === "z-later.txt") throw failure;
+      return copyFile(source, target, mode);
+    });
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline");
+    try {
+      await expect(prepared.restoreWorkspace()).rejects.toBe(failure);
+      await expect(readFile(path.join(localWorkspaceDir, "a-first.txt"), "utf8")).resolves.toBe("first\n");
+      expect(directoryTransfers).toBe(1);
+      expect(merge).toHaveBeenCalledTimes(1);
+    } finally { vi.restoreAllMocks(); }
+  });
 
   it("moves the bundle through one native syncOut file mapping, never through readFile", async () => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };

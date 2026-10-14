@@ -34,6 +34,7 @@ const EXTERNAL_CHAT_PROVIDERS = new Set([
   "microsoft-teams",
   "telegram",
   "imessage-photon",
+  "speko",
 ]);
 const ATTACHMENT_OMISSION_REASONS = new Set([
   "attachment_limit",

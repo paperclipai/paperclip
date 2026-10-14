@@ -11,6 +11,7 @@ describe("skills navigation", () => {
     expect(resolveSkillsDiscoveryView(null)).toBe("installed");
     expect(resolveSkillsNavigationView("/PAP/skills", "")).toBe("installed");
     expect(SKILLS_NAVIGATION_HREFS).toEqual({
+      sources: "/skills/sources",
       installed: "/skills",
       discover: "/skills?tab=discover",
       authored: "/skills/studio",

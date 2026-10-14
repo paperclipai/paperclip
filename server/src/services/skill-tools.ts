@@ -18,6 +18,35 @@ export const createSkillToolInput = z.object({
   }
 });
 
+/** Replace the complete primary file of an existing skill, never a partial patch. */
+export const updateSkillToolInput = z.object({
+  skillId: z.string().guid(),
+  markdown: z.string().min(1).max(200000),
+  expectedVersionId: z.string().guid(),
+  idempotencyKey: z.string().min(1).max(240),
+}).strict().superRefine((input, context) => {
+  const document = parseFrontmatterMarkdown(input.markdown);
+  const metadata = skillFrontmatterSchema.safeParse(document.frontmatter);
+  if (!document.hasFrontmatter || !metadata.success || !document.body.trim()) {
+    context.addIssue({ code: "custom", path: ["markdown"], message: "Provide a complete SKILL.md with valid name and description frontmatter and a nonempty body." });
+  }
+});
+
+export async function callUpdateSkillTool(input: {
+  arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;
+}, fetcher: typeof fetch = fetch) {
+  const { skillId, markdown, expectedVersionId, idempotencyKey } = updateSkillToolInput.parse(input.arguments);
+  const response = await fetcher(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api/companies/${encodeURIComponent(input.companyId)}/skills/${encodeURIComponent(skillId)}/files`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: "SKILL.md", content: markdown, expectedVersionId, idempotencyKey }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill update failed (${response.status})`);
+  return { skillId: result.skillId, versionId: result.versionId, path: result.path, studioPath: result.studioPath };
+}
+
 /** Use the same API and company skill policy as Skill Studio. */
 export async function callCreateSkillTool(input: {
   arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;

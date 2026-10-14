@@ -318,3 +318,21 @@ fn rejects_malformed_or_oversized_response_envelopes() {
     code_unit_bounded["answers"]["notes"] = json!({"text":"😀".repeat(50_001)});
     assert!(validate_question_response(&unconstrained_set, &code_unit_bounded).is_err());
 }
+
+#[test]
+fn initial_text_is_never_an_implicit_answer_or_validation_bypass() {
+    let mut questions = question_set();
+    questions["questions"][2]["initialText"] = json!("YES");
+    validate_question_response(&questions, &valid_response()).unwrap();
+    let mut absent = valid_response();
+    absent["answers"].as_object_mut().unwrap().remove("notes");
+    assert!(validate_question_response(&questions, &absent).is_err());
+    let mut invalid = valid_response();
+    invalid["answers"]["notes"] = json!({"text":"bad"});
+    assert!(validate_question_response(&questions, &invalid).is_err());
+    questions["questions"][2]["initialText"] = json!(format!("{}😀", "a".repeat(99_999)));
+    assert!(serde_json::to_vec(&questions).unwrap().len() < 196 * 1024);
+    validate_question_response(&questions, &valid_response()).unwrap();
+    questions["questions"][2]["initialText"] = json!(format!("{}😀", "a".repeat(100_000)));
+    assert!(validate_question_response(&questions, &valid_response()).is_err());
+}

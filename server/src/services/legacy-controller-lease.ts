@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import type { LegacyControllerLeaseLossCause } from "./run-cancellation.js";
 
 // A boot UUID has meaning across containers; a numeric PID does not.
 export const legacyControllerBootId = randomUUID();
@@ -8,6 +9,14 @@ export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
 type Run = typeof heartbeatRuns.$inferSelect;
+
+/** Abort reason for a lost lease, so completion can attribute the stop. */
+export class LegacyControllerLeaseLostError extends Error {
+  constructor(readonly leaseLossCause: LegacyControllerLeaseLossCause) {
+    super("Legacy controller lease lost");
+    this.name = "LegacyControllerLeaseLostError";
+  }
+}
 
 /** Commit these fields in the same UPDATE that claims a queued run. */
 export function legacyControllerClaim(runtimeMode: string) {
@@ -70,8 +79,11 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   }
   let stopped = false;
   let pending = false;
-  const lost = () => { if (!stopped) controller.abort(new Error("Legacy controller lease lost")); };
-  let deadline = setTimeout(lost, Math.max(0,
+  const lost = (cause: LegacyControllerLeaseLossCause) => {
+    if (!stopped) controller.abort(new LegacyControllerLeaseLostError(cause));
+  };
+  const deadlinePassed = () => lost("renewal_deadline");
+  let deadline = setTimeout(deadlinePassed, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();
   const assertOwned = async (stage?: "dispatching") => {
@@ -91,20 +103,20 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
     }
     if (stopped) return;
     if (!renewed) {
-      lost();
+      lost("renewal_rejected");
       controller.signal.throwIfAborted();
     }
     controller.signal.throwIfAborted();
     if (!stopped) {
       clearTimeout(deadline);
-      deadline = setTimeout(lost, Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt)));
+      deadline = setTimeout(deadlinePassed, Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt)));
       deadline.unref();
     }
   };
   const timer = setInterval(() => {
     if (pending || stopped) return;
     pending = true;
-    void assertOwned().catch(lost).finally(() => { pending = false; });
+    void assertOwned().catch(() => lost("renewal_error")).finally(() => { pending = false; });
   }, LEGACY_CONTROLLER_RENEW_MS);
   timer.unref();
   return { assertOwned, stop() { stopped = true; clearInterval(timer); clearTimeout(deadline); } };

@@ -43,7 +43,7 @@ const embeddedPostgresSupport = externalTestDatabaseUrl
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
-  ? describe.sequential
+  ? describe
   : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {

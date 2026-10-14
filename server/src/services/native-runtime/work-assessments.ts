@@ -19,6 +19,8 @@ export async function recordNativeWorkAssessment(input: {
   priorDecisionId: string | null;
   policyVersion: string;
   assessment: NativeEvidenceAssessment;
+  /** Workspace repair changes the status decision even when work evidence is unchanged. */
+  workspaceFinalizeStatus?: "succeeded" | "failed";
   supersedesAssessmentId?: string | null;
 }) {
   const assessmentJson = input.assessment as unknown as Record<string, unknown>;
@@ -36,6 +38,7 @@ export async function recordNativeWorkAssessment(input: {
     triggerCapability: "server_native_finalizer",
     policyVersion: input.policyVersion,
     assessment: assessmentJson,
+    ...(input.workspaceFinalizeStatus ? { workspaceFinalizeStatus: input.workspaceFinalizeStatus } : {}),
   });
   const existing = await input.db.select().from(workAssessments).where(and(
     eq(workAssessments.issueId, input.issueId),

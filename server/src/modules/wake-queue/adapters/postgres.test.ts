@@ -9,6 +9,8 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -59,6 +61,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(issueComments);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(environmentLeases);
     // `heartbeat_runs.wakeup_request_id` references `agent_wakeup_requests.id`,
     // so the run row must go first.
     await db.delete(heartbeatRuns);
@@ -414,6 +418,42 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(drained).toBe(false);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
     expect(wake.status).toBe("deferred_issue_execution");
+  });
+
+  it.each(["clean", "launch", "cleanup"])("promotes saved input only after a verified pre-dispatch review wait (%s)", async evidence => {
+    const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId },
+      errorCode: "issue_continuation_waiting_on_review" });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 1000), resultJson: {
+      stopReason: "issue_continuation_waiting_on_review", timeoutSource: "stale_queued_run_gate",
+    } }).where(eq(heartbeatRuns.id, runId));
+    if (evidence === "launch") await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+      eventType: "native.process_start_requested", stream: "system", level: "info" });
+    if (evidence === "cleanup") await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId,
+      provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user",
+      authorUserId: "responsible-user", body: "Continue with this new message." }).returning();
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } } });
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } });
+    const result = await release({ companyId, runId, now: new Date() });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    if (evidence !== "clean") {
+      expect(result.outcome.kind).toBe("released");
+      expect(runs).toHaveLength(1);
+      expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      return;
+    }
+    expect(result.outcome.kind).toBe("promoted");
+    expect(runs).toHaveLength(2);
+    const successor = runs.find(run => run.status === "queued")!;
+    expect(wake.runId).toBe(successor.id);
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: [comment.id] });
+    await release({ companyId, runId, now: new Date() });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
   });
 
   it("leaves deferred work untouched until the effective execution hold clears", async () => {

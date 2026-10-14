@@ -100,10 +100,10 @@ vi.mock("./pages/audit/CompanyActivity.production", () => ({
   },
 }));
 
-vi.mock("./pages/Costs.production", () => ({
+vi.mock("./pages/Costs", () => ({
   Costs: () => {
     const location = useLocation();
-    return <div>{`PRODUCTION_COSTS@${location.pathname}${location.search}`}</div>;
+    return <div>{`SHARED_COSTS@${location.pathname}${location.search}`}</div>;
   },
 }));
 
@@ -267,14 +267,14 @@ describe("App Activity routing (PAP-16302)", () => {
     flushSync(() => root.unmount());
   });
 
-  it("uses the production Activity and Costs routes when Streamlined UI is disabled", async () => {
+  it("uses legacy Activity and the shared standalone Costs page when Streamlined UI is disabled", async () => {
     streamlinedUiState.enabled = false;
     const activityRoot = renderAppAt(container, "/PAP/activity");
     await waitForRoute(container, "PRODUCTION_ACTIVITY@/PAP/activity");
     flushSync(() => activityRoot.unmount());
 
     const costsRoot = renderAppAt(container, "/PAP/costs?range=30d");
-    await waitForRoute(container, "PRODUCTION_COSTS@/PAP/costs?range=30d");
+    await waitForRoute(container, "SHARED_COSTS@/PAP/costs?range=30d");
     flushSync(() => costsRoot.unmount());
   });
 

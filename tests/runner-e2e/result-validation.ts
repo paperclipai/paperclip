@@ -1,3 +1,4 @@
+import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import type { RunnerE2EResult } from "./types.js";
 
 type Rule = (value: unknown, at: string) => void;
@@ -98,6 +99,7 @@ const runtime = shape({
   pricingAsOf: optional(string),
   pricingUrl: optional(url),
 });
+const assistant = shape({ provider: oneOf("openai", "anthropic"), model: string, observedModels: array(string), requests: integer, inputTokens: number, outputTokens: number, cachedInputTokens: number, estimatedCostUsd: number, pricingAsOf: string, pricingUrl: url });
 const llm = shape({
   runCount: integer,
   runsWithTokenUsage: integer,
@@ -111,6 +113,7 @@ const llm = shape({
 });
 const billing = shape({
   judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
+  assistant: optional(assistant),
   llm,
   runtime,
   reportedCostUsd: number,
@@ -136,6 +139,7 @@ const matcher: Rule = (value, at) => {
     file_exact: shape({ path: string, expected: string }),
     file_contains: shape({ path: string, expected: string }),
     artifact_exists: shape({ name: string, mimeType: optional(string) }),
+    artifact_exact: shape({ name: string, expected: string, mimeType: optional(string) }),
     json_path: shape({ path: string }),
     json_schema: shape({ schema: object }),
   };
@@ -144,6 +148,7 @@ const matcher: Rule = (value, at) => {
   rule(value, at);
 };
 const fields = {
+  publicMcp: optional(assistant),
   schema: oneOf(
     "paperclip.runner-e2e.result/v1",
     "paperclip.runner-e2e.result/v2",
@@ -240,6 +245,26 @@ const fields = {
       tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
     checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
   })),
+  providerConnection: optional(shape({
+    version: integer,
+    outcome: oneOf("running", "passed", "failed", "awaiting_user", "missing_credential", "blocked_target"),
+    phase: string, assisted: boolean, authFreshness: oneOf("signed-in", "signed-out"),
+    target: shape({ mode: oneOf("managed-local", "attach"), origin: url, commit: nullable(string), deploymentMode: nullable(string) }),
+    entry: oneOf("apps", "agent"), method: string, checkpoints: shape(Object.fromEntries(connectionCheckpoints.map(key => [key, optional(boolean)]))),
+    waits: array(shape({ kind: oneOf("board_login", "provider_login"), startedAt: date, finishedAt: optional(date) })),
+    artifactChecks: optional(array(shape({ filename: string, runId: string, sha256: string, fields: object, exactFields: boolean }))),
+    inputTransport: optional(oneOf("prompt_base64")),
+    setupChecks: optional(array(shape({ code: string, level: oneOf("info", "warn", "error") }))),
+    runDiagnostics: optional(array(shape({ runId: string, status: oneOf("succeeded", "failed", "cancelled", "interrupted", "timed_out", "unknown"), signals: array(oneOf(...connectionRunSignals)), logAvailable: boolean }))),
+    creationFailure: optional(shape({ status: integer, code: oneOf("ai_connection_api_key_rejected", "ai_connection_verification_failed", "connection_request_rejected") })),
+    connectionId: optional(string), agentId: optional(string), companyId: optional(string), artifactSha256: optional(string), model: optional(string), cleanupRetained: optional(boolean), companyArchived: optional(boolean),
+  })),
+  completionQuality: optional(array(shape({
+    name: string, purpose: optional(oneOf("product", "calibration")), expectedPass: boolean, passed: boolean, status: oneOf("completed", "failed", "pending"), config: object, configHash: string, evidenceHash: string,
+    criteria: array(shape({ id: string, passed: boolean, rationale: string, evidenceIds: array(string) })),
+    reports: optional(array(shape({ replyId: string, rationale: string, completedTaskIdsReferenced: array(string), resultAccessTaskIds: optional(array(string)), correctsReplyIds: array(string) }))),
+    inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string), rejectedVerdict: optional(string),
+  }))),
   firstTaskQuality: optional(shape({
     status: oneOf("completed", "failed", "pending"), informational: boolean, config: object, configHash: string, evidenceHash: string,
     scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),
@@ -254,4 +279,6 @@ export function validateRetainedRunnerResult(
   value: unknown,
 ): asserts value is RunnerE2EResult {
   result(value, "result");
+  const checked = value as RunnerE2EResult;
+  if (checked.suiteId === "provider-connections" && checked.status === "passed" && (!checked.providerConnection || !connectionEvidencePasses(checked.providerConnection))) invalid("result.providerConnection");
 }

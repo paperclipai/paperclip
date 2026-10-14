@@ -1,3 +1,5 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -9,6 +11,8 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
+  companyMemberships,
   completionContracts,
   createDb,
   executionWorkspaces,
@@ -260,7 +264,7 @@ describe("P6-25 pre-result native session recovery", () => {
         leaseExpiresAt: new Date(0),
       })),
     ]);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => temporary?.cleanup());
 
@@ -795,6 +799,8 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         status: "active",
         defaultResponsibleUserId: "responsible-user",
       });
+      await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
       await db
         .insert(projects)
         .values({
@@ -952,7 +958,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           authorUserId: "responsible-user",
           body: "Verify the newest user instruction before completing this task.",
         });
-    }, 30_000);
+    }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
     afterAll(async () => {
       if (
@@ -1392,6 +1398,11 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         assigneeAgentId: agentId,
         workMode: "standard",
       });
+      const directExecute = legacyAdapterExecute.getMockImplementation()!;
+      legacyAdapterExecute.mockImplementationOnce(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, freshIssueId));
+        return directExecute();
+      });
       const fresh = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
@@ -1447,3 +1458,6 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
     }, 30_000);
   },
 );
+
+
+enableRunFailureReporting();

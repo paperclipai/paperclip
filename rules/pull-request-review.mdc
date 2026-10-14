@@ -1,0 +1,22 @@
+---
+description: Existing Paperclip pull request review requirements migrated from Greptile settings.
+alwaysApply: true
+---
+
+# Pull request review
+
+This rule applies when reviewing pull requests throughout this repository.
+
+- Follow the PR description guide in `CONTRIBUTING.md` and the sections in
+  `.github/PULL_REQUEST_TEMPLATE.md`. Request missing thinking paths and missing
+  explanations of what changed, why it matters, the benefits, verification, or
+  risks.
+- Do not request UI screenshots in PR reviews for this repository. Visual state
+  verification is described through component tests, enumeration of states in
+  the PR description, and use of existing design tokens. This repository rule
+  takes precedence over the older organization instruction to request
+  screenshots for visual changes.
+- When a PR grows a source file from fewer than 1,000 lines to more than 1,000
+  lines, require a concrete reason for keeping the implementation together.
+  Flag an unexplained crossing and suggest a cohesive extraction. This check
+  does not require unrelated cleanup of every existing large file.

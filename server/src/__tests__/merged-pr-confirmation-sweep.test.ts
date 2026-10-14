@@ -134,7 +134,7 @@ describe("merged pull-request confirmation extraction", () => {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", () => {
+describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 

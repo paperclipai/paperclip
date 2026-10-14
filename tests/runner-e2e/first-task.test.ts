@@ -2,12 +2,19 @@ import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import type { RunnerApi } from "./api.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
+import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
 import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
 import { renderInteractionCard } from "./interaction-report.js";
 import { main as judgeCommand } from "./first-task-judge.js";
+import { projectFirstTaskResult, managedFirstTaskFileCheck, observeManagedFirstTaskSetup } from "./first-task-flow.js";
+import { validateRetainedRunnerResult } from "./result-validation.js";
+import { buildRuntimeUsage } from "./billing.js";
+import { fixtureRuntimeCostCoverage, selectFixtureRuntimeLeases } from "./live-fixtures.js";
 import {
   firstTaskNativeRuntimePatch,
   provisionFirstTaskFixtures,
+  startFirstTaskWithRuntimeBound,
+  MANAGED_FIRST_TASK_CELL,
 } from "./first-task-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -30,6 +37,7 @@ import {
   QUALITY_DIMENSIONS,
   judgeFirstTask,
   pendingQuality,
+  qualityInput,
   validateQualityScores,
 } from "./first-task-quality.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
@@ -143,6 +151,33 @@ function recording(caseId = "task-reply-accept"): FirstTaskEvidence {
     checks: [],
   };
 }
+/** Reduced lifecycle evidence from gha-36307603818-1 / reject-no-execution.
+ * The decision checkpoint models the repaired capture order, not a historical regrade. */
+function rejectionRecording(): FirstTaskEvidence {
+  const e = recording("reject-no-execution");
+  const rejected = e.checkpoints[2];
+  rejected.phase = "rejected";
+  rejected.comments[rejected.comments.length - 1] = {
+    id: "no", issueId: "onboarding", authorUserId: "board",
+    body: firstTaskScenario(e.caseId, e.nonce).rejection,
+    createdAt: "2026-09-15T00:02:00.100Z",
+  };
+  const last = e.checkpoints[3];
+  last.tasks = [{ ...last.tasks[0], status: "cancelled" }];
+  last.documents = [];
+  last.runs = [...rejected.runs, {
+    id: "refusal-run", agentId: "agent", status: "cancelled", errorCode: "cancelled",
+    error: "Cancelled by control plane", startedAt: "2026-09-15T00:02:01Z", finishedAt: "2026-09-15T00:02:15Z",
+    contextSnapshot: { issueId: "onboarding", commentId: "no", wakeCommentId: "no" },
+  }];
+  last.comments = [...rejected.comments, {
+    id: "ack", issueId: "onboarding", authorAgentId: "agent", createdByRunId: "refusal-run",
+    body: "Understood. Stopped at your request. No welcome note or child task was created.",
+    createdAt: "2026-09-15T00:02:15.100Z",
+  }];
+  return e;
+}
+
 function result(e = recording()): RunnerE2EResult {
   return {
     schema: "paperclip.runner-e2e.result/v2",
@@ -187,6 +222,82 @@ const scores = () =>
     rationale: "Concrete and relevant",
     evidence: ["response-1"],
   }));
+
+describe("first-task public result projection", () => {
+  it("keeps fixture-visible evidence while excluding private records from both normalized result fields", () => {
+    const e = recording();
+    const sentinel = "PRIVATE_SESSION_ACCOUNT_SENTINEL";
+    e.instructions[0].content = sentinel;
+    e.instructions[0].path = `/private/${sentinel}/AGENTS.md`;
+    e.runtimeSettings = {
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.6-sol", env: { OPENAI_API_KEY: sentinel }, codexHome: sentinel },
+      runtimeConfig: { accountId: sentinel }, permissions: { privateTrace: sentinel },
+      onboardingRuntime: { mode: "production-wizard", originalAdapterType: "paperclip_runner", testedAdapterType: "paperclip_runner", accountId: sentinel },
+      onboardingRuntimeBound: { timeoutSec: 180, maxConcurrentRuns: 1, before: { runtimeConfig: { accountId: sentinel } }, after: { runtimeConfig: { accountId: sentinel } } },
+    };
+    for (const checkpoint of e.checkpoints) {
+      checkpoint.tasks.forEach(t => Object.assign(t, { executionState: { sessionId: sentinel }, responsibleUserId: sentinel }));
+      checkpoint.agents.forEach(a => Object.assign(a, { accountId: sentinel, metadata: { auth: sentinel }, adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol", env: { TOKEN: sentinel }, home: sentinel } }));
+      checkpoint.comments.forEach(c => Object.assign(c, { hiddenReasoning: sentinel, metadata: { sessionId: sentinel },
+        ...(c.authorUserId ? { authorUserId: sentinel } : {}) }));
+      checkpoint.interactions.forEach(i => Object.assign(i, { nativeQuestionId: sentinel, metadata: { sessionId: sentinel },
+        payload: { ...i.payload, providerSessionId: sentinel, toolAction: { secret: sentinel } },
+        result: { ...i.result, outcome: "answered", refreshToken: sentinel } }));
+      checkpoint.documents.forEach(d => Object.assign(d, { privateStorageRef: sentinel }));
+      checkpoint.runs.forEach(r => Object.assign(r, { nativeSessionId: sentinel, sessionIdBefore: sentinel, sessionIdAfter: sentinel,
+        runnerProfileJson: { sessionCheckpoint: { providerSessionId: sentinel } }, contextSnapshot: { home: sentinel },
+        resultJson: { model: "gpt-5.6-sol", privateAuth: sentinel }, stdoutExcerpt: sentinel, error: sentinel }));
+    }
+    e.checks = gradeFirstTask(e);
+    e.checks.push({ id: "native-session-continuity", passed: false, evidence: ["finished-3"], detail: sentinel });
+    const original = structuredClone(e);
+    const raw = { ...result(e), error: sentinel, failureClass: "candidate_failure" as const,
+      usage: { runs: [{ runId: "parent-run", usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 30,
+        costUsdExact: "0.499592800", costUsd: null, costStatus: "estimated", accountingReceiptReady: true,
+        pricingProvenance: { source: "rate_card", version: "openai-standard-2026-09-30", accountId: sentinel },
+        persistedSessionId: sentinel, providerRequestId: sentinel, accountingReceiptSourceId: sentinel } }] },
+      matcherResults: e.checks.map(c => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${c.id}`, expected: true }, passed: c.passed, detail: c.detail })) };
+    raw.matcherResults.push({ matcher: { kind: "json_path", path: "cleanup.provider-retired", expected: true }, passed: false, detail: sentinel });
+    const projected = projectFirstTaskResult(raw);
+    const normalized = { results: [projected] };
+    expect(JSON.stringify(normalized)).not.toContain(sentinel);
+    expect(JSON.stringify(raw)).toContain(sentinel);
+    expect(e).toEqual(original);
+    expect(projected.firstTask!.checks.map(c => ({ id: c.id, passed: c.passed, notReached: Boolean(c.notReached) })))
+      .toEqual(e.checks.map(c => ({ id: c.id, passed: c.passed, notReached: Boolean(c.notReached) })));
+    expect(projected.matcherResults!.map(c => ({ matcher: c.matcher, passed: c.passed })))
+      .toEqual(raw.matcherResults.map(c => ({ matcher: c.matcher, passed: c.passed })));
+    expect(projected.firstTask!.runtimeSettings).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
+    expect(projected.usage).toMatchObject({ runs: [{ runId: "parent-run", usage: { inputTokens: 100, outputTokens: 20,
+      cachedInputTokens: 30, costUsdExact: "0.499592800", costStatus: "estimated", accountingReceiptReady: true,
+      pricingProvenance: { source: "rate_card", version: "openai-standard-2026-09-30" } } }] });
+    expect(summarizeExecutionBilling(projected)).toEqual(summarizeExecutionBilling(raw));
+    expect(qualityInput(projected.firstTask!)).toContain(firstTaskScenario(e.caseId, e.nonce).acceptance);
+    expect(qualityInput(projected.firstTask!)).toContain(firstTaskScenario(e.caseId, e.nonce).marker);
+    expect(renderFirstTaskDetails(projected)).not.toContain(sentinel);
+    expect(projected.firstTask!.checkpoints.at(-1)!.documents[0].body).toBe(e.checkpoints.at(-1)!.documents[0].body);
+    validateRetainedRunnerResult(projected);
+  });
+
+  it("preserves failures, unreached checks, cleanup controls and private artifact hashes", () => {
+    const e = recording();
+    e.checks = [{ id: "recorded-response", passed: false, evidence: ["response-1"], detail: "private diagnostic" },
+      { id: "durable-completion", passed: false, notReached: "private interrupted-session reason", evidence: ["finished-3"], detail: "private diagnostic" }];
+    const raw = { ...result(e), error: "private transport/session error", failureClass: "candidate_failure" as const, cleanup: "failed" as const,
+      matcherResults: [{ matcher: { kind: "json_path" as const, path: "cleanup.provider-retired", expected: true }, passed: false, detail: "private process details" }] };
+    const projected = projectFirstTaskResult(raw);
+    expect(projected).toMatchObject({ status: "failed", failureClass: "candidate_failure", cleanup: "failed" });
+    expect(projected.firstTask!.checks[0].passed).toBe(false);
+    expect(projected.firstTask!.checks[1]).toMatchObject({ passed: false, notReached: expect.any(String) });
+    expect(projected.matcherResults![0]).toMatchObject({ matcher: raw.matcherResults[0].matcher, passed: false });
+    expect(projected.firstTask!.instructions[0]).toMatchObject({ sha256: e.instructions[0].sha256, redacted: true });
+    expect(raw.error).toBe("private transport/session error");
+    expect(projected.error).not.toContain("private transport/session error");
+    expect(projectFirstTaskResult(projected)).toEqual(projected);
+  });
+});
 
 describe("first-task attachment evidence", () => {
   it("reads persisted bytes, verifies their hash, and redacts the retained text", async () => {
@@ -667,9 +778,10 @@ Accept the card above and I write it. This task stays in review until then.`;
       (e) => e.suite.id === "first-task" && e.profile.id === "legacy-codex",
     )!;
     const get = vi.fn().mockResolvedValue([{ id: "local", driver: "local" }]);
+    const patch = vi.fn().mockResolvedValue({});
     const postSensitive = vi.fn().mockResolvedValue({ id: "encrypted-secret" });
     const fixtures = await provisionFirstTaskFixtures({
-      api: { get, postSensitive },
+      api: { get, patch, postSensitive },
       execution,
       nonce: "test",
       company: {
@@ -681,6 +793,9 @@ Accept the card above and I write it. This task stays in review until then.`;
     });
     expect(get).toHaveBeenCalledExactlyOnceWith(
       "/api/companies/ui-created-company/environments?driver=local",
+    );
+    expect(patch).toHaveBeenCalledExactlyOnceWith(
+      "/api/companies/ui-created-company", { budgetMonthlyCents: 500 },
     );
     expect(postSensitive).toHaveBeenCalledExactlyOnceWith(
       "/api/companies/ui-created-company/secrets",
@@ -695,7 +810,7 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(JSON.stringify(fixtures)).not.toContain("fixture-key");
     await expect(
       provisionFirstTaskFixtures({
-        api: { get, postSensitive },
+        api: { get, patch, postSensitive },
         execution,
         nonce: "test",
         company: fixtures.company,
@@ -703,6 +818,110 @@ Accept the card above and I write it. This task stays in review until then.`;
       }),
     ).rejects.toThrow("Missing credential");
     expect(postSensitive).toHaveBeenCalledTimes(1);
+  });
+
+  describe("bounded automatic Codex onboarding admission", () => {
+    function harness(environment = "local", profile = "runner-codex") {
+      const execution = runnerMatrix.find(entry => entry.task.flow === "first_task" && entry.profile.id === profile && entry.environment.id === environment)!;
+      const original = {
+        id: "agent", companyId: "company", adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", timeoutSec: 0, model: "gpt-5.6-sol", modelReasoningEffort: "high", codexPermissionMode: "readOnly",
+          env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "encrypted-key", version: "latest" } }, paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/first-task"] } },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+          heartbeat: { maxConcurrentRuns: 20, enabled: false, intervalSec: 0, wakeOnAssignment: true, customHeartbeatSetting: "retained" }, customSetting: "retained" },
+        permissions: { canCreateAgents: true }, defaultEnvironmentId: environment, budgetMonthlyCents: 500, metadata: { ownerUserId: "qa-user" },
+      };
+      let stored = structuredClone(original);
+      const calls: string[] = [];
+      const api = {
+        get: vi.fn(async (_path: string) => { calls.push("GET"); return structuredClone(stored); }),
+        patch: vi.fn(async (_path: string, data: any) => {
+          calls.push("PATCH");
+          stored.adapterConfig = { ...stored.adapterConfig, ...data.adapterConfig };
+          if (data.runtimeConfig) stored.runtimeConfig = structuredClone(data.runtimeConfig);
+          return structuredClone(stored);
+        }),
+      };
+      const observe = vi.fn(() => { calls.push("OBSERVE"); });
+      const start = vi.fn(async () => { calls.push("START"); });
+      const admit = () => startFirstTaskWithRuntimeBound({ api: api as any, execution, agent: original, observe, start });
+      return { api, original, calls, observe, start, admit, stored: () => stored };
+    }
+
+    it.each(["local", "daytona"])("bounds %s without choosing a runner, provider, model, or account", async environment => {
+      const h = harness(environment);
+      const original = structuredClone(h.original);
+      const expected = { ...original, adapterConfig: { ...original.adapterConfig, timeoutSec: 180 },
+        runtimeConfig: { ...original.runtimeConfig, heartbeat: { ...original.runtimeConfig.heartbeat, maxConcurrentRuns: 1 } } };
+      await h.admit();
+      expect(h.stored()).toEqual(expected);
+      expect(h.api.patch).toHaveBeenCalledExactlyOnceWith("/api/agents/agent", { adapterConfig: { timeoutSec: 180 }, runtimeConfig: expected.runtimeConfig });
+      expect(h.calls).toEqual(["GET", "PATCH", "GET", "OBSERVE", "START"]);
+      expect(h.original).toEqual(original);
+      expect(h.observe).toHaveBeenCalledExactlyOnceWith({ timeoutSec: 180, maxConcurrentRuns: 1, before: original, after: expected });
+    });
+
+    it.each(["read-failure", "patch-failure", "verification-failure", "missing-timeout", "missing-concurrency"])("does not admit task execution after %s", async mode => {
+      const h = harness();
+      if (mode === "read-failure") h.api.get.mockRejectedValue(new Error("Agent read failed"));
+      if (mode === "patch-failure") h.api.patch.mockRejectedValue(new Error("Timeout patch failed"));
+      if (mode === "verification-failure") h.api.get.mockResolvedValueOnce(structuredClone(h.original)).mockRejectedValueOnce(new Error("Verification read failed"));
+      if (mode === "missing-timeout") h.api.patch.mockImplementation(async (_path, data) => {
+        h.stored().runtimeConfig = structuredClone(data.runtimeConfig);
+        return structuredClone(h.stored());
+      });
+      if (mode === "missing-concurrency") h.api.patch.mockImplementation(async (_path, data) => {
+        h.stored().adapterConfig = { ...h.stored().adapterConfig, ...data.adapterConfig };
+        return structuredClone(h.stored());
+      });
+      await expect(h.admit()).rejects.toThrow();
+      expect(h.start).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      if (mode === "read-failure") expect(h.api.patch).not.toHaveBeenCalled();
+    });
+
+    it.each(["legacy", "wrong-provider", "foreign-agent", "changed-account"])("rejects %s before changing the automatic wizard choice", async mode => {
+      const h = harness();
+      if (mode === "legacy") h.original.adapterType = "codex_local";
+      if (mode === "wrong-provider") h.original.adapterConfig.provider = "claude";
+      if (mode === "foreign-agent") h.api.get.mockResolvedValue({ ...h.original, companyId: "another-company" });
+      if (mode === "changed-account") h.api.get.mockResolvedValue({ ...h.original, runtimeConfig: { ...h.original.runtimeConfig,
+        aiConnection: { ...h.original.runtimeConfig.aiConnection, method: "subscription" } } });
+      await expect(h.admit()).rejects.toThrow();
+      expect(h.api.patch).not.toHaveBeenCalled();
+      expect(h.start).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+    });
+
+    it.each(["runner", "provider", "model", "account", "permissions", "environment", "instructions", "heartbeat-policy", "other-runtime", "missing-heartbeat"])("refuses a persisted %s change instead of treating the bound PATCH as proof", async field => {
+      const h = harness();
+      const altered = structuredClone(h.original);
+      altered.adapterConfig.timeoutSec = 180;
+      altered.runtimeConfig.heartbeat.maxConcurrentRuns = 1;
+      if (field === "runner") altered.adapterType = "codex_local";
+      if (field === "provider") altered.adapterConfig.provider = "claude";
+      if (field === "model") altered.adapterConfig.model = "another-model";
+      if (field === "account") altered.runtimeConfig.aiConnection.mode = "fixed";
+      if (field === "permissions") altered.permissions.canCreateAgents = false;
+      if (field === "environment") altered.defaultEnvironmentId = "another-environment";
+      if (field === "instructions") altered.adapterConfig.paperclipSkillSync.desiredSkills = [];
+      if (field === "heartbeat-policy") altered.runtimeConfig.heartbeat.wakeOnAssignment = false;
+      if (field === "other-runtime") altered.runtimeConfig.customSetting = "lost";
+      if (field === "missing-heartbeat") delete (altered.runtimeConfig as Partial<typeof altered.runtimeConfig>).heartbeat;
+      h.api.get.mockResolvedValueOnce(structuredClone(h.original)).mockResolvedValueOnce(altered);
+      await expect(h.admit()).rejects.toThrow("runtime bound was not confirmed");
+      expect(h.start).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+    });
+
+    it.each(["legacy-codex", "legacy-claude", "runner-acpx-claude"])("leaves %s admission unchanged", async profile => {
+      const h = harness("local", profile);
+      await h.admit();
+      expect(h.api.get).not.toHaveBeenCalled();
+      expect(h.api.patch).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.start).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each(["runner-codex", "runner-acpx-claude"])(
@@ -881,11 +1100,9 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(failed(e)).toContain("durable-completion");
   });
   it("allows closing a rejected unexecuted task, but not earlier completion or output", () => {
-    const e = recording("reject-no-execution");
-    e.checkpoints[2].phase = "rejected";
-    e.checkpoints[3].tasks = [{ ...e.checkpoints[3].tasks[0], status: "done" }];
-    e.checkpoints[3].documents = [];
-    e.checkpoints[3].runs = [{ id: "parent-run", status: "succeeded" }];
+    const e = rejectionRecording();
+    e.checkpoints[3].tasks[0].status = "done";
+    e.checkpoints[3].runs.at(-1)!.status = "succeeded";
     expect(failed(e)).toEqual([]);
     e.checkpoints[1].tasks[0].status = "done";
     expect(failed(e)).toContain("no-premature-work");
@@ -1257,4 +1474,419 @@ it("retains suppressed unstarted wakes without failing successful execution", ()
   expect(passed()).toBe(true);
   wake.startedAt = "2026-09-18";
   expect(passed()).toBe(false);
+});
+
+it("ignores an obsolete unstarted wake but still requires successful execution and approved output", () => {
+  const e = recording();
+  const last = e.checkpoints.at(-1)!;
+  last.runs.push({ id: "obsolete", status: "cancelled", errorCode: "issue_terminal_status",
+    startedAt: null, contextSnapshot: { issueId: "child" } });
+  expect(failed(e)).toEqual([]);
+  // The old harness aborted here while another provider run was still active.
+  last.runs[1].status = "running";
+  expect(failed(e)).toContain("provider-runs-succeeded");
+  last.runs[1].status = "cancelled";
+  last.runs[1].errorCode = "cancelled";
+  expect(failed(e)).toContain("provider-runs-succeeded");
+  last.runs[1].status = "succeeded";
+  last.documents = [];
+  expect(failed(e)).toContain("durable-completion");
+  last.tasks[1].assigneeAgentId = null;
+  expect(failed(e)).toContain("one-scoped-subtask");
+});
+
+describe("recorded refusal cancellation", () => {
+  it("waits for the refusal run's persisted reply even when it arrives after cancellation", () => {
+    const e = rejectionRecording();
+    const last = e.checkpoints.at(-1)!;
+    const run = last.runs.at(-1)!;
+    expect(isFirstTaskRejectionCancellation(run, e, last.tasks)).toBe(true);
+    const reply = last.comments.pop()!;
+    expect(firstTaskRejectionReplyRecorded(e, last.comments, last.runs)).toBe(false);
+    expect(failed(e)).toEqual(["rejection-respected", "provider-runs-succeeded"]);
+    last.comments.push(reply);
+    expect(failed(e)).toEqual([]);
+  });
+
+  it.each([
+    ["missing decision checkpoint", (e: FirstTaskEvidence) => { e.checkpoints[2].phase = "response"; }],
+    ["acceptance rather than refusal", (e: FirstTaskEvidence) => { e.checkpoints[2].comments.at(-1)!.body = "Yes, proceed"; }],
+    ["agent-authored refusal", (e: FirstTaskEvidence) => { e.checkpoints[2].comments.at(-1)!.authorAgentId = e.agentId; }],
+    ["no user attribution", (e: FirstTaskEvidence) => { delete e.checkpoints[2].comments.at(-1)!.authorUserId; }],
+    ["stale refusal", (e: FirstTaskEvidence) => { e.checkpoints[2].comments.at(-1)!.createdAt = "2026-09-15T00:00:00Z"; }],
+    ["unrelated task", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.contextSnapshot.issueId = "other"; }],
+    ["unrelated wake", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.contextSnapshot = { issueId: "onboarding", commentId: "old", wakeCommentId: "old" }; }],
+    ["operator cleanup", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.error = "Cancelled by a board operator"; }],
+    ["provider failure", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.status = "failed"; }],
+    ["provider timeout", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.status = "timed_out"; }],
+    ["unfinished task", (e: FirstTaskEvidence) => { e.checkpoints[3].tasks[0].status = "in_progress"; }],
+    ["missing execution timestamp", (e: FirstTaskEvidence) => { e.checkpoints[3].runs.at(-1)!.startedAt = null; }],
+  ])("does not exempt %s", (_name, mutate) => {
+    const e = rejectionRecording();
+    mutate(e);
+    const last = e.checkpoints.at(-1)!;
+    expect(isFirstTaskRejectionCancellation(last.runs.at(-1)!, e, last.tasks)).toBe(false);
+    expect(failed(e)).toContain("provider-runs-succeeded");
+  });
+
+  it.each([
+    { authorAgentId: "other" }, { createdByRunId: "parent-run" },
+    { createdAt: "2026-09-15T00:01:00Z" }, { body: " " }, { deletedAt: "2026-09-15T00:02:20Z" },
+  ])("does not accept unrelated or missing reply evidence: %j", patch => {
+    const e = rejectionRecording();
+    Object.assign(e.checkpoints[3].comments.at(-1)!, patch);
+    expect(failed(e)).toEqual(["rejection-respected", "provider-runs-succeeded"]);
+  });
+
+  it("keeps unauthorized work and active runs red despite an acknowledged cancellation", () => {
+    for (const kind of ["task", "document", "attachment", "agent", "run"]) {
+      const e = rejectionRecording();
+      const last = e.checkpoints[3];
+      if (kind === "task") last.tasks.push({ id: "unauthorized-child", status: "done" });
+      if (kind === "document") last.documents.push({ id: "output", key: "welcome", body: "Completed note" });
+      if (kind === "attachment") last.attachments = [{ id: "output", filename: "welcome.md" }];
+      if (kind === "agent") last.agents.push({ id: "unapproved-hire" });
+      if (kind === "run") last.runs.push({ id: "active", status: "running" });
+      expect(failed(e), kind).toContain(kind === "agent" ? "no-premature-work" : "rejection-respected");
+    }
+  });
+});
+
+describe("managed onboarding through the production wizard", () => {
+  const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+  const execution = () => runnerMatrix.find(entry => entry.id === MANAGED_FIRST_TASK_CELL)!;
+
+  function managedFixtureApi(previousDefault: string | null = "previous-default", previousManagedOnly = false) {
+    const state = { defaultEnvironmentId: previousDefault, experimental: { enableManagedSandboxOnly: previousManagedOnly, enableAgentChat: true } };
+    const calls: string[] = [];
+    const api = {
+      get: vi.fn(async () => structuredClone(state)),
+      patch: vi.fn(async (path: string, data: any) => {
+        calls.push(`PATCH ${path}`);
+        if (path === "/api/instance/settings") state.defaultEnvironmentId = data.defaultEnvironmentId;
+        if (path === "/api/instance/settings/experimental") Object.assign(state.experimental, data);
+        return structuredClone(state);
+      }),
+      postSensitive: vi.fn(async (_path: string, data: any) => ({ id: `encrypted-${data.key}` })),
+      post: vi.fn(async (path: string, data: any) => {
+        calls.push(`POST ${path}`);
+        return path === "/api/plugins/install" ? { id: "plugin", status: "ready" } : { id: "environment", driver: "sandbox", config: data.config };
+      }),
+      delete: vi.fn(async (path: string) => { calls.push(`DELETE ${path}`); }),
+    };
+    const provision = () => provisionFirstTaskFixtures({ api: api as any, execution: execution(), nonce: "private", company: { id: "company", name: "Fresh" },
+      daytonaImage: image, credentials: { OPENAI_API_KEY: "synthetic-key", DAYTONA_API_KEY: "synthetic-platform" } });
+    return { api, state, calls, provision };
+  }
+
+  it.each([[null, false], ["previous-default", false], ["previous-default", true]] as const)(
+    "restores prior default %s and managed-only %s before deleting the managed fixture", async (previousDefault, previousManagedOnly) => {
+      const h = managedFixtureApi(previousDefault, previousManagedOnly);
+      const fixtures = await h.provision();
+      expect(h.state).toMatchObject({ defaultEnvironmentId: "environment", experimental: { enableManagedSandboxOnly: true } });
+      let deletedState: typeof h.state | undefined;
+      h.api.delete.mockImplementation(async () => { deletedState = structuredClone(h.state); });
+      await fixtures.teardown();
+      expect(deletedState).toMatchObject({ defaultEnvironmentId: previousDefault, experimental: { enableManagedSandboxOnly: previousManagedOnly } });
+      expect(h.api.get).toHaveBeenCalledExactlyOnceWith("/api/instance/settings");
+      expect(h.api.patch).toHaveBeenLastCalledWith("/api/instance/settings", { defaultEnvironmentId: previousDefault });
+      expect(h.state.experimental.enableAgentChat).toBe(true);
+      expect(h.api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true });
+    },
+  );
+
+  it.each(["default", "managed-only"])("restores a %s setup write whose response is lost after committing", async phase => {
+    const h = managedFixtureApi();
+    const patch = h.api.patch.getMockImplementation()!;
+    let failed = false;
+    h.api.patch.mockImplementation(async (path, data) => {
+      const result = await patch(path, data);
+      if (!failed && (phase === "default" ? data.defaultEnvironmentId === "environment" : data.enableManagedSandboxOnly === true)) {
+        failed = true;
+        throw new Error("Setup response lost after commit");
+      }
+      return result;
+    });
+    await expect(h.provision()).rejects.toThrow("Setup response lost after commit");
+    expect(h.state).toEqual({ defaultEnvironmentId: "previous-default", experimental: { enableManagedSandboxOnly: false, enableAgentChat: true } });
+    expect(h.api.delete).toHaveBeenCalledTimes(1);
+    if (phase === "default") expect(h.api.patch.mock.calls.some(([path]) => path === "/api/instance/settings/experimental")).toBe(false);
+  });
+
+  it("retains setup and restoration failures instead of deleting an unconfirmed instance default", async () => {
+    const h = managedFixtureApi();
+    const patch = h.api.patch.getMockImplementation()!;
+    h.api.patch.mockImplementation(async (path, data) => {
+      if (path === "/api/instance/settings/experimental" && data.enableManagedSandboxOnly === true) throw new Error("Managed mode setup failed");
+      if (path === "/api/instance/settings" && data.defaultEnvironmentId === "previous-default") throw new Error("Default restoration failed");
+      return patch(path, data);
+    });
+    const error = await h.provision().catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors[0].message).toBe("Managed mode setup failed");
+    expect(error.errors[1].errors[0].message).toBe("Default restoration failed");
+    expect(error.errors[1].message).toContain("environment deletion was not attempted");
+    expect(h.api.delete).not.toHaveBeenCalled();
+    expect(h.state.defaultEnvironmentId).toBe("environment");
+  });
+
+  it("keeps failed default restoration outstanding and only deletes after a later confirmed restoration", async () => {
+    const h = managedFixtureApi();
+    const fixtures = await h.provision();
+    const patch = h.api.patch.getMockImplementation()!;
+    h.api.patch.mockImplementation(async (path, data) => {
+      if (path === "/api/instance/settings") throw new Error("Default restoration failed");
+      return patch(path, data);
+    });
+    await expect(fixtures.teardown()).rejects.toThrow("environment deletion was not attempted");
+    expect(h.state).toMatchObject({ defaultEnvironmentId: "environment", experimental: { enableManagedSandboxOnly: false } });
+    expect(h.api.delete).not.toHaveBeenCalled();
+    h.api.patch.mockImplementation(patch);
+    await fixtures.teardown();
+    await fixtures.teardown();
+    expect(h.state.defaultEnvironmentId).toBe("previous-default");
+    expect(h.api.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports failed managed-mode restoration while still removing an environment that is no longer the default", async () => {
+    const h = managedFixtureApi();
+    const fixtures = await h.provision();
+    h.state.experimental.enableAgentChat = false;
+    const patch = h.api.patch.getMockImplementation()!;
+    h.api.patch.mockImplementation(async (path, data) => {
+      if (path === "/api/instance/settings/experimental") throw new Error("Managed mode restoration failed");
+      return patch(path, data);
+    });
+    const error = await fixtures.teardown().catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors.map((error: Error) => error.message)).toEqual(["Managed mode restoration failed"]);
+    expect(h.state.defaultEnvironmentId).toBe("previous-default");
+    expect(h.api.delete).toHaveBeenCalledTimes(1);
+    h.api.patch.mockImplementation(patch);
+    await fixtures.teardown();
+    expect(h.state.experimental).toEqual({ enableManagedSandboxOnly: false, enableAgentChat: false });
+    expect(h.api.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps failed environment deletion red after successful settings restoration", async () => {
+    const h = managedFixtureApi();
+    const fixtures = await h.provision();
+    h.api.delete.mockRejectedValue(new Error("Provider cleanup unconfirmed"));
+    vi.useFakeTimers();
+    try {
+      const rejected = expect(fixtures.teardown()).rejects.toThrow("Managed onboarding fixture cleanup failed");
+      await vi.runAllTimersAsync();
+      await rejected;
+      expect(h.state).toMatchObject({ defaultEnvironmentId: "previous-default", experimental: { enableManagedSandboxOnly: false } });
+      h.api.delete.mockResolvedValue();
+      await fixtures.teardown();
+      const deletes = h.api.delete.mock.calls.length;
+      await fixtures.teardown();
+      expect(h.api.delete).toHaveBeenCalledTimes(deletes);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["read-failure", "missing-default", "missing-mode"])("fails before fixture mutations when prior settings have %s", async mode => {
+    const h = managedFixtureApi();
+    if (mode === "read-failure") h.api.get.mockRejectedValue(new Error("Settings read failed"));
+    else h.api.get.mockResolvedValue((mode === "missing-default" ? { experimental: { enableManagedSandboxOnly: false } } : { defaultEnvironmentId: null, experimental: {} }) as any);
+    await expect(h.provision()).rejects.toThrow(mode === "read-failure" ? "Settings read failed" : "prior instance settings could not be read");
+    expect(h.api.patch).not.toHaveBeenCalled();
+    expect(h.api.postSensitive).not.toHaveBeenCalled();
+    expect(h.api.post).not.toHaveBeenCalled();
+    expect(h.api.delete).not.toHaveBeenCalled();
+  });
+
+  it("prepares only encrypted credentials and an immutable managed default, with no fixture probe or agent", async () => {
+    const calls: string[] = [];
+    const api = {
+      get: vi.fn(async () => ({ defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: false } })),
+      patch: vi.fn(async (path: string) => { calls.push(`PATCH ${path}`); return {}; }),
+      postSensitive: vi.fn(async (_path: string, data: any) => ({ id: `encrypted-${data.key}` })),
+      post: vi.fn(async (path: string, data: any) => {
+        calls.push(`POST ${path}`);
+        if (path === "/api/plugins/install") return { id: "plugin", status: "ready" };
+        expect(path).toBe("/api/companies/company/environments");
+        expect(data.config).toMatchObject({ image, apiKey: { type: "secret_ref", secretId: "encrypted-DAYTONA_API_KEY", version: "latest" } });
+        expect(data).not.toHaveProperty("metadata");
+        return { id: "environment", driver: "sandbox", config: data.config };
+      }),
+      delete: vi.fn(async () => {}),
+    };
+    const fixtures = await provisionFirstTaskFixtures({ api: api as any, execution: execution(), nonce: "private", company: { id: "company", name: "Fresh" },
+      daytonaImage: image, credentials: { OPENAI_API_KEY: "synthetic-key", DAYTONA_API_KEY: "synthetic-platform" } });
+    expect(calls).toEqual(["PATCH /api/companies/company", "POST /api/plugins/install", "POST /api/companies/company/environments", "PATCH /api/instance/settings", "PATCH /api/instance/settings/experimental"]);
+    expect(api.patch).toHaveBeenCalledWith("/api/instance/settings", { defaultEnvironmentId: "environment" });
+    expect(api.patch).toHaveBeenCalledWith("/api/instance/settings/experimental", { enableManagedSandboxOnly: true });
+    expect(fixtures.agent.id).toBe("");
+    expect(fixtures.setupLeases).toEqual([]);
+    expect(JSON.stringify(fixtures)).not.toContain("synthetic");
+    await fixtures.teardown();
+    expect(api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true });
+  });
+
+  it.each(["missing-key", "mutable-image", "other-cell"])("rejects %s before admitting a managed browser fixture", async mode => {
+    const api = { get: vi.fn(), patch: vi.fn(), postSensitive: vi.fn(), post: vi.fn(), delete: vi.fn() };
+    await expect(provisionFirstTaskFixtures({ api, execution: mode === "other-cell" ? { ...execution(), id: "other" } : execution(), nonce: "private", company: { id: "company", name: "Fresh" },
+      daytonaImage: mode === "mutable-image" ? "ubuntu:24.04" : image,
+      credentials: mode === "missing-key" ? { OPENAI_API_KEY: "synthetic" } : { OPENAI_API_KEY: "synthetic", DAYTONA_API_KEY: "synthetic" } })).rejects.toThrow();
+    expect(api.post).not.toHaveBeenCalled();
+    expect(api.postSensitive).not.toHaveBeenCalled();
+  });
+
+  function fileEvidence() {
+    const e = recording("task-card-accept");
+    const last = e.checkpoints.at(-1)!;
+    last.tasks = [{ id: "child", parentId: e.onboardingIssueId, status: "done" }];
+    const body = `Welcome beginners. Join our free Saturday meetup ${firstTaskScenario(e.caseId, e.nonce).marker}.`;
+    last.attachments = [{ id: "file", issueId: "child", originalFilename: "garden-welcome.txt", contentType: "text/plain", body,
+      contentVerified: true, contentSha256: digestText(body) }];
+    return e;
+  }
+  it("requires the downloaded verified physical artifact", () => {
+    expect(managedFirstTaskFileCheck(fileEvidence()).passed).toBe(true);
+  });
+  it.each(["document-only", "unverified", "wrong-hash", "wrong-child", "wrong-name", "wrong-marker"])("rejects %s as physical-file proof", async mode => {
+    const e = fileEvidence();
+    const last = e.checkpoints.at(-1)!;
+    const file = last.attachments![0]!;
+    if (mode === "document-only") { last.documents = [{ ...file, key: "welcome" }]; last.attachments = []; }
+    if (mode === "unverified") file.contentVerified = false;
+    if (mode === "wrong-hash") file.contentSha256 = "0".repeat(64);
+    if (mode === "wrong-child") file.issueId = "foreign";
+    if (mode === "wrong-name") file.originalFilename = "plan.txt";
+    if (mode === "wrong-marker") { file.body = "A different welcome note"; file.contentSha256 = digestText(file.body); }
+    expect(managedFirstTaskFileCheck(e).passed).toBe(false);
+  });
+
+  function setupHarness(mode = "success") {
+    const listeners = new Map<string, Set<(event: any) => void>>();
+    const page = { on: (name: string, callback: (event: any) => void) => { const set = listeners.get(name) ?? new Set(); set.add(callback); listeners.set(name, set); },
+      off: (name: string, callback: (event: any) => void) => listeners.get(name)?.delete(callback) };
+    const fixtures = { company: { id: "company", name: "Fresh" }, environment: { id: "environment", driver: "sandbox" },
+      agent: { id: "", companyId: "company", name: "Ada" }, secretRefs: {}, setupLeases: [],
+      setupQualification: { recorded: false, adapterType: null, platformResponses: 0, adapterResponses: 0 }, teardown: async () => {} } as import("./live-fixtures.js").LiveFixtureValues;
+    const rows = ["platform", "adapter"].map(id => ({ id, companyId: "company", environmentId: "environment", provider: "daytona", heartbeatRunId: null, issueId: null,
+      status: mode === "cleanup" ? "failed" : "released", cleanupStatus: "success" }));
+    if (mode === "foreign") rows[0]!.companyId = "another-company";
+    let begun = false;
+    const api = { get: vi.fn(async (path: string) => path.includes("environment-leases/") ? rows.find(row => path.endsWith(`/${row.id}`))
+      : begun ? [...rows, { ...rows[0], id: "unrelated", issueId: "other-task" }] : []) } as unknown as RunnerApi;
+    const start = (kind: "platform" | "discovery" | "adapter", runner?: string) => {
+      begun = true;
+      const request = { url: () => `http://fixture.test${kind === "platform" ? "/api/environments/environment/probe?companyId=company"
+        : kind === "discovery" ? "/api/adapters?companyId=company&environmentId=environment" : "/api/companies/company/adapters/codex_local/test-environment"}`,
+        method: () => kind === "discovery" ? "GET" : "POST", postDataJSON: () => runner ? { runner } : {} };
+      for (const listener of listeners.get("request") ?? []) listener(request);
+      return request;
+    };
+    const respond = (request: ReturnType<typeof start>, body: any) => {
+      const response = { request: () => request, json: async () => body, ok: () => true };
+      for (const listener of listeners.get("response") ?? []) listener(response);
+    };
+    const emit = (kind: "platform" | "discovery" | "adapter", body: any, runner?: string) => respond(start(kind, runner), body);
+    const fail = (request: ReturnType<typeof start>) => {
+      for (const listener of listeners.get("requestfailed") ?? []) listener(request);
+    };
+    return { fixtures, page: page as unknown as import("@playwright/test").Page, api, emit, start, respond, fail, listeners, rows };
+  }
+
+  it.each(["missing-response", "request-failed"])("retains unknown adapter setup cost after %s without an attributable row", async mode => {
+    const h = setupHarness();
+    h.rows.splice(1);
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.emit("platform", { ok: true, details: { platformQualificationRecorded: true, leaseId: "platform" } });
+    const request = h.start("adapter");
+    if (mode === "request-failed") h.fail(request);
+    await stop(false);
+    expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform"]);
+    expect(h.fixtures.setupLeaseAccountingIncomplete).toBe(true);
+    expect(h.fixtures.setupQualification!.adapterResponses).toBe(0);
+    const leases = selectFixtureRuntimeLeases({ leases: h.rows.map(row => ({ ...row,
+      acquiredAt: "2026-10-13T00:00:00Z", releasedAt: "2026-10-13T00:00:02Z", metadata: { cpu: 4, memory: 4, disk: 10 } })),
+      runIds: [], setupLeaseIds: h.fixtures.setupLeases!.map(row => row.leaseId) });
+    const usage = fixtureRuntimeCostCoverage(buildRuntimeUsage({ environmentId: "daytona", runs: [], leases }), h.fixtures);
+    expect(usage.leaseCount).toBe(1);
+    expect(usage.costStatus).toBe("unavailable");
+    expect(usage).not.toHaveProperty("estimatedListCostUsd");
+    expect([...h.listeners.values()].every(listeners => listeners.size === 0)).toBe(true);
+  });
+
+  it("retains unknown failed platform setup without a response or visible lease row", async () => {
+    const h = setupHarness();
+    h.rows.splice(0);
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.fail(h.start("platform"));
+    await stop(false);
+    expect(h.fixtures.setupLeases).toEqual([]);
+    expect(h.fixtures.setupLeaseAccountingIncomplete).toBe(true);
+    expect(h.fixtures.setupQualification!.recorded).toBe(false);
+  });
+
+  it("does not clear failed-request accounting uncertainty when later responses correlate", async () => {
+    const h = setupHarness();
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.emit("platform", { ok: true, details: { platformQualificationRecorded: true, leaseId: "platform" } });
+    const request = h.start("adapter");
+    h.fail(request);
+    h.respond(request, { adapterType: "paperclip_runner", status: "pass", checks: [{ code: "sandbox_test_identity", detail: "paperclipLeaseId=adapter" }] });
+    await stop(false);
+    expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform", "adapter"]);
+    expect(h.fixtures.setupLeaseAccountingIncomplete).toBe(true);
+  });
+
+  it.each(["success", "missing-discovery", "explicit-runner", "duplicate", "foreign", "cleanup"])("verifies exact UI setup responses and owned cleanup for %s", async mode => {
+    const h = setupHarness(mode);
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, mode === "cleanup" ? Date.now() - 1 : Date.now() + 1000);
+    const platform = { ok: true, details: { platformQualificationRecorded: true, leaseId: "platform" } };
+    h.emit("platform", platform);
+    if (mode === "duplicate") h.emit("platform", platform);
+    if (mode !== "missing-discovery") h.emit("discovery", [{ type: "codex_local", defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] }]);
+    h.emit("adapter", { adapterType: "paperclip_runner", status: "pass", checks: [{ code: "sandbox_test_identity", detail: "paperclipLeaseId=adapter; providerLeaseId=private-provider" }] }, mode === "explicit-runner" ? "paperclip" : undefined);
+    if (mode === "success") { await stop(true); expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform", "adapter"]); }
+    else await expect(stop(true)).rejects.toThrow();
+    expect(h.fixtures.setupLeases!.some(row => row.leaseId === "unrelated")).toBe(false);
+    expect([...h.listeners.values()].every(listeners => listeners.size === 0)).toBe(true);
+  });
+
+  it("reports a rejected platform setup immediately without waiting for the long browser deadline", async () => {
+    const h = setupHarness();
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    const rejected = expect(stop.failure).rejects.toThrow("UI environment qualification did not pass");
+    h.emit("platform", { ok: false, details: { leaseId: "platform", platformQualificationRecorded: false } });
+    await rejected;
+    await stop(false);
+    expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform"]);
+  });
+
+  it("keeps an uncorrelated lease out of setup billing and retains unavailable cost coverage", async () => {
+    const h = setupHarness();
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.emit("platform", { ok: false, details: { leaseId: "platform", platformQualificationRecorded: false } });
+    await stop(false);
+    expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform"]);
+    expect(h.fixtures.setupLeaseAccountingIncomplete).toBe(true);
+    expect(h.fixtures.setupQualification!.recorded).toBe(false);
+  });
+
+  it("retains exact failed setup leases for accounting without granting qualification", async () => {
+    const h = setupHarness();
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.emit("platform", { ok: true, details: { leaseId: "platform", platformQualificationRecorded: true } });
+    h.emit("adapter", { adapterType: "paperclip_runner", status: "fail", checks: [{ code: "sandbox_test_identity", detail: "paperclipLeaseId=adapter; providerLeaseId=private-provider" }] });
+    await stop(false);
+    expect(h.fixtures.setupLeases!.map(row => row.leaseId)).toEqual(["platform", "adapter"]);
+    expect(h.fixtures.setupQualification!.adapterType).toBeNull();
+  });
+
+  it("keeps a missing response lease ID unknown even without visible lease history", async () => {
+    const h = setupHarness();
+    h.rows.splice(0);
+    const stop = await observeManagedFirstTaskSetup(h.page, h.api, h.fixtures, Date.now() + 1000);
+    h.emit("platform", { ok: false, details: { platformQualificationRecorded: false } });
+    await stop(false);
+    expect(h.fixtures.setupLeases).toEqual([]);
+    expect(h.fixtures.setupLeaseAccountingIncomplete).toBe(true);
+    expect(h.fixtures.setupQualification!.recorded).toBe(false);
+  });
 });

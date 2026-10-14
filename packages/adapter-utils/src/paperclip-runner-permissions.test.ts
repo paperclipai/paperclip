@@ -1,14 +1,24 @@
+import { resolvePaperclipRunnerPiThinkingLevel } from "./paperclip-runner-permissions.js";
 import { describe, expect, it } from "vitest";
 
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   paperclipRunnerTransitionConfig,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
+  it("admits Pi with provider credentials while keeping Copilot pending", () => {
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "pi"))
+      .toMatchObject({ qualified: true, credentialEnvironment: expect.arrayContaining(["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) });
+    for (const agent of ["copilot"]) {
+      expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === agent)?.qualified).toBe(false);
+    }
+  });
   it("defaults Codex to the only qualified non-interactive mode", () => {
     expect(resolvePaperclipRunnerPermissionMode("codex", undefined)).toBe(
       "never",
@@ -67,5 +77,33 @@ describe("Paperclip Runner permission defaults", () => {
   it("preserves an explicit Codex model", () => {
     expect(resolvePaperclipRunnerModel("codex", "gpt-5.5")).toBe("gpt-5.5");
     expect(resolvePaperclipRunnerModel("codex", "  gpt-5.5  ")).toBe("gpt-5.5");
+  });
+});
+
+
+describe("Cursor session mode admission", () => {
+  it.each([undefined, "agent", "plan", "ask"])("retains mode %s with an explicit Cursor default", mode => {
+    expect(resolvePaperclipRunnerCursorMode("acpx", "cursor", mode)).toBe(mode ?? "agent");
+  });
+  it.each([null, "", "auto", "PLAN", true, {}, ["plan"]])("rejects invalid mode %j", mode => {
+    expect(() => resolvePaperclipRunnerCursorMode("acpx", "cursor", mode)).toThrow("Cursor session mode");
+  });
+  it.each([["codex", "cursor"], ["acpx", "copilot"], ["acpx", "pi"], ["acpx", "claude"]])("rejects mode on %s/%s", (provider, agent) => {
+    expect(resolvePaperclipRunnerCursorMode(provider, agent, undefined)).toBeUndefined();
+    expect(() => resolvePaperclipRunnerCursorMode(provider, agent, "plan")).toThrow("only for Cursor");
+  });
+});
+
+describe("Pi thinking configuration", () => {
+  it.each([undefined, "off", "low", "high", "max"] as const)("persists exact level %s with low as the fresh-config default", value => {
+    expect(resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", value)).toBe(value ?? "low");
+  });
+  it.each(["medium", "minimal", "xhigh", "", null, 1])("rejects unsupported alias %s", value => {
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", value)).toThrow();
+  });
+  it("rejects foreign provider settings", () => {
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("codex", "pi", "low")).toThrow(/only/);
+    expect(() => resolvePaperclipRunnerPiThinkingLevel("acpx", "cursor", "low")).toThrow(/only/);
+    expect(resolvePaperclipRunnerPiThinkingLevel("codex", undefined, undefined)).toBeUndefined();
   });
 });

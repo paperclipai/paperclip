@@ -20,7 +20,7 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["environmentExecute"],
+        supportedMethods: ["environmentExecute", "configChanged"],
       },
     });
     return;
@@ -41,6 +41,16 @@ rl.on("line", (line) => {
         },
       });
     }, delayMs);
+    return;
+  }
+
+  if (method === "configChanged") {
+    setTimeout(() => send({
+      jsonrpc: "2.0", id: message.id,
+      ...(message.params.config.fail
+        ? { error: { code: -32000, message: "configuration rejected" } }
+        : { result: {} }),
+    }), Number(message.params.config.delayMs ?? 0));
     return;
   }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createGeminiJsonlParser,
   detectGeminiAuthRequired,
   isGeminiTransientNetworkError,
   isGeminiSessionUnrecoverableError,
@@ -88,8 +89,8 @@ describe("parseGeminiJsonl", () => {
     expect(result.summary).toBe("hello.");
     expect(result.sessionId).toBe("session-abc");
     expect(result.errorMessage).toBeNull();
-    expect(result.usage.inputTokens).toBe(9095);
-    expect(result.usage.outputTokens).toBe(29);
+    expect(result.usage.inputTokens).toBe(963);
+    expect(result.usage.outputTokens).toBe(373);
     expect(result.usage.cachedInputTokens).toBe(8132);
   });
 
@@ -211,5 +212,40 @@ describe("isGeminiTransientNetworkError", () => {
     expect(
       isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
     ).toBe(false);
+  });
+});
+
+
+describe("Gemini accounting semantics", () => {
+  it.each([
+    [0, "result"], [1.25, "result"], [0, "step_finish"], [1.25, "step_finish"], [0, "usage"], [1.25, "usage"],
+  ] as const)("invalidates an earlier $%s price when a later %s adds unpriced usage", (cost, type) => {
+    const consume = createGeminiJsonlParser();
+    const priced = JSON.stringify({ type: "step_finish", usage: { input_tokens: 10, output_tokens: 2 }, cost });
+    const unpriced = JSON.stringify({ type, usage: { input_tokens: 20, output_tokens: 3 } });
+    expect(consume(priced).costUsd).toBe(cost);
+    const parsed = consume(unpriced);
+    expect(parsed.usage).toEqual({ inputTokens: 30, cachedInputTokens: 0, outputTokens: 5 });
+    expect(parsed.costUsd).toBeNull();
+    expect(parseGeminiJsonl(`${priced}\n${unpriced}`)).toEqual(parsed);
+  });
+  it.each([0, 2.5])("accepts a final reported total of $%s after earlier unpriced usage", (cost) => {
+    const consume = createGeminiJsonlParser();
+    expect(consume(JSON.stringify({ type: "step_finish", usage: { input_tokens: 10 } })).costUsd).toBeNull();
+    expect(consume(JSON.stringify({ type: "result", total_cost_usd: cost })).costUsd).toBe(cost);
+  });
+  it("retains a reported price when later events add no usage", () => {
+    const consume = createGeminiJsonlParser();
+    consume(JSON.stringify({ type: "step_finish", usage: { input_tokens: 10 }, cost: 1.25 }));
+    expect(consume(JSON.stringify({ type: "message", role: "assistant", content: "Done" })).costUsd).toBe(1.25);
+    expect(consume(JSON.stringify({ type: "result", status: "success" })).costUsd).toBe(1.25);
+  });
+  it("keeps cache reads disjoint and includes thinking tokens in API metadata", () => {
+    const parsed = parseGeminiJsonl(JSON.stringify({ type: "result", usageMetadata: { promptTokenCount: 100, cachedContentTokenCount: 80, candidatesTokenCount: 10, thoughtsTokenCount: 5, totalTokenCount: 115 } }));
+    expect(parsed.usage).toEqual({ inputTokens: 20, cachedInputTokens: 80, outputTokens: 15 });
+  });
+  it("preserves explicit zero and distinguishes absent prices", () => {
+    expect(parseGeminiJsonl(JSON.stringify({ type: "result", total_cost_usd: 0 })).costUsd).toBe(0);
+    expect(parseGeminiJsonl(JSON.stringify({ type: "result" })).costUsd).toBeNull();
   });
 });

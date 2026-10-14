@@ -294,6 +294,28 @@ describe("Codex app-server Codex driver", () => {
     expect(events.some((event) => event.eventType === "turn.interrupted")).toBe(true);
   });
 
+  it.each(["output", "cache"])("does not certify partial provider usage using retained %s counters", async omitted => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-partial-usage", normalizedSessionId: "normalized-partial-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const first = { inputTokens: 10, outputTokens: 4, ...(omitted === "cache" ? { cachedInputTokens: 2 } : {}) };
+    const second = { inputTokens: 20, ...(omitted === "cache" ? { outputTokens: 8 } : {}) };
+    for (const total of [first, second]) {
+      transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total } });
+    }
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const usage = events.filter(event => event.payload.kind === "usage");
+    expect(usage.map(event => event.payload.usage)).toMatchObject([
+      { runDelta: first, runDeltaComplete: true },
+      { runDelta: { ...first, ...second }, runDeltaComplete: false },
+    ]);
+    expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
+  });
+
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

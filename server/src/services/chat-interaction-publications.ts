@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { nativePhotonInteraction } from "./photon/interactions.js";
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -30,7 +31,7 @@ const QUESTION_ACTION_TOKEN_BYTES = 16;
 export const CHAT_QUESTION_ACTION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 export const TELEGRAM_CALLBACK_DATA_LIMIT_BYTES = 64;
 
-type ChatPublicationDb = Pick<Db, "select" | "insert" | "update">;
+type ChatPublicationDb = Pick<Db, "select" | "insert" | "update" | "transaction">;
 
 function terminalNativeInteractionCopy(
   interaction: IssueThreadInteraction,
@@ -408,83 +409,87 @@ export async function enqueueIssueInteractionChatPublications(
         },
       },
     });
-    const rows = await db
-      .insert(chatPublications)
-      .values({
-        companyId: interaction.companyId,
-        endpointId: endpoint.id,
-        conversationId: conversation.id,
-        issueId: interaction.issueId,
-        idempotencyKey: `interaction:${interaction.id}:${endpoint.id}`,
-        payload,
-        state: "pending",
-      })
-      .onConflictDoNothing()
-      .returning();
-    const publication = rows[0];
-    if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
-      const reference = randomBytes(9).toString("base64url");
-      await db.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
-        kind: "photon_interaction", providerActionId: `photon:${reference}`,
-        payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
-          expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
-    } else if (publication && formDraft) {
-      await db.insert(chatActions).values(
-        chatQuestionFormActionRecords(formDraft, {
+    const rows = await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      const rows = await tx
+        .insert(chatPublications)
+        .values({
           companyId: interaction.companyId,
           endpointId: endpoint.id,
           conversationId: conversation.id,
-          publicationId: publication.id,
-        }),
-      );
-    } else if (publication && question && questionActionTokens.length > 0) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        questionActionTokens.map(({ actionId, option }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "question_answer",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
+          issueId: interaction.issueId,
+          idempotencyKey: `interaction:${interaction.id}:${endpoint.id}`,
+          payload,
+          state: "pending",
+        })
+        .onConflictDoNothing()
+        .returning();
+      const publication = rows[0];
+      if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
+        const reference = randomBytes(9).toString("base64url");
+        await tx.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
+          kind: "photon_interaction", providerActionId: `photon:${reference}`,
+          payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
+            expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
+      } else if (publication && formDraft) {
+        await tx.insert(chatActions).values(
+          chatQuestionFormActionRecords(formDraft, {
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
             publicationId: publication.id,
-            interactionId: interaction.id,
-            questionId: question.id,
-            optionId: option.id,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
-    } else if (
-      publication &&
-      confirmation &&
-      confirmationActionTokens.length > 0
-    ) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        confirmationActionTokens.map(({ actionId, decision }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "confirmation_response",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
-            publicationId: publication.id,
-            interactionId: interaction.id,
-            decision,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
-    }
+          }),
+        );
+      } else if (publication && question && questionActionTokens.length > 0) {
+        const expiresAt = new Date(
+          publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+        ).toISOString();
+        await tx.insert(chatActions).values(
+          questionActionTokens.map(({ actionId, option }) => ({
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            kind: "question_answer",
+            providerActionId: actionId,
+            payload: {
+              version: 1,
+              publicationId: publication.id,
+              interactionId: interaction.id,
+              questionId: question.id,
+              optionId: option.id,
+              expiresAt,
+            },
+            status: "issued",
+          })),
+        );
+      } else if (
+        publication &&
+        confirmation &&
+        confirmationActionTokens.length > 0
+      ) {
+        const expiresAt = new Date(
+          publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+        ).toISOString();
+        await tx.insert(chatActions).values(
+          confirmationActionTokens.map(({ actionId, decision }) => ({
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            kind: "confirmation_response",
+            providerActionId: actionId,
+            payload: {
+              version: 1,
+              publicationId: publication.id,
+              interactionId: interaction.id,
+              decision,
+              expiresAt,
+            },
+            status: "issued",
+          })),
+        );
+      }
+      return rows;
+    });
     inserted.push(...rows);
   }
   return inserted;
@@ -560,20 +565,23 @@ export async function enqueueTerminalIssueInteractionChatPublications(
     )
     .map((publication) => publication.id);
   if (unsentIds.length > 0) {
-    await db
-      .update(chatPublications)
-      .set({
-        state: "cancelled",
-        nextAttemptAt: null,
-        redactedError: "Interaction was resolved before provider publication",
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          inArray(chatPublications.id, unsentIds),
-          inArray(chatPublications.state, ["pending", "retry"]),
-        ),
-      );
+    await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      return tx
+        .update(chatPublications)
+        .set({
+          state: "cancelled",
+          nextAttemptAt: null,
+          redactedError: "Interaction was resolved before provider publication",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(chatPublications.id, unsentIds),
+            inArray(chatPublications.state, ["pending", "retry"]),
+          ),
+        );
+    });
   }
 
   const originalIds = originals.map((publication) => publication.id);
@@ -706,33 +714,37 @@ export async function enqueueTerminalIssueInteractionChatPublications(
   if (!copy) return [];
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const original of providerVisibleOriginals) {
-    if (!original.payload.card) continue;
-    const rows = await db
-      .insert(chatPublications)
-      .values({
-        companyId: interaction.companyId,
-        endpointId: original.endpointId,
-        conversationId: original.conversationId,
-        issueId: interaction.issueId,
-        idempotencyKey: `interaction-resolution:${interaction.id}:${original.endpointId}`,
-        payload: projectSafeChatPublication({
-          classification: "external",
-          source: "issue_interaction",
-          text: copy.text,
-          interaction: {
-            id: interaction.id,
-            card: {
-              kind: original.payload.card.kind,
-              title: original.payload.card.title,
-              body: copy.body,
-              actions: [],
+    const card = original.payload.card;
+    if (!card) continue;
+    const rows = await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      return tx
+        .insert(chatPublications)
+        .values({
+          companyId: interaction.companyId,
+          endpointId: original.endpointId,
+          conversationId: original.conversationId,
+          issueId: interaction.issueId,
+          idempotencyKey: `interaction-resolution:${interaction.id}:${original.endpointId}`,
+          payload: projectSafeChatPublication({
+            classification: "external",
+            source: "issue_interaction",
+            text: copy.text,
+            interaction: {
+              id: interaction.id,
+              card: {
+                kind: card.kind,
+                title: card.title,
+                body: copy.body,
+                actions: [],
+              },
             },
-          },
-        }),
-        state: "pending",
-      })
-      .onConflictDoNothing()
-      .returning();
+          }),
+          state: "pending",
+        })
+        .onConflictDoNothing()
+        .returning();
+    });
     inserted.push(...rows);
   }
   return inserted;
@@ -771,23 +783,26 @@ export async function cancelPendingIssueInteractionChatPublications(
         ]),
       ),
     );
-  return db
-    .update(chatPublications)
-    .set({
-      state: "cancelled",
-      nextAttemptAt: null,
-      redactedError: "Interaction was superseded before publication",
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(chatPublications.companyId, input.companyId),
-        eq(chatPublications.issueId, input.issueId),
-        inArray(chatPublications.state, ["pending", "retry"]),
-        inArray(sql<string>`${chatPublications.payload}->>'interactionId'`, [
-          ...input.interactionIds,
-        ]),
-      ),
-    )
-    .returning();
+  return db.transaction(async (tx) => {
+    await notifyChatPublicationWork(tx);
+    return tx
+      .update(chatPublications)
+      .set({
+        state: "cancelled",
+        nextAttemptAt: null,
+        redactedError: "Interaction was superseded before publication",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(chatPublications.companyId, input.companyId),
+          eq(chatPublications.issueId, input.issueId),
+          inArray(chatPublications.state, ["pending", "retry"]),
+          inArray(sql<string>`${chatPublications.payload}->>'interactionId'`, [
+            ...input.interactionIds,
+          ]),
+        ),
+      )
+      .returning();
+  });
 }

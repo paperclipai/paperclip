@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentSessionGoalActions,
@@ -352,10 +352,17 @@ describeEmbeddedPostgres("runner goal service", () => {
       { runnerInstanceId: randomUUID() },
       { status: "succeeded" },
     ]) {
-      await db.update(heartbeatRuns).set(invalidOwner).where(eq(heartbeatRuns.id, nextRunId));
+      // Corrupt a historical binding to verify the reader's independent guard.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set(invalidOwner).where(eq(heartbeatRuns.id, nextRunId));
+      });
       await expect(applyRunnerGoalPrpEvent(db, eventBinding, successorEvent)).resolves.toBeNull();
-      await db.update(heartbeatRuns).set({ nativeSessionId, nativeIssueId: binding.issueId, runnerInstanceId: runnerId, status: "running" })
-        .where(eq(heartbeatRuns.id, nextRunId));
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set({ nativeSessionId, nativeIssueId: binding.issueId, runnerInstanceId: runnerId, status: "running" })
+          .where(eq(heartbeatRuns.id, nextRunId));
+      });
     }
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, priorRunId));
     await expect(applyRunnerGoalPrpEvent(db, eventBinding, successorEvent)).resolves.toBeNull();

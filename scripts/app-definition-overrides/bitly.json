@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "slug": "bitly",
+  "name": "Bitly",
+  "description": "Connect Bitly's provider-hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/bitly.svg"
+  },
+  "urlPatterns": [
+    "https://api-ssl.bitly.com/*"
+  ],
+  "docsUrl": "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api-ssl.bitly.com/v4/mcp",
+        "scopesHint": [
+          "mcp.all"
+        ]
+      },
+      "guidanceMd": "Connect Bitly in the browser. Choose only the intended workspace. Review the discovered actions and keep writes and destructive operations disabled until explicitly needed.",
+      "riskTier": "S4",
+      "label": "Sign in with Bitly",
+      "consoleLinks": {
+        "docs": "https://dev.bitly.com/bitly-mcp/using-the-bitly-mcp-server/configuration-details/"
+      },
+      "warnings": [
+        "The mcp.all scope covers Bitly's broad MCP catalog, including link and QR management, analytics, groups, custom domains, and Bitly Sites.",
+        "The catalog includes publishing and deletion operations, including permanent short-link deletion, site deletion, and custom-domain changes. Review the full catalog and keep write and destructive actions Off during read-only qualification."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-created Bitly API token when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api-ssl.bitly.com/v4/mcp"
+      },
+      "guidanceMd": "Generate a Bitly API token under Settings → API. The token may authorize the MCP's full catalog under your Bitly account; Paperclip cannot narrow the token. Review discovered actions and keep writes and destructive operations disabled until explicitly needed.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Bitly API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Bitly API token",
+          "secret": true,
+          "helperMd": "Bitly's API token may authorize the MCP's broad catalog under your account. Paperclip cannot narrow the token; keep write and destructive actions Off unless you explicitly need them."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://bitly.com/settings/api",
+        "docs": "https://dev.bitly.com/bitly-mcp/using-the-bitly-mcp-server/configuration-details/"
+      },
+      "warnings": [
+        "This API token is not documented as a restricted MCP token. It may authorize Bitly's broad MCP catalog, including link creation/update/deletion, QR codes, Sites publishing/deletion, and custom-domain operations.",
+        "Review the discovered catalog and keep write and destructive actions Off during read-only qualification."
+      ]
+    }
+  ]
+}

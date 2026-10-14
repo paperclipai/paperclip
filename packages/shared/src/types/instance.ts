@@ -30,7 +30,6 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
-  keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
@@ -47,6 +46,7 @@ export interface InstanceExperimentalSettings {
    * Existing native runs ignore later flag changes so they remain recoverable.
    */
   enableNativeRunner: boolean;
+  enableAiConnectionRouters: boolean;
   /**
    * Hide the local environment and run all agents in the platform-managed
    * sandbox environment. Run selection refuses local while this is on.
@@ -71,6 +71,14 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
+  /** Show GitHub review bot setup and management independently of chat connectors. */
+  enableGitHubReviewBots: boolean;
+  /** Allow person-authorized assistant tools and task event delivery. */
+  enablePublicMcp: boolean;
+  /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
+  enableOpenAiDot: boolean;
+  /** Enable experimental Grok Bot agents; requires MCP and the managed/native Runner. */
+  enableGrokBot: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
@@ -78,6 +86,8 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
+  /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
+  enableCombinedInboxTasks: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
@@ -89,6 +99,8 @@ export interface InstanceExperimentalSettings {
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
+  /** Show company connection settings and allow contextual fast-response acknowledgements. */
+  enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */

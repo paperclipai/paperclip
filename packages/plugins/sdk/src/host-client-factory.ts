@@ -139,6 +139,8 @@ export interface HostServices {
 
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
+    listLifecycle(params: WorkerToHostMethods["events.listLifecycle"][0]): Promise<WorkerToHostMethods["events.listLifecycle"][1]>;
+    acknowledgeLifecycle(params: WorkerToHostMethods["events.acknowledgeLifecycle"][0]): Promise<void>;
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
@@ -405,6 +407,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Events
   "events.emit": "events.emit",
   "events.subscribe": "events.subscribe",
+  "events.listLifecycle": "events.subscribe",
+  "events.acknowledgeLifecycle": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -762,6 +766,8 @@ export function createHostClientHandlers(
     }),
 
     // Events
+    "events.listLifecycle": gated("events.listLifecycle", async (params) => services.events.listLifecycle(params)),
+    "events.acknowledgeLifecycle": gated("events.acknowledgeLifecycle", async (params) => services.events.acknowledgeLifecycle(params)),
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),

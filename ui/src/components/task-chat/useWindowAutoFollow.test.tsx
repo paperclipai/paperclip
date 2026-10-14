@@ -8,7 +8,7 @@ import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 function Host({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
   useWindowAutoFollow(contentKey, enabled);
-  return <div>thread</div>;
+  return <div data-testid="task-chat-thread">thread</div>;
 }
 
 /**
@@ -186,6 +186,71 @@ describe("useWindowAutoFollow", () => {
     geometry.setScrollHeight(2300);
     triggerResize();
 
+    expect(scrollToCalls).toHaveLength(0);
+  });
+
+  it("follows a late thread resize without a React content update or body resize", async () => {
+    const observed = new Set<Element>();
+    let resizeThread = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeThread = () => {
+          const thread = container.querySelector('[data-testid="task-chat-thread"]')!;
+          if (observed.has(thread)) callback([{ target: thread } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        };
+      }
+      observe(element: Element) { observed.add(element); }
+      disconnect() { observed.clear(); }
+    });
+    const geometry = fakeWindowGeometry();
+    render(0);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2400);
+    resizeThread();
+
+    expect(scrollToCalls).toContain(2400);
+    expect(window.scrollY).toBe(1600);
+  });
+
+  it("keeps following when a scroll event arrives after growth before reconciliation", async () => {
+    const geometry = fakeWindowGeometry();
+    render(0);
+
+    geometry.setScrollHeight(2400);
+    await scrollWindowTo(1200); // Still at the old bottom; the user did not move up.
+    scrollToCalls = [];
+    render(1);
+
+    expect(scrollToCalls).toContain(2400);
+  });
+
+  it("holds an upward user scroll during growth and resumes after returning to the bottom", async () => {
+    const geometry = fakeWindowGeometry();
+    render(0);
+
+    geometry.setScrollHeight(2400);
+    await scrollWindowTo(900);
+    scrollToCalls = [];
+    render(1);
+    expect(scrollToCalls).toHaveLength(0);
+
+    await scrollWindowTo(1600);
+    geometry.setScrollHeight(2700);
+    render(2);
+    expect(scrollToCalls).toContain(2700);
+  });
+
+  it("follows viewport resizing while pinned and holds it while reading older output", async () => {
+    render(0);
+    Object.defineProperty(window, "innerHeight", { value: 600, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    expect(window.scrollY).toBe(1400);
+
+    await scrollWindowTo(500);
+    scrollToCalls = [];
+    Object.defineProperty(window, "innerHeight", { value: 700, configurable: true });
+    window.dispatchEvent(new Event("resize"));
     expect(scrollToCalls).toHaveLength(0);
   });
 

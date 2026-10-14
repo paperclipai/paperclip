@@ -36,7 +36,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your PagerDuty user API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -73,7 +74,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your PagerDuty user API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

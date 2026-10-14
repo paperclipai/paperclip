@@ -1,0 +1,922 @@
+{
+  "schema": "paperclip-cursor-authenticated-qualification/v1",
+  "providerVersion": "2026.09.26-dd393fe",
+  "qualification": "pending",
+  "attempts": [
+    {
+      "id": "cursor-tracer-20260928-1920",
+      "accountContext": "previous free account; superseded by explicit operator account selection",
+      "case": "get-task-context",
+      "runnerSourceRevision": "e5159fb67ad28bf6a691bfa64ffddb332d96f8be",
+      "providerPackDigest": "sha256:86b907fe5efadaab9bb0953acd1434bcd0e098b1f78bbb2fd7c5ea1b975da5ac",
+      "runnerPackageSha256": "90c806623d24694997d9d0173cc6c020b1db18e5a978824e2c6f2d0a25825a3b",
+      "runnerdSha256": "66122cae0160bfa2655d64afb7c7b5c01aa5fa7bba8ad608c7ee768c14f51fec",
+      "evalRevision": "63e33f556d933beb274447b9568b185a1e37056f",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "observedModel": {
+        "id": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "provider": "cursor"
+      },
+      "startedAt": "2026-09-28T19:17:48.658Z",
+      "finishedAt": "2026-09-28T19:18:12.924Z",
+      "durationMs": 24256,
+      "limits": {
+        "turnTimeoutMs": 60000,
+        "maxAgentTurns": 1,
+        "maxEstimatedCostNanodollars": 500000000
+      },
+      "automaticRetries": 0,
+      "nativeTerminalStatus": "completed",
+      "assistantText": [
+        "Upgrade your plan to continue"
+      ],
+      "semanticToolInvocations": 0,
+      "runnerResult": "eval_orchestration_failure",
+      "runnerDiagnostic": "capability_live_usage_missing",
+      "interpretation": "Native entitlement denial text was followed by normal ACP completion; missing usage then masked the semantic failure. This attempt is not a pass.",
+      "networkEvidence": {
+        "childPaperclipEnvironmentKeys": [],
+        "realPaperclipRequests": 0
+      },
+      "cleanup": {
+        "runnerExited": true,
+        "runnerExitCode": 0,
+        "authorityCleared": true,
+        "mockStopped": true
+      },
+      "usage": {
+        "submittedPrompts": 1,
+        "billedPrompts": null,
+        "tokens": null,
+        "costUsd": null,
+        "coverage": "unavailable",
+        "dashboardBefore": {
+          "onDemandUsd": 0,
+          "includedPoolPercent": [
+            0,
+            0,
+            0
+          ]
+        },
+        "dashboardAfter": {
+          "onDemandUsd": 0,
+          "includedPoolPercent": [
+            0,
+            0,
+            0
+          ]
+        },
+        "dashboardLimitation": "Aggregate display unchanged at coarse precision; this does not prove zero metered usage or zero charge."
+      }
+    },
+    {
+      "id": "cursor-new-account-first-20260928",
+      "accountContext": "operator-selected replacement Pro+ account",
+      "case": "get-task-context",
+      "runnerSourceRevision": "01959b8a602683f13706807983f02c3cba9d36a0",
+      "providerPackDigest": "sha256:f0b622e9151c1c0886e6220c48ea71993b65887baa88b1600b27462074748ddb",
+      "runnerPackageSha256": "75ddd8bf9dd474a01df0879ea1ceda6d015e08a3364dc21c38ddfc9e65a60ec0",
+      "runnerdSha256": "986060810ba7377c6ddd64a5d89e322d0a434e1a9c80400e6d4acf5934bfc421",
+      "runnerdSourceRevision": "f77ae83aeb6d802c73f1c955760017ae272eba29",
+      "evalRevision": "b01676fdb7a2783f7b3635a90ba9583041e86338",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "observedModel": {
+        "id": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "provider": "cursor"
+      },
+      "startedAt": "2026-09-28T19:28:46.976Z",
+      "finishedAt": "2026-09-28T19:29:16.268Z",
+      "durationMs": 29291,
+      "limits": {
+        "turnTimeoutMs": 60000,
+        "maxAgentTurns": 1,
+        "maxEstimatedCostNanodollars": 500000000
+      },
+      "automaticRetries": 0,
+      "nativeTerminalStatus": "completed",
+      "assistantText": "I\u2019m assigned PAP-101, \u201cAdd task-context orientation eval,\u201d under PAP-100.\n\nThe immediate next step is to inspect the runner/evaluation harness and implement the smallest end-to-end check proving an agent reads its assigned task context before acting, while preserving inspectable evidence. The manager specifically asked to start with that smallest check. No task completion or blocking action is authorized yet.",
+      "semanticResults": [
+        {
+          "operationId": "get_task_context",
+          "ok": true
+        },
+        {
+          "operationId": "get_task_history",
+          "ok": true
+        }
+      ],
+      "runnerResult": "passed",
+      "oracleChecks": [
+        {
+          "id": "context-call",
+          "passed": true
+        },
+        {
+          "id": "terminal-completed",
+          "passed": true
+        },
+        {
+          "id": "transcript-complete",
+          "passed": true
+        },
+        {
+          "id": "mock-only",
+          "passed": true
+        }
+      ],
+      "scoreDigest": "sha256:0e39e3067a928b9ff4da7a70426f2e643bf9e869bbee514de8dd6a3661bc0942",
+      "networkEvidence": {
+        "childPaperclipEnvironmentKeys": [],
+        "realPaperclipRequests": 0
+      },
+      "cleanup": {
+        "runnerExited": true,
+        "runnerExitCode": 0
+      },
+      "usage": {
+        "submittedPrompts": 1,
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; dashboard row attributed"
+      },
+      "billing": {
+        "source": "parent-observed account Usage row after bounded attempt",
+        "observedRequestAt": "2026-09-28T19:28:55Z",
+        "modelLabel": "gpt-5.6-luna-medium",
+        "tokensDisplay": "56K",
+        "usageType": "Included",
+        "chargeDisplay": "Included",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.07,
+        "listCostBoundBasis": "At most 57,000 rounded-display tokens at the maximum listed $1.20 per million token rate; this is not a billing receipt."
+      },
+      "scope": "Runner Eval: authenticated local native-MCP semantic tools on mock control plane; not Product E2E or native interaction/recovery/Daytona qualification"
+    },
+    {
+      "id": "cursor-product-hello-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.hello-complete",
+      "runnerSourceRevision": "66ddbc1f9e2001e95dd8a32bd1da09e65df363f7",
+      "startedAt": "2026-09-28T19:37:31.806Z",
+      "finishedAt": "2026-09-28T19:37:32.243Z",
+      "result": "failed_before_agent_creation",
+      "failureClass": "permanent_infrastructure",
+      "errorCode": "paperclip_runner_acpx_agent_unavailable",
+      "submittedPrompts": 0,
+      "providerRuns": 0,
+      "automaticRetries": 0,
+      "cleanup": "passed",
+      "interpretation": "Public agent creation rejected the pending candidate before provider launch; foundation 26dde3cfe added exact host-owned candidate/model qualification admission. A separately authorized replacement retained the failure."
+    },
+    {
+      "id": "cursor-product-hello-replacement-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.hello-complete",
+      "runnerSourceRevision": "edf538e61e712dddb6b4d59045c3dcfd445686c7",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "runnerdSha256": "986060810ba7377c6ddd64a5d89e322d0a434e1a9c80400e6d4acf5934bfc421",
+      "runnerdSourceRevision": "f77ae83aeb6d802c73f1c955760017ae272eba29",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T19:41:56.376Z",
+      "finishedAt": "2026-09-28T19:42:38.761Z",
+      "durationMs": 42385,
+      "providerStartedAt": "2026-09-28T19:42:03.686Z",
+      "providerFinishedAt": "2026-09-28T19:42:36.720Z",
+      "providerTimeoutSec": 120,
+      "timeoutFired": false,
+      "result": "passed",
+      "automaticRetries": 0,
+      "submittedPrompts": 1,
+      "providerRuns": 1,
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "invariantFailures": [],
+      "taskStatus": "done",
+      "runStatus": "succeeded",
+      "finalizationPhase": "committed",
+      "cleanup": "passed",
+      "resultSha256": "5e1ac034a851b0ea124ca314c67e16a6e562ca6e54a30c4421daca1459ccfcd9",
+      "screenshot": {
+        "id": "final-state",
+        "sha256": "04f163928e8f43a1216bc432c4be5248d2434070d270eff9274beaa76730e67a",
+        "visuallyInspected": true,
+        "observed": "Task Done; Cursor assignee; one completion marker; tool activity visible."
+      },
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; dashboard row attributed"
+      },
+      "scope": "Real local browser/server/database/native runner and authenticated completion tool. Does not qualify native questions/plans, restrictive permissions, file artifacts, recovery, or Daytona.",
+      "billing": {
+        "source": "parent-observed account Usage row after bounded attempt",
+        "observedRequestAt": "2026-09-28T19:42:25Z",
+        "modelLabel": "gpt-5.6-luna-medium",
+        "tokensDisplay": "41.7K",
+        "usageType": "Included in Pro Plus",
+        "chargeDisplay": "Included",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.06,
+        "listCostBoundBasis": "At most 42,000 rounded-display tokens at the maximum listed $1.20 per million token rate, rounded up to $0.06; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-product-file-edit-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.file-edit-validate",
+      "runnerSourceRevision": "fe132224c2b30a8d9ce7b46cea38b8760af233fc",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "runnerdSha256": "986060810ba7377c6ddd64a5d89e322d0a434e1a9c80400e6d4acf5934bfc421",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T19:44:43.582Z",
+      "finishedAt": "2026-09-28T19:45:24.406Z",
+      "durationMs": 40824,
+      "providerStartedAt": "2026-09-28T19:44:48.263Z",
+      "providerFinishedAt": "2026-09-28T19:45:20.690Z",
+      "providerTimeoutSec": 120,
+      "timeoutFired": false,
+      "result": "passed",
+      "automaticRetries": 0,
+      "submittedPrompts": 1,
+      "providerRuns": 1,
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        },
+        {
+          "kind": "file_exact",
+          "passed": true
+        }
+      ],
+      "invariantFailures": [],
+      "taskStatus": "done",
+      "runStatus": "succeeded",
+      "cleanup": "passed",
+      "resultSha256": "2554fd5709ce35712a3f23405fe7550d169b9f3a0cde2a9906c18e4f7ba4ae86",
+      "screenshot": {
+        "id": "final-state",
+        "sha256": "712a1b2105ff54530db9d2a7ff3764c53ad9cbf2bbe047e90010e8f44563972c",
+        "visuallyInspected": true,
+        "observed": "Task Done; Cursor assignee; 24-byte text file and downloadable artifact card; Used tools, edited files; one completion marker."
+      },
+      "fileEvidence": {
+        "exactFinalBytesMatched": true,
+        "sizeBytes": 24,
+        "sha256": "a6a152b61f60708dc2982f1a0c06cb8dd7ba6339d26018a0f00a072534fd8c18",
+        "commandValidation": "Python compared actual bytes to the expected bytes and exited successfully.",
+        "workspaceArtifactPresented": true,
+        "providerDiffProjectionQualified": false
+      },
+      "observedEventGap": {
+        "field": "native command rawOutput.exitCode",
+        "nativeValue": 0,
+        "canonicalExitCode": null,
+        "preservedAs": "serialized rawOutput text",
+        "followUp": "P2: validated numeric command result projection; do not infer from arbitrary output text."
+      },
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; dashboard row attributed"
+      },
+      "scope": "Real local create/edit/command-validation plus independent byte matcher and visible workspace artifact. Does not qualify provider-native diff projection, restrictive denial, native input, recovery, or Daytona.",
+      "billing": {
+        "source": "parent-observed account Usage row after bounded attempt",
+        "observedRequestAt": "2026-09-28T19:44:59Z",
+        "modelLabel": "gpt-5.6-luna-medium",
+        "tokensDisplay": "84.1K",
+        "usageType": "Included in Pro Plus",
+        "chargeDisplay": "Included",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.102,
+        "listCostBoundBasis": "Rounded dashboard token count bounded conservatively at the maximum listed $1.20 per million token rate; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-product-question-merged-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.question-resume-complete",
+      "runnerSourceRevision": "a7e01a0cec397dd5048f5d5b5825658dc6e91450",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "packSourceRevision": "19ac45c4fd87b8b9f28507b3ecd57803da3f7c73",
+      "providerPackDigest": "sha256:f9b1869c3d6822981518a4acfa5ffd0d8623ac555034754d92e57dabd56feadb",
+      "runnerdSha256": "dadafb10a6a02f2046798ae4104edc481d205e65724e0526a7f34ba50eb746d0",
+      "runnerdSourceRevision": "527ac0e31f45a613cba1f65c25b01547f176736d",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:04:44.147Z",
+      "finishedAt": "2026-09-28T20:05:52.691Z",
+      "durationMs": 68544,
+      "providerSubmittedAt": [
+        "2026-09-28T20:05:00.738Z",
+        "2026-09-28T20:05:30.525Z"
+      ],
+      "providerTimeoutSec": 120,
+      "outerTimeoutSec": 300,
+      "result": "passed",
+      "automaticRetries": 0,
+      "submittedPrompts": 2,
+      "providerRuns": 2,
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "invariantFailures": [],
+      "taskStatus": "done",
+      "cleanup": "passed",
+      "resultSha256": "957fac7017a0059bbd222afa7e14b080fdea2e1c2409af5a6f0d852191ba7691",
+      "screenshots": [
+        {
+          "id": "question-pending",
+          "sha256": "6ac5022e20d275b1746a3b038dcf3949653f053523fccb395163b1cbc1766713",
+          "visuallyInspected": true
+        },
+        {
+          "id": "final-state",
+          "sha256": "2dc98776e6178c8f8a494ebb4bb66938fbfee2a41aa43b67e053b0bd8838fdc1",
+          "visuallyInspected": true
+        }
+      ],
+      "questionEvidence": {
+        "origin": "Paperclip request_human_input semantic tool",
+        "kind": "ask_user_questions",
+        "selectionMode": "single",
+        "pendingBeforeAnswer": true,
+        "requestedAt": "2026-09-28T20:05:10.459Z",
+        "resolvedAt": "2026-09-28T20:05:16.215Z",
+        "answer": "Cobalt",
+        "finalStatus": "answered",
+        "serverRestartedBeforeAnswer": false,
+        "continuationRunObserved": true,
+        "nativeCursorExtensionQualified": false
+      },
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; two dashboard rows attributed"
+      },
+      "scope": "Real local browser question, answer, wake-assignee continuation and completion. Does not qualify cursor/ask_question native RPC, native plan decisions, restrictive permissions, restart recovery, or Daytona.",
+      "billing": {
+        "source": "parent-observed account Usage rows after bounded case",
+        "requests": [
+          {
+            "at": "2026-09-28T20:05:01Z",
+            "tokensDisplay": "35.5K"
+          },
+          {
+            "at": "2026-09-28T20:05:35Z",
+            "tokensDisplay": "42K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.1,
+        "listCostBoundBasis": "Rounded display total bounded at80,000 tokens, maximum listed $1.20/M, rounded upward; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-product-plan-merged-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.plan-approve-complete",
+      "runnerSourceRevision": "a7e01a0cec397dd5048f5d5b5825658dc6e91450",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "packSourceRevision": "19ac45c4fd87b8b9f28507b3ecd57803da3f7c73",
+      "providerPackDigest": "sha256:f9b1869c3d6822981518a4acfa5ffd0d8623ac555034754d92e57dabd56feadb",
+      "runnerdSha256": "dadafb10a6a02f2046798ae4104edc481d205e65724e0526a7f34ba50eb746d0",
+      "runnerdSourceRevision": "527ac0e31f45a613cba1f65c25b01547f176736d",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:09:56.429Z",
+      "finishedAt": "2026-09-28T20:10:49.114Z",
+      "durationMs": 52685,
+      "providerSubmittedAt": [
+        "2026-09-28T20:10:09.422Z",
+        "2026-09-28T20:10:33.832Z"
+      ],
+      "providerTimeoutSec": 120,
+      "outerTimeoutSec": 300,
+      "result": "passed",
+      "automaticRetries": 0,
+      "submittedPrompts": 2,
+      "providerRuns": 2,
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "invariantFailures": [],
+      "taskStatus": "done",
+      "cleanup": "passed",
+      "resultSha256": "3bfa8d5f62ae827e73bc0aabb496f8aefdf55338ada76985b9222485d4fd58d2",
+      "screenshots": [
+        {
+          "id": "plan-pending",
+          "sha256": "ef025fedfe201da0e2a8e31f8fdd2b14d9d9e4248e2c5f2a310410915e5ea98c",
+          "visuallyInspected": true
+        },
+        {
+          "id": "final-state",
+          "sha256": "bd7ad23c19903a4df63482a1b89642093fc74526fdae3331416986f5a0cd370f",
+          "visuallyInspected": true
+        }
+      ],
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; two dashboard rows attributed"
+      },
+      "scope": "Real local browser Plan display, exact-revision approval, wake-assignee continuation and completion. Does not qualify cursor/create_plan native RPC, restrictive permissions, restart recovery, or Daytona.",
+      "planEvidence": {
+        "origin": "Paperclip write_document and request_human_input semantic tools",
+        "kind": "request_confirmation",
+        "revisionNumber": 1,
+        "pendingBeforeApproval": true,
+        "requestedAt": "2026-09-28T20:10:21.718Z",
+        "resolvedAt": "2026-09-28T20:10:25.286Z",
+        "finalStatus": "accepted",
+        "confirmationTargetsDisplayedRevision": true,
+        "continuationRunObserved": true,
+        "nativeCursorExtensionQualified": false
+      },
+      "billing": {
+        "source": "parent-observed account Usage rows after bounded case",
+        "requests": [
+          {
+            "at": "2026-09-28T20:10:09Z",
+            "tokensDisplay": "48.5K"
+          },
+          {
+            "at": "2026-09-28T20:10:34Z",
+            "tokensDisplay": "43.7K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.114,
+        "listCostBoundBasis": "Rounded display total bounded at 95,000 tokens at the maximum listed $1.20/M; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-product-question-restart-merged-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.structured-question-restart-resume",
+      "runnerSourceRevision": "a7e01a0cec397dd5048f5d5b5825658dc6e91450",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:12:21.993813+00:00",
+      "finishedAt": "2026-09-28T20:12:22.080838+00:00",
+      "result": "failed_before_harness_start",
+      "failureClass": "local_launcher_infrastructure",
+      "errorCode": "tsx_ipc_socket_path_einval",
+      "submittedPrompts": 0,
+      "providerRuns": 0,
+      "automaticRetries": 0,
+      "processCleanupVerified": true,
+      "billing": {
+        "incrementalCashChargeUsd": 0,
+        "evidence": "tsx failed to bind startup Unix socket before loading Product harness; no provider process or prompt."
+      },
+      "scope": "Task-owned temporary Unix socket path exceeded macOS length limit; no model or product behavior was measured."
+    },
+    {
+      "id": "cursor-restart-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.structured-question-restart-resume",
+      "runnerSourceRevision": "a7e01a0cec397dd5048f5d5b5825658dc6e91450",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "packSourceRevision": "19ac45c4fd87b8b9f28507b3ecd57803da3f7c73",
+      "providerPackDigest": "sha256:f9b1869c3d6822981518a4acfa5ffd0d8623ac555034754d92e57dabd56feadb",
+      "runnerdSha256": "dadafb10a6a02f2046798ae4104edc481d205e65724e0526a7f34ba50eb746d0",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:13:24.214Z",
+      "finishedAt": "2026-09-28T20:14:00.389Z",
+      "durationMs": 36175,
+      "result": "failed",
+      "failureClass": "transient_infrastructure",
+      "errorCode": "embedded_postgres_semaphore_exhaustion",
+      "automaticRetries": 0,
+      "authorizedInfrastructureRetryOf": "cursor-product-question-restart-merged-20260928",
+      "providerTimeoutSec": 120,
+      "outerTimeoutSec": 300,
+      "submittedPrompts": 1,
+      "providerRuns": 1,
+      "promptCountEvidence": "Pending question screenshot and graceful shutdown with no interrupted active runs; replacement server failed before an answer or continuation. Post-failure API snapshot could not recover exact submission time.",
+      "cleanup": "failed",
+      "processCleanupVerifiedSeparately": true,
+      "cleanupEvidence": "Original cleanup API check failed because server was down; subsequent task-path process inspection and replacement PostgreSQL PID check found no surviving owned processes.",
+      "resultSha256": "c74c3f5e96ffc7940d7d87ca05b7ff77d7cf9912a87ec340c9db38e19a06fcfd",
+      "screenshots": [
+        {
+          "id": "question-pending",
+          "sha256": "f575e57fc975175d7122893f3bf1110195b0dd2a68b82c5101838177932dd8d7",
+          "visuallyInspected": true
+        }
+      ],
+      "questionEvidence": {
+        "origin": "Paperclip request_human_input semantic tool",
+        "pendingQuestionVisible": true,
+        "options": [
+          "Cobalt",
+          "Amber"
+        ],
+        "serverRestartRequested": true,
+        "replacementServerStarted": false,
+        "answered": false,
+        "continuationRunObserved": false,
+        "nativeCursorExtensionQualified": false
+      },
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; one dashboard row attributed"
+      },
+      "scope": "Infrastructure failure after one completed pending-question turn; does not qualify server-restart recovery. Original failed cleanup and evidence retained.",
+      "billing": {
+        "source": "parent-observed account Usage row within retained attempt time window",
+        "requests": [
+          {
+            "at": "2026-09-28T20:13:38Z",
+            "tokensDisplay": "23.7K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.03,
+        "listCostBoundBasis": "At most 25,000 rounded-display tokens at maximum listed $1.20/M; not a billing receipt."
+      }
+    },
+    {
+      "schema": "paperclip-cursor-native-question-probe/v1",
+      "sourceRevision": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+      "providerPackDigest": "sha256:38bc6dd39c13b0f5478a1018e26deb61b0333ab0242f3d857e3c79d3a34b7682",
+      "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "prompts": 1,
+      "automaticRetries": 0,
+      "activeDeadlineSec": 120,
+      "outerDeadlineSec": 180,
+      "reservedUsd": 2,
+      "declaredEnvelopeUsd": 0.5,
+      "expectedNativeMethod": "cursor/ask_question",
+      "expectedQuestions": [
+        "single Cobalt/Amber",
+        "multi Cedar/Birch/Maple"
+      ],
+      "expectedAnswer": [
+        "Cobalt",
+        [
+          "Cedar",
+          "Maple"
+        ]
+      ],
+      "semanticTools": [],
+      "nativePlanProbe": "not attempted: runtime lacks explicit session/set_mode",
+      "scope": "actual native provider -> patched ACPX -> profile normalization -> sidecar runtime input and pipe response acknowledgement; excludes Rust durable replay and browser",
+      "startedAt": "2026-09-28T20:39:41.855Z",
+      "status": "failed",
+      "costUsd": null,
+      "promptSubmittedAt": "2026-09-28T20:39:47.990Z",
+      "sessionClosed": true,
+      "finishedAt": "2026-09-28T20:39:58.232Z",
+      "inputCount": 0,
+      "deliveryAcknowledged": false,
+      "duplicateResolutionRejected": false,
+      "terminalStatus": "completed",
+      "nativeUsageReceipt": null,
+      "id": "cursor-native-question-20260928",
+      "family": "native-sidecar-qualification",
+      "case": "cursor/ask_question-single-and-multi",
+      "failureClass": "provider_behavior",
+      "oracleFailure": "Expected one native input request; observed zero.",
+      "visibleProviderResponse": "The native AskQuestion tool is unavailable in this session.",
+      "probeSha256": "ff197923020be5b578112603980c9aebb0f1c644baffdf7c086bae52998e2c0b",
+      "resultSha256": "b0674dd97f36ff754875677b5b139fad8af3595455d6321600663b5df0e0775a",
+      "billing": {
+        "source": "parent-observed account Usage row within retained probe window",
+        "requests": [
+          {
+            "at": "2026-09-28T20:39:48Z",
+            "tokensDisplay": "17.4K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.024,
+        "listCostBoundBasis": "At most 20,000 rounded-display tokens at maximum listed $1.20/M; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-restart-final-20260928",
+      "family": "product-e2e",
+      "case": "extended-harnesses.runner-acpx-cursor.local.structured-question-restart-resume",
+      "runnerSourceRevision": "d35b83074a018537f5475568d7410e3b1d676789",
+      "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+      "packSourceRevision": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+      "providerPackDigest": "sha256:38bc6dd39c13b0f5478a1018e26deb61b0333ab0242f3d857e3c79d3a34b7682",
+      "runnerdSha256": "e6a9fb5170b76a49b8411834b3706e8edf8f1a1ae85ad13b55368158aa7f67a0",
+      "runnerdSourceRevision": "78360fa55adff11da9f200b228467eca782b81e1",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:42:13.120Z",
+      "finishedAt": "2026-09-28T20:43:10.985Z",
+      "durationMs": 57865,
+      "providerSubmittedAt": [
+        "2026-09-28T20:42:26.185Z",
+        "2026-09-28T20:42:53.642Z"
+      ],
+      "providerTimeoutSec": 120,
+      "outerTimeoutSec": 300,
+      "result": "passed",
+      "automaticRetries": 0,
+      "submittedPrompts": 2,
+      "providerRuns": 2,
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "invariantFailures": [],
+      "taskStatus": "done",
+      "cleanup": "passed",
+      "resultSha256": "0ca2c23dd458b35ffb7c72f6e7a1855ffc31b990124347805330a34cc365dddc",
+      "screenshots": [
+        {
+          "id": "question-pending",
+          "sha256": "8d3d3fe7a3dfd28b5b4a950d12b2be7feb492d9c9b7112bb484f01e65f63c3a4",
+          "visuallyInspected": true
+        },
+        {
+          "id": "final-state",
+          "sha256": "eeb684b5a06f23703c4a76a7c81c05b6d7f640706fd12035e996e5dda1849b21",
+          "visuallyInspected": true
+        }
+      ],
+      "questionEvidence": {
+        "origin": "Paperclip request_human_input semantic tool",
+        "kind": "ask_user_questions",
+        "selectionMode": "single",
+        "pendingBeforeAnswer": true,
+        "requestedAt": "2026-09-28T20:42:32.665Z",
+        "resolvedAt": "2026-09-28T20:42:51.140Z",
+        "answer": "Cobalt",
+        "finalStatus": "answered",
+        "serverRestartedBeforeAnswer": true,
+        "continuationRunObserved": true,
+        "nativeCursorExtensionQualified": false
+      },
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "provider usage unavailable; two dashboard rows attributed"
+      },
+      "scope": "Real local browser/server restart while a semantic question is pending, persisted answer, wake-assignee continuation and completion. Does not qualify native cursor/ask_question pending-request restoration, restrictive permissions, or Daytona.",
+      "authorizedInfrastructureRetryOf": "cursor-restart-20260928",
+      "processCleanupVerifiedSeparately": true,
+      "billing": {
+        "source": "parent-observed account Usage rows within retained retry window",
+        "requests": [
+          {
+            "at": "2026-09-28T20:42:26Z",
+            "tokensDisplay": "23.8K"
+          },
+          {
+            "at": "2026-09-28T20:42:57Z",
+            "tokensDisplay": "41.7K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.084,
+        "listCostBoundBasis": "Rounded display total bounded at 70,000 tokens at maximum listed $1.20/M; not a billing receipt."
+      }
+    },
+    {
+      "id": "cursor-native-denial-20260928",
+      "family": "native-acp-risk-qualification",
+      "case": "deny-shell-write",
+      "runnerSourceRevision": "cb63ccd1d0b35f9bd230eafb849cf6750661f809",
+      "packSourceRevision": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+      "providerPackDigest": "sha256:38bc6dd39c13b0f5478a1018e26deb61b0333ab0242f3d857e3c79d3a34b7682",
+      "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+      "startedAt": "2026-09-28T20:51:59.907Z",
+      "promptSubmittedAt": "2026-09-28T20:52:07.462Z",
+      "finishedAt": "2026-09-28T20:52:16.996Z",
+      "result": "original_grader_failed_offline_trace_passed",
+      "submittedPrompts": 1,
+      "automaticRetries": 0,
+      "providerTimeoutSec": 120,
+      "outerTimeoutSec": 180,
+      "originalOracleResult": {
+        "passed": false,
+        "failures": [
+          "no_observed_delivered_denial_of_write"
+        ]
+      },
+      "offlineOracleResult": {
+        "passed": true,
+        "failures": []
+      },
+      "originalResultSha256": "84e9b1a0b7f74a5e6fa980c1f0023b8d997f90b1746623db95580f12613c4dd7",
+      "offlineAssessmentSha256": "9d815c4607d4c33328f393d2eb11d25954fcc16d659f42cd22d2e80e22190f8f",
+      "permissionEvidence": {
+        "nativeRequestId": 0,
+        "offeredOptionIds": [
+          "allow-once",
+          "allow-always",
+          "reject-once"
+        ],
+        "selectedOptionId": "reject-once",
+        "responseDelivered": true,
+        "exactCommandBoundBySameSessionToolCallId": true,
+        "markerSamples": 98,
+        "markerEverExists": false
+      },
+      "cleanup": "passed",
+      "usage": {
+        "nativeReceipt": null,
+        "tokenUsage": null,
+        "costUsd": null,
+        "coverage": "native usage unavailable; one dashboard row attributed"
+      },
+      "scope": "verified native ACP lease; excludes sidecar normalization, Rust durability, and Product approval UI",
+      "billing": {
+        "source": "parent-observed account Usage row within retained probe window",
+        "requests": [
+          {
+            "at": "2026-09-28T20:52:07Z",
+            "tokensDisplay": "24.4K"
+          }
+        ],
+        "modelLabel": "gpt-5.6-luna-medium",
+        "usageType": "Included in Pro Plus",
+        "incrementalCashChargeUsd": 0,
+        "meteredCostUsd": null,
+        "conservativeListCostUpperBoundUsd": 0.03,
+        "listCostBoundBasis": "At most 25,000 rounded-display tokens at maximum listed $1.20/M; not a billing receipt."
+      }
+    }
+  ],
+  "newAccountDiscovery": {
+    "accountContext": "operator-selected replacement account; Pro+ confirmed by operator dashboard",
+    "methods": [
+      {
+        "method": "initialize",
+        "status": "success"
+      },
+      {
+        "method": "cursor/list_available_models",
+        "status": "success"
+      },
+      {
+        "method": "session/new",
+        "status": "success"
+      },
+      {
+        "method": "session/set_model",
+        "status": "success"
+      },
+      {
+        "method": "session/set_config_option",
+        "status": "success"
+      }
+    ],
+    "modelCount": 41,
+    "requestedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+    "exactModelEcho": true,
+    "modelPrompts": 0
+  },
+  "nativeWrapperGap": {
+    "source": "Pinned 5672.index.js entitlement catch",
+    "behavior": "Actionable upgrade, login, payment, and configuration errors become assistant message text without structured failure metadata; ACP completion may still be successful.",
+    "treatment": "Retain raw outcome for qualification and semantic oracle; no string-only terminal heuristic.",
+    "priority": "P1",
+    "followUp": "Upstream typed failure or an owned verified wrapper hook that preserves typed error before it is rendered."
+  },
+  "redactions": [
+    "No tokens, account identifiers, provider session identifiers, private paths, or hidden reasoning retained."
+  ]
+}

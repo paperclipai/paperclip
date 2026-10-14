@@ -31,6 +31,7 @@ import {
 import { renderRunnerHistoryIndex } from "./history-index.js";
 import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
+import { connectionCheckpoints, type ConnectionEvidence } from "./connection-evidence.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -63,6 +64,7 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
     finishedAt: "2026-08-28T00:00:01.000Z",
     durationMs: 1_000,
     cleanup: "passed",
+    ...(execution.task.flow === "provider_connection" ? { providerConnection: { version: 1, outcome: status, phase: "finished", assisted: false, authFreshness: "signed-in", target: { mode: "attach", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), deploymentMode: "local_trusted" }, entry: "agent", method: "api-key", checkpoints: Object.fromEntries(connectionCheckpoints.map(key => [key, true])), waits: [] } satisfies ConnectionEvidence } : {}),
   } satisfies RunnerE2EResult;
 }
 
@@ -164,6 +166,9 @@ describe("runner E2E campaign history", () => {
   });
 
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
+    vi.stubEnv("GITHUB_SERVER_URL", "");
+    vi.stubEnv("GITHUB_REPOSITORY", "");
+    vi.stubEnv("GITHUB_RUN_ID", "");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");
     vi.stubEnv("GITHUB_SHA", "trusted-master-sha");

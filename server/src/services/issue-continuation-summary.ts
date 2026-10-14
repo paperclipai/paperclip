@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
+import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -141,12 +142,17 @@ export function buildContinuationSummaryMarkdown(input: {
 }) {
   const { issue, run, agent } = input;
   const resultSummary = readResultSummary(run.resultJson);
+  const terminalFailure = run.resultJson?.terminalSessionFailure;
+  const terminalFailureCategory = terminalFailure && typeof terminalFailure === "object" && !Array.isArray(terminalFailure)
+    ? ((terminalFailure as Record<string, unknown>).category ?? "unknown")
+    : null;
+  const modelError = summarizeRunErrorForModel(run.error, terminalFailureCategory);
   const recentActions = [
     `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
   ];
-  if (run.error) {
-    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
+  if (modelError) {
+    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
