@@ -360,6 +360,89 @@ function itemIssueId(item: AttentionItem) {
   return typeof metadataIssueId === "string" ? metadataIssueId : null;
 }
 
+// Mirrors PENDING_INTERACTION_STATUSES in attention.ts. A seeded interaction row
+// stays in the queue only while its interaction is still awaiting an answer.
+const PENDING_INTERACTION_STATUSES = ["pending"] as const;
+
+/**
+ * Removes seeded interaction rows whose interaction has left the pending set,
+ * plus rows whose source interaction no longer exists at all.
+ *
+ * Two guards keep this from eating live work:
+ * - A source the current feed still reports is never retired, so re-running the
+ *   seeder with the same candidates stays a no-op.
+ * - The rest is decided by the source row's own status rather than by absence
+ *   from the feed, so a feed truncated by a query limit cannot retire a
+ *   question that is still open.
+ *
+ * Only rows the seed rules added (addedByType = 'system') are touched: a row an
+ * operator added by hand stays until that operator removes it.
+ */
+async function retireSeededQueueItems(db: Db, companyId: string, reported: Set<string>) {
+  const seeded = await db
+    .select({
+      id: decisionQueueItems.id,
+      queueId: decisionQueueItems.queueId,
+      sourceId: decisionQueueItems.sourceId,
+    })
+    .from(decisionQueueItems)
+    .innerJoin(decisionQueues, and(
+      eq(decisionQueues.id, decisionQueueItems.queueId),
+      eq(decisionQueues.companyId, decisionQueueItems.companyId),
+    ))
+    .where(and(
+      eq(decisionQueueItems.companyId, companyId),
+      eq(decisionQueueItems.sourceKind, "issue_thread_interaction"),
+      eq(decisionQueueItems.addedByType, "system"),
+      eq(decisionQueues.seedRulesEnabled, true),
+    ));
+
+  if (seeded.length === 0) return;
+
+  const candidates = seeded.filter((row) => !reported.has(row.sourceId));
+  if (candidates.length === 0) return;
+
+  const ids = candidates.map((row) => row.id);
+  const stillPending = await db
+    .select({ queueItemId: decisionQueueItems.id })
+    .from(decisionQueueItems)
+    .innerJoin(issueThreadInteractions, sql`${issueThreadInteractions.id}::text = ${decisionQueueItems.sourceId}`)
+    .where(and(
+      inArray(decisionQueueItems.id, ids),
+      eq(issueThreadInteractions.companyId, companyId),
+      inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+    ))
+    .then((rows) => new Set(rows.map((row) => row.queueItemId)));
+
+  const retired = candidates.filter((row) => !stillPending.has(row.id));
+  if (retired.length === 0) return;
+
+  await db.transaction(async (tx) => {
+    const txDb = tx as unknown as Db;
+    const removed = await txDb.delete(decisionQueueItems)
+      .where(inArray(decisionQueueItems.id, retired.map((row) => row.id)))
+      .returning({ queueId: decisionQueueItems.queueId });
+    for (const queueId of new Set(removed.map((row) => row.queueId))) {
+      await txDb.insert(decisionTriageEvents).values({
+        companyId,
+        queueId,
+        action: "queue_item.retired",
+        ...eventActorColumns(SYSTEM_ACTOR),
+        details: { reason: "source_left_pending", count: removed.length },
+      });
+      await txDb.update(decisionQueues).set({ updatedAt: new Date() })
+        .where(and(eq(decisionQueues.companyId, companyId), eq(decisionQueues.id, queueId)));
+    }
+    await recordActivity(txDb, SYSTEM_ACTOR, {
+      companyId,
+      action: "decision_queue_item.retired",
+      entityType: "decision_queue",
+      entityId: retired[0]!.queueId,
+      details: { reason: "source_left_pending", count: retired.length },
+    });
+  });
+}
+
 export function decisionQueueService(db: Db) {
   async function getQueue(companyId: string, key: string) {
     return db.select().from(decisionQueues)
@@ -683,6 +766,15 @@ export function decisionQueueService(db: Db) {
     },
 
     materializeSeededQueues: async (companyId: string, items: AttentionItem[]) => {
+      // Retire first, and on an empty feed too: a queue whose only member has
+      // just been answered has to drain even when nothing else is waiting. The
+      // feed only carries sources that are still open, so anything the seed
+      // rules own but the feed no longer reports has left the queue.
+      await retireSeededQueueItems(
+        db,
+        companyId,
+        new Set(items.map((item) => item.subject.id)),
+      );
       if (items.length === 0) return;
       const issueIds = [...new Set(items.map(itemIssueId).filter((id): id is string => Boolean(id)))];
       const prIssueIds = new Set(issueIds.length === 0 ? [] : await db

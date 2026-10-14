@@ -110,6 +110,50 @@ describeEmbeddedPostgres("decision queue routes", () => {
     return { companyId, agentId, issueId, interactionId, approvalId };
   }
 
+  function seedQuestionItem(companyId: string, issueId: string, interactionId: string): AttentionItem {
+    return {
+      id: `issue_thread_interaction:${interactionId}`,
+      companyId,
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: interactionId,
+        companyId,
+        title: "Waiting on board approval",
+        identifier: null,
+        status: "pending",
+        href: null,
+        metadata: { kind: "ask_user_questions", issueId },
+      },
+      whyNow: "test",
+      decisionVerbs: [],
+      inlineResolvable: true,
+      entryRule: "issue_thread_interactions.status = 'pending'",
+      exitRule: "Interaction resolves, expires, fails, or is cancelled.",
+      dedupKey: `interaction:${interactionId}`,
+      dismissalKey: `issue_thread_interaction:${interactionId}`,
+      dismissal: null,
+      severity: "medium",
+      rank: 1,
+      activityAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      relatedIssue: {
+        kind: "issue",
+        id: issueId,
+        companyId,
+        title: "Issue",
+        identifier: "DQC-1",
+        status: "in_review",
+        href: null,
+      },
+      project: null,
+      workspace: null,
+      detail: null,
+      trainingExampleId: null,
+    };
+  }
+
   function app(actor: Record<string, unknown>) {
     const testApp = express();
     testApp.use(express.json());
@@ -377,6 +421,146 @@ describeEmbeddedPostgres("decision queue routes", () => {
     })]);
     expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.queueId, questionsQueue.id)))
       .toHaveLength(1);
+  });
+
+  it("retires a seeded question when its interaction reaches a terminal state", async () => {
+    const { companyId, issueId } = await seed();
+    const terminal = ["answered", "expired", "cancelled", "accepted", "rejected", "failed"] as const;
+    const ids = terminal.map(() => randomUUID());
+    await db.insert(issueThreadInteractions).values(ids.map((id) => ({
+      id,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      // Every one starts pending so each is seeded into the questions queue.
+      status: "pending" as const,
+      payload: { version: 1, questions: [] } as never,
+    })));
+    const liveId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: liveId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      payload: { version: 1, questions: [] } as never,
+    });
+
+    const candidates = [...ids, liveId].map((id) => seedQuestionItem(companyId, issueId, id));
+    await decisionQueueService(db).materializeSeededQueues(companyId, candidates);
+
+    const questionsQueue = await db.select().from(decisionQueues).where(and(
+      eq(decisionQueues.companyId, companyId),
+      eq(decisionQueues.key, "questions"),
+    )).then((rows) => rows[0]!);
+    const queued = () => db.select({ sourceId: decisionQueueItems.sourceId })
+      .from(decisionQueueItems)
+      .where(eq(decisionQueueItems.queueId, questionsQueue.id))
+      .then((rows) => rows.map((row) => row.sourceId));
+    expect((await queued()).sort()).toEqual([...ids, liveId].sort());
+
+    // Each interaction leaves the pending set in turn, and the queue follows
+    // that one row down each time.
+    for (const [index, status] of terminal.entries()) {
+      await db.update(issueThreadInteractions)
+        .set({ status: status as never })
+        .where(eq(issueThreadInteractions.id, ids[index]!));
+      await decisionQueueService(db).materializeSeededQueues(companyId, [seedQuestionItem(companyId, issueId, liveId)]);
+      const expected = [...ids.slice(index + 1), liveId].sort();
+      expect((await queued()).sort()).toEqual(expected);
+    }
+
+    // The live question is retired too, and the queue drains on an empty feed.
+    await db.update(issueThreadInteractions)
+      .set({ status: "answered" })
+      .where(eq(issueThreadInteractions.id, liveId));
+    await decisionQueueService(db).materializeSeededQueues(companyId, []);
+    expect(await queued()).toEqual([]);
+
+    const retireEvents = await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId),
+      eq(decisionTriageEvents.action, "queue_item.retired"),
+    ));
+    expect(retireEvents.length).toBe(terminal.length + 1);
+  });
+
+  it("purges a seeded question whose source interaction no longer exists", async () => {
+    const { companyId, issueId } = await seed();
+    const goneId = randomUUID();
+    const liveId = randomUUID();
+    await db.insert(issueThreadInteractions).values([goneId, liveId].map((id) => ({
+      id,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending" as const,
+      payload: { version: 1, questions: [] } as never,
+    })));
+
+    await decisionQueueService(db).materializeSeededQueues(companyId, [
+      seedQuestionItem(companyId, issueId, goneId),
+      seedQuestionItem(companyId, issueId, liveId),
+    ]);
+    const questionsQueue = await db.select().from(decisionQueues).where(and(
+      eq(decisionQueues.companyId, companyId),
+      eq(decisionQueues.key, "questions"),
+    )).then((rows) => rows[0]!);
+
+    // The source row disappears entirely, so no status can classify it.
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, goneId));
+    await decisionQueueService(db).materializeSeededQueues(companyId, [seedQuestionItem(companyId, issueId, liveId)]);
+
+    expect(await db.select({ sourceId: decisionQueueItems.sourceId })
+      .from(decisionQueueItems)
+      .where(eq(decisionQueueItems.queueId, questionsQueue.id))
+      .then((rows) => rows.map((row) => row.sourceId))).toEqual([liveId]);
+  });
+
+  it("keeps a hand-added question that the seed rules do not own", async () => {
+    const { companyId, issueId } = await seed();
+    const addedId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: addedId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      payload: { version: 1, questions: [] } as never,
+    });
+
+    // Manual membership is written by an operator: the seed rules never owned
+    // this row, so retirement must leave it alone even once it goes terminal.
+    const service = decisionQueueService(db);
+    const boardMutation = {
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      userId: "board-user",
+      runId: null,
+      agentApiKeyId: null,
+      responsibleUserId: null,
+    } as const;
+    const queue = await service.create({
+      companyId,
+      key: "manual",
+      title: "Manual",
+      authActor: boardActor(companyId) as never,
+      actor: boardMutation as never,
+    });
+    await service.addItem({
+      companyId,
+      key: "manual",
+      sourceKind: "issue_thread_interaction",
+      sourceId: addedId,
+      authActor: boardActor(companyId) as never,
+      actor: boardMutation as never,
+    });
+    await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, addedId));
+    await service.materializeSeededQueues(companyId, []);
+    expect(await db.select({ sourceId: decisionQueueItems.sourceId })
+      .from(decisionQueueItems)
+      .where(eq(decisionQueueItems.queueId, queue.queue.id)))
+      .toEqual([{ sourceId: addedId }]);
   });
 
   it("records agent decide-by, preserves override history, and exposes the board override attribution", async () => {
