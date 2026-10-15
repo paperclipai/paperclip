@@ -1155,6 +1155,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
     const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    // A parsed success is authoritative over the process exit: after the CLI
+    // emits its terminal result event, the runner SIGTERMs the lingering
+    // process (exit 143) once the terminal-result grace expires. That teardown
+    // kill must not flip a completed run to failed, and the broad login-prompt
+    // matcher must not relabel it as an auth failure when model output repeats
+    // a login phrase. Genuine auth failures never present as parsed success
+    // (is_error=true or an error subtype / 401 status), so gating on success
+    // preserves them. See TOG-25014 (run f5fa47c8: subtype=success,
+    // is_error=false, exit 143 after completion, mislabeled auth).
+    const effectiveRequiresLogin = loginMeta.requiresLogin && !parsedSucceeded;
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1185,7 +1195,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const providerQuota =
       failed &&
-      !loginMeta.requiresLogin &&
+      !effectiveRequiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
@@ -1196,7 +1206,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     const transientUpstream =
       failed &&
-      !loginMeta.requiresLogin &&
+      !effectiveRequiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
@@ -1214,12 +1224,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = proc.errorCode
+    const resolvedErrorCode = !parsedSucceeded && proc.errorCode
       // Forward the transport-level error code from the run-disposition seam
       // first. A lost duplex control channel surfaces the typed
-      // `duplex_channel_lost` code before any provider classification.
+      // `duplex_channel_lost` code before any provider classification. A
+      // parsed success keeps authority: the CLI already delivered its terminal
+      // result, so a transport/teardown code must not override it.
       ? proc.errorCode
-      : loginMeta.requiresLogin
+      : effectiveRequiresLogin
       ? "claude_auth_required"
       // Structured CLI signals outrank the model-not-found detector, which
       // scans the run's full stdout for a literal "model not found" phrase.
@@ -1253,6 +1265,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : claudeRefusal
       ? "model_refusal"
       : null;
+    // The terminal-result cleanup kill (SIGTERM -> exit 143) fires after the
+    // CLI has already emitted its result event. Normalize it to a clean exit
+    // so the heartbeat records success; the original kill evidence stays in
+    // resultJson as a teardown warning alongside the existing
+    // unmanagedBackgroundTask record.
+    const teardownKilledAfterSuccess =
+      parsedSucceeded && proc.terminalResultCleanup?.stopped === true;
+    const normalizedExitCode = teardownKilledAfterSuccess ? 0 : proc.exitCode;
+    const normalizedSignal = teardownKilledAfterSuccess ? null : proc.signal;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
@@ -1263,18 +1284,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
+      ...(teardownKilledAfterSuccess
+        ? {
+            teardownWarning: {
+              kind: "teardown_kill_after_success",
+              exitCode: proc.exitCode,
+              signal: proc.signal,
+            },
+          }
+        : {}),
     };
 
+    const effectiveErrorMeta = effectiveRequiresLogin ? errorMeta : undefined;
     return {
-      exitCode: proc.exitCode,
-      signal: proc.signal,
+      exitCode: normalizedExitCode,
+      signal: normalizedSignal,
       timedOut: false,
       usageComplete: parsedStream.resultJson !== null || parsed.type === "result",
       errorMessage,
       errorCode: resolvedErrorCode,
       errorFamily,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-      errorMeta,
+      errorMeta: effectiveErrorMeta,
       usage,
       usageByModel: claudeModelReceipts(parsed.modelUsage),
       ...(usageBasis ? { usageBasis } : {}),
