@@ -26,6 +26,16 @@ export type CodexAuthRefreshFailureClass =
   | "refresh_token_expired"
   | "refresh_token_invalidated";
 
+/** Codex terminal records that can carry usage accounting. The JSONL parser
+ * reads usage from `turn.completed`, `turn.failed`, and `error` alike, so
+ * damaged-accounting classification must cover all three. A redacted counter
+ * in any of them leaves the control parser with a zero it accepts as valid,
+ * and the final result would otherwise report understated usage as complete. */
+export function isCodexAccountingRecord(event: Record<string, unknown>): boolean {
+  const type = typeof event.type === "string" ? event.type : "";
+  return type === "turn.completed" || type === "turn.failed" || type === "error";
+}
+
 export function parseCodexJsonl(stdout: string) {
   return createCodexJsonlParser()(stdout);
 }

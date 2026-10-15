@@ -71,6 +71,7 @@ import {
   parseCodexProcessOutput,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexAccountingRecord,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -1390,7 +1391,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
-      }, event => event.type === "turn.completed", { trackLossWithoutSubscriber: true });
+      }, isCodexAccountingRecord, { trackLossWithoutSubscriber: true });
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           onProcessStopped: providerStop.beginInvocation(),
