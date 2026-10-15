@@ -4011,20 +4011,6 @@ export function heartbeatService(
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
         }
-        // An issue that became terminal during this run deferred the archive of its
-        // shared sessions until the run finished.
-        const terminalIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-        if (terminalIssueId) {
-          await executionWorkspaceLifecycle.finishDeferredCleanup({
-            issueId: terminalIssueId,
-            actor: { actorType: "agent", actorId: run.agentId, agentId: run.agentId, runId: run.id },
-          }).catch((err) => {
-            logger.warn(
-              { err, issueId: terminalIssueId, runId: run.id },
-              "failed to archive shared execution workspace sessions of a terminal issue",
-            );
-          });
-        }
         await startNextQueuedRunForAgent(run.agentId);
       }
     }

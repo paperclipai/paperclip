@@ -1177,23 +1177,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     ));
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
-  // This run uses a shared session. Archive the shared sessions of earlier runs on the
-  // same issue now. Otherwise each run adds one open session that nothing closes.
-  if (issueId && persistedExecutionWorkspace?.mode === "shared_workspace" && input.services.executionWorkspaceLifecycle) {
-    try {
-      await input.services.executionWorkspaceLifecycle.archiveSupersededSharedSessionsForIssue({
-        companyId: agent.companyId,
-        issueId,
-        keepWorkspaceId: persistedExecutionWorkspace.id,
-        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id, runId: run.id },
-      });
-    } catch (error) {
-      logger.warn(
-        { err: error, issueId, executionWorkspaceId: persistedExecutionWorkspace.id },
-        "failed to archive superseded shared execution workspace sessions",
-      );
-    }
-  }
   const projectRepositoryPaths: string[] = [];
   if (remoteAuthority) projectRepositoryPaths.push(...(remoteSourceState.value?.source.repositories ?? [])
     .filter(repository => !repository.readOnly).map(repository => repository.relativePath));
@@ -1413,6 +1396,25 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   // the issue before dispatch so warm turns reuse the exact same workspace
   // and lease scope instead of silently creating a per-run replacement.
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
+  // Realization fixed the final shared session above. This run uses it, so archive
+  // the shared sessions of earlier runs on the same issue now.
+  // This run uses a shared session. Archive the shared sessions of earlier runs on the
+  // same issue now. Otherwise each run adds one open session that nothing closes.
+  if (issueId && persistedExecutionWorkspace?.mode === "shared_workspace" && input.services.executionWorkspaceLifecycle) {
+    try {
+      await input.services.executionWorkspaceLifecycle.archiveSupersededSharedSessionsForIssue({
+        companyId: agent.companyId,
+        issueId,
+        keepWorkspaceId: persistedExecutionWorkspace.id,
+        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id, runId: run.id },
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, issueId, executionWorkspaceId: persistedExecutionWorkspace.id },
+        "failed to archive superseded shared execution workspace sessions",
+      );
+    }
+  }
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
   if (remoteAuthority && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {

@@ -24,11 +24,6 @@ type CleanupActor = Pick<LogActivityInput, "actorType" | "actorId" | "agentId" |
 
 type SharedSessionArchiveSource = "superseded_session" | "terminal_issue";
 
-export type TerminalWorkspaceCleanupResult = {
-  outcome: "not_applicable" | "deferred" | "archived";
-  archivedWorkspaceIds: string[];
-};
-
 /**
  * Archives one shared session record. A shared session points at the project workspace
  * directory, so this function changes no file on disk and never sets `cleanup_failed`.
@@ -218,53 +213,6 @@ async function archiveSharedSessionsOfIssue(
 
 export function executionWorkspaceLifecycleService(db: Db) {
   /**
-   * Archives the shared sessions of an issue that became terminal. When a heartbeat run
-   * still works on the issue, `defer` is true and the run-finish path calls
-   * `finishDeferredCleanup` later.
-   */
-  async function reconcileTerminalIssueWorkspace(input: {
-    issueId: string;
-    defer: boolean;
-    actor: CleanupActor;
-  }): Promise<TerminalWorkspaceCleanupResult> {
-    const issue = await db
-      .select({
-        companyId: issues.companyId,
-        executionWorkspaceId: issues.executionWorkspaceId,
-        status: issues.status,
-      })
-      .from(issues)
-      .where(eq(issues.id, input.issueId))
-      .then((rows) => rows[0] ?? null);
-    if (!issue || !(TERMINAL_ISSUE_STATUSES as readonly string[]).includes(issue.status)) {
-      return { outcome: "not_applicable", archivedWorkspaceIds: [] };
-    }
-    if (input.defer) {
-      return { outcome: "deferred", archivedWorkspaceIds: [] };
-    }
-    const archivedWorkspaceIds = await archiveSharedSessionsOfIssue(db, {
-      companyId: issue.companyId,
-      issueId: input.issueId,
-      keepWorkspaceId: null,
-      linkedWorkspaceId: issue.executionWorkspaceId,
-      actor: input.actor,
-      source: "terminal_issue",
-      ignoreGrace: true,
-    });
-    return {
-      outcome: archivedWorkspaceIds.length > 0 ? "archived" : "not_applicable",
-      archivedWorkspaceIds,
-    };
-  }
-
-  async function finishDeferredCleanup(input: {
-    issueId: string;
-    actor: CleanupActor;
-  }): Promise<TerminalWorkspaceCleanupResult> {
-    return reconcileTerminalIssueWorkspace({ ...input, defer: false });
-  }
-
-  /**
    * Called after a run persists a new shared session. Archives the sessions of earlier runs
    * on the same issue. Keeps the current session and the sessions that are possibly live.
    */
@@ -286,8 +234,6 @@ export function executionWorkspaceLifecycleService(db: Db) {
   }
 
   return {
-    reconcileTerminalIssueWorkspace,
-    finishDeferredCleanup,
     archiveSupersededSharedSessionsForIssue,
   };
 }
