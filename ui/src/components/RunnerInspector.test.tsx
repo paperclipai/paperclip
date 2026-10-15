@@ -4,6 +4,8 @@ import { createElement, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
+import { ConnectivityProvider, createConnectivityStore, type ConnectivityStore } from "@/lib/connectivity";
 import { RunnerInspector } from "./RunnerInspector";
 
 const accessMock = vi.hoisted(() => vi.fn());
@@ -662,5 +664,159 @@ describe("RunnerInspector", () => {
     expect(container.textContent).toContain("payload.query");
     expect(container.textContent).toContain("research.completed");
     expect(container.textContent).toContain("Production surface preview");
+  });
+});
+
+describe("RunnerInspector disconnect handling", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let store: ConnectivityStore;
+  let probe: ReturnType<typeof vi.fn<() => Promise<{ reachable: boolean; retryAfterMs: number | null }>>>;
+  const unavailable = () => new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" });
+  const event = (runId: string, seq: number) => ({
+    id: seq,
+    companyId: "company-1",
+    runId,
+    agentId: "agent-1",
+    seq,
+    eventType: "run.result.proposed",
+    stream: "stdout",
+    level: "info",
+    color: null,
+    message: null,
+    payload: { prpEvent: { sourceEventId: `runner:${runId}:${seq}`, payload: {} } },
+    createdAt: "2026-08-22T12:00:03.000Z",
+  });
+
+  function render(runId = "run-1") {
+    flushSync(() =>
+      root.render(
+        <ConnectivityProvider store={store}>
+          <RunnerInspector
+            runId={runId}
+            run={{ status: "succeeded", resultJson: null }}
+            open
+            onOpenChange={vi.fn()}
+          />
+        </ConnectivityProvider>,
+      ),
+    );
+  }
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    probe = vi.fn(async () => ({ reachable: true, retryAfterMs: null }));
+    store = createConnectivityStore({ probe: probe as never, browserOnline: true });
+    accessMock.mockResolvedValue({ source: "local_implicit", isInstanceAdmin: false });
+    eventsMock.mockResolvedValue([]);
+    traceMock.mockResolvedValue({ trace: null, entries: [] });
+  });
+
+  afterEach(() => {
+    flushSync(() => root.unmount());
+    container.remove();
+    store.dispose();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it("keeps the loaded inspection on screen when the refetch after an outage fails transiently", async () => {
+    eventsMock.mockResolvedValue([event("run-1", 9)]);
+    traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
+    render();
+    await flush();
+    expect(container.textContent).toContain("run-1-redacted");
+
+    probe.mockResolvedValue({ reachable: false, retryAfterMs: null });
+    store.reportError(unavailable());
+    await flush();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    expect(container.textContent).toContain("run-1-redacted");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    // Recovery refetches; a transient failure of that refetch retries quietly.
+    eventsMock.mockRejectedValue(new ApiError("Too many requests", 429, { error: "rate_limited" }));
+    probe.mockResolvedValue({ reachable: true, retryAfterMs: null });
+    store.probeNow();
+    await flush();
+    expect(store.getSnapshot().status).toBe("online");
+    expect(container.textContent).toContain("run-1-redacted");
+    expect(container.textContent).toContain("Reveal exact frame");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("rate_limited");
+  });
+
+  it("waits quietly for a first load during an outage and fills in on recovery", async () => {
+    probe.mockResolvedValue({ reachable: false, retryAfterMs: null });
+    store.reportError(unavailable());
+    await flush();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    eventsMock.mockResolvedValue([event("run-1", 9)]);
+    render();
+    await flush();
+    expect(accessMock).not.toHaveBeenCalledWith(); // the initial load is paused, not failing
+    expect(eventsMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Loading run pipeline…");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    probe.mockResolvedValue({ reachable: true, retryAfterMs: null });
+    store.probeNow();
+    await flush();
+    expect(store.getSnapshot().status).toBe("online");
+    expect(eventsMock).toHaveBeenCalledWith("run-1", 0, 1_000);
+    expect(container.textContent).not.toContain("Loading run pipeline…");
+    expect(container.textContent).toContain("1 PRP event");
+  });
+
+  it("shows readable copy for a real failure, never raw access, and retries on request", async () => {
+    traceMock.mockRejectedValueOnce(new ApiError("stale_revision", 409, { error: "stale_revision" }));
+    render();
+    await flush();
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).toContain("Couldn't load the runner inspection");
+    expect(alert?.textContent).not.toContain("stale_revision");
+    expect(container.textContent).not.toContain("Reveal exact frame");
+    expect(container.textContent).not.toContain("Download exact trace");
+
+    traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
+    flushSync(() => alert?.querySelector("button")?.click());
+    await flush();
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("run-1-redacted");
+  });
+
+  it("leaves out Retry and keeps raw controls hidden when access is forbidden", async () => {
+    accessMock.mockRejectedValue(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    render();
+    await flush();
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert?.textContent).toContain("Forbidden");
+    expect(alert?.querySelector("button")).toBeNull();
+    expect(traceMock).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Reveal exact frame");
+  });
+
+  it("ignores a load that finishes after the run changed", async () => {
+    const pendingFirst = deferred<ReturnType<typeof event>[]>();
+    eventsMock.mockImplementation(async (runId: string) =>
+      runId === "run-1" ? pendingFirst.promise : [event(runId, 2)],
+    );
+    traceMock.mockImplementation(async (runId: string) => traceInspection(runId, `${runId}-redacted`));
+    render("run-1");
+    await flush();
+    expect(container.textContent).toContain("Loading run pipeline…");
+    render("run-2");
+    await flush();
+    expect(container.textContent).toContain("run-2-redacted");
+    pendingFirst.resolve([event("run-1", 1), event("run-1", 2), event("run-1", 3)]);
+    await flush();
+    expect(container.textContent).toContain("run-2-redacted");
+    expect(container.textContent).not.toContain("run-1-redacted");
+    expect(container.textContent).toContain("runner:run-2:2");
+    expect(container.textContent).not.toContain("runner:run-1:");
   });
 });

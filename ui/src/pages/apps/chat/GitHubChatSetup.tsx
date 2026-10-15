@@ -311,7 +311,7 @@ export function GitHubChatSetup() {
               ? "Connect your account"
               : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
-      {(error || (!identityOnly && !existing && progress.error) || accounts.error) && (
+      {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>

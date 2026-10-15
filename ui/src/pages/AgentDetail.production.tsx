@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";

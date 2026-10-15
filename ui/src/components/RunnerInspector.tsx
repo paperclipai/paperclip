@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { heartbeatsApi, type ProviderTraceInspection } from "@/api/heartbeats";
 import { accessApi } from "@/api/access";
+import { QueryErrorState } from "@/components/QueryView";
+import { useResilientFetch } from "@/hooks/useResilientFetch";
 import { parsePaperclipRunnerStdoutLine } from "@/adapters/paperclip-runner";
 import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCard";
 import type { TaskChatProtocolItem } from "@/components/task-chat/task-chat-model";
@@ -656,8 +658,7 @@ export function RunnerInspector({
 }) {
   const [inspection, setInspection] = useState<ProviderTraceInspection | null>(null);
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<unknown>(null);
   const [view, setView] = useState<InspectorView>("pipeline");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<number | null>(null);
@@ -680,8 +681,7 @@ export function RunnerInspector({
     setRawTraceAccess(null);
     setInspection(null);
     setEvents([]);
-    setLoading(open);
-    setError(null);
+    setActionError(null);
     setSelectedKey(null);
     setSelectedFrameId(null);
     setRevealed({});
@@ -705,8 +705,7 @@ export function RunnerInspector({
     rawTraceAccessRef.current = deniedAccess;
     setRawTraceAccess(deniedAccess);
     setInspection({ trace: null, entries: [] });
-    setLoading(false);
-    setError(null);
+    setActionError(null);
     setSelectedKey(null);
     setSelectedFrameId(null);
     setRevealed({});
@@ -721,53 +720,51 @@ export function RunnerInspector({
     if (requestedOperation) setSelectedKey(requestedOperation);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    const loadEpoch = rawTraceAccessEpochRef.current;
-    setLoading(true);
-    setError(null);
-    Promise.all([accessApi.getCurrentBoardAccess(), loadAllRunEvents(runId)])
-      .then(async ([boardAccess, nextEvents]) => {
-        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
-        const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
-        const access: RawTraceAccess = {
-          runId,
-          allowed: canRaw,
-          epoch: rawTraceAccessEpochRef.current,
-          phase: canRaw ? "granted" : "denied",
-        };
-        rawTraceAccessRef.current = access;
-        setRawTraceAccess(access);
-        if (!canRaw) setRevealed({});
-        const trace = canRaw
-          ? await heartbeatsApi.providerTrace(runId)
-          : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
-        const currentAccess = rawTraceAccessRef.current;
-        if (
-          !active ||
-          currentAccess?.runId !== runId ||
-          currentAccess.epoch !== loadEpoch ||
-          currentAccess.allowed !== canRaw
-        ) {
-          return;
-        }
-        setInspection(trace);
-        setEvents(nextEvents);
-      })
-      .catch((cause) => {
-        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
-        setError(cause instanceof Error ? cause.message : "Runner inspection failed");
-      })
-      .finally(() => {
-        if (active && rawTraceAccessEpochRef.current === loadEpoch) {
-          setLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, runId]);
+  // The initial load: the board's current access, every canonical event, and
+  // (only for an administrator) the redacted provider trace. The permission
+  // epoch fences it: a denial or deletion while it is in flight makes its
+  // result stale, and a stale result never reveals or restores raw access.
+  // Transient failures keep what is shown and retry; a real failure is
+  // rendered as readable copy with a Retry button.
+  const load = useResilientFetch({
+    key: ["runner-inspection", runId, open],
+    enabled: open,
+    fetcher: async () => {
+      const loadEpoch = rawTraceAccessEpochRef.current;
+      const [boardAccess, nextEvents] = await Promise.all([
+        accessApi.getCurrentBoardAccess(),
+        loadAllRunEvents(runId),
+      ]);
+      // Superseded by a newer denial or deletion: do not read the raw trace.
+      if (rawTraceAccessEpochRef.current !== loadEpoch) return null;
+      const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
+      const trace = canRaw
+        ? await heartbeatsApi.providerTrace(runId)
+        : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
+      return { loadEpoch, canRaw, trace, events: nextEvents };
+    },
+    onSuccess: (result) => {
+      if (!result || rawTraceAccessEpochRef.current !== result.loadEpoch) return;
+      const access: RawTraceAccess = {
+        runId,
+        allowed: result.canRaw,
+        epoch: result.loadEpoch,
+        phase: result.canRaw ? "granted" : "denied",
+      };
+      rawTraceAccessRef.current = access;
+      setRawTraceAccess(access);
+      if (!result.canRaw) setRevealed({});
+      setInspection(result.trace);
+      setEvents(result.events);
+    },
+  });
+  // Once access for this run is decided (a newer denial while the load is
+  // still in flight counts) the inspector is no longer loading: the pending
+  // result is stale and will be discarded.
+  const loading =
+    rawTraceAccess?.runId !== runId &&
+    (load.view.kind === "loading" || load.view.kind === "reconnecting");
+  const loadError = load.view.kind === "error" ? load.view.error : null;
 
   useEffect(() => {
     if (!open) return;
@@ -956,9 +953,7 @@ export function RunnerInspector({
       await heartbeatsApi.deleteProviderTrace(runId);
     } catch (cause) {
       if (rawTraceAccessRef.current?.epoch === deletionAccess.epoch) {
-        setError(
-          cause instanceof Error ? cause.message : "Raw trace deletion failed",
-        );
+        setActionError(cause);
       }
       return;
     }
@@ -1063,14 +1058,25 @@ export function RunnerInspector({
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {error ? <div className="m-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</div> : null}
-          {!loading && !error && canInspectRaw === false ? (
+          {loadError ? (
+            <QueryErrorState
+              className="m-4"
+              error={loadError}
+              action="load the runner inspection"
+              onRetry={load.view.retry}
+              retrying={load.view.isFetching}
+            />
+          ) : null}
+          {actionError !== null && actionError !== undefined ? (
+            <QueryErrorState className="m-4" error={actionError} action="delete the raw trace" />
+          ) : null}
+          {!loading && !loadError && canInspectRaw === false ? (
             <div className="m-4 rounded-md border border-border bg-muted/20 p-4">
               <p className="font-medium">Raw provider traces require an instance administrator.</p>
               <p className="mt-1 text-sm text-muted-foreground">Canonical PRP events and presentation decisions remain inspectable below.</p>
             </div>
           ) : null}
-          {!loading && !error && canInspectRaw === true && !inspection?.trace ? (
+          {!loading && !loadError && canInspectRaw === true && !inspection?.trace ? (
             <div className="m-4 flex items-start justify-between gap-4 rounded-md border border-border bg-muted/20 p-4">
               <div>
                 <p className="font-medium">Raw provider capture was off for this run.</p>

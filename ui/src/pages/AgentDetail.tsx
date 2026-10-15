@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
