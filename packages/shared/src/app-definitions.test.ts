@@ -7,6 +7,7 @@ import {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
   CONNECTABLE_APP_DEFINITIONS,
+  CONNECTABLE_APP_SLUGS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
   getAvailableConnectionMethods,
@@ -873,7 +874,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(80);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(81);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1336,6 +1337,28 @@ describe("Railway provider", () => {
   });
 });
 
+describe("typesafe", () => {
+  const app = APP_DEFINITIONS.find((entry) => entry.slug === "typesafe");
+  it("is a connectable, store-visible API-key tool app", () => {
+    expect(app).toBeTruthy();
+    expect(CONNECTABLE_APP_SLUGS).toContain("typesafe");
+    expect(APP_STORE_DEFINITIONS.some((entry) => entry.slug === "typesafe")).toBe(true);
+    expect(app!.methods).toHaveLength(1);
+    const [method] = app!.methods;
+    expect(method).toMatchObject({
+      key: "api-key",
+      transport: "rest_api",
+      auth: "api_key",
+      riskTier: "S2",
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(method.provider).toBeUndefined();
+    expect(method.credentialFields?.map((field) => field.key)).toEqual(["apiKey"]);
+    expect(method.extensionFields).toEqual([
+      expect.objectContaining({ key: "model", defaultValue: "jev-latest", advanced: true }),
+    ]);
+  });
+});
 
 describe("tool method permission review", () => {
   const audit = JSON.parse(fs.readFileSync(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8")) as {

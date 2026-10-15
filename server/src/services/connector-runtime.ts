@@ -20,6 +20,11 @@ import {
   AGENTMAIL_TOOLS,
   executeAgentmailTool,
 } from "./connectors/agentmail.js";
+import {
+  TYPESAFE_TOOLS,
+  assignedTypesafeConnections,
+  executeTypesafeAsk,
+} from "./connectors/typesafe.js";
 import { materializeAsset } from "./native-runtime/runtime-context.js";
 import { BROWSER_USE_CLOUD_SKILL } from "./connectors/browser-use-cloud/skill.js";
 
@@ -108,6 +113,25 @@ const connectors: ConnectorDefinition[] = [
         ...value,
         action: tool.action,
       });
+    },
+  },
+  {
+    key: "typesafe",
+    label: "TypeSafe",
+    skillName: "typesafe",
+    tools: [...TYPESAFE_TOOLS],
+    async resolve(db, binding) {
+      return (await assignedTypesafeConnections(db, binding)).map(
+        (connection) => ({
+          id: connection.id,
+          label: connection.name,
+          connectionId: connection.id,
+        }),
+      );
+    },
+    async execute(db, binding, name, value) {
+      if (name !== "typesafe_ask") throw forbidden("Unknown TypeSafe tool");
+      return executeTypesafeAsk(db, binding, value);
     },
   },
 ];

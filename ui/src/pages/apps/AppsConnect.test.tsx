@@ -56,6 +56,7 @@ const GITHUB_MANAGED = {
   },
 };
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
+const TYPESAFE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "typesafe")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 const ASANA_MANAGED = {
   ...ASANA,
@@ -1079,6 +1080,17 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(container.textContent).toContain("no agents selected yet.");
+  });
+
+  it("tells the operator on the key step that TypeSafe receives submitted content", async () => {
+    mockParams.appKey = "typesafe";
+    listGalleryMock.mockResolvedValue({ apps: [TYPESAFE] });
+    await render();
+
+    expect(container.textContent).toContain("Your TypeSafe key");
+    expect(container.textContent).toContain(
+      "Content an agent submits for evaluation is sent to TypeSafe.",
+    );
   });
 
   it("reflects a changed access selection in the stated default", async () => {

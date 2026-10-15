@@ -2154,6 +2154,20 @@
       "liveProof": "not-run"
     },
     {
+      "app": "typesafe",
+      "method": "api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Ask the Jev model typed yes/no, multiple-choice and scoring questions about content an agent submits; no provider-side resources are created or changed.",
+      "evidence": [
+        "https://docs.typesafe.ai/introduction/quickstart"
+      ],
+      "reviewedAt": "2026-10-14",
+      "liveProof": "not-run"
+    },
+    {
       "app": "vercel",
       "method": "mcp-oauth",
       "auth": "oauth",
