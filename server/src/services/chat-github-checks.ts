@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/db";
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { githubReviewBaseBranchInScope } from "./chat-github-review-policy.js";
 import {
   githubBotRepositoryToken,
   githubBotRequest,
@@ -41,6 +42,8 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       ...config.configuration.repositories[event.repositoryId],
     };
     if (policy.ratingThreshold === null && !admitted) return;
+    if (!admitted && !githubReviewBaseBranchInScope(policy, event.baseBranch))
+      return;
     await db
       .insert(chatActions)
       .values({
