@@ -1,3 +1,5 @@
+import { trustedWatchdogContext } from "../middleware/watchdog-service-request.js";
+import { assertWatchdogSecret } from "../services/watchdog-service-context.js";
 import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -335,8 +337,10 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.post("/agents/me/secrets/:key/value", async (req, res) => {
     const context = agentSecretContext(req);
-    const available = await svc.listAgentSecretAccess(context.companyId, context);
-    const secret = available.find((entry) => entry.key === req.params.key);
+    const watchdog = trustedWatchdogContext(req);
+    const secret = watchdog
+      ? await assertWatchdogSecret(db, watchdog, req.params.key as string)
+      : (await svc.listAgentSecretAccess(context.companyId, context)).find((entry) => entry.key === req.params.key);
     if (!secret) throw forbidden("Secret access is not granted for this agent");
     const resolution = await svc.resolveSecretValueForAgentAccess(
       context.companyId,

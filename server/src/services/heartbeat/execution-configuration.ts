@@ -2,6 +2,7 @@ import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
 import { agentObservabilityLaunch } from "../agent-observability-launch.js";
+import { assertFixedProcessUnresolvedEnvironment, captureFixedProcessEnvironment } from "../../adapters/process/fixed-command.js";
 import { withSkillActor } from "../skill-access.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { eq, sql } from "drizzle-orm";
@@ -171,6 +172,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       selectedEnvironmentForConfig?.driver ?? "local",
     );
 
+  const fixedProcessConfig = agent.adapterType === "process" ? agent.adapterConfig : {};
+  assertFixedProcessUnresolvedEnvironment(fixedProcessConfig, executionRunConfig,
+    [selectedEnvironmentForConfig?.envVars, taskProjectContext?.env, routineEnvContext.env]);
   const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
     await time("configuration_secrets", () => resolveExecutionRunAdapterConfig({
       managedAiCredentials: Boolean(aiBinding),
@@ -192,6 +196,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       secretsSvc,
       trustPreset,
     }));
+  const approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, resolvedConfig);
   onFailureSecretsResolved(() => collectRunFailureSecretValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
@@ -407,5 +412,6 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, useHostGitHub,
     resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest,
     runtimeSkillEntries, nativeRunnerPreparationSpans, runtimeConfig, agentIdentity, observability,
+    fixedProcessConfig, approveFixedProcessEnvironment,
   };
 }
