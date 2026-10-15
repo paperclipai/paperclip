@@ -24,6 +24,7 @@ Agent access: [companion](../agent-access-map/agents.md).
 - `built-in`: `agents/built-in` — configure required agents without treating them as ordinary removable hires.
 - `api-keys`: `agents/api-keys` — create and inspect named agent credentials, copy a new token once, and revoke it without changing agent identity.
 - `managed-agent-setup`: `agents/managed-agent-setup` — probe, create, or adopt a qualified Anthropic managed-agent profile with pinned provider resources and retention acknowledgement.
+- `fixed-process-service`: `agents/fixed-process-service` — pin a `process` agent to its saved command and environment so its persistent key can only check status and trigger its own run; optional watchdog signals.
 
 ## How to get to it (user POV)
 
