@@ -642,6 +642,57 @@ describe("codex remote execution", () => {
     expect(call?.[3].env.CODEX_HOME).toBe(agentCodexHome);
   });
 
+  it("merges custom providers into a Paperclip-managed per-agent CODEX_HOME for the launched run", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-agent-home-providers-"));
+    cleanupDirs.push(rootDir);
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const agentCodexHome = path.join(
+      paperclipHome, "instances", "default", "companies", "company-1", "agents", "agent-1", "codex-home",
+    );
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(agentCodexHome, { recursive: true });
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    let configTomlDuringRun: string | null = null;
+    (runChildProcess as unknown as {
+      mockImplementationOnce: (fn: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => {
+      configTomlDuringRun = await readFile(path.join(agentCodexHome, "config.toml"), "utf8").catch(() => null);
+      return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture", pid: 123, startedAt: new Date().toISOString() };
+    });
+
+    await execute({
+      runId: "run-agent-home-providers",
+      agent: { id: "agent-1", companyId: "company-1", name: "CodexCoder", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: {
+          CODEX_HOME: agentCodexHome,
+          OPENAI_API_KEY: "",
+          PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+            providers: { bifrost: { name: "bifrost", base_url: "http://gateway.example.test/v1", env_key: "OPENAI_API_KEY", wire_api: "responses" } },
+            model_provider: "bifrost",
+          }),
+        },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      onLog: async () => {},
+    });
+
+    // Without the managed-home check the provider merge skips this home and
+    // the launched Codex sees no custom provider routing.
+    expect(configTomlDuringRun).toContain('model_provider = "bifrost"');
+    expect(configTomlDuringRun).toContain("[model_providers.bifrost]");
+    expect(configTomlDuringRun).toContain('base_url = "http://gateway.example.test/v1"');
+    const call = runChildProcess.mock.calls.at(-1) as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.CODEX_HOME).toBe(agentCodexHome);
+  });
+
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-"));
     cleanupDirs.push(rootDir);
