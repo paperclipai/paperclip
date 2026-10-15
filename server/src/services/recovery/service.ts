@@ -746,6 +746,13 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
+export function shouldHoldRecoveryForPausedAgent(
+  agent: { status: string; companyId: string } | null | undefined,
+  issueCompanyId: string,
+): boolean {
+  return agent?.status === "paused" && agent.companyId === issueCompanyId;
+}
+
 export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
@@ -4704,6 +4711,14 @@ export function recoveryService(
         continue;
       }
 
+      const agent = await getAgent(agentId);
+      // A deliberate pause holds all assigned and review work, including
+      // successful legacy runs. Resume returns it to the normal sweep.
+      if (shouldHoldRecoveryForPausedAgent(agent, issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (latestRun?.status === "succeeded" && issue.status !== "in_review") {
         const [source] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, latestRun.id)).limit(1);
         if (source?.runtimeMode !== "native") {
@@ -4720,7 +4735,6 @@ export function recoveryService(
         }
       }
 
-      const agent = await getAgent(agentId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
         result.skipped += 1;
         continue;
