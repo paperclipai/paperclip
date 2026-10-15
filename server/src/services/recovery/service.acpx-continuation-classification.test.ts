@@ -34,6 +34,29 @@ describe("ACPX continuation retry classification", () => {
     expect(classifyContinuationFailure(run("acpx_session_config_failed")).kind).toBe("default");
   });
 
+  it.each(["connection", "service"])("retries an ACPX turn that failed with a %s failure as transient", (category) => {
+    const classification = classifyContinuationFailure({
+      errorCode: "acpx_turn_failed",
+      resultJson: { terminalSessionFailure: { category, title: "The worker connection closed" } },
+    } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
+    expect(classification.kind).toBe("transient_infra");
+  });
+
+  it.each([
+    ["limit", "Configured budget limit reached"],
+    ["limit", "Maximum number of turns reached"],
+    ["limit", "Context window limit exceeded"],
+    ["request", "You've hit your session limit"],
+  ])("keeps a typed %s turn failure off the transient path: %s", (category, title) => {
+    // Retrying unchanged settings cannot repair these, so they keep the default
+    // bounded retry and stay visible for repair.
+    const classification = classifyContinuationFailure({
+      errorCode: "acpx_turn_failed",
+      resultJson: { terminalSessionFailure: { category, title } },
+    } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
+    expect(classification.kind).toBe("default");
+  });
+
   it("keeps non-retryable codes non-retryable", () => {
     expect(classifyContinuationFailure(run("budget_exhausted")).kind).toBe("non_retryable");
   });

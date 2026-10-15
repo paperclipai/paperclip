@@ -539,11 +539,32 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   // single retry, and are escalated to `blocked` on the first infrastructure blip.
   // `acpx_session_config_failed` stays out: it also reports a runtime without
   // config controls or a rejected option, which a retry cannot repair.
+  // `acpx_turn_failed` is transient only for transport failures; see
+  // `isTransientAcpxTurnFailure`.
   "acpx_session_init_failed",
   "acpx_turn_failed",
   "acpx_backend_unavailable",
   "acpx_timeout",
 ]);
+
+// Categories of an ACP agent's typed terminal failure that report a lost
+// connection or an unavailable service. Other categories, such as a configured
+// budget, turn or context limit, are permanent: retrying the same settings
+// cannot repair them, so they keep the default bounded retry and stay visible.
+const TRANSIENT_ACPX_TERMINAL_FAILURE_CATEGORIES = new Set<string>(["connection", "service"]);
+
+/**
+ * `acpx_turn_failed` covers both transport failures and typed terminal failures
+ * from the ACP agent. A run without a typed diagnostic died on the transport.
+ */
+function isTransientAcpxTurnFailure(latestRun: LatestIssueRun) {
+  const resultJson = latestRun?.resultJson;
+  if (typeof resultJson !== "object" || resultJson === null) return true;
+  const failure = (resultJson as Record<string, unknown>).terminalSessionFailure;
+  if (typeof failure !== "object" || failure === null) return true;
+  const category = readNonEmptyString((failure as Record<string, unknown>).category);
+  return category === null || TRANSIENT_ACPX_TERMINAL_FAILURE_CATEGORIES.has(category);
+}
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
@@ -813,7 +834,11 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+  if (
+    errorCode &&
+    TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode) &&
+    (errorCode !== "acpx_turn_failed" || isTransientAcpxTurnFailure(latestRun))
+  ) {
     return {
       kind: "transient_infra",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
