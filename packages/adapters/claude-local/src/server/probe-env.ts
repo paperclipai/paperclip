@@ -6,7 +6,7 @@ import path from "node:path";
  * The environment variable names that a local Claude adapter-test probe may
  * take from the untrusted adapter configuration. The builder denies every
  * other key by default. The list holds the documented Claude, Anthropic auth,
- * and AWS Bedrock variables that the probe needs to reach the real credential
+ * AWS Bedrock, and Microsoft Foundry variables that the probe needs to reach the real credential
  * the agent run uses.
  */
 const LOCAL_PROBE_ALLOWED_CALLER_ENV_KEYS = [
@@ -28,6 +28,12 @@ const LOCAL_PROBE_ALLOWED_CALLER_ENV_KEYS = [
   "AWS_PROFILE",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
+  // Microsoft Foundry inference.
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
 ] as const;
 
 /**

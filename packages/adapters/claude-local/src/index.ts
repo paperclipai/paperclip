@@ -14,6 +14,7 @@ export function resolveClaudeModel(
   if (
     providerFlag(env.CLAUDE_CODE_USE_BEDROCK)
     || providerFlag(env.CLAUDE_CODE_USE_VERTEX)
+    || providerFlag(env.CLAUDE_CODE_USE_FOUNDRY)
     || (typeof env.ANTHROPIC_BEDROCK_BASE_URL === "string" && env.ANTHROPIC_BEDROCK_BASE_URL.trim())
   ) {
     return "";
@@ -63,7 +64,7 @@ Core fields:
 - engine (string, optional): defaults to ACP, including legacy unset/"auto" values. Missing prerequisites and execution failures fail the run without changing engines. Set "cli" to explicitly select the CLI engine.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
-- model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
+- model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex/Foundry without an explicit model retain their provider default.
 - effort (string, optional): model-specific reasoning effort passed via --effort (low|medium|high; current Opus, Sonnet 5/5.5, and Fable models also support xhigh|max)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template

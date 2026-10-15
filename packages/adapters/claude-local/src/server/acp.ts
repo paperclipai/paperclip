@@ -180,14 +180,16 @@ export function resolveClaudeAcpBillingIdentity(
   };
   const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
   const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
-  const billingType: AdapterBillingType = bedrock
+  const foundryFlag = readEnvValue("CLAUDE_CODE_USE_FOUNDRY");
+  const foundry = foundryFlag === "1" || foundryFlag === "true";
+  const billingType: AdapterBillingType = bedrock || foundry
     ? "metered_api"
     : readEnvValue("ANTHROPIC_API_KEY")
     ? "api"
     : "subscription";
   return {
     provider: "anthropic",
-    biller: bedrock ? "aws_bedrock" : "anthropic",
+    biller: bedrock ? "aws_bedrock" : foundry ? "microsoft_foundry" : "anthropic",
     billingType,
   };
 }
@@ -824,6 +826,11 @@ export async function testClaudeAcpEnvironment(
     (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "true") ||
     isNonEmpty(envConfig.ANTHROPIC_BEDROCK_BASE_URL) ||
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
+  const hasFoundry =
+    envConfig.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+    envConfig.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_FOUNDRY === "1") ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_FOUNDRY === "true");
   const configApiKey = envConfig.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
   const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
@@ -835,6 +842,13 @@ export async function testClaudeAcpEnvironment(
       level: "info",
       message: "AWS Bedrock auth detected. Claude ACP will use Bedrock for inference.",
       hint: "Ensure AWS credentials and AWS_REGION are configured in this environment.",
+    });
+  } else if (hasFoundry) {
+    checks.push({
+      code: "claude_acp_foundry_auth",
+      level: "info",
+      message: "Microsoft Foundry auth detected. Claude ACP will use Foundry for inference.",
+      hint: "Ensure ANTHROPIC_FOUNDRY_RESOURCE and a Foundry credential are configured in this environment.",
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";

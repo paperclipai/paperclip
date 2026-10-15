@@ -149,4 +149,79 @@ describe("provider routing", () => {
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
   });
+  it("projects a Foundry resource and pinned deployment into Claude Code's native Foundry mode", () => {
+    const routing = aiProviderRoutingSchema.parse({
+      kind: "foundry",
+      protocol: "messages",
+      resource: "contoso-ai",
+      models: [{ id: "claude-opus-4-8" }],
+    });
+    const projected = managedProviderRouting(
+      routing,
+      "claude_local",
+      "fixture-foundry-key",
+      "claude-opus-4-8",
+    );
+    expect(projected.env).toEqual({
+      CLAUDE_CODE_USE_FOUNDRY: "1",
+      ANTHROPIC_FOUNDRY_RESOURCE: "contoso-ai",
+      ANTHROPIC_FOUNDRY_API_KEY: "fixture-foundry-key",
+      ANTHROPIC_MODEL: "claude-opus-4-8",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-8",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-opus-4-8",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-opus-4-8",
+      CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8",
+    });
+    expect(managedProviderRouting(routing, "claude_local", "fixture-foundry-key", "").env).not.toHaveProperty("ANTHROPIC_MODEL");
+    const metadata = { provider: "anthropic", method: "api_key", routing } as const;
+    expect(isAiConnectionCompatible(metadata, "claude_local")).toBe(true);
+    // The qualified ACPX Claude credential boundary does not admit Foundry yet.
+    expect(isAiConnectionCompatible(metadata, "paperclip_runner", "claude-opus-4-8", "acpx", "claude")).toBe(false);
+    for (const adapter of ["codex_local", "opencode_local", "hermes_local"]) expect(isAiConnectionCompatible(metadata, adapter)).toBe(false);
+  });
+  it("routes other Foundry models through the resource's OpenAI-compatible v1 endpoint", () => {
+    const responses = aiProviderRoutingSchema.parse({ kind: "foundry", protocol: "responses", resource: "contoso-ai" });
+    const codex = managedProviderRouting(responses, "codex_local", "fixture-foundry-key", "gpt-5");
+    expect(codex.env).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "fixture-foundry-key" });
+    expect(codex.codexConfig).toContain('base_url = "https://contoso-ai.services.ai.azure.com/openai/v1"');
+    expect(codex.codexConfig).toContain('wire_api = "responses"');
+    expect(codex.codexConfig).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: responses }, "codex_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: responses }, "claude_local")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: responses }, "paperclip_runner", "gpt-5", "codex")).toBe(true);
+
+    const chat = aiProviderRoutingSchema.parse({ kind: "foundry", protocol: "chat", resource: "contoso-ai" });
+    const opencode = managedProviderRouting(chat, "opencode_local", "fixture-foundry-key", "DeepSeek-R1");
+    expect(opencode.env.PAPERCLIP_AI_PROVIDER_URL).toBe("https://contoso-ai.services.ai.azure.com/openai/v1");
+    expect(opencode.config.model).toBe("paperclip/DeepSeek-R1");
+    expect(opencode.env).not.toHaveProperty("CLAUDE_CODE_USE_FOUNDRY");
+    const hermes = managedProviderRouting(chat, "hermes_local", "fixture-foundry-key", "DeepSeek-R1");
+    expect(hermes.hermesConfig).toContain('base_url: "https://contoso-ai.services.ai.azure.com/openai/v1"');
+  });
+  it.each([
+    [{ kind: "foundry", protocol: "messages" }, "requires a resource"],
+    [{ kind: "foundry", protocol: "messages", auth: "api_key", resource: "contoso-ai" }, "requires the Foundry API key"],
+    [{ kind: "foundry", protocol: "chat", auth: "none", resource: "contoso-ai" }, "requires authentication"],
+    [{ kind: "foundry", protocol: "bedrock", resource: "contoso-ai" }, "rejects Bedrock"],
+    [{ kind: "foundry", protocol: "messages", resource: "contoso-ai", baseUrl: "https://evil.example" }, "rejects a base URL"],
+    [{ kind: "foundry", protocol: "messages", resource: "contoso-ai.services.ai.azure.com" }, "rejects a host name"],
+    [{ kind: "foundry", protocol: "messages", resource: "https://contoso-ai" }, "rejects a URL"],
+    [{ kind: "gateway", protocol: "messages", baseUrl: "https://gateway.example", resource: "contoso-ai" }, "keeps Azure settings on Foundry"],
+  ])("rejects invalid Foundry routing %#: %s", (routing) => {
+    expect(aiProviderRoutingSchema.safeParse(routing).success).toBe(false);
+  });
+  it("matches the Foundry connection provider to the selected API format", () => {
+    const input = {
+      provider: "openai",
+      method: "api_key",
+      name: "Foundry",
+      ownership: "personal",
+      apiKey: "fixture-foundry-key",
+      routing: { kind: "foundry", protocol: "messages", resource: "contoso-ai" },
+    };
+    expect(createAiConnectionSchema.safeParse(input).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...input, provider: "anthropic" }).success).toBe(true);
+    expect(createAiConnectionSchema.safeParse({ ...input, routing: { ...input.routing, protocol: "responses" } }).success).toBe(true);
+  });
+
 });

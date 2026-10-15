@@ -187,6 +187,12 @@ export async function testEnvironment(
     isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
 
+  const hasFoundry =
+    env.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+    env.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_FOUNDRY === "1") ||
+    (considerHostEnv && process.env.CLAUDE_CODE_USE_FOUNDRY === "true");
+
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
   if (hasBedrock) {
@@ -202,6 +208,13 @@ export async function testEnvironment(
       message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
+    });
+  } else if (hasFoundry && !config.managedAiRouting) {
+    checks.push({
+      code: "claude_foundry_auth",
+      level: "info",
+      message: "Microsoft Foundry auth detected. Claude will use Foundry for inference.",
+      hint: "Ensure ANTHROPIC_FOUNDRY_RESOURCE and ANTHROPIC_FOUNDRY_API_KEY are configured, and set the model to a Foundry deployment name.",
     });
   } else if (config.managedAiRouting) {
     checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });

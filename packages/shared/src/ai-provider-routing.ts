@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Value-free routing stored on the connection, never supplied by an agent binding. */
 export const aiProviderRoutingSchema = z
   .object({
-    kind: z.enum(["openrouter", "bedrock", "gateway", "local"]),
+    kind: z.enum(["openrouter", "bedrock", "foundry", "gateway", "local"]),
     protocol: z.enum(["responses", "messages", "chat", "bedrock"]),
     baseUrl: z.string().trim().max(2048).optional(),
     auth: z
@@ -12,6 +12,11 @@ export const aiProviderRoutingSchema = z
     region: z
       .string()
       .regex(/^[a-z]{2}(?:-[a-z]+)+-\d$/)
+      .optional(),
+    /** Azure resource name only; every Foundry endpoint is derived from it. */
+    resource: z
+      .string()
+      .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])$/)
       .optional(),
     models: z
       .array(
@@ -44,6 +49,13 @@ export const aiProviderRoutingSchema = z
       route.region
     )
       invalid("AWS settings require Bedrock.");
+    if (route.kind === "foundry") {
+      if (!route.resource || route.auth !== "bearer" || route.baseUrl)
+        invalid(
+          "Microsoft Foundry requires a resource name and a Foundry API key.",
+        );
+    } else if (route.resource)
+      invalid("Azure settings require Microsoft Foundry.");
     if (
       route.kind === "openrouter" &&
       (route.baseUrl || route.auth !== "bearer")
@@ -116,6 +128,8 @@ export function aiRoutingBaseUrl(
   route: AiProviderRouting,
   harness: string,
 ): string {
+  if (route.kind === "foundry")
+    return `https://${route.resource}.services.ai.azure.com/openai/v1`;
   return route.kind === "openrouter"
     ? `https://openrouter.ai/api${harness === "claude_local" ? "" : "/v1"}`
     : (route.baseUrl ?? "").replace(/\/+$/, "");
@@ -143,7 +157,7 @@ export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProvi
 
 /** Direct catalog setup presets; legacy gateway links still open their existing setup. */
 export function aiProviderSetupPreset(source: string | null): {
-  provider: "openrouter" | "bedrock" | "gateway" | "local" | "google";
+  provider: "openrouter" | "bedrock" | "foundry" | "gateway" | "local" | "google";
   protocol?: AiProviderRouting["protocol"];
   label?: string;
 } | undefined {
@@ -152,7 +166,7 @@ export function aiProviderSetupPreset(source: string | null): {
     case "messages-api": return { provider: "gateway", protocol: "messages", label: "Messages API" };
     case "chat-completions-api": return { provider: "gateway", protocol: "chat", label: "Chat Completions API" };
     case "google-ai": return { provider: "google" };
-    case "google": case "openrouter": case "bedrock": case "gateway": case "local": return { provider: source };
+    case "google": case "openrouter": case "bedrock": case "foundry": case "gateway": case "local": return { provider: source };
     default: return undefined;
   }
 }

@@ -118,7 +118,11 @@ export function isAiConnectionCompatible(
   runnerProvider?: unknown,
   acpxAgent?: unknown,
 ): boolean {
+  const nativeRunner = adapterType === "paperclip_runner";
   adapterType = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  // The qualified ACPX Claude credential boundary does not admit Foundry
+  // credentials yet; Foundry Claude runs use the Claude adapter.
+  if (nativeRunner && adapterType === "claude_local" && "routing" in requirement && requirement.routing?.kind === "foundry") return false;
   if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
@@ -198,7 +202,7 @@ export const createAiConnectionSchema = z
       ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
     if (v.routing && (v.method !== "api_key" || (v.routing.kind === "openrouter" && v.provider !== "openrouter") || (v.routing.kind === "bedrock" && v.provider !== "anthropic")))
       ctx.addIssue({ code: "custom", message: "Routing requires the matching provider and API authentication." });
-    if (v.routing && ["gateway", "local"].includes(v.routing.kind) && v.provider !== (v.routing.protocol === "messages" ? "anthropic" : "openai"))
+    if (v.routing && ["gateway", "local", "foundry"].includes(v.routing.kind) && v.provider !== (v.routing.protocol === "messages" ? "anthropic" : "openai"))
       ctx.addIssue({ code: "custom", message: "The provider must match the endpoint’s API format." });
     if (v.routing?.auth === "none") {
       if (v.apiKey || v.loginSessionId) ctx.addIssue({ code: "custom", message: "Provide only the selected authentication method." });

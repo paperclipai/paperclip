@@ -53,7 +53,7 @@ describe("tool app gallery URL matching", () => {
   });
 
   it("offers region and custom model connections without claiming arbitrary URLs", () => {
-    for (const slug of ["bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+    for (const slug of ["bedrock", "foundry", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       const app = CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === slug);
       expect(app?.methods.every(method => method.purpose === "ai")).toBe(true);
       expect(app?.urlPatterns).toEqual([]);

@@ -51,6 +51,12 @@ const providers = [
     advanced: true,
   },
   {
+    id: "foundry",
+    name: "Microsoft Foundry",
+    description: "Foundry API key and Azure resource",
+    advanced: true,
+  },
+  {
     id: "gateway",
     name: "Custom gateway",
     description: "Emissary or another compatible endpoint",
@@ -94,7 +100,8 @@ export function AiProviderSetup({
     reconnect
       ? reconnect.routing?.kind === "gateway" ||
         reconnect.routing?.kind === "local" ||
-        reconnect.routing?.kind === "bedrock"
+        reconnect.routing?.kind === "bedrock" ||
+        reconnect.routing?.kind === "foundry"
         ? reconnect.routing.kind
         : reconnect.provider
       : initialProvider,
@@ -115,6 +122,9 @@ export function AiProviderSetup({
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
+  const [resource, setResource] = useState(
+    reconnect?.routing?.resource ?? "",
+  );
   const [models, setModels] = useState(
     reconnect?.routing?.models.map((m) => m.id).join(", ") ?? "",
   );
@@ -132,11 +142,11 @@ export function AiProviderSetup({
     queryFn: () => agentsApi.list(companyId),
   });
   const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? "provider";
-  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
+  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "foundry", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
       ? "anthropic"
-      : provider === "gateway" || provider === "local"
+      : provider === "gateway" || provider === "local" || provider === "foundry"
         ? protocol === "messages"
           ? "anthropic"
           : "openai"
@@ -175,9 +185,11 @@ export function AiProviderSetup({
         aiProviderRoutingSchema.parse({
           kind: provider,
           protocol: provider === "bedrock" ? "bedrock" : protocol,
-          auth: provider === "openrouter" ? "bearer" : auth,
+          auth: provider === "openrouter" || provider === "foundry" ? "bearer" : auth,
           ...(provider === "bedrock"
             ? { region }
+            : provider === "foundry"
+            ? { resource: resource.trim() }
             : provider === "gateway" || provider === "local"
               ? { baseUrl }
               : {}),
@@ -245,9 +257,39 @@ export function AiProviderSetup({
         disabled={Boolean(reconnect)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {provider === "foundry"
+          ? "Use your Foundry deployment names. You can also enter one on the agent."
+          : "Use the provider’s model ID or your gateway’s alias. You can also enter one on the agent."}
       </span>
+    </label>
+  );
+  const apiFormat = (
+    <label className="block space-y-2 text-xs text-muted-foreground">
+      API format
+      <Select
+        value={protocol}
+        onValueChange={(v) => {
+          setProtocol(v as typeof protocol);
+          if (v !== "messages" && auth === "api_key")
+            setAuth("bearer");
+        }}
+        disabled={Boolean(reconnect) || Boolean(initialProtocol)}
+      >
+        <SelectTrigger aria-label="API format" className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="responses">
+            OpenAI Responses · Codex
+          </SelectItem>
+          <SelectItem value="messages">
+            Anthropic Messages · Claude
+          </SelectItem>
+          <SelectItem value="chat">
+            Chat Completions · OpenCode, Hermes
+          </SelectItem>
+        </SelectContent>
+      </Select>
     </label>
   );
   const accessDefaults = !reconnect ? (
@@ -339,33 +381,7 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect)}
                 />
               </label>
-              <label className="block space-y-2 text-xs text-muted-foreground">
-                API format
-                <Select
-                  value={protocol}
-                  onValueChange={(v) => {
-                    setProtocol(v as typeof protocol);
-                    if (v !== "messages" && auth === "api_key")
-                      setAuth("bearer");
-                  }}
-                  disabled={Boolean(reconnect) || Boolean(initialProtocol)}
-                >
-                  <SelectTrigger aria-label="API format" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="responses">
-                      OpenAI Responses · Codex
-                    </SelectItem>
-                    <SelectItem value="messages">
-                      Anthropic Messages · Claude
-                    </SelectItem>
-                    <SelectItem value="chat">
-                      Chat Completions · OpenCode, Hermes
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
+              {apiFormat}
             </>
           )}
           {provider === "bedrock" && (
@@ -379,7 +395,23 @@ export function AiProviderSetup({
               />
             </label>
           )}
-          {provider !== "openrouter" && (
+          {provider === "foundry" && (
+            <label className="block space-y-2 text-xs text-muted-foreground">
+              Azure resource name
+              <Input
+                aria-label="Azure resource name"
+                placeholder="my-foundry-resource"
+                value={resource}
+                onChange={(e) => setResource(e.target.value)}
+                disabled={Boolean(reconnect)}
+              />
+              <span className="block">
+                The name in https://&lt;resource&gt;.services.ai.azure.com.
+              </span>
+            </label>
+          )}
+          {provider === "foundry" && apiFormat}
+          {provider !== "openrouter" && provider !== "foundry" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               Authentication
               <Select
@@ -451,7 +483,8 @@ export function AiProviderSetup({
               disabled={
                 save.isPending || accounts.isPending || accounts.isError ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
-                (auth !== "none" && !apiKey.trim())
+                (auth !== "none" && !apiKey.trim()) ||
+                (provider === "foundry" && !resource.trim())
               }
             >
               {save.isPending

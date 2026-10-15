@@ -128,6 +128,7 @@ export function providerDisplayName(provider: string): string {
   const map: Record<string, string> = {
     anthropic: "Anthropic",
     aws_bedrock: "AWS Bedrock",
+    microsoft_foundry: "Microsoft Foundry",
     openai: "OpenAI",
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",

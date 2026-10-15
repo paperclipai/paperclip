@@ -141,6 +141,12 @@
       "localAsset": "/brands/apps/executor.png"
     },
     {
+      "slug": "foundry",
+      "provider": "Microsoft Foundry",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/foundry.svg"
+    },
+    {
       "slug": "gauge",
       "provider": "Gauge",
       "catalogVisible": true,

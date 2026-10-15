@@ -22,6 +22,21 @@ export function managedProviderRouting(
     env.AWS_DEFAULT_REGION = route.region!;
     env.AWS_EC2_METADATA_DISABLED = "true";
     env.AWS_BEARER_TOKEN_BEDROCK = credential;
+  } else if (route.kind === "foundry" && harness === "claude_local") {
+    // Claude Code speaks Foundry's Anthropic endpoint natively. Other harnesses
+    // use the resource's OpenAI-compatible v1 endpoint below.
+    env.CLAUDE_CODE_USE_FOUNDRY = "1";
+    env.ANTHROPIC_FOUNDRY_RESOURCE = route.resource!;
+    env.ANTHROPIC_FOUNDRY_API_KEY = credential;
+    // Foundry models are deployment names and are not checked at startup, so
+    // every Claude alias must resolve to the selected deployment.
+    if (model) {
+      env.ANTHROPIC_MODEL = model;
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+      env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+    }
   } else if (harness === "codex_local") {
     env.PAPERCLIP_AI_PROVIDER_KEY = credential;
     codexConfig = `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n${route.auth === "none" ? "" : 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n'}`;

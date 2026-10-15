@@ -573,13 +573,13 @@ provider token can still require reconnecting the account.
 ## Advanced provider routing (2026-10-02)
 
 Use the regular rows on **Connectors** to add OpenRouter, Amazon Bedrock,
-Google Gemini, a Responses API, Messages API, Chat Completions API, or local
+Microsoft Foundry, Google Gemini, a Responses API, Messages API, Chat Completions API, or local
 endpoint connection. Each row has its own Connect action and saved accounts.
 The catalog tags these entries `model-provider`; no category UI is shown.
 Responses-compatible gateways such as Emissary use the Responses API row.
 The native subscription/API-key onboarding remains the default. Provider choices
 show the existing local brand artwork and reuse the existing access step. Custom
-URLs, protocol, AWS region, and credential fields appear only after choosing the
+URLs, protocol, AWS region, Azure resource, and credential fields appear only after choosing the
 corresponding connector. New connections default to everyone in the organization
 and all agents when the actor has permission; the existing Advanced disclosure
 contains the controls to narrow access, without a separate Access step. New-agent setup also offers the connection picker in its persistent
@@ -593,10 +593,10 @@ credentials belong to the connection; the model belongs to the agent.
 
 | Harness | Implemented managed routes |
 | --- | --- |
-| Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints |
-| Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
-| OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
-| Hermes local | OpenRouter; custom/local Chat Completions |
+| Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints; Foundry Responses |
+| Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key; Foundry API key (Claude legacy only) |
+| OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions; Foundry Chat Completions |
+| Hermes local | OpenRouter; custom/local Chat Completions; Foundry Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
 Migration `0306` adds Google to both account-default provider constraints. Local
@@ -616,8 +616,9 @@ discovery path, preserve the provider's ordering, and adapt model IDs to the sel
 harness. Explicit connection model lists take precedence. Catalog discovery sends
 no credentials; a failed request offers refresh and manual model entry.
 
-`config.ai.routing` stores only kind, protocol, URL, auth method, region, and
-optional model IDs/labels. The vault stores provider API keys, including Bedrock API keys.
+`config.ai.routing` stores only kind, protocol, URL, auth method, region, Azure
+resource name, and optional model IDs/labels. The vault stores provider API keys,
+including Bedrock and Foundry API keys.
 Fixed bindings contain only connection/grant identity. The server checks actual
 connection metadata, company, owner/audience, installation, status, and protocol
 before resolving secrets. Advanced connections cannot silently become native
@@ -637,7 +638,7 @@ from shell tools reading the configuration; it is not an OS isolation boundary
 against a process debugger running as the runner user.
 
 Only fixed official provider endpoints receive control-plane key checks. Custom
-endpoints and Bedrock are exercised by the selected harness in the selected
+endpoints, Bedrock, and Foundry are exercised by the selected harness in the selected
 execution environment, through **Run test**. Saving a custom connection records
 configuration; it is not proof that the model can respond. HTTPS is required for
 remote URLs; loopback endpoints may use HTTP. Localhost refers to the agent’s
@@ -669,6 +670,8 @@ Primary configuration references consulted:
 [OpenRouter Claude](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration),
 [Claude gateways](https://code.claude.com/docs/en/llm-gateway),
 [Claude Bedrock](https://code.claude.com/docs/en/amazon-bedrock),
+[Claude Microsoft Foundry](https://code.claude.com/docs/en/microsoft-foundry),
+[Foundry v1 API](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle),
 [OpenCode providers](https://opencode.ai/docs/providers/), and
 [Hermes providers](https://hermes-agent.nousresearch.com/docs/integrations/providers).
 
@@ -696,6 +699,33 @@ calculation, completed the task, and ran a context-dependent follow-up. Actual
 tool output was verified for all four successful runs. Private gateways still
 have deterministic mapping and validation coverage but need live verification
 in the target deployment. Short-lived Bedrock keys must be rotated before expiry.
+
+### Microsoft Foundry
+
+A Foundry connection stores one Azure resource name and one Foundry API key; it
+is not tied to a model family. Its **API format** selects the harness, as with a
+custom gateway. **Anthropic Messages** uses Claude Code's native Foundry mode:
+`CLAUDE_CODE_USE_FOUNDRY=1`, `ANTHROPIC_FOUNDRY_RESOURCE`, and
+`ANTHROPIC_FOUNDRY_API_KEY`. **OpenAI Responses** (Codex) and **Chat
+Completions** (OpenCode, Hermes) use the resource's OpenAI-compatible endpoint,
+`https://<resource>.services.ai.azure.com/openai/v1`, without an `api-version`.
+That endpoint serves Azure OpenAI and other Foundry models, such as DeepSeek and
+Grok. Use a separate connection per API format for the same resource.
+
+Claude New Runner (ACPX) does not offer Foundry connections yet. Its Claude
+credential boundary, `drivers/acpx/environment.ts`, is pinned by the qualified
+Pi profile, so adding Foundry names there requires profile requalification.
+Foundry Claude runs use the Claude adapter. Codex, OpenCode, and Hermes use the
+OpenAI-compatible endpoint and are not affected.
+
+Model IDs are Foundry deployment names. Foundry does not check the model at
+startup, so the Claude projection pins `ANTHROPIC_MODEL` and every
+`ANTHROPIC_DEFAULT_*_MODEL` alias to the agent's selected deployment. The
+resource field accepts the name only, never a host name or URL, and the endpoint
+is derived from it. Entra ID tokens, ambient Azure identity, and per-alias
+deployments are not part of this implementation. Host
+`ANTHROPIC_FOUNDRY_*` values are cleared before every managed run. Costs are
+attributed to the `microsoft_foundry` biller.
 
 The repeatable provider connection campaign is documented in
 [`tests/runner-e2e/PROVIDER-CONNECTIONS.md`](../../tests/runner-e2e/PROVIDER-CONNECTIONS.md).

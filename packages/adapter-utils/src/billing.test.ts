@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "./billing.js";
+import { inferOpenAiCompatibleBiller, resolveManagedBiller, resolveManagedOpenAiBilling, resolveManagedRoutingBiller } from "./billing.js";
 
 describe("inferOpenAiCompatibleBiller", () => {
   it("returns openrouter when OPENROUTER_API_KEY is present", () => {
@@ -43,5 +43,24 @@ describe("managed Responses routing", () => {
   });
   it("leaves ordinary direct API and subscription detection unchanged", () => {
     expect(resolveManagedOpenAiBilling(undefined)).toBeUndefined();
+  });
+});
+
+describe("managed connection biller", () => {
+  it("bills Foundry routes to Microsoft Foundry for every harness provider", () => {
+    expect(resolveManagedBiller("anthropic", { kind: "foundry", protocol: "messages" })).toBe("microsoft_foundry");
+    expect(resolveManagedBiller("openai", { kind: "foundry", protocol: "responses" })).toBe("microsoft_foundry");
+  });
+  it("names the routed biller only for routed cloud providers", () => {
+    expect(resolveManagedRoutingBiller({ kind: "foundry", protocol: "chat" })).toBe("microsoft_foundry");
+    for (const routing of [undefined, null, "foundry", { kind: "gateway" }, { kind: "openrouter" }, { kind: "bedrock" }])
+      expect(resolveManagedRoutingBiller(routing)).toBeUndefined();
+  });
+  it("keeps existing provider and OpenAI-compatible billers", () => {
+    expect(resolveManagedBiller("anthropic", undefined)).toBe("anthropic");
+    expect(resolveManagedBiller("anthropic", { kind: "gateway", protocol: "messages" })).toBe("anthropic");
+    expect(resolveManagedBiller("openai", undefined)).toBe("openai");
+    expect(resolveManagedBiller("openai", { kind: "openrouter" })).toBe("openrouter");
+    expect(resolveManagedBiller("openai", { kind: "gateway" })).toBe("unknown");
   });
 });

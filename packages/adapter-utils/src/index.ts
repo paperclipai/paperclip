@@ -89,7 +89,7 @@ export type {
   RuntimeStatusSink,
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
-export { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "./billing.js";
+export { inferOpenAiCompatibleBiller, resolveManagedBiller, resolveManagedOpenAiBilling, resolveManagedRoutingBiller } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,

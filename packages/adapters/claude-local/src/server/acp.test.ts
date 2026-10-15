@@ -1537,6 +1537,12 @@ describe("resolveClaudeAcpBillingIdentity", () => {
     ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
   });
 
+  it("classifies Foundry auth as metered_api billed to microsoft_foundry", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "fixture-foundry-key" } } }),
+    ).toEqual({ provider: "anthropic", biller: "microsoft_foundry", billingType: "metered_api" });
+  });
+
   it("falls back to subscription without API-key or Bedrock auth", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;

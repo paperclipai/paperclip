@@ -35,7 +35,21 @@ export function resolveManagedOpenAiBilling(routing: unknown) {
   if (!routing || typeof routing !== "object") return undefined;
   return {
     provider: "openai",
-    biller: (routing as { kind?: unknown }).kind === "openrouter" ? "openrouter" : "unknown",
+    biller: (routing as { kind?: unknown }).kind === "openrouter" ? "openrouter"
+      : (routing as { kind?: unknown }).kind === "foundry" ? "microsoft_foundry" : "unknown",
     billingType: "api" as const,
   };
+}
+
+/** A routed cloud provider bills the run regardless of the harness reporting it. */
+export function resolveManagedRoutingBiller(routing: unknown): string | undefined {
+  return routing && typeof routing === "object" && (routing as { kind?: unknown }).kind === "foundry"
+    ? "microsoft_foundry"
+    : undefined;
+}
+
+/** The selected connection's routing, not the harness provider, owns the biller. */
+export function resolveManagedBiller(provider: string, routing: unknown): string {
+  return resolveManagedRoutingBiller(routing)
+    ?? (provider === "openai" ? resolveManagedOpenAiBilling(routing)?.biller ?? provider : provider);
 }

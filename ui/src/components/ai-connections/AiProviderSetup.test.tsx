@@ -32,7 +32,7 @@ it("reconnects an older OpenRouter account without adding routing metadata", asy
   }
 });
 
-const providerSources = ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+const providerSources = ["openrouter", "bedrock", "foundry", "responses-api", "messages-api", "chat-completions-api", "local"];
 it("shows advanced providers directly when entered from advanced connection mode", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
@@ -42,7 +42,7 @@ it("shows advanced providers directly when entered from advanced connection mode
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" advancedOnly onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
     const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
-    expect(choices).toEqual(["OpenRouter", "Amazon Bedrock", "Custom gateway", "Local endpoint"]);
+    expect(choices).toEqual(["OpenRouter", "Amazon Bedrock", "Microsoft Foundry", "Custom gateway", "Local endpoint"]);
     expect(container.querySelector("details")).toBeNull();
   } finally {
     await act(async () => root.unmount()); client.clear();
@@ -98,6 +98,46 @@ it("saves the default organization grant and all-agent installation from the dir
   }
 });
 
+
+it.each([
+  ["messages", "anthropic"],
+  ["responses", "openai"],
+  ["chat", "openai"],
+] as const)("saves a Foundry resource and key for the %s API format", async (protocol, provider) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const onComplete = vi.fn();
+  const type = async (label: string, value: string) => {
+    const input = container.querySelector(`input[aria-label="${label}"]`)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider="foundry" initialProtocol={protocol} onCancel={() => {}} onComplete={onComplete} /></QueryClientProvider>));
+    expect(container.querySelector('[aria-label="Authentication"]')).toBeNull();
+    expect(container.querySelector('[aria-label="API format"]')).not.toBeNull();
+    const connect = container.querySelector('button[type="submit"]') as HTMLButtonElement;
+    await type("API key", "fixture-foundry-key");
+    expect(connect.disabled).toBe(true);
+    await type("Azure resource name", "contoso-ai");
+    expect(connect.disabled).toBe(false);
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(aiConnectionsApi.create).toHaveBeenCalledWith("company", expect.objectContaining({
+      provider,
+      method: "api_key",
+      apiKey: "fixture-foundry-key",
+      routing: { kind: "foundry", protocol, auth: "bearer", resource: "contoso-ai", models: [] },
+    }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ provider, method: "api_key" }));
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
 
 it("allows an ordinary member to save a personal gateway before the agent exists", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

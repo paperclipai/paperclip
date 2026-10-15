@@ -36,7 +36,7 @@ import { isConversation } from "../agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
-import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
+import { resolveManagedBiller, resolveManagedRoutingBiller } from "@paperclipai/adapter-utils";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
@@ -482,6 +482,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   };
 
   const usageRecorder = await createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType });
+  // Legacy harnesses name the biller from their own model prefix or provider.
+  // A routed cloud connection owns the biller instead.
+  const routedBiller = resolveManagedRoutingBiller(managedAiRuntime?.config.managedAiRouting);
   input.effects.onUsageCaptureReady(usageRecorder.persistFailure);
   let adapterResult: AdapterExecutionResult;
   const runGoalControlRequestId = readNonEmptyString(
@@ -620,7 +623,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               // configured provider values and the server-selected
               // workspace boundary authoritative.
               managedGitHub: !useHostGitHub && githubSelection.configured,
-              billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
+              billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: resolveManagedBiller(managedAiRuntime.attribution.provider, managedAiRuntime.config.managedAiRouting), billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
@@ -812,7 +815,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onLog,
               onMeta: onAdapterMeta,
               onEvent: onAdapterEvent,
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: async receipt => { await usageRecorder.capture(routedBiller ? { ...receipt, biller: routedBiller } : receipt); },
               onExecutionPhase: executionControl.phases.enter,
               startupTraceContext: getStartupTraceContext(),
               onRuntimeProgress: async (progress) => {
@@ -872,6 +875,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       adapterResult = await guardedDispatch.resultPromise;
     }
     adapterResult = identityRedactor.redact(adapterResult);
+    if (routedBiller) adapterResult = { ...adapterResult, biller: routedBiller };
     if (run.runtimeMode === "legacy" && hasWorkspaceRestoreFailure(adapterResult.resultJson)
         && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
       const requiredWorkspaceRestoreEvidence = {
