@@ -4,6 +4,8 @@ import { goals } from "@paperclipai/db";
 
 type GoalReader = Pick<Db, "select">;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
   const activeRootGoal = await db
     .select()
@@ -46,12 +48,14 @@ export function goalService(db: Db) {
   return {
     list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
 
-    getById: (id: string) =>
-      db
+    getById: async (id: string) => {
+      if (!UUID_RE.test(id)) return null;
+      return db
         .select()
         .from(goals)
         .where(eq(goals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
 
