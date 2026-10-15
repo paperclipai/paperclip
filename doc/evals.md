@@ -404,8 +404,9 @@ Remaining native chat boundaries are in the explicit-only
 `agent-chat-qualification` suite: active task reassignment, user Retry after
 verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
-The 26 native `first-task` cells exercise onboarding before native selection
-becomes the UI default. Live results and semantic answer reviews must accompany
+The 26 native `first-task` cells inspect the production wizard's saved native
+default on qualified targets, without an API runner switch. The 26 Legacy cells
+select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)

@@ -72,7 +72,7 @@ describe("host ACPX qualification admission", () => {
     }
   });
   it("preserves product defaults separately from qualification examples", () => {
-    for (const [acpxAgent, model] of [["claude", "claude-sonnet-5"], ["grok", "grok-4.7"]]) {
+    for (const [acpxAgent, model] of [["claude", "claude-opus-5-5"], ["grok", "grok-4.7"]]) {
       expect(resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent }))
         .toMatchObject({ acpxAgent, model });
     }

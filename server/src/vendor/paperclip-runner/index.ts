@@ -36,6 +36,7 @@ export type {
   NativeExecutionInputV4,
   NativeExecutionInputV5,
   NativeExecutionInputV6,
+  NativeExecutionInputV7,
   DotBindingSnapshot,
   ExternalProviderPort,
   ExternalProviderOperation,
@@ -134,6 +135,7 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;

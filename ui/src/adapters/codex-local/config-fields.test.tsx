@@ -11,9 +11,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { CodexLocalConfigFields } from "./config-fields";
 import { buildCodexRunnerConfig } from "./config-fields";
+import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { defaultCreateValues } from "@/components/agent-config-defaults";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
-import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
@@ -121,11 +121,6 @@ async function editFields(
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it.each(["", "max"])("preserves or overrides saved native Codex reasoning effort (%s)", thinkingEffort => {
-    const values = { ...defaultCreateValues, thinkingEffort, adapterSchemaValues: { provider: "codex", modelReasoningEffort: "high" } };
-    expect(buildPaperclipRunnerConfig(values).modelReasoningEffort).toBe(thinkingEffort || "high");
-    expect(buildPaperclipRunnerConfig({ ...values, adapterSchemaValues: { provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "high" } })).not.toHaveProperty("modelReasoningEffort");
-  });
   it.each(["", "--sandbox,read-only"])("shows actual automatic Legacy policy and preserves the explicit toggle (%s)", async (extraArgs) => {
     const container = document.createElement("div");
     document.body.appendChild(container);

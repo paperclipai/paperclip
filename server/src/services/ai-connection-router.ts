@@ -55,8 +55,7 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
   const efforts = provider === "openai" ? codexLocalReasoningEffortsForModel(model)
     : provider === "anthropic" ? claudeLocalReasoningEffortsForModel(model)
     : provider === "xai" ? grokLocalReasoningEffortsForModel(model) : [];
-  // ACPX currently has no qualified effort override; keep that host limitation explicit.
-  const effortKey = adapterType === "paperclip_runner" ? profile.provider === "codex" ? "modelReasoningEffort" : null
+  const effortKey = adapterType === "paperclip_runner" ? profile.provider === "codex" || (profile.provider === "acpx" && profile.acpxAgent === "claude") ? "modelReasoningEffort" : null
     : provider === "anthropic" ? "effort" : provider === "xai" ? "reasoningEffort" : provider === "openai" ? "modelReasoningEffort" : "variant";
   const requested = overrides.modelReasoningEffort ?? overrides.reasoningEffort ?? overrides.effort ?? overrides.variant;
   const effort = typeof requested === "string" && efforts.includes(requested) && effortKey ? requested

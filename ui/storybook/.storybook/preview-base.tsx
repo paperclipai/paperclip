@@ -163,6 +163,9 @@ function installStorybookApiFixtures() {
     if (url.pathname === "/api/instance/settings/experimental") {
       return Response.json(experimentalSettings());
     }
+    if (url.pathname === "/api/instance/settings/general") {
+      return Response.json(instanceGeneralSettingsSchema.parse({}));
+    }
 
     if (url.pathname === "/api/health") {
       return Response.json({ deploymentMode: "authenticated", localAiLoginSupported: onboardingFixtureState.environments === "local" });
@@ -483,9 +486,11 @@ function installStorybookApiFixtures() {
           type: "claude_local",
           label: "Claude Code",
           source: "builtin",
-          modelsCount: 2,
+          modelsCount: 4,
           loaded: true,
           disabled: false,
+          supportedRunners: ["paperclip", "legacy"],
+          defaultRunner: "legacy",
           capabilities: {
             supportsInstructionsBundle: true,
             supportsSkills: true,
@@ -511,6 +516,8 @@ function installStorybookApiFixtures() {
           modelsCount: 3,
           loaded: true,
           disabled: false,
+          supportedRunners: ["paperclip", "legacy"],
+          defaultRunner: "legacy",
           capabilities: {
             supportsInstructionsBundle: true,
             supportsSkills: true,
@@ -523,6 +530,16 @@ function installStorybookApiFixtures() {
             },
           },
         },
+        {
+          type: "paperclip_runner",
+          label: "Paperclip Runner",
+          source: "builtin",
+          modelsCount: 0,
+          loaded: true,
+          disabled: false,
+          supportedRunners: ["paperclip"],
+          defaultRunner: "paperclip",
+        },
       ]);
     }
 
@@ -533,6 +550,7 @@ function installStorybookApiFixtures() {
       const [, , resource] = adapterModelsMatch;
       if (resource === "models") {
         return Response.json([
+          { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
           { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
           { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
           { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },

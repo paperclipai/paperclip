@@ -52,7 +52,7 @@ Manual: Hire an agent with a distinct name and role. Complete any required appro
 
 For a new Codex hire, choose the Codex harness. Automatic selection uses Paperclip
 Runner on a qualified selected target; Advanced offers an explicit Legacy runner
-override. Other harness defaults are unchanged. Record the persisted runner and
+override. Record the persisted runner and
 underlying harness, rather than treating the displayed Codex name as execution
 proof. See [runtime selection and validation](./runs-adapters.md#adapter-setup)
 and [target qualification](./execution-environments.md#environment-settings).
@@ -68,6 +68,14 @@ choice uses the new-agent default, while updating an existing same-harness agent
 preserves its execution. For a native Codex import, edit a model or account binding
 and verify unchanged runtime settings survive; an explicit clear must stay cleared.
 Use the [portability recipe](./companies.md) for package preparation and boundaries.
+
+For Claude Code on Apple Silicon, submit without a runner override and inspect
+saved configuration: `paperclip_runner`, `provider: acpx`, `acpxAgent: claude`,
+and ordinary model `claude-opus-5-5`. The Advanced runner selector can explicitly
+choose Legacy. Keep explicit model/account choices and saved runners on edits.
+Verify useful output and a follow-up after a controller restart; setup success
+alone does not establish session continuity. Additional target defaults remain
+subject to their separate qualification gates.
 
 The current hiring wizard assigns the first hire CEO and subsequent hires
 General reporting to the CEO. Change manager/role afterward through supported

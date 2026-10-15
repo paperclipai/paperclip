@@ -214,7 +214,8 @@ export function agentDisplayAdapterType(agent: { adapterType: string; adapterCon
   if (agent.adapterConfig.provider === "openai_dot" || agent.adapterConfig.provider === "grok_bot") {
     return agent.adapterConfig.provider;
   }
-  return agentHarnessType(agent.adapterType, agent.adapterConfig) === "codex_local" ? "codex_local" : agent.adapterType;
+  const harness = agentHarnessType(agent.adapterType, agent.adapterConfig);
+  return ["codex_local", "claude_local"].includes(harness) ? harness : agent.adapterType;
 }
 
 export function isKnownAdapterType(type: string): boolean {

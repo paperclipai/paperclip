@@ -20,7 +20,7 @@ import type { agentInstructionWorkingCopyService } from "../agent-instruction-wo
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { CHAT_PROVIDERS } from "@paperclipai/shared";
+import { agentHarnessType, CHAT_PROVIDERS } from "@paperclipai/shared";
 import {
   type agents,
   completionContracts,
@@ -713,6 +713,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
       const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
+        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)) === "claude_local")
         || nativeRuntimeResolution.profile.backend === "opencode_server"
         ? projectPaperclipRunnerTaskConfig(
             nativeRuntimeResolution.profile.backend,

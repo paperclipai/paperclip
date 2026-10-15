@@ -499,13 +499,13 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     const parent = await seedParentAgent(companyId, "paperclip_runner", {});
     await db.update(agents).set({ adapterConfig: {
       provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5", acpxPermissionMode: "approve-all",
-      env: { ANTHROPIC_API_KEY: secretRef("parent-secret") }, cwd: "/private/parent",
+      env: { PRIVATE_PARENT_TOKEN: secretRef("parent-secret") }, cwd: "/private/parent",
       invocationLimits: { maxIterations: 3, credentials: "never-copy" },
     } }).where(eq(agents.id, parent.id));
     const res = await hire(agentActor(companyId, parent.id), companyId, {
       name: "Approval Snapshot Child", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
     });
-    expect(res.status).toBe(201);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.agent.status).toBe("pending_approval");
     expect(res.body.approval.payload.inheritRuntimeFrom).toBeUndefined();
     expect(res.body.approval.payload.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "approve-all" });

@@ -44,6 +44,11 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
+qualified selection, not successful authentication or task execution. Native
+Claude retains existing account grants and company/responsible-user boundaries.
+Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
 
@@ -52,7 +57,7 @@ reports supported runners/effective default for the selected company/environment
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
 server-owned immutable sandbox facts without provisioning. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
-other harness defaults remain unchanged. The board inventory does not grant a
+Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
 [probe restrictions](./execution-environments.md#probe) for acquiring qualification.
 An absent forced-Kubernetes environment is an unqualified sandbox target, never

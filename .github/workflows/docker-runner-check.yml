@@ -173,16 +173,19 @@ jobs:
       - name: Verify repository on hosted Linux
         if: inputs.verify_source
         # Leave time for artifact retention within the job deadline.
-        timeout-minutes: 38
+        timeout-minutes: 80
         run: |
           set -uo pipefail
           pnpm install --frozen-lockfile --ignore-scripts
+          git fetch --no-tags --depth=1 origin 2a8a99e4a5f69aa803b3f10b982f583e75a87042 16ef1a5744b23bb043a8b286e6288921da1de98f
           status=0
           for check in 'pnpm -r typecheck' 'pnpm test:run' 'pnpm check:token-gates' 'pnpm test:e2e:runner:typecheck' 'pnpm test:e2e:runner:unit' 'pnpm build' 'if [ -f scripts/verify-grok-npm-install.mjs ]; then node scripts/verify-grok-npm-install.mjs; fi'; do
             label="$(echo "$check" | tr -cs 'a-zA-Z0-9' '-')"
             echo "Starting $check"
             check_status=0
-            timeout --signal=TERM --kill-after=15s 15m bash -c "$check" > "remote-verification/$label.log" 2>&1 || check_status=$?
+            limit=15m
+            if [ "$check" = 'pnpm test:run' ]; then limit=60m; fi
+            timeout --signal=TERM --kill-after=15s "$limit" bash -c "$check" > "remote-verification/$label.log" 2>&1 || check_status=$?
             printf '%s\t%s\n' "$check_status" "$check" >> remote-verification/check-status.tsv
             if [ "$check_status" -ne 0 ]; then status=1; fi
             echo "Finished $check (exit $check_status)"

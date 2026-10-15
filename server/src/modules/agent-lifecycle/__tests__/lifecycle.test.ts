@@ -136,7 +136,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const probe = vi.spyOn(adapter, "testEnvironment").mockResolvedValue({ adapterType, status: "warn",
       testedAt: new Date().toISOString(), checks: [{ code: `${adapterType.split("_")[0]}_hello_probe_auth_required`, level: "warn", message: "Login required" }] });
     try {
-      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType });
+      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType, runner: "legacy" });
       const work = worker(createLifecycleDriver(db, {} as never).runHost);
       await work.process(agent.id);
       expect(probe).toHaveBeenCalled();

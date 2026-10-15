@@ -5300,7 +5300,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               "OpenAI Dot is experimental and disabled on this instance.",
               { code: "paperclip_runner_dot_disabled" },
             );
-          } else if (config.provider !== "codex" && config.provider !== undefined && experimental.enableNativeRunner !== true) {
+          } else if (config.provider !== "codex" && config.provider !== undefined && agentHarnessType("paperclip_runner", config) !== "claude_local" && experimental.enableNativeRunner !== true) {
             throw unprocessable(
               "Paperclip Runner is experimental and disabled on this instance.",
               { code: "paperclip_runner_rollout_disabled" },
@@ -5644,7 +5644,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               runner = agentRunner(existingImportAgent.adapterType);
             }
           }
-          const retainedNative = runner === "paperclip" && selectedHarness === "codex_local"
+          const retainedNative = runner === "paperclip" && ["codex_local", "claude_local"].includes(selectedHarness)
             ? [manifestAgent, existingImportAgent].find((agent) => agent?.adapterType === "paperclip_runner"
               && agentHarnessType(agent.adapterType, agent.adapterConfig) === selectedHarness)
             : undefined;

@@ -3,7 +3,7 @@ import { Field } from "./agent-config-primitives";
 import { SelectPopover } from "./ui/select";
 import { Button } from "./ui/button";
 
-export function CodexRunnerSelect({
+export function AgentRunnerSelect({
   value,
   onChange,
   defaultRunner,

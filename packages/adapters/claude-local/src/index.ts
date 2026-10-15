@@ -1,4 +1,4 @@
-export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5";
+export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5-5";
 
 /** Resolve Paperclip's default without replacing an explicit provider model. */
 export function resolveClaudeModel(
