@@ -199,11 +199,6 @@ export function createHeartbeatScheduling(
     monitor: IssueExecutionMonitorPolicy | null;
     nextAttemptCount: number;
     now: Date;
-    // Preemptive (pre-dispatch) checks allow exactly `maxAttempts` attempts to
-    // be made before stopping on what would be attempt `maxAttempts + 1`. A
-    // check made *after* an attempt has already failed must instead treat
-    // that failed attempt as consuming its slot immediately: if it was the
-    // `maxAttempts`-th attempt, there is no attempt left to defer into.
     attemptJustFailed?: boolean;
   }): IssueExecutionMonitorClearReason | null {
     const timeoutAt = parseMonitorDate(input.monitor?.timeoutAt ?? null);
@@ -223,9 +218,6 @@ export function createHeartbeatScheduling(
   const MONITOR_DISPATCH_DEFER_BASE_MS = 5 * 60 * 1000;
   const MONITOR_DISPATCH_DEFER_MAX_MS = 60 * 60 * 1000;
 
-  /** Backoff for a scheduled dispatch deferred by a transient client error:
-   * 5 min, 10, 20, 40, capped at 60 min. `attemptCount` is 1-indexed (the
-   * attempt that just failed). */
   function monitorDispatchDeferDelayMs(attemptCount: number) {
     const exponent = Math.max(0, attemptCount - 1);
     return Math.min(
@@ -416,9 +408,6 @@ export function createHeartbeatScheduling(
     const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.scheduledAtIso}`;
 
     const fallBackToRecoveryComment = async (reason: string) => {
-      // Falling back here (rather than letting the caller's exception
-      // propagate) avoids undoing the clear's accounting and silently
-      // dropping the recovery notice; same idea as escalate_to_board.
       await db.insert(issueComments).values({
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
@@ -446,9 +435,6 @@ export function createHeartbeatScheduling(
     const ownerAgent = await getAgent(input.claimed.assigneeAgentId!);
     const ownerInvokability = await evaluateAgentInvokabilityFromDb(db, ownerAgent);
     if (!ownerInvokability.invokable) {
-      // The assignee is the same agent the monitor just failed to dispatch
-      // to (most commonly paused for budget/quota reasons) — waking them now
-      // would hit the identical failure.
       await fallBackToRecoveryComment(ownerInvokability.reason ?? "not invokable");
       return false;
     }
@@ -514,11 +500,6 @@ export function createHeartbeatScheduling(
         ),
       });
     } catch (err) {
-      // getAgentInvokability only rules out a paused/suspended agent; it
-      // doesn't see a company/project budget block, which enqueueWakeup
-      // also rejects with a 4xx. The agent is usually still not invokable
-      // at the moment a monitor exhausts (that's the realistic trigger for
-      // exhaustion), so this is expected to fire sometimes, not a bug.
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         await fallBackToRecoveryComment(err.message);
         return false;
@@ -657,9 +638,6 @@ export function createHeartbeatScheduling(
   }
 
   function monitorDeferDispatchPatch(patch: ReturnType<typeof buildIssueMonitorDeferredPatch>) {
-    // Same rationale as monitorOnlyDispatchPatch above: admission and
-    // consumption are separate transactions, so merge only the monitor path
-    // of each JSONB column instead of overwriting the whole column.
     const monitorPolicyValue = (patch.executionPolicy as { monitor?: unknown } | null)?.monitor ?? null;
     return {
       ...patch,
@@ -754,11 +732,6 @@ export function createHeartbeatScheduling(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;
-    // `normalizeIssueExecutionPolicy` always redacts `monitor.externalRef` to
-    // "[redacted]" (it's the same schema used to validate untrusted PUT
-    // input). Read the real value straight off the raw DB column so a
-    // deferred retry can preserve it instead of overwriting the saved source
-    // reference with the redacted placeholder.
     const rawMonitorExternalRef =
       typeof (claimed.executionPolicy as { monitor?: { externalRef?: unknown } } | null)?.monitor
         ?.externalRef === "string"
@@ -971,13 +944,6 @@ export function createHeartbeatScheduling(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          // A 4xx here is usually transient (most commonly the assignee
-          // being momentarily paused/quota-throttled), not a terminal
-          // condition for a monitor that may be scheduled weeks out.
-          // Defer with backoff instead of destroying it outright; only
-          // actually clear once the monitor's own bounds are exhausted, via
-          // the same recovery path a successful-dispatch exhaustion uses
-          // (which also carries the review-state renotify this clear needs).
           const deferClearReason = issueMonitorLimitClearReason({
             monitor,
             nextAttemptCount,
@@ -1005,10 +971,6 @@ export function createHeartbeatScheduling(
           const deferDelayMs = monitorDispatchDeferDelayMs(nextAttemptCount);
           const monitorTimeoutAt = monitor?.timeoutAt ? new Date(monitor.timeoutAt) : null;
           const uncappedDeferredTo = new Date(input.now.getTime() + deferDelayMs);
-          // Don't schedule the retry past the monitor's own timeout: tickDueIssueMonitors
-          // only selects rows whose monitorNextCheckAt is already due, so a deferredTo
-          // beyond timeoutAt would leave an expired monitor unable to be cleared until
-          // the backoff delay separately elapses.
           const deferredTo =
             monitorTimeoutAt && monitorTimeoutAt.getTime() < uncappedDeferredTo.getTime()
               ? monitorTimeoutAt

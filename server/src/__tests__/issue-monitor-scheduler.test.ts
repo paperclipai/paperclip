@@ -647,9 +647,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(result.skipped).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    // A transient 4xx (agent momentarily paused) must not destroy a monitor
-    // that may be scheduled weeks out: it stays armed, with backoff and a
-    // consumed attempt, not nulled/cleared.
     expect(issue.monitorNextCheckAt).toEqual(new Date(tickAt.getTime() + 5 * 60 * 1000));
     expect(issue.monitorAttemptCount).toBe(1);
     expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.nextCheckAt)
@@ -668,8 +665,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_skipped");
     expect(activity).not.toContain("issue.monitor_exhausted");
 
-    // The deferred check-in is itself due later and dispatches normally once
-    // the agent is active again, proving the monitor is still alive.
     await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
     const second = await heartbeat.tickTimers(new Date(tickAt.getTime() + 5 * 60 * 1000 + 1000));
     expect(second.enqueued).toBe(1);
@@ -693,16 +688,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: "cleared",
       clearReason: "max_attempts_exhausted",
     });
-    // The failed dispatch that triggered this exhaustion was itself a real,
-    // consumed attempt (maxAttempts: 1, so this is attempt #1) — the cleared
-    // monitor must record that, not leave the column at its pre-dispatch
-    // value as if the attempt never happened.
     expect(issue.monitorAttemptCount).toBe(1);
 
-    // The owner is the same agent the monitor failed to dispatch to (still
-    // paused), so recovery cannot wake them either — it should fall back to
-    // a comment instead of throwing (which would also undo the `skipped`
-    // accounting asserted above).
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)
@@ -747,11 +734,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   it("preserves the monitor's externalRef across repeated transient-error defer cycles", async () => {
-    // normalizeIssueExecutionPolicy (the only parser for executionPolicy)
-    // always redacts monitor.externalRef, since it also validates untrusted
-    // PUT input. A naive defer that rebuilds the policy from that normalized
-    // read would overwrite the real, previously-stored externalRef with the
-    // literal "[redacted]" placeholder on the very first retry.
     const externalRef = "https://provider.example/run/abc?token=secret";
     const { issueId } = await seedFixture({
       agentStatus: "paused",
@@ -765,9 +747,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((afterFirstDefer.executionPolicy as { monitor?: { externalRef?: string } } | null)?.monitor?.externalRef)
       .toBe(externalRef);
 
-    // A second defer re-reads the policy this first defer just wrote. If
-    // that write had already redacted the ref, this tick would persist
-    // "[redacted]" from here on, permanently losing it.
     const secondTickAt = new Date(afterFirstDefer.monitorNextCheckAt!.getTime() + 60_000);
     await heartbeat.tickTimers(secondTickAt);
     const afterSecondDefer = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
@@ -778,13 +757,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   it("caps a deferred retry at the monitor's timeoutAt instead of overshooting it", async () => {
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
-    // The first backoff delay is 5 minutes (MONITOR_DISPATCH_DEFER_BASE_MS).
-    // A timeoutAt only 2 minutes out is still in the future at tickAt (so
-    // the pre-dispatch exhaustion check doesn't fire), but an uncapped
-    // defer would schedule the retry a full 3 minutes past the deadline —
-    // tickDueIssueMonitors only selects rows that are already due, so an
-    // expired-but-not-yet-rechecked monitor would sit unrecoverable for
-    // that gap.
     const timeoutAt = new Date(tickAt.getTime() + 2 * 60 * 1000);
     const { issueId } = await seedFixture({
       agentStatus: "paused",
@@ -805,13 +777,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   it("falls back to a recovery comment, instead of throwing, when the owner is budget-blocked (not just agent-paused)", async () => {
-    // getAgentInvokability only sees the agent's own status (paused/
-    // terminated/pending_approval); it never checks a company or project
-    // budget block. A *company* pause would also exclude the issue from
-    // tickDueIssueMonitors' dispatch query entirely (it requires
-    // companies.status = "active"), so this has to be a project-scoped
-    // budget pause to reach the recovery-wake code path at all: agent and
-    // company both stay active, only the issue's project is budget-paused.
     const { issueId, agentId } = await seedFixture({
       agentStatus: "active",
       monitorAttemptCount: 1,
