@@ -73,6 +73,12 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("../api/grokBot", () => ({
+  grokBotApi: {
+    connection: async () => ({ enabled: true, canConfigureConnection: true, binding: null }),
+  },
+}));
+
 vi.mock("../api/adapters", () => ({
   adaptersApi: { list: async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }] },
 }));
@@ -312,6 +318,7 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     showAdapterTypeField?: boolean;
+    compactTestFeedback?: boolean;
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
@@ -335,6 +342,7 @@ async function renderForm(
         agent={makeAgent(agentOverrides)}
         onSave={onSave}
         hidePromptTemplate
+        compactTestFeedback={options.compactTestFeedback}
         content={options.content}
         environmentVariablesPlacement={options.environmentVariablesPlacement}
         hideInlineSave={options.hideInlineSave}
@@ -841,6 +849,25 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it.each([false, true])("uses Grok connection verification without native controls (compact: %s)", async compactTestFeedback => {
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "grok_bot", cwd: "/old/local/path", model: "old-model" },
+    }, { showAdapterTypeField: true, showAdapterTestEnvironmentButton: true, compactTestFeedback });
+    roots.push(result.root);
+
+    expect(result.container.querySelector('[aria-label="Grok Bot connection"]')).not.toBeNull();
+    expect(result.container.textContent).toContain("Reconnect agent access");
+    expect(result.container.querySelector('[data-config-section="adapter"]')?.textContent).toContain("Grok Bot");
+    expect(result.container.querySelector('[aria-label="Model"]')).toBeNull();
+    expect(result.container.textContent).not.toContain("AI connection");
+    expect(result.container.textContent).not.toContain("Working directory");
+    expect(result.container.textContent).not.toContain("Test your agent");
+    expect(findButton(result.container, "Test")).toBeUndefined();
+    expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;
@@ -947,6 +974,8 @@ describe("AgentConfigForm environment selector", () => {
     ]);
     roots.push(result.root);
 
+    expect(result.container.textContent).not.toContain("Secret access");
+
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
   });
@@ -1038,15 +1067,6 @@ describe("AgentConfigForm environment selector", () => {
     expect(existing.container.textContent).toContain("Default (claude-opus-5)");
     expect(created.container.textContent).toContain("Default (claude-opus-5)");
     expect(existing.onSave).not.toHaveBeenCalled();
-  });
-
-  it("keeps secret access out of the main Configuration content", async () => {
-    const result = await renderForm([
-      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
-    ]);
-    roots.push(result.root);
-
-    expect(result.container.textContent).not.toContain("Secret access");
   });
 
   it("renders secret access as dedicated form content", async () => {
@@ -1677,21 +1697,6 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
-  it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {
-    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
-    const result = await renderCodexSandbox();
-    roots.push(result.root);
-
-    await runTest(result.container);
-    await startLogin(result.container);
-
-    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
-      environmentId: "sandbox-1",
-    });
-    expect(result.container.textContent).toContain("WXYZ-1234");
-    expect(result.container.textContent).toContain("https://auth.example.test/device");
-  });
-
   it("shows the loading state while the session starts and the prompt is not ready", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
@@ -1789,6 +1794,12 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
     await startLogin(result.container);
+
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: "sandbox-1",
+    });
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.textContent).toContain("https://auth.example.test/device");
 
     // The Cancel button appears while the session is active.
     expect(findButton(result.container, "Cancel")).toBeTruthy();
@@ -2531,31 +2542,6 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
-  it("shows the authorization URL and a browser-code input for a Claude sandbox", async () => {
-    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
-    const result = await renderClaudeSandbox();
-    roots.push(result.root);
-
-    await runTest(result.container);
-    await startLogin(result.container);
-    await flushUntil(() =>
-      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
-    );
-
-    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
-      environmentId: "sandbox-1",
-    });
-    // The panel shows the authorization URL and a browser-code input. It never
-    // shows a server-displayed code.
-    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
-    expect(
-      result.container.querySelector('input[aria-label="Browser code"]'),
-    ).toBeTruthy();
-    // The default prompt carries no advisory: a confidential transport. So the
-    // panel shows no disclaimer.
-    expect(result.container.textContent).not.toContain("not encrypted");
-  });
-
   it("shows a non-blocking disclaimer when the transport advisory is present", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     // The guarded prompt read reports a non-confidential transport. The server
@@ -2989,6 +2975,19 @@ describe("AgentConfigForm environment selector", () => {
     await flushUntil(() =>
       (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
     );
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
+      environmentId: "sandbox-1",
+    });
+    // The panel shows the authorization URL and a browser-code input. It never
+    // shows a server-displayed code.
+    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
+    expect(
+      result.container.querySelector('input[aria-label="Browser code"]'),
+    ).toBeTruthy();
+    // The default prompt carries no advisory: a confidential transport. So the
+    // panel shows no disclaimer.
+    expect(result.container.textContent).not.toContain("not encrypted");
 
     expect(findButton(result.container, "Cancel")).toBeTruthy();
 
@@ -3793,6 +3792,9 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     });
     await flushReact();
     const labels = fieldLabels(result.container);
+
+    expect(labels).toContain("ACP session mode");
+    expect(labels).toContain("ACP non-interactive permissions");
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");
     expect(labels).not.toContain("Execution engine");
@@ -3802,25 +3804,6 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     // The stored values stay untouched: hiding is presentation, and an import
     // that carries adapter configuration from another instance must still save.
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
-  });
-
-  it("keeps the non-path ACP controls visible when the policy hides the engine choice", async () => {
-    setManagedSandboxOnly(true);
-    const result = await renderForm(
-      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
-      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
-    );
-    roots.push(result.root);
-
-    await act(async () => {
-      for (const button of result.container.querySelectorAll("button")) {
-        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
-      }
-    });
-    await flushReact();
-    const labels = fieldLabels(result.container);
-    expect(labels).toContain("ACP session mode");
-    expect(labels).toContain("ACP non-interactive permissions");
   });
 
   it("keeps the host-path fields hidden while the policy is still loading", async () => {

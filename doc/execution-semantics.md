@@ -212,6 +212,13 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+Stopping a queued legacy run before runtime selection clears only its own task
+locks. It preserves deferred messages without promoting another run. The stop
+must have a recorded, expected operator cancellation and no runtime selection,
+start timestamp, or process identity. A later eligible instruction can adopt the
+saved messages through normal admission. This rule does not prove a dispatched
+provider has stopped or change native cancellation acknowledgement.
+
 ### Known execution waits at admission
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
@@ -841,6 +848,15 @@ On startup and on the periodic recovery loop, Paperclip performs the following r
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
+Startup health (`/api/health`) reports `starting` until these recovery passes and
+the other startup steps that serving requests depends on finish. Housekeeping
+that every scheduler tick repeats does not delay it: the custom-image setup
+cleanup, tool connection health, decision expiry, adapter and setup-token login
+reapers, environment lease cleanup, and the retention sweep run after readiness.
+A failed housekeeping step is logged as `startup housekeeping step failed` and
+the next step still runs. The heartbeat scheduler interval starts after
+housekeeping, so the reapers still finish before the first timer tick.
+
 The stale-lock sweep leaves native runs with their finalization coordinator while
 same-session recovery or accepted-result finalization is pending. A provider can
 exit before workspace copy-back, assessment, or arbitration completes. An expired
@@ -1124,6 +1140,25 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+A prepared remote workspace interrupted before the executor's first durable
+claim may resume its untouched bootstrap on the same run. This requires attempt
+and controller generation zero, no prior owner, and no process, provider session,
+checkpoint, or launch evidence. The executor still verifies any durable runner
+root before starting. Missing evidence after a prior claim does not qualify.
+Classification preserves the provider attempt count; execution consumes the
+first attempt through the normal claim and admission gates.
+
+This path also requires a server-owned preparation fencing marker created with
+fresh native run identities. Unmarked preparations from older servers remain
+held during rolling upgrades, because those servers cannot safely yield to a
+recovery owner. Revisiting an existing preparation cannot add that marker.
+
+A preparation that resumes after another execution acquired the coordinator
+lease yields through the controller-detachment path. It does not fail the shared
+run, release its environment, or start another provider. Lease expiry alone does
+not authorize that stale preparation to take ownership; normal recovery must
+establish a new claim first.
+
 An exact local Codex restart can restore the conversation after losing its active
 turn. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
 task result. The admitted restart attempt may send one continuation in that same
@@ -1264,6 +1299,13 @@ Examples:
 - a dependency graph has an invalid/uninvokable owner, unassigned blocker, or invalid review participant
 
 The recovery action stays source-scoped by default. Stranded-task escalation is board-owned and records the cause, evidence, next action, source and return owner, `routingPolicy: board_escalation_no_takeover_v1`, and wake or monitor policy in the source thread/detail surface.
+
+The recovery-actions read API also lists settled records whose automatic recovery
+receipt still blocks replay. A resolved recovery record does not by itself prove
+that work resumed. The task's stopped-run notice lets authorized board users
+inspect the matching decision under Recovery details, even when there is no
+active recovery action. Existing run inspection, verified continuation, new
+messages, and required-file repair remain the supported recovery paths.
 
 The board owns the recovery decision, not the source deliverable. Automatic recovery must preserve both source assignee fields. Only an explicit operator decision or applicable serious-failure policy may transfer the deliverable.
 

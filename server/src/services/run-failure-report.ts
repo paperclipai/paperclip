@@ -167,6 +167,23 @@ function isHermesConnectionFailure(run: HeartbeatRun, options: RunFailureReportO
 }
 
 /**
+ * The orphan reaper proved a server restart stopped legacy setup before
+ * dispatch and made the run eligible for its bounded retry. Only that reaper
+ * branch pairs process loss with bootstrap evidence.
+ */
+function isRestartInterruptedSetup(run: HeartbeatRun): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "process_lost" || run.runtimeMode !== "legacy" ||
+    run.executionStage !== "preparing" || run.processPid != null || run.processGroupId != null
+  ) return false;
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  const processLoss = asRecord(run.resultJson?.processLossDiagnostic);
+  return recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false &&
+    processLoss?.retryEligible === true && processLoss.runPredatesObserver === true &&
+    processLoss.localCheck === "no_identifiers";
+}
+
+/**
  * The adapter proved the user's provider account is out of quota, and recovery
  * waits for its reset. Both fields come from the adapter's own classifier.
  */
@@ -218,7 +235,8 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
-    isProviderQuotaFailure(run, options)
+    isProviderQuotaFailure(run, options) ||
+    isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options, mode);

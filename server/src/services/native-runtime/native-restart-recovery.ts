@@ -1,7 +1,12 @@
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
-import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
+import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
+import {
+  PROCESS_IDENTITY_RECORDED,
+  PROCESS_START_REQUESTED,
+  recordNativeLocalProcessStop,
+} from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -287,6 +292,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
+  unclaimedBootstrap?: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -308,6 +314,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
+      return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
+    }
     return input.hasCheckpoint &&
       input.checkpointIdentityMatches === true &&
       input.hasProviderEvidence
@@ -750,8 +759,54 @@ export async function claimNativeRestartRecoveries(input: {
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
+      let unclaimedBootstrap =
+        remoteWorkspace?.state === "prepared" &&
+        row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION &&
+        row.coordinator.phase === "observed" &&
+        row.coordinator.attempt === 0 &&
+        row.coordinator.controllerGeneration === 0 &&
+        !row.coordinator.controllerBootId &&
+        !row.coordinator.controllerPid &&
+        !row.coordinator.controllerProcessStartedAt &&
+        !row.coordinator.leaseOwner &&
+        !row.coordinator.leaseExpiresAt &&
+        !row.coordinator.failureDetail?.successorRunId &&
+        !row.run.processPid &&
+        !row.run.processGroupId &&
+        !row.run.processStartedAt &&
+        !row.run.sessionIdBefore &&
+        !row.run.sessionIdAfter &&
+        Boolean(row.run.nativeSessionId && row.run.runnerInstanceId) &&
+        !hasCheckpoint &&
+        !hasProviderEvidence;
+      if (unclaimedBootstrap) {
+        if (activeNativeExecutionRunIds.has(row.run.id) &&
+            controller.bootId === (await currentNativeControllerIdentity()).bootId) {
+          return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
+        }
+        const [executionEvent] = await tx
+          .select({ id: heartbeatRunEvents.id })
+          .from(heartbeatRunEvents)
+          .where(and(
+            eq(heartbeatRunEvents.companyId, row.run.companyId),
+            eq(heartbeatRunEvents.runId, row.run.id),
+            or(
+              isNotNull(heartbeatRunEvents.sourceEventId),
+              inArray(heartbeatRunEvents.eventType, [
+                "adapter.invoke",
+                PROCESS_START_REQUESTED,
+                PROCESS_IDENTITY_RECORDED,
+                "tool.execution.started",
+              ]),
+            ),
+          ))
+          .limit(1);
+        unclaimedBootstrap = !executionEvent;
+      }
+
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox,
+        unclaimedBootstrap,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,

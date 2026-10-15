@@ -23,7 +23,7 @@ import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractio
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -39,7 +39,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import {
@@ -283,6 +283,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  shouldWakeOnRestoredBlockedDependency,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -9503,8 +9504,11 @@ export function issueRoutes(
     });
     const retainedHolds = await db.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
-      sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
       sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      or(
+        sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+        inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+      ),
     )).orderBy(desc(issueRecoveryActions.createdAt));
     res.json({
       active,
@@ -15645,12 +15649,15 @@ export function issueRoutes(
           }
         }
 
-        const restoredBlockedReadyDependency =
-          issue.status === "blocked" &&
-          issue.assigneeAgentId &&
-          (existing.status !== "blocked" ||
-            Array.isArray(req.body.blockedByIssueIds) ||
-            existing.assigneeAgentId !== issue.assigneeAgentId);
+        const restoredBlockedReadyDependency = shouldWakeOnRestoredBlockedDependency({
+          previousStatus: existing.status,
+          nextStatus: issue.status,
+          previousAssigneeAgentId: existing.assigneeAgentId ?? null,
+          nextAssigneeAgentId: issue.assigneeAgentId ?? null,
+          blockerSetEdited: Array.isArray(req.body.blockedByIssueIds),
+          actorType: actor.actorType,
+          actorAgentId: actor.agentId ?? null,
+        });
         if (
           restoredBlockedReadyDependency &&
           typeof dependencyReadinessSvc.getDependencyReadiness === "function"

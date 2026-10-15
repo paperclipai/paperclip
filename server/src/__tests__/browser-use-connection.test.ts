@@ -407,6 +407,18 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(revoked.paperclipConnectorSkillDigest).toBeNull();
       expect((await prepareConnectorSkillDelivery(revoked, "cursor_local")).instructions).toBe("");
     });
+    it.each([false, true])("skips tool discovery without an active company Browser Use connection (foreign: %s)", async foreign => {
+      const f = await fixture();
+      await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.connectionId));
+      if (foreign) await fixture();
+      f.request.mockClear();
+      const discovery = vi.spyOn(db, "transaction");
+      try {
+        expect(await f.gateway.browserUseResources(f.binding)).toEqual([]);
+        expect(discovery).not.toHaveBeenCalled();
+        expect(f.request).not.toHaveBeenCalled();
+      } finally { discovery.mockRestore(); }
+    });
     it("withholds Cloud instructions when connection tools are disabled", async () => {
       const f = await fixture();
       await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.connectionId));

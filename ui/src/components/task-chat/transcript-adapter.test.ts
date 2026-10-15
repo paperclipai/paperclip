@@ -1715,14 +1715,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       if (m.kind !== "message") continue;
       expect(m.interstitial).toBe(true);
     }
-  });
-
-  it("marks only the message still open at the tail as streaming", () => {
-    const items = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: true,
-    });
-    const messages = items.filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     // The first message was closed by the tool call — finished self-talk.
@@ -1751,13 +1743,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       expect(m.interstitial).toBe(true);
       expect(m.streaming).toBe(false);
     }
-  });
-
-  it("stamps atMs from the first streamed chunk", () => {
-    const messages = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: false,
-    }).filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     expect(messages[0].atMs).toBe(Date.parse(TS));

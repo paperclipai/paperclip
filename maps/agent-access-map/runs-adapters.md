@@ -126,6 +126,15 @@ settings. See [creation access](./agents.md#hire).
 
 Review: `baseline`.
 
+Scoped source-only timing evidence: workspace preparation spans carry only the
+existing hashed run ID. Controller startup phase spans carry no custom attributes.
+Native controller setup and settlement phases use that same run hash, including
+assigned MCP discovery; neither tool definitions nor credentials are recorded.
+Both retain operator-controlled tracing; unconfigured clients stay silent.
+This adds no agent API, credential access, run-log write, or recovery authority.
+See [the tracing contract](../../doc/observability.md#controller-preparation-phases).
+Live latency verification remains separate from the existing access baseline.
+
 API: `present` — representative operation IDs:
 
 - `GET /api/heartbeat-runs/{runId}`.

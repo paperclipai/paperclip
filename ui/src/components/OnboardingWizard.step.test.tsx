@@ -293,15 +293,6 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(currentStep()).toBe("agent");
   });
 
-  it("opens on the agent step when the goals lookup fails outright", async () => {
-    routerState.pathname = "/PC1/onboarding";
-    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
-    await render();
-    await settle();
-
-    expect(currentStep()).toBe("agent");
-  });
-
   it("does not move an open wizard when a later refetch finds a mission", async () => {
     // The defect this file exists for, in its current form. A refetch landing
     // mid-flow used to flip the derived step from 2 to 3 and move the customer

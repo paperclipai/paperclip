@@ -698,6 +698,37 @@ describe("releaseIssueExecution", () => {
     expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
   });
 
+  it.each([
+    ["board cancel", { errorCode: "cancelled", operatorStopped: true }],
+    ["agent pause", { errorCode: "agent_paused", operatorStopped: true }],
+  ] as const)("does not re-queue or escalate a run a person stopped (%s)", async (_label, stop) => {
+    // Regression: a board cancel of a queued wake re-created it as
+    // issue_continuation_needed / issue_assignment_recovery within a second.
+    for (const status of ["in_progress", "todo"]) {
+      const transaction = createFakeTransaction();
+      const recovery = createFakeRecovery();
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }, { ...RUN, status: "cancelled", ...stop }),
+        recovery,
+      });
+      const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+      expect(result.outcome.kind).toBe("released");
+      expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+      expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still recovers a control-plane cancelled run that no person stopped", async () => {
+    const transaction = createFakeTransaction();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, status: "cancelled", errorCode: "cancelled", operatorStopped: false }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+  });
+
   it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {
     const transaction = createFakeTransaction();
     const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });

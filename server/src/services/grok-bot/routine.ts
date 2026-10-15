@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, isNotNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, isNotNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { companies, dotAgentBindings as bindings, dotRunnerAssignments as assignments,
   grokBotRoutines as routines, grokBotDispatches as dispatches, mcpOauthGrants, type Db } from "@paperclipai/db";
@@ -16,6 +16,12 @@ export const grokWakeAcknowledgementSchema = z.object({ correlationId: z.uuid(),
   bindingGeneration: z.number().int().positive(), challenge: z.string().min(20).max(100).optional() }).strict();
 type Ack = z.infer<typeof grokWakeAcknowledgementSchema>;
 type Delivery = typeof deliverGrokRoutineWake;
+
+/** Serialize work acceptance with the bounded HTTP handoff, without holding
+ * binding/assignment row locks that would block Stop or authenticated replies. */
+export async function lockGrokRoutineAcceptance(database: Db, bindingId: string) {
+  await database.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`grok-routine-acceptance:${bindingId}`}, 0))`);
+}
 
 /** Existing shared agent grants and assignments own authority; routines only wake the Bot. */
 export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutineWake) {
@@ -165,7 +171,7 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
       if (row.kind === "mailbox_updated") {
         if (!row.assignmentId) throw fail("Work wake requires an admitted assignment.");
         const { dotRunnerBroker } = await import("../dot-runner-broker.js");
-        await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, row.bindingId, row.assignmentId);
+        await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, row.bindingId, row.assignmentId, { requireOffered: true });
       }
       // Accepted, acknowledged and uncertain work is never sent again after restart.
       if (row.expiresAt <= new Date()) throw fail("Unsent dispatch expired. Inspect before creating a new verification.");
@@ -178,18 +184,32 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
       return row ? state(companyId, agentId, row.bindingId) : null;
     }
     let networkAttempted = false;
-    let outcome: GrokRoutineDelivery = { delivery: "unknown", httpStatus: null };
+    let outcome: { delivery: GrokRoutineDelivery["delivery"] | "cancelled"; httpStatus: number | null } = { delivery: "unknown", httpStatus: null };
     try {
       const secret = await secretService(db).resolveSecretValue(companyId, intent.routine.secretId, intent.routine.secretVersion,
         { accessContext: { consumerType: "agent", consumerId: agentId, configPath: "grok.routine", actorType: "system", actorId: "grok-dispatch" } });
-      // Recheck the grant after resolving credentials; resolution is not authority.
-      await current(db, companyId, agentId, intent.row.bindingId);
-      if (intent.row.kind === "mailbox_updated") {
-        const { dotRunnerBroker } = await import("../dot-runner-broker.js");
-        await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, intent.row.bindingId, intent.row.assignmentId!);
-      }
-      networkAttempted = true;
-      outcome = await deliver(JSON.parse(secret), intent.row.payload as GrokRoutineWake);
+      const handoff = async (database: Db) => {
+        // Acceptance may have committed while credentials were resolving. An
+        // obsolete, unsent wake is cancellation, not a provider rejection.
+        if (intent.row.kind === "mailbox_updated") {
+          const [assignment] = await database.select({ status: assignments.status }).from(assignments)
+            .where(and(eq(assignments.id, intent.row.assignmentId!), eq(assignments.bindingId, intent.row.bindingId)));
+          if (assignment && assignment.status !== "offered") return { delivery: "cancelled" as const, httpStatus: null };
+        }
+        // Recheck after acquiring the acceptance lock and resolving credentials.
+        await current(database, companyId, agentId, intent.row.bindingId);
+        if (intent.row.kind === "mailbox_updated") {
+          const { dotRunnerBroker } = await import("../dot-runner-broker.js");
+          await dotRunnerBroker(database).assertWakeAuthority(companyId, agentId, intent.row.bindingId, intent.row.assignmentId!, { requireOffered: true });
+        }
+        networkAttempted = true;
+        return deliver(JSON.parse(secret), intent.row.payload as GrokRoutineWake);
+      };
+      outcome = intent.row.kind === "mailbox_updated" ? await db.transaction(async tx => {
+        const database = tx as unknown as Db;
+        await lockGrokRoutineAcceptance(database, intent.row.bindingId);
+        return handoff(database);
+      }) : await handoff(db);
     } catch { outcome = { delivery: networkAttempted ? "unknown" : "rejected", httpStatus: null }; /* Do not persist exception or response text. */ }
     await db.transaction(async tx => {
       await tx.select({ id: bindings.id }).from(bindings).where(eq(bindings.id, intent.row.bindingId)).for("update");
@@ -215,7 +235,7 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
     if (row.dispatch.kind === "mailbox_updated") {
       if (!row.dispatch.assignmentId) throw fail("Work wake requires an admitted assignment.");
       const { dotRunnerBroker } = await import("../dot-runner-broker.js");
-      await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, binding.id, row.dispatch.assignmentId);
+      await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, binding.id, row.dispatch.assignmentId, { requireOffered: true });
     }
     // Retain the rejected receipt. Concurrent clicks reserve the same next intent;
     // accepted/unknown work can never enter this path, and is never replayed.

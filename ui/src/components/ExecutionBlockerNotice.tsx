@@ -3,6 +3,7 @@ import type { ExecutionBlocker, Issue } from "@paperclipai/shared";
 import { WorkspaceFileRecovery } from "./WorkspaceFileRecovery";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
+import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
@@ -18,6 +19,15 @@ export function ExecutionBlockerNotice({ companyId, issueId, issueStatus, canMan
   onRetried: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { data: recovery, error: recoveryError } = useQuery({
+    queryKey: queryKeys.issues.recoveryActions(issueId, blocker.recoveryActionId ?? null, blocker.runId ?? null),
+    queryFn: () => issuesApi.recoveryActions(issueId),
+    enabled: canManage && Boolean(blocker.recoveryActionId) && !["done", "cancelled"].includes(issueStatus ?? ""),
+    refetchInterval: 5_000,
+  });
+  const hold = recovery?.actions.find(action => action.id === blocker.recoveryActionId &&
+    (action.evidence.runId ?? action.evidence.sourceRunId) === blocker.runId);
+  const replayBlocked = (hold?.evidence.automaticRecovery as { replay?: unknown } | undefined)?.replay === "blocked";
   const { data: runs, error: runsError } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
@@ -75,6 +85,13 @@ export function ExecutionBlockerNotice({ companyId, issueId, issueStatus, canMan
         <p role="alert" className="w-full text-destructive">{retry.error.message}</p>
       )}
       {runsError && <p role="alert" className="w-full text-destructive">{runsError.message}</p>}
+      {canManage && hold && <details className="w-full">
+        <summary className="cursor-pointer">Recovery details</summary>
+        {replayBlocked &&
+          <p>Paperclip stopped automatic retries to avoid repeating work with an unknown outcome. Inspect the run before requesting continuation.</p>}
+        {hold.resolutionNote && <p>{hold.resolutionNote}</p>}
+      </details>}
+      {recoveryError && <p role="alert" className="w-full text-destructive">Unable to load recovery details: {recoveryError.message}</p>}
       {issueStatus && <WorkspaceFileRecovery key={`${blocker.recoveryActionId}:${blocker.runId}`} issueId={issueId}
         issueStatus={issueStatus} blocker={blocker} canManage={canManage} onRecorded={onRetried} />}
     </div>

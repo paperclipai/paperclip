@@ -316,16 +316,11 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
 
     const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
-    expect(headings).not.toContain("Conference Room Chat");
-    expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
-  });
 
-  it("does not render the Pipelines experimental setting for now", async () => {
-    await renderPage();
-
-    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
     expect(headings).not.toContain("Pipelines");
     expect(container.querySelector('button[aria-label="Toggle pipelines experimental setting"]')).toBeNull();
+    expect(headings).not.toContain("Conference Room Chat");
+    expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
   });
 
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
@@ -596,6 +591,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     setWorktreeRuntimeMeta(true);
     await renderPage();
 
+    expect(container.textContent).toContain(
+      "Only tasks created after enabling will run automatically",
+    );
+    expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
+    // Off => no armed banner and no fail-closed hint.
+    expect(container.textContent).not.toContain("Running tasks created after");
+    expect(container.textContent).not.toContain("Execution is suppressed");
+
     expect(container.textContent).toContain("Run tasks in this worktree");
     expect(container.textContent).toContain(
       "isolated git-worktree preview instance",
@@ -613,19 +616,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       enableWorktreeRunExecution: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("shows the cutoff-copy for the worktree run-execution toggle when off", async () => {
-    setWorktreeRuntimeMeta(true);
-    await renderPage();
-
-    expect(container.textContent).toContain(
-      "Only tasks created after enabling will run automatically",
-    );
-    expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
-    // Off => no armed banner and no fail-closed hint.
-    expect(container.textContent).not.toContain("Running tasks created after");
-    expect(container.textContent).not.toContain("Execution is suppressed");
   });
 
   it("shows the armed timestamp when the flag matches the current instance", async () => {

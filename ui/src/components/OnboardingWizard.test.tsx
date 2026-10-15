@@ -457,19 +457,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await flushReact();
     }
 
-    it("creates the organization on Continue and lands on the agent step, no mission", async () => {
-      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne();
-      await clickByText((t) => t.startsWith("Continue"));
-
-      expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
-      expect(document.body.textContent).toContain("Create your first agent");
-      expect(document.body.textContent).not.toContain("Define your mission");
-      expect(document.body.textContent).not.toContain("Tell us about your team");
-
-      await act(async () => root.unmount());
-    });
-
     it("shows no environment-check card on the model step, and no Mission row on review", async () => {
       // Round-3 walk feedback: the adapter environment check still runs —
       // Connect probes before hiring and blocks on a fail — but its idle card
@@ -480,6 +467,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       const { root } = await openStepOne();
       await clickByText((t) => t.startsWith("Continue"));
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+      expect(document.body.textContent).not.toContain("Define your mission");
+      expect(document.body.textContent).not.toContain("Tell us about your team");
       expect(document.body.textContent).toContain("Create your first agent");
 
       // Step 3 → 4 needs an agent name — the one field the step has now.
@@ -1059,12 +1050,28 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // Selecting the provider automatically verifies the saved subscription.
       await flushReact();
 
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
+        type: "user_secret_ref",
+        key: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        version: "latest",
+        required: true,
+      });
+
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
       const hireBody = hireArgs[1] as {
         adapterConfig: { env?: Record<string, unknown> };
         applyStoredClaudeLogin?: boolean;
       };
+
+      const binding = hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY] as
+        | { type: string }
+        | undefined;
+      expect(binding?.type).toBe("user_secret_ref");
+      expect(JSON.stringify(hireBody)).not.toContain("secretId");
       expect(hireBody.applyStoredClaudeLogin).toBe(true);
       expect(hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
         type: "user_secret_ref",
@@ -1083,6 +1090,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root, clickByText } = await openConnectStep();
 
       await clickByText((t) => isArcPrimary(t));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -1120,68 +1132,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       };
       expect(hireBody.applyStoredClaudeLogin).toBeUndefined();
       expect(hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
-
-      await act(async () => root.unmount());
-    });
-
-    it("carries no token value in the hire payload", async () => {
-      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
-      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
-        secretId: "11111111-1111-1111-1111-111111111111",
-        latestVersion: 1,
-      });
-      const { root } = await openConnectStep();
-      // Selecting the provider automatically verifies the saved subscription.
-      await flushReact();
-
-      expect(mockAgentsApi.hire).toHaveBeenCalled();
-      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
-      const hireBody = hireArgs[1] as { adapterConfig: { env?: Record<string, unknown> } };
-      const binding = hireBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY] as
-        | { type: string }
-        | undefined;
-      // A reference, never a value: no `value` field, no `secretId` field
-      // either — the fixed binding names the env var, not the status
-      // response's secret id.
-      expect(binding?.type).toBe("user_secret_ref");
-      expect(JSON.stringify(hireBody)).not.toContain("secretId");
-
-      await act(async () => root.unmount());
-    });
-
-    it("sends the fixed binding in the environment test request when the status route returns 200", async () => {
-      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
-      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
-        secretId: "11111111-1111-1111-1111-111111111111",
-        latestVersion: 1,
-      });
-      const { root } = await openConnectStep();
-      // Selecting the provider automatically verifies the saved subscription.
-      await flushReact();
-
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
-      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
-      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
-      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
-        type: "user_secret_ref",
-        key: CLAUDE_OAUTH_TOKEN_ENV_KEY,
-        version: "latest",
-        required: true,
-      });
-
-      await act(async () => root.unmount());
-    });
-
-    it("sends no binding in the environment test request when the status route returns 404", async () => {
-      // The default `beforeEach` mock already rejects with a 404 `ApiError`.
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
-
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
-      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
-      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
-      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
 
       await act(async () => root.unmount());
     });
@@ -3004,6 +2954,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "claude_local" });
 
       await pickSource(/Claude/);
+
+      expect(document.body.textContent).toContain("Sign in to Claude then come back and enter authorization code");
+      expect(document.body.textContent).not.toContain("Use saved login");
       expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
 
       const back = [...document.body.querySelectorAll("button")].find((b) =>
@@ -3039,15 +2992,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
 
-      await act(async () => root.unmount());
-    });
-
-    it("renders no 'Use saved login' control", async () => {
-      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
-      const { root } = await openStep4({ adapterType: "claude_local" });
-      await pickSource(/Claude/);
-      expect(document.body.textContent).toContain("Sign in to Claude then come back and enter authorization code");
-      expect(document.body.textContent).not.toContain("Use saved login");
       await act(async () => root.unmount());
     });
 

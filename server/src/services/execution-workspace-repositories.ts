@@ -4,13 +4,13 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { and, eq, isNotNull, or, sql } from "drizzle-orm";
+import { and, inArray, eq, isNotNull, or, sql } from "drizzle-orm";
 import { activityLog, agents, heartbeatRuns, projects, projectWorkspaces, executionWorkspaceRepositoryAccess, executionWorkspaceRepositoryRoots, executionWorkspaceRepositories, executionWorkspaces, issues, type Db } from "@paperclipai/db";
 import { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository, type ProjectRepository } from "@paperclipai/shared";
 import { withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
-import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
+import { assertTaskWorkspacesReadAccessForActors, assertTaskWorkspacesReadAccess, assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { authorizationService, canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition, issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH, resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
@@ -239,7 +239,7 @@ export async function assertExecutionWorkspaceRootReadAccess(db: Db | DbTransact
   companyId: string; cwd: string; actor: AuthorizationActor; sourceWorkspaceId?: string;
 }): Promise<void> {
   const { sourceIds, sourceProjectIds } = await resolveRepositoryRootSources(db, { ...input, inspectCurrentAliases: true });
-  for (const sourceId of sourceIds) await assertTaskWorkspaceAccess(db, input.actor, input.companyId, sourceId);
+  await assertTaskWorkspacesReadAccess(db, input.actor, input.companyId, sourceIds);
   await assertRootProjectAccess(db, input.actor, input.companyId, sourceProjectIds);
 }
 
@@ -256,11 +256,13 @@ async function retainGitMetadataOwners(tx: DbTransaction, input: {
   const closure = await resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: input.commonRoot, inspectCurrentAliases: true });
   const workspaceIds = new Set([...closure.sourceIds, ...input.workspaceIds]);
   const projectIds = new Set([...closure.sourceProjectIds, ...input.projectIds]);
+  const readerActors: AuthorizationActor[] = [];
   for (const reader of closure.overlappingEntries.filter(entry => entry.kind === "reader")) {
     const { actor } = await retainedRootReader(tx, input.companyId, reader);
-    for (const id of workspaceIds) await assertTaskWorkspaceAccess(tx, actor, input.companyId, id);
+    readerActors.push(actor);
     await assertRootProjectAccess(tx, actor, input.companyId, projectIds);
   }
+  await assertTaskWorkspacesReadAccessForActors(tx, readerActors, input.companyId, workspaceIds);
   for (const [kind, ids] of [["source", workspaceIds], ["project_source", projectIds]] as const) {
     for (const scopeId of ids) if (!closure.entries.some(entry => entry.kind === kind && entry.scopeId === scopeId)) {
       await tx.insert(executionWorkspaceRepositoryAccess).values({ companyId: input.companyId,
@@ -278,10 +280,8 @@ export async function assertIsolatedWorkspaceSourceReadAccess(db: Db, input: {
     const workspaceIds = new Set<string>(), projectIds = new Set<string>();
     for (const cwd of roots) {
       const closure = await resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, inspectCurrentAliases: true });
-      for (const id of closure.sourceIds) {
-        await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, id);
-        workspaceIds.add(id);
-      }
+      await assertTaskWorkspacesReadAccess(tx, input.actor, input.companyId, closure.sourceIds);
+      for (const id of closure.sourceIds) workspaceIds.add(id);
       await assertRootProjectAccess(tx, input.actor, input.companyId, closure.sourceProjectIds);
       for (const id of closure.sourceProjectIds) projectIds.add(id);
     }
@@ -315,10 +315,8 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
         for (const id of closure.sourceProjectIds) projectIds.add(id);
       } catch (error) { failure ??= error; }
     }
-    for (const id of workspaceIds) {
-      try { await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, id); }
-      catch (error) { failure ??= error; }
-    }
+    try { await assertTaskWorkspacesReadAccess(tx, input.actor, input.companyId, workspaceIds); }
+    catch (error) { failure ??= error; }
     for (const id of projectIds) {
       try { await assertRootProjectAccess(tx, input.actor, input.companyId, new Set([id])); }
       catch (error) { failure ??= error; }
@@ -350,15 +348,17 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
     try {
       const target = await resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: canonicalCwd, preparingCopyProjectIds });
       await assertRootProjectTrust(tx, { companyId: input.companyId, actor: input.actor, issueId: input.issueId, projectIds: target.sourceProjectIds });
-      for (const id of target.sourceIds) await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, id);
+      await assertTaskWorkspacesReadAccess(tx, input.actor, input.companyId, target.sourceIds);
       await assertRootProjectAccess(tx, input.actor, input.companyId, target.sourceProjectIds,
         { sharedProjectIds: target.sharedProjectIds, issueId: input.issueId });
+      const readerActors: AuthorizationActor[] = [];
       for (const reader of target.overlappingEntries.filter(entry => entry.kind === "reader")) {
         const { actor, issue } = await retainedRootReader(tx, input.companyId, reader);
+        readerActors.push(actor);
         await assertRootProjectTrust(tx, { companyId: input.companyId, actor, issueId: issue.id, projectIds: target.sourceProjectIds });
-        for (const id of target.sourceIds) await assertTaskWorkspaceAccess(tx, actor, input.companyId, id);
         await assertRootProjectAccess(tx, actor, input.companyId, target.sourceProjectIds);
       }
+      await assertTaskWorkspacesReadAccessForActors(tx, readerActors, input.companyId, target.sourceIds);
     } catch (error) { failure ??= error; }
     if (!failure && verifiedCopyProjectIds) {
       for (const scopeId of verifiedCopyProjectIds) if (!existing.some(entry => entry.kind === "isolated_copy" && entry.scopeId === scopeId)) {
@@ -451,7 +451,7 @@ export async function assertExecutionWorkspaceRootWriteAccess(db: Db | DbTransac
   companyId: string; cwd: string; actor: AuthorizationActor; sourceWorkspaceId?: string; taskCreation?: TaskWorkspaceCreationTrustContext;
 } & Omit<NonNullable<Parameters<typeof assertTaskWorkspaceSourceProjectAccess>[4]>, "write">): Promise<void> {
   const { sourceIds, sourceProjectIds, sharedProjectIds } = await resolveRepositoryRootSources(db, { ...input, inspectCurrentAliases: true });
-  for (const sourceId of sourceIds) await assertTaskWorkspaceAccess(db, input.actor, input.companyId, sourceId);
+  await assertTaskWorkspacesReadAccess(db, input.actor, input.companyId, sourceIds);
   await assertRootProjectAccess(db, input.actor, input.companyId, sourceProjectIds, { ...input, sharedProjectIds });
   await assertRootProjectTrust(db, { ...input, projectIds: sourceProjectIds });
 }
@@ -461,7 +461,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
     return (await toolAccessService(db).listProjectRepositories(companyId, userId, localTrusted)).repositories;
   }
   async function requiresAnonymousAcquisition(reader: Db | DbTransaction, input: {
-    issue: typeof issues.$inferSelect; workspace: typeof executionWorkspaces.$inferSelect | null;
+    issue: typeof issues.$inferSelect; workspace: Pick<typeof executionWorkspaces.$inferSelect, "projectId"> | null;
     agentId?: string | null; runId?: string | null;
   }) {
     const { issue, workspace } = input;
@@ -542,6 +542,9 @@ export function executionWorkspaceRepositoryService(db: Db) {
     const ownAdmissionOnly = input.preserveOwnAdmission && input.reader && input.sourceWorkspaceId
       && sourceIds.size === 1 && sourceIds.has(input.sourceWorkspaceId)
       && readers.every(reader => reader.issueId === input.reader!.issueId);
+    const sourceProjects = sourceIds.size ? await tx.selectDistinct({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, input.companyId), inArray(executionWorkspaces.id, [...sourceIds]))) : [];
+    const sourceActors: AuthorizationActor[] = [];
     for (const reader of readers) {
       const { actor, issue } = await retainedRootReader(tx, input.companyId, reader);
       await assertRootProjectTrust(tx, { companyId: input.companyId, projectIds: sourceProjectIds, actor, issueId: issue.id,
@@ -556,10 +559,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
             type: "board", userId: actor.onBehalfOfUserId, ignoreInstanceAdmin: true,
           }) : undefined));
         if (!ownSource) throw forbidden("Task workspace access is no longer available");
-      } else for (const sourceId of sourceIds) await assertTaskWorkspaceAccess(tx, actor, input.companyId, sourceId);
-      const sourceWorkspaces = sourceIds.size ? await tx.select().from(executionWorkspaces).where(and(
-        eq(executionWorkspaces.companyId, input.companyId), or(...[...sourceIds].map(id => eq(executionWorkspaces.id, id))))) : [];
-      for (const sourceWorkspace of sourceWorkspaces.length ? sourceWorkspaces : [null]) {
+      } else sourceActors.push(actor);
+      for (const sourceWorkspace of sourceProjects.length ? sourceProjects : [null]) {
         if (await requiresAnonymousAcquisition(tx, { issue, workspace: sourceWorkspace, agentId: reader.agentId!, runId: reader.scopeId })) {
           await reserveRootPolicy(tx, input.companyId, canonicalCwd, "anonymous_only");
         }
@@ -569,8 +570,9 @@ export function executionWorkspaceRepositoryService(db: Db) {
       if (!input.issueId) throw forbidden("Workspace write authorization requires a task");
       await assertRootProjectTrust(tx, { ...input, projectIds: sourceProjectIds, actor: input.actor });
       await assertRootProjectAccess(tx, input.actor, input.companyId, sourceProjectIds, { sharedProjectIds, issueId: input.issueId });
-      for (const sourceId of sourceIds) await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, sourceId);
+      sourceActors.push(input.actor);
     }
+    await assertTaskWorkspacesReadAccessForActors(tx, sourceActors, input.companyId, sourceIds);
     for (const [kind, ids] of [["source", sharedSourceIds], ["isolated_source", isolatedSourceIds], ["project_source", sourceProjectIds],
       ["shared_project_source", sharedProjectIds], ["isolated_project_source", isolatedProjectIds]] as const) {
       for (const scopeId of ids) {
@@ -714,10 +716,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
             for (const id of source.sourceProjectIds) projectIds.add(id);
           } catch (error) { failure ??= error; }
         }
-        for (const id of workspaceIds) {
-          try { await assertTaskWorkspaceAccess(tx, actor, input.companyId, id); }
-          catch (error) { failure ??= error; }
-        }
+        try { await assertTaskWorkspacesReadAccess(tx, actor, input.companyId, workspaceIds); }
+        catch (error) { failure ??= error; }
         for (const id of projectIds) {
           try { await assertRootProjectAccess(tx, actor, input.companyId, new Set([id])); }
           catch (error) { failure ??= error; }

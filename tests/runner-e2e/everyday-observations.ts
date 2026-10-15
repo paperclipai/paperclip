@@ -1,4 +1,5 @@
 import type { IssueComment } from "../../packages/shared/src/types/issue.js";
+import { gradeRemoteRestart, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 
 export interface StoryCheck {
   id: string;
@@ -140,6 +141,7 @@ export interface StoryRun {
   lastOutputSeq?: number | null;
   errorCode?: string | null;
   error?: string | null;
+  nativePhase?: string | null;
 }
 
 export type StoryArtifactGradeMode = "base" | "separator" | "max-length";
@@ -272,6 +274,8 @@ export function storyLifecycleChecks(input: {
   parentId: string;
   leadId: string;
   allowedInterruptedRuns?: string[];
+  requireRemoteRestart?: boolean;
+  remoteRestart?: RemoteRestartEvidence;
 }): StoryCheck[] {
   const executed = input.runs.filter((r) => !isStoryWorkspaceDeferral(r));
   const allowed = input.allowedInterruptedRuns ?? [];
@@ -281,6 +285,7 @@ export function storyLifecycleChecks(input: {
     detail,
   });
   return [
+    ...(input.requireRemoteRestart ? gradeRemoteRestart(input.remoteRestart) : []),
     check(
       "tasks-done",
       input.issues.length > 0 && input.issues.every((i) => i.status === "done"),

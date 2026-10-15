@@ -3,7 +3,14 @@ import express, { type Request } from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
+import {
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import { actorMiddleware, cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./idle-admission.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
@@ -59,10 +66,14 @@ function createFakeDb(options: {
       return chain;
     },
     select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
       return {
         from: (table: unknown) => ({
           where: (condition: unknown) => {
+            // Role-default grant seeding reads existing grants first; keep that
+            // read working so selectThrows exercises only the degradable reads.
+            if (options.selectThrows && table !== principalPermissionGrants) {
+              throw new Error("select unavailable");
+            }
             selectWheres.push({ table, condition });
             const rows =
               table === instanceSettings && settingsRow

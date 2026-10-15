@@ -1,0 +1,530 @@
+{
+  "audit": {
+    "file": "ui/src/components/AgentConfigForm.render.test.tsx",
+    "base": "e3effbb9e5c66b838f67fd487987c8bf1007e413",
+    "originalSha256": "57282ae3afe8c55ac118f3a658152d8df500a87b15383c8f6b0530a7fdcfb8a0",
+    "candidateSha256": "132112f3d2bb74d0844673a39ce31ffca1306e0b82d9846f3e0cafaf83e81708",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 4,
+    "rootRendersRemoved": 4,
+    "netTestLinesRemoved": 44,
+    "migrations": [
+      {
+        "retired": "keeps secret access out of the main Configuration content",
+        "keeper": "hides the environment override when Local is the only configured environment",
+        "exactSetupStatements": 2,
+        "sameEnclosingHooks": true,
+        "exactCleanupStatements": 0,
+        "migratedGuards": [
+          "expect(result.container.textContent).not.toContain(\"Secret access\");"
+        ],
+        "exactDuplicateGuardAlreadyKept": [],
+        "registeredInvocationsRemoved": 1,
+        "rootRendersRemoved": 1
+      },
+      {
+        "retired": "starts a login session for the effective sandbox and shows the code and the authentication URL",
+        "keeper": "shows a Cancel affordance while a login is active and cancels the session",
+        "exactSetupStatements": 5,
+        "sameEnclosingHooks": true,
+        "exactCleanupStatements": 0,
+        "migratedGuards": [
+          "expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith(\"company-1\", \"codex_local\", {\n      environmentId: \"sandbox-1\",\n    });",
+          "expect(result.container.textContent).toContain(\"WXYZ-1234\");",
+          "expect(result.container.textContent).toContain(\"https://auth.example.test/device\");"
+        ],
+        "exactDuplicateGuardAlreadyKept": [],
+        "registeredInvocationsRemoved": 1,
+        "rootRendersRemoved": 1
+      },
+      {
+        "retired": "shows the authorization URL and a browser-code input for a Claude sandbox",
+        "keeper": "cancels an active Claude login and returns to its start state",
+        "exactSetupStatements": 6,
+        "sameEnclosingHooks": true,
+        "exactCleanupStatements": 0,
+        "migratedGuards": [
+          "expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith(\"company-1\", {\n      environmentId: \"sandbox-1\",\n    });",
+          "expect(result.container.textContent).toContain(\"https://claude.example.test/authorize\");",
+          "expect(\n      result.container.querySelector('input[aria-label=\"Browser code\"]'),\n    ).toBeTruthy();",
+          "expect(result.container.textContent).not.toContain(\"not encrypted\");"
+        ],
+        "exactDuplicateGuardAlreadyKept": [],
+        "registeredInvocationsRemoved": 1,
+        "rootRendersRemoved": 1
+      },
+      {
+        "retired": "keeps the non-path ACP controls visible when the policy hides the engine choice",
+        "keeper": "hides the host path and execution-engine fields for claude_local when the policy is on",
+        "exactSetupStatements": 6,
+        "sameEnclosingHooks": true,
+        "exactCleanupStatements": 0,
+        "migratedGuards": [
+          "expect(labels).toContain(\"ACP session mode\");",
+          "expect(labels).toContain(\"ACP non-interactive permissions\");"
+        ],
+        "exactDuplicateGuardAlreadyKept": [],
+        "registeredInvocationsRemoved": 1,
+        "rootRendersRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "084bdbc359e510397ef64daeb24e259efbc62c8b5d2c56d3e09d7f2534f155aa",
+  "mutationVerifierSha256": "ca8463047109d38a447d93fb94a19bb8efe9b1df440e0abf91ab31a8c0a358a2",
+  "runs": [
+    {
+      "kind": "baseline",
+      "total": 99,
+      "passed": 99,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "16a733e7e1de263ce88f1fbd89b94d4844aab7b6e7eca1fd670899fd670e263f",
+      "logSha256": "3f6f04966d8971e70a782681fccde2afd1aee5099fd8f376197109ed2babd2e5"
+    },
+    {
+      "kind": "candidate",
+      "total": 95,
+      "passed": 95,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "7fdabb69061f6d6f072c17224832171a225ac9a992d53c94d050c277eb467120",
+      "logSha256": "2717b82c2589f41dad5d9e926a7a37dd4fd79594acc1e9e6d9614a89ae2b5841"
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "secrets",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "hides the environment override when Local is the only configured environment",
+      "mutation": {
+        "before": "if (!isCreate && props.content === \"secrets\")",
+        "after": "if (!isCreate && (props.content === \"secrets\" || props.content === undefined))",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(result.container.textContent).not.toContain(\"Secret access\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "24cf0c3e870ddc964fe327426491a4bbdfde043206191df578686ffb089d2f8f",
+        "logSha256": "10c8a0e3b2aafe33ab63fce0881fdf2b066d1cee507ccc589db6076701da4161",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "a9af939b306874f9bc7ef93c6954f3a234aafbb252c14672097aa33732c86f90",
+        "logSha256": "7fa30fef5ccdfa2cb797df92c4b207dff1eac29c99b9dcefa7a977278a4c3593",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Secret accessSecrets this agent can r\u2026' not to contain 'Secret access'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:822:46\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "codex-company",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "shows a Cancel affordance while a login is active and cancels the session",
+      "mutation": {
+        "before": "agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection })",
+        "after": "agentsApi.startAdapterAuthLogin(\"wrong-company\", adapterType, { environmentId, aiConnection })",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "fabccb095c86b4151cb80e0446d83e60074a4da76e7f0a36d4fef0246a483696",
+        "logSha256": "3397bb075079467542110406669cb26177cbbcdee8c6e6c56a5f52ccaaafd30f",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "332cf3fce408da458c33289abaf343fbf76ffedc68d37ee532a5c43ffc09f93e",
+        "logSha256": "81892e052e638ba655789fcac2b9bf95b243d1bd628c86a72053ebd7c596a432",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ Array(3) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"company-1\",\n+   \"wrong-company\",\n    \"codex_local\",\n    {\n+     \"aiConnection\": undefined,\n      \"environmentId\": \"sandbox-1\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:1593:49\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "codex-adapter",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "shows a Cancel affordance while a login is active and cancels the session",
+      "mutation": {
+        "before": "agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection })",
+        "after": "agentsApi.startAdapterAuthLogin(companyId, \"wrong-adapter\", { environmentId, aiConnection })",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "3acb41404a916f7bc11b1ff698bfbaaa22017c67835907e59283b7b1df5ea07c",
+        "logSha256": "6530c744b0788868f9123b062307dfd1fac3f40740e193943a81da360fb19f3a",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "b3cbd3bfee156e965bed6924beefc3f0e6009785f3dcade569f03b88fd5cba55",
+        "logSha256": "90eeb1ecbbce2406915a5123c24d1311016fc1fe3d878af795781da3c352a071",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ Array(3) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n-   \"codex_local\",\n+   \"wrong-adapter\",\n    {\n+     \"aiConnection\": undefined,\n      \"environmentId\": \"sandbox-1\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:1593:49\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "codex-environment",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "shows a Cancel affordance while a login is active and cancels the session",
+      "mutation": {
+        "before": "agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection })",
+        "after": "agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId: \"wrong-sandbox\", aiConnection })",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "3afd47d7705415ceb4ad8b7ce1415bd61b0b202d65732881660d75e75910c536",
+        "logSha256": "874b11b544fc038fba5e9ff57b156229acbbefb1db8410bf1bebc6794d1e5f20",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "2750457c4f575d786dade8a250f50520e08b1e351c95d2562900a06ffc9ab769",
+        "logSha256": "845ff3e01a9b6640496b2f895ca31e169639a65e3bf8e94bb3a383026e232b8b",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ Array(3) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n    \"codex_local\",\n    {\n-     \"environmentId\": \"sandbox-1\",\n+     \"aiConnection\": undefined,\n+     \"environmentId\": \"wrong-sandbox\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:1593:49\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "codex-code",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "shows a Cancel affordance while a login is active and cancels the session",
+      "mutation": {
+        "before": "{prompt.code}</span>",
+        "after": "{\"missing code\"}</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(result.container.textContent).toContain(\"WXYZ-1234\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f985ab64892d06589b60759cb68183f52c9128056b79c93e69880cb5ff8c3ad1",
+        "logSha256": "dba2f7e6b14ed30859608119e88ac17f20c3c6de3ad93727a357d3860dc5a592",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "3a7ecc1e9c5e40c93c8e92f9e3930a4d0a01a2f84f01ffed53541c3403be4737",
+        "logSha256": "77c403024242dedc9cfa765484486337c97a35133cea348ed4ec57caf26a760d",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'IdentityNameTitleReports toChoose man\u2026' to contain 'WXYZ-1234'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:1596:42\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "codex-url",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "shows a Cancel affordance while a login is active and cancels the session",
+      "mutation": {
+        "before": "{prompt.url}</span>",
+        "after": "{\"missing url\"}</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(result.container.textContent).toContain(\"https://auth.example.test/device\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "0a11ca18e53fda28ea9a2956ee7254ab1b9f40f32f772b530df169adb06569b9",
+        "logSha256": "1772bbd6667cd1f32383f0671a186bc263054ef434de07933bac4feda1e3d4b6",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "3cca5f95b518a31622ebf3f17758c4617fa40476623210da56eee539c5a1efb6",
+        "logSha256": "1bac45eb7f9b150cdc6a99067d62e588baeca3af41d148fe897d0a0fa5949332",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'IdentityNameTitleReports toChoose man\u2026' to contain 'https://auth.example.test/device'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:1597:42\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "claude-company",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "cancels an active Claude login and returns to its start state",
+      "mutation": {
+        "before": "agentsApi.startClaudeSetupTokenLogin(companyId, {",
+        "after": "agentsApi.startClaudeSetupTokenLogin(\"wrong-company\", {",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "40ec576f564d239009569ca0033715f58f5b255f76ef22da20b134c2e490218f",
+        "logSha256": "075d5fe2d62f1b80f60d63e0ce37e540fffdf2e666b01a21740264e6d4075478",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "0bf3dff32509866e86a80d67029ee81a1437d335045a91cb6cdf7f6ce59b5982",
+        "logSha256": "7ae4dcd73616fa424d373204986a05e798f573b5659daef4ac58bc6f7b9d9fdf",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(1) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"company-1\",\n+   \"wrong-company\",\n    {\n+     \"aiConnection\": undefined,\n      \"environmentId\": \"sandbox-1\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:2782:54\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "claude-environment",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "cancels an active Claude login and returns to its start state",
+      "mutation": {
+        "before": "agentsApi.startClaudeSetupTokenLogin(companyId, {\n        environmentId,",
+        "after": "agentsApi.startClaudeSetupTokenLogin(companyId, {\n        environmentId: \"wrong-sandbox\",",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "4250b6cc6d66dc4df5753f403ef6894ceacdbc94bbf7812c5788ae143201d617",
+        "logSha256": "b76c385cbee9d1e26130b8e0c8c5f61fb2b31523e2ca65e2fbbf7303037ff179",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "7dfc3e5efa6eeb0c719d717b901b31fca6ca4a5cff1eb817382fa932a90f983b",
+        "logSha256": "56c3a19a6f86d4cc69918c47afd81bc4b4d887f788c135c7b956ea4fc3c0903c",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(1) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n    {\n-     \"environmentId\": \"sandbox-1\",\n+     \"aiConnection\": undefined,\n+     \"environmentId\": \"wrong-sandbox\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:2782:54\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "claude-url",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "cancels an active Claude login and returns to its start state",
+      "mutation": {
+        "before": "{authorizationUrl}</span>",
+        "after": "{\"missing authorization url\"}</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(result.container.textContent).toContain(\"https://claude.example.test/authorize\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "8ee00e28a8630374d9bfe8c85d96a44121121377b89b7f845ee4b32d659833f5",
+        "logSha256": "35255166875e6184b0a10b1abc4c6f42a281d4217eeac6ba2d1bbda83620aaf9",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "b2aca78cbef836af30a95188def37939d9ea2d0af743392abe804ae1bf118605",
+        "logSha256": "bb383cfabd0dc16036f31324b47ad392159a9eb7db75c622e2c2e132c2d1ee63",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'IdentityNameTitleReports toChoose man\u2026' to contain 'https://claude.example.test/authorize'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:2787:42\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "claude-input",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "cancels an active Claude login and returns to its start state",
+      "mutation": {
+        "before": "aria-label=\"Browser code\"",
+        "after": "aria-label=\"Missing browser input\"",
+        "replacementCount": 1
+      },
+      "intendedGuard": "result.container.querySelector('input[aria-label=\"Browser code\"]')",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "cf8cb1ded0e9999bb966c94c1c38aa7a147d217a06ff4ebe647c4f03ed3e550f",
+        "logSha256": "dc8c2389ba9b411989fc0d60a27e489829b21de1001c94b908555c337dfc685e",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "1bffa0d67d82af2e69b851eea8a1d4b2c319f85cad4b9b9fdf36dc95c143bde5",
+        "logSha256": "13f2b561842f8803f084be9723c7042abf5c0be74b625c99effb180f0c57dc4d",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected null to be truthy\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:2790:7\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "claude-advisory",
+      "owner": "ui/src/components/AgentConfigForm.tsx",
+      "sourceSha256": "bf999102f39bfc762747ce5d598e1e6ec2f926ac5fb28de55fa1baf5493f28b1",
+      "title": "cancels an active Claude login and returns to its start state",
+      "mutation": {
+        "before": "{transportInsecure && (",
+        "after": "{true && (",
+        "replacementCount": 2
+      },
+      "intendedGuard": "expect(result.container.textContent).not.toContain(\"not encrypted\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "ce03b65cc51ee03992fec6dfa438798f57053b914aca0cb56a791a43817a04b7",
+        "logSha256": "1e6753c737dd67dafe5f8cc4f7ec40be3be0875a4b97f0668e8d457a31462d4f",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "7f3ed2737dd31b0caf900567545c59d50c2cbf9aca876fd35080f13c87fb8757",
+        "logSha256": "aca8606f2a3f8176814074b81c913ec3f702e44141cd2131e28c14de2ce695c7",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'IdentityNameTitleReports toChoose man\u2026' not to contain 'not encrypted'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:2793:46\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "acp-mode",
+      "owner": "ui/src/adapters/claude-local/config-fields.tsx",
+      "sourceSha256": "c7e5aa4093bf30d31d5d3b1de092abe767965b7c79143965f92f8c250bf916f6",
+      "title": "hides the host path and execution-engine fields for claude_local when the policy is on",
+      "mutation": {
+        "before": "label=\"ACP session mode\"",
+        "after": "label=\"Missing ACP mode\"",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(labels).toContain(\"ACP session mode\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f6011ba4b3d6f34b47bf64dd76424cfb674b81a6663a58df2dd3994b9f87fca7",
+        "logSha256": "0174f7e7bcb488d93a15306214bb579be7049bfba08e3a048c3183f79360b6b0",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "294e714633d60e3121afe528b1c461d32bf13e4407cbfbd0da2581fc6d22f1ad",
+        "logSha256": "90a2ade05e125113eabeb530edec54a30e21dabd097407bb285139f4d87a35af",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected [ Array(17) ] to include 'ACP session mode'\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2077:15)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:3599:20\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "acp-permissions",
+      "owner": "ui/src/adapters/claude-local/config-fields.tsx",
+      "sourceSha256": "c7e5aa4093bf30d31d5d3b1de092abe767965b7c79143965f92f8c250bf916f6",
+      "title": "hides the host path and execution-engine fields for claude_local when the policy is on",
+      "mutation": {
+        "before": "label=\"ACP non-interactive permissions\"",
+        "after": "label=\"Missing ACP permissions\"",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(labels).toContain(\"ACP non-interactive permissions\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f859cc875b6f5c83be73f63cf9122d2fe928ad225c6d815a9ae29f6fed365766",
+        "logSha256": "06269344f536044578526368812f6c89c02f8208b9258beb773d14043859720b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "b8b76b1c053101b532aec230f5356cbea28900d0c40fb012e3a8cc9b93a1ff2d",
+        "logSha256": "590f6908806038ca072a41f61516323dcba661886afbab66c0e1cf280c596060",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected [ Array(17) ] to include 'ACP non-interactive permissions'\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2077:15)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/AgentConfigForm.render.test.tsx:3600:20\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary-controls.json",
+      "sha256": "bad49e7bc92dea919df6b980bfa45e7452984cf31a6fd4655b355ba0444ff9a6"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary.md",
+      "sha256": "cd6f173584db0d485004af6f85b1ce78fa65b19d8c6ef582b061f0d232c6c1ed"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments-controls.json",
+      "sha256": "c4ff66a3226e1edafd286cad0ca45c9445795b46944cf70d606c59a754913f3a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments.md",
+      "sha256": "d38715393c95306d10e871a5a2c9a32f105fa1452871cd7ad030d86dbbdb7416"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route-controls.json",
+      "sha256": "0a72a7770ec749f2c0507a74d395e65d70b722d0b9d2a767a2c066a67ed46382"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route.md",
+      "sha256": "9b5e1543163d6c9d0958aa3e377a593ec458f6674ce1ddb2bf3ca158786f09c4"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar-controls.json",
+      "sha256": "ae9f24746e67432cf6247c5da130b9c1bba46fc85112c0610d3f18545dfce326"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar.md",
+      "sha256": "5e267441c43aa8375fa5c54edcbd2879428d657708be9a2ab372aa66e4792886"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline-controls.json",
+      "sha256": "6a86b07770f1cd8d758334fb61c46254197a7f533d24c056fc9a52c317488291"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline.md",
+      "sha256": "612dc3ec4c3d435888055ba20a7f28230ce89ea8b071b8c38d1ea2c147074a96"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

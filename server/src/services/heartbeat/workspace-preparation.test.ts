@@ -23,6 +23,8 @@ import * as managedRepositoryCheckout from "../managed-repository-checkout.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
 import { issueService } from "../issues.js";
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 
 const execFile = promisify(execFileCallback);
 const support = await getEmbeddedPostgresTestSupport();
@@ -118,6 +120,47 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(input.nativeRunnerPreparationSpans.map(span => span.name)).toEqual(["environment.acquire", "environment.workspace.realize"]);
     expect(input.nativeRunnerPreparationSpans.every(span => span.parentName === "task.provider_session")).toBe(true);
     expect(input.controllerLease.assertOwned).toHaveBeenCalledTimes(2);
+  });
+
+  it("records workspace steps around real persistence before environment acquisition", async () => {
+    const { input, source, issue, envOrchestrator } = await fixture();
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+    const acquire = envOrchestrator.acquireForRun;
+    vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      const names = exporter.getFinishedSpans().map(span => span.name);
+      expect(names).toContain("heartbeat.prepare.workspace_record_create");
+      expect(names).toContain("heartbeat.prepare.workspace_binding");
+      expect((await readIssue(issue.id)).executionWorkspaceId).toBe(args.persistedExecutionWorkspace?.id);
+      return acquire(args);
+    });
+    try {
+      const result = await prepareHeartbeatWorkspace(db, input);
+      expect(result.executionWorkspace.cwd).toBe(source);
+      await provider.forceFlush();
+      const spans = exporter.getFinishedSpans();
+      expect(spans.map(span => span.name)).toEqual(expect.arrayContaining([
+        "heartbeat.prepare.workspace_source_resolution",
+        "heartbeat.prepare.workspace_provision_policy",
+        "heartbeat.prepare.workspace_base_validation",
+        "heartbeat.prepare.workspace_provision",
+        "heartbeat.prepare.workspace_operation_binding",
+        "heartbeat.prepare.workspace_config_recording",
+        "heartbeat.prepare.workspace_repository_admission",
+        "heartbeat.prepare.workspace_project_repositories",
+      ]));
+      for (const span of spans) {
+        expect(Object.keys(span.attributes)).toEqual(["paperclip.task.run.run_id"]);
+        expect(JSON.stringify(span.attributes)).not.toContain(source);
+      }
+    } finally {
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
   });
 
   it.each(["create", "failed-save", "shared-retry-after-failed-save", "literal-branch", "legacy-explicit-source", "inherited-source", "legacy-untyped-source", "changed-source-intent", "context-source"] as const)("preserves restricted source isolation during %s", async scenario => {

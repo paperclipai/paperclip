@@ -3955,7 +3955,7 @@
     {
       "id": "paperclip-adapter-selection",
       "requirement": "paperclip_runner is selectable without changing legacy adapter behavior",
-      "deterministicOwner": "server/src/services/native-runtime/runtime-mode.test.ts; server/src/__tests__/heartbeat-native-runner-selection.test.ts"
+      "deterministicOwner": "server/src/services/native-runtime/runtime-mode.test.ts"
     },
     {
       "id": "real-control-plane-binding",

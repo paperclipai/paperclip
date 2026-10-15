@@ -11,6 +11,7 @@ import { conflict } from "../../errors.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "./scheduling.js";
+import { readIdleSleepSafety } from "../idle-sleep-safety.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -131,6 +132,28 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await first;
     }
     expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
+  });
+
+  it("restores the reported future deadline and claims monitor delivery exactly once", async () => {
+    const f = await fixture();
+    const at = new Date(now.getTime() + 600_000);
+    await db.update(issues).set({ monitorNextCheckAt: at,
+      executionPolicy: { monitor: { nextCheckAt: at.toISOString() } } }).where(eq(issues.id, f.issue.id));
+    const ownerId = randomUUID();
+    const hold = () => ({ ownerId, draining: true, activeRuns: 0, pendingWakes: 0,
+      startedAt: now, expiresAt: new Date(now.getTime() + 120_000) });
+    const report = await readIdleSleepSafety(db, hold, () => now.getTime(), ownerId,
+      async () => "none", undefined, undefined, true, true);
+    expect(report).toMatchObject({ version: 2, backgroundWork: "none", scheduledWake: {
+      kind: "routines_and_issue_monitors", nextWakeAt: at.toISOString() } });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    const restored = createHeartbeatScheduling(db, f.deps);
+    const deadline = new Date(report.scheduledWake!.nextWakeAt);
+    await Promise.all([restored.tickTimers(deadline), f.scheduler.tickTimers(deadline)]);
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({ reason: "issue_monitor_due" }));
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
   });
 

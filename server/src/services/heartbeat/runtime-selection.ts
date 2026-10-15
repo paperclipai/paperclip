@@ -70,6 +70,7 @@ import {
   materializeExternalChatQuestionResponseInput,
 } from "../native-runtime/external-chat-question-response-input.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
@@ -932,6 +933,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
+              ? NATIVE_PREPARATION_FENCING_VERSION
+              : lockedProfile.nativePreparationFencingVersion,
             ...(lockedProfile.nativeExecutionInput
               ? {}
               : { recoveryEventInventoryVersion: 1 }),

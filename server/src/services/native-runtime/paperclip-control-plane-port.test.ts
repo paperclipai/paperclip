@@ -1024,6 +1024,12 @@ describe("PaperclipControlPlanePort conformance", () => {
       .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
     // A workspace recovery owner can commit before the live heartbeat reaches
     // presentation. The file-preparation comment must not hide the real reply.
+    const [workspaceNotice] = await db.insert(issueComments).values({
+      companyId: identity.companyId, issueId: taskIssueId,
+      authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
+      body: "## Workspace Ready",
+      presentation: { kind: "system_notice", tone: "info", title: "Workspace ready", density: "compact", detailsDefaultOpen: false },
+    }).returning();
     const [prepared] = await db.insert(issueComments).values({
       companyId: identity.companyId, issueId: taskIssueId,
       authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
@@ -1052,7 +1058,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(await repair()).toBe(false);
     expect(await db.select({ body: issueComments.body }).from(issueComments)
       .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
-      .toEqual([{ body: prepared!.body }, { body: finalText }]);
+      .toEqual([{ body: workspaceNotice!.body }, { body: prepared!.body }, { body: finalText }]);
     await expect(port.completeRun({
       result: taskResult,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,

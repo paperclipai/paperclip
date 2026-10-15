@@ -1,3 +1,5 @@
+import { logger } from "../middleware/logger.js";
+import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
@@ -445,6 +447,14 @@ import { startServer } from "../index.ts";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 
+// Startup housekeeping runs after readiness and starts the heartbeat scheduler
+// interval when it finishes. Let that background work settle.
+async function settleStartupHousekeeping() {
+  for (let index = 0; index < 10; index += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -721,6 +731,7 @@ describe("startServer feedback export wiring", () => {
     }) as typeof setInterval);
     try {
       await startServer();
+      await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
@@ -782,6 +793,7 @@ describe("startServer feedback export wiring", () => {
 
     try {
       await startServer();
+      await settleStartupHousekeeping();
 
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
@@ -849,6 +861,7 @@ describe("startServer feedback export wiring", () => {
     }) as typeof setInterval);
     try {
       expect((await startServer()).server).toBe(fakeServer);
+      await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(tick).toBeDefined();
       tick?.();
@@ -856,6 +869,67 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
     } finally {
       timer.mockRestore();
+    }
+  });
+
+  it("reports ready before startup housekeeping finishes and starts the scheduler after it", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let releaseCleanup: (() => void) | undefined;
+    environmentCustomImagesServiceMock.cleanupExpiredSetupSessions.mockImplementationOnce(() =>
+      new Promise((resolve) => {
+        releaseCleanup = () => resolve({ scanned: 0, timedOut: 0, failed: 0 });
+      }));
+    const heartbeatIntervals: Array<() => void> = [];
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      if (interval === 30000) heartbeatIntervals.push(callback);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      // Readiness does not wait for the hung housekeeping step.
+      expect(getStartupRecoveryState().phase).toBe("ready");
+      await settleStartupHousekeeping();
+      expect(heartbeatIntervals).toHaveLength(0);
+
+      releaseCleanup?.();
+      await settleStartupHousekeeping();
+      expect(heartbeatIntervals).toHaveLength(1);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("runs the remaining startup housekeeping steps when one fails", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    environmentCustomImagesServiceMock.cleanupExpiredSetupSessions.mockRejectedValueOnce(new Error("provider outage"));
+    const heartbeatIntervals: Array<() => void> = [];
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      if (interval === 30000) heartbeatIntervals.push(callback);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await expect(startServer()).resolves.toBeDefined();
+      await settleStartupHousekeeping();
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+        expect.objectContaining({ startupStep: "custom_image_setup_cleanup" }),
+        "startup housekeeping step failed",
+      );
+      // The scheduler starts only after every housekeeping step settled.
+      expect(heartbeatIntervals).toHaveLength(1);
+    } finally {
+      setIntervalSpy.mockRestore();
     }
   });
 

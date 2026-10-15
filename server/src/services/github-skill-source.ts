@@ -160,7 +160,11 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
         if (dependencyBytes > MAX_REPOSITORY_BYTES) throw unprocessable('Repository package exceeds the 61 MB runtime limit.');
         dependencyBlobs.set(entry.sha, bytes);
         return bytes;
-      }) : entries.filter(entry => entry.type !== 'tree');
+      }, snapshot.readBlobs ? async pending => {
+        options.signal?.throwIfAborted();
+        const unread = pending.filter(entry => !dependencyBlobs.has(entry.sha) && (entry.size ?? 0) <= MAX_FILE_BYTES);
+        if (unread.length) for (const [sha, bytes] of await snapshot.readBlobs!(unread, options.signal)) dependencyBlobs.set(sha, bytes);
+      } : undefined) : entries.filter(entry => entry.type !== 'tree');
     if (repositoryInventory && repositoryInventory.length > MAX_REPOSITORY_FILES) throw unprocessable('Repository package exceeds the 9,990 file limit.');
     const readable = repositoryInventory?.filter(entry => entry.type === 'blob' && ['100644', '100755'].includes(entry.mode) && (entry.size ?? 0) <= MAX_FILE_BYTES);
     if (readable && readable.reduce((sum, entry) => sum + (entry.size ?? 0), 0) > MAX_REPOSITORY_BYTES) throw unprocessable('Repository package exceeds the 61 MB runtime limit.');

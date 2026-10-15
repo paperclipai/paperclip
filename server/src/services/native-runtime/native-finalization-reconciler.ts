@@ -43,6 +43,7 @@ import {
 } from "./native-workspace-sync.js";
 import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
+import { createNativeReconciliationPassTiming } from "./native-reconciliation-timing.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   isNativeRunnerOwnershipHeld,
@@ -546,26 +547,51 @@ export async function claimNativeSessionResumptions(input: {
   return claims;
 }
 
+type NativeReconciliationOptions = {
+  environmentRuntime?: EnvironmentRuntimeService;
+  onWorkspaceSettled?: (input: {
+    runId: string;
+    companyId: string;
+    agentId: string;
+    succeeded: boolean;
+  }) => Promise<void>;
+};
+
+type NativeReconciliationPassTiming = ReturnType<typeof createNativeReconciliationPassTiming>;
+
 /** Recovery is keyed only by persisted mode/coordinator state, never the live flag. */
 export async function reconcileNativeFinalizations(
   db: Db,
   runIds?: string[],
-  options: {
-    environmentRuntime?: EnvironmentRuntimeService;
-    onWorkspaceSettled?: (input: {
-      runId: string;
-      companyId: string;
-      agentId: string;
-      succeeded: boolean;
-    }) => Promise<void>;
-  } = {},
+  options: NativeReconciliationOptions = {},
 ) {
+  const timing = createNativeReconciliationPassTiming();
+  let outcome: "ok" | "failed" = "ok";
+  try {
+    return await reconcileNativeFinalizationsPass(db, runIds, options, timing);
+  } catch (error) {
+    outcome = "failed";
+    throw error;
+  } finally {
+    timing.finish({ outcome, scoped: Boolean(runIds?.length) });
+  }
+}
+
+async function reconcileNativeFinalizationsPass(
+  db: Db,
+  runIds: string[] | undefined,
+  options: NativeReconciliationOptions,
+  timing: NativeReconciliationPassTiming,
+) {
+  timing.phase("legacy_workspace_exports");
   await recoverLegacyUnsafeWorkspaceExports(db, runIds).catch((err) => {
     logger.warn({ err }, "Historical unsafe export recovery remains pending");
   });
+  timing.phase("obsolete_policy_reviews");
   await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
+  timing.phase("automatic_completion_reviews");
   if (runIds?.length) {
     const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
       .where(inArray(nativeRunFinalizations.runId, runIds));
@@ -573,6 +599,7 @@ export async function reconcileNativeFinalizations(
   } else {
     await dismissAutomaticCompletionReviews(db);
   }
+  timing.phase("candidate_scan");
   const rows = await db
     .select({
       runId: heartbeatRuns.id,
@@ -610,6 +637,8 @@ export async function reconcileNativeFinalizations(
       ),
       ...(runIds && runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
     ));
+  timing.candidates(rows.length);
+  timing.phase("candidates");
   const results = [];
   for (const row of rows) {
     const pendingEffects = row.decisionId

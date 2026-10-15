@@ -1,5 +1,4 @@
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
-import { and, eq, ne, sql } from "drizzle-orm";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
@@ -69,6 +68,7 @@ export interface HeartbeatEnvironmentSelectionInput {
       "ensureLocalEnvironment" | "findManagedSandboxEnvironment" | "findKubernetesEnvironment" | "ensureKubernetesEnvironment" | "getById">;
     instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "get" | "getExperimental">;
     findSharedWorkspaceHolder: ReturnType<typeof createHeartbeatRetries>["findSharedWorkspaceHolder"];
+    findExecutionWorkspaceHolder: ReturnType<typeof createHeartbeatRetries>["findExecutionWorkspaceHolder"];
   };
 }
 
@@ -84,7 +84,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
   } = input.policy;
   const { config, sourceWorkspaceConfig, issueAssigneeOverrides } = input.config;
-  const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder } = input.services;
+  const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder } = input.services;
   // A native run's execution input is immutable once persisted. Recovery must therefore
   // restore the workspace bound to that input rather than consulting the issue's current
   // workspace pointer: a newer run may already have moved or cleared the issue binding while
@@ -307,23 +307,45 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       },
     );
   }
-  if (!nativeRecoveryExecutionWorkspaceId && reusableExistingExecutionWorkspace &&
-      effectiveExecutionWorkspaceMode === "shared_workspace" &&
-      selectedEnvironmentForConfig?.driver !== "local" && selectedEnvironmentForConfig?.driver !== "ssh") {
-    const [remoteSharedHolder] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, agent.companyId), ne(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running"),
-      sql`exists (select 1 from ${issues} where ${issues.companyId} = ${agent.companyId}
-        and ${issues.executionWorkspaceId} = ${reusableExistingExecutionWorkspace.id}
-        and (${issues.executionRunId} = ${heartbeatRuns.id} or ${issues.id}::text = coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')))`,
-    )).limit(1);
-    if (remoteSharedHolder) throw new ConfigurationIncompleteFailure("This environment cannot place concurrent agents in one physical shared folder. Use local/SSH sharing or isolated task workspaces.", {
-      configurationIncomplete: { reason: "shared_realization_unsupported", issueId },
-    });
-  }
   const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
     projectPolicy: projectExecutionWorkspacePolicy,
     issueSettings: issueExecutionWorkspaceSettings,
   });
+  // A reused shared execution workspace (for example one a child task inherited from a
+  // parent whose run is still live) follows the same policy as a shared project workspace:
+  // only an explicit "allow" is unsupported outside local/SSH; otherwise wait for the holder.
+  // A holder silent past the staleness cutoff is still running, so its folder is not free:
+  // fail rather than overlap it or wait on it forever.
+  if (!nativeRecoveryExecutionWorkspaceId && reusableExistingExecutionWorkspace &&
+      effectiveExecutionWorkspaceMode === "shared_workspace" &&
+      selectedEnvironmentForConfig?.driver !== "local" && selectedEnvironmentForConfig?.driver !== "ssh") {
+    const executionWorkspaceHolder = await findExecutionWorkspaceHolder({
+      companyId: agent.companyId,
+      executionWorkspaceId: reusableExistingExecutionWorkspace.id,
+      excludeRunId: run.id,
+    });
+    if (executionWorkspaceHolder) {
+      if (executionWorkspaceHolder.stale) {
+        throw new ConfigurationIncompleteFailure(`This environment cannot place concurrent agents in one physical shared folder, and run ${executionWorkspaceHolder.runId} still holds this shared execution workspace after more than an hour without output. Use local/SSH sharing or isolated task workspaces.`, {
+          configurationIncomplete: { reason: "shared_realization_unsupported", issueId, holderRunId: executionWorkspaceHolder.runId, holderStale: true },
+        });
+      }
+      if (sharedWorkspaceConcurrency === "allow") {
+        throw new ConfigurationIncompleteFailure("This environment cannot place concurrent agents in one physical shared folder. Use local/SSH sharing or isolated task workspaces.", {
+          configurationIncomplete: { reason: "shared_realization_unsupported", issueId },
+        });
+      }
+      throw new WorkspaceBusyDeferral({
+        holder: executionWorkspaceHolder,
+        executionWorkspaceId: reusableExistingExecutionWorkspace.id,
+        deferralAttempt:
+          run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+            ? (run.scheduledRetryAttempt ?? 0)
+            : 0,
+        wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+      });
+    }
+  }
   // A live holder is always consulted for shared workspaces. Depending on policy and the final
   // execution target it either remains the existing deferral gate or becomes dispatch context.
   // Local/SSH folders never take an exclusive workspace lock, including when older

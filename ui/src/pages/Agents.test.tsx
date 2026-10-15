@@ -294,6 +294,16 @@ function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | 
   return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
 }
 
+function renderAgentsView(root: ReturnType<typeof createRoot> | null, queryClient: QueryClient) {
+  root!.render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <Agents />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe("Agents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -396,13 +406,7 @@ describe("Agents", () => {
   it("shows the configured model beside the adapter on the all agents page", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -420,13 +424,7 @@ describe("Agents", () => {
   it("switches between the preserved list and the interactive org chart with icon buttons", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
 
@@ -489,13 +487,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -522,57 +514,7 @@ describe("Agents", () => {
     expect(row?.textContent).not.toContain("Pause");
   });
 
-  it("uses the built-in agents route segment as the built-in filter", async () => {
-    mockRouterState.pathname = "/agents/builtin";
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
-    const builtInAgent = makeAgent({
-      id: "built-in-agent",
-      name: "Briefs Agent",
-      urlKey: "briefs-agent",
-    });
-    const regularAgent = makeAgent({
-      id: "regular-agent",
-      name: "Regular Agent",
-      urlKey: "regular-agent",
-    });
-    mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
-    mockAgentsApi.org.mockResolvedValue([
-      {
-        id: "built-in-agent",
-        name: "Briefs Agent",
-        role: "engineer",
-        status: "active",
-        reports: [],
-      },
-      {
-        id: "regular-agent",
-        name: "Regular Agent",
-        role: "engineer",
-        status: "active",
-        reports: [],
-      },
-    ]);
-    mockBuiltInAgentsApi.list.mockResolvedValue([
-      makeBuiltInAgentState({ agentId: "built-in-agent", agent: builtInAgent }),
-    ]);
 
-    root = createRoot(container);
-    await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    expect(container.textContent).toContain("1 agent");
-    expect(container.textContent).toContain("Briefs Agent");
-    expect(container.textContent).not.toContain("Regular Agent");
-  });
 
   it("shows effective environment and sandbox provider beside agents", async () => {
     mockAgentsApi.list.mockResolvedValue([
@@ -592,13 +534,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -625,13 +561,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -653,13 +583,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -692,13 +616,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -751,13 +669,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -815,13 +727,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -859,13 +765,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -877,13 +777,7 @@ describe("Agents", () => {
   it("does not show environment filter or grouping controls yet", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -897,13 +791,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -916,18 +804,17 @@ describe("Agents", () => {
   it("shows and filters built-in agents when the experimental flag is enabled", async () => {
     mockRouterState.pathname = "/agents/builtin";
     mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
-    mockAgentsApi.list.mockResolvedValue([
-      makeAgent({
-        id: "built-in-agent",
-        name: "Briefs Agent",
-        urlKey: "briefs-agent",
-      }),
-      makeAgent({
-        id: "regular-agent",
-        name: "Regular Agent",
-        urlKey: "regular-agent",
-      }),
-    ]);
+    const builtInAgent = makeAgent({
+      id: "built-in-agent",
+      name: "Briefs Agent",
+      urlKey: "briefs-agent",
+    });
+    const regularAgent = makeAgent({
+      id: "regular-agent",
+      name: "Regular Agent",
+      urlKey: "regular-agent",
+    });
+    mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
@@ -945,22 +832,17 @@ describe("Agents", () => {
       },
     ]);
     mockBuiltInAgentsApi.list.mockResolvedValue([
-      makeBuiltInAgentState({ agentId: "built-in-agent" }),
+      makeBuiltInAgentState({ agentId: "built-in-agent", agent: builtInAgent }),
     ]);
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("1 agent");
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");
@@ -972,13 +854,7 @@ describe("Agents", () => {
   it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1066,13 +942,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1090,13 +960,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();

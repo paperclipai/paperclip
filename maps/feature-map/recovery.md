@@ -38,6 +38,13 @@ Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
 Inspect the recovery notice/card in its history, expand details if needed, and
 use the currently offered action. Follow any linked repair task and return owner.
 
+An authorized board user can expand Recovery details on a stopped-run notice to
+read the decision that still blocks replay, including a settled recovery record.
+The notice matches the current action and run; it does not show another run's
+historical decision or authorize a retry. Source-reviewed behavior; the
+[notice regressions](../../ui/src/components/ExecutionBlockerNotice.test.tsx)
+cover empty active recovery, a mismatched source, and failed history reads.
+
 ### `run-detail`
 
 Open the agent's run (`/agents/:agentId/runs/:runId`) from activity or the task's
@@ -93,6 +100,23 @@ explanation, original owner, recovery owner if different, and next action. Follo
 the supported recovery until the source task produces a useful result or a
 specific escalation. Reload and verify that resolved notices retire and attempt
 history remains. A fixture pass does not qualify every live harness/provider.
+
+The [native restart integration suite](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
+also covers a prepared remote workspace interrupted before the executor's first
+claim. Real database tests assert one same-run bootstrap claim under concurrent
+controllers and reject prior claims, launch/provider evidence, and malformed
+workspace references. These cases prove classification, not a live remote
+provider restart. For that journey, interrupt a disposable deployment after
+workspace preparation and before its first executor claim, then confirm one
+provider turn starts on the original run through the normal admission gates.
+
+The same database suite pauses an original preparation while recovery claims
+the remote run. It then verifies that the old preparation yields without opening
+a provider or changing the recovery owner, for both live and expired leases.
+[Heartbeat boundary tests](../../server/src/services/heartbeat/runtime-execution.test.ts)
+verify that the detachment signal transfers recovery ownership before cleanup.
+The suite also rejects an older unmarked preparation and verifies that calling
+preparation again cannot add the fencing marker from supplied profile data.
 
 For a native workspace owner hold, repeat issue reads and recovery checks after
 the task becomes done or cancelled. Verify one unchanged action ID, attempt
@@ -195,6 +219,12 @@ Automated: [legacy continuation](../../server/src/services/recovery/legacy-conti
 [native restart recovery](../../server/src/services/native-runtime/native-restart-recovery.test.ts)
 cover their respective recovery paths. [Legacy failure continuation](../../tests/e2e/legacy-failure-continuation.spec.ts)
 adds a browser journey; it is not native runtime proof.
+
+[Queued Stop database regressions](../../server/src/modules/wake-queue/adapters/queued-operator-stop-postgres.test.ts)
+verify that an operator cancellation before runtime selection releases its own
+locks, preserves deferred input without launching it, and leaves another active
+cycle of the same routine unchanged. Provider cancellations and already selected
+or dispatched runs retain their existing release behavior.
 
 Manual: stop a disposable run, submit a distinguishable follow-up, and observe
 any cleanup wait. After confirmed stop, verify the follow-up reaches one eligible

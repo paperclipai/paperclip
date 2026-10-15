@@ -2142,19 +2142,6 @@ describe("Daytona sandbox provider plugin", () => {
       ...overrides,
     });
 
-    it("creates one session on the first execute and reuses it on the next", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
-      const sandbox = createMockSandbox();
-      mockGet.mockResolvedValue(sandbox);
-
-      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
-      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
-
-      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
-      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
-      expect(sessionId).toMatch(/^paperclip-/);
-    });
-
     it("opens one session when two first commands overlap", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
@@ -2541,6 +2528,8 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
 
       expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      expect(sessionId).toMatch(/^paperclip-/);
       const firstSid = sandbox.process.executeSessionCommand.mock.calls[0]![0] as string;
       const secondSid = sandbox.process.executeSessionCommand.mock.calls[1]![0] as string;
       expect(firstSid).toBe(secondSid);
@@ -5159,6 +5148,7 @@ describe("daytona native file-sync hooks", () => {
     const pack = spans.find((span) => span.name === "pack");
     expect(pack).toBeDefined();
     expect(pack!.ended).toBe(true);
+    expect(pack!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
     expect(typeof pack!.attributes["paperclip.sandbox.startup.pack.wall_ms"]).toBe("number");
 
     const transfer = spans.find((span) => span.name === "transfer");
@@ -5250,42 +5240,6 @@ describe("daytona native file-sync hooks", () => {
     for (const span of spans) {
       expect(span.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
     }
-  });
-
-  it("records a pack span for a traced directory mapping", async () => {
-    const hostDir = await makeHostDir();
-    const sourceDir = path.join(hostDir, "assets");
-    await fs.mkdir(sourceDir, { recursive: true });
-    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    const { tracer, spans } = createRecordingPluginTracer();
-    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
-    try {
-      await plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-pack",
-            files: [
-              { sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/.paperclip-runtime/assets`, kind: "directory" },
-            ],
-          },
-        ],
-      });
-    } finally {
-      restore();
-    }
-
-    const pack = spans.find((span) => span.name === "pack");
-    expect(pack).toBeDefined();
-    expect(pack!.ended).toBe(true);
-    expect(pack!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
   });
 
   it("opens a postUploadCommand span for a post-upload command with a working directory", async () => {

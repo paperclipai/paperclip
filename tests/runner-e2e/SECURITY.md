@@ -32,6 +32,14 @@ changes.
 
 ## GitHub authorization
 
+The Everyday remote Codex restart oracle reads only the existing public run,
+event, environment-lease, workspace-operation and recovery APIs. It does not
+execute commands in a provider sandbox or signal a provider process. Its new
+evidence projects closed receipt metadata and hashes the provider sandbox ID
+and full native event content. Provider text, tool arguments and command output
+do not enter these snapshots. Existing image admission, credentials, billing,
+retention and cleanup rules continue to apply.
+
 Set `RUNNER_E2E_ALLOWED_ACTOR_IDS` to a non-empty JSON array of numeric GitHub
 user IDs. Keep the list equal to the owners of `.github/**` in
 `.github/CODEOWNERS`. For example, use `[123456,789012]`. Resolve each ID from

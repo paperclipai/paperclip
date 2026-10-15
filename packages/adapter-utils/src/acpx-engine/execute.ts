@@ -106,6 +106,7 @@ import {
 } from "acpx/runtime";
 import {
   ACP_TOOL_KINDS,
+  ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS,
   ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS,
   ACPX_HANDSHAKE_TIMEOUT_MS,
   ACPX_HANDSHAKE_TRANSPORT_POLL_MS,
@@ -2046,6 +2047,11 @@ async function buildRuntime(input: {
   // it reliably sets the model before any turns are run.
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
+  }
+  // ACP `mcpServers` entries carry no per-server timeout, so bound Claude's
+  // MCP tool calls through its env setting instead.
+  if (acpxAgent === "claude" && mcpServers.length > 0 && !env.MCP_TOOL_TIMEOUT) {
+    env.MCP_TOOL_TIMEOUT = String(ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS);
   }
   // Gemini CLI reads GEMINI_MODEL when creating each ACP session. Its ACP
   // implementation supports set_model, but not set_config_option; configure

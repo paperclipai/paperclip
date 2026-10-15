@@ -157,6 +157,11 @@ permission, and requester scope decisions through saved browser interactions.
 
 ## Validation ladder
 
+The native Codex Daytona `recover-controller` cell in Everyday Workflows
+requires active process and lease continuity, native receipt continuity and
+workspace finalization. See the [restart evidence contract](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md).
+Catalog discovery and deterministic calibration do not establish live recovery.
+
 The explicit-only [public MCP suite](../tests/runner-e2e/PUBLIC-MCP.md) evaluates
 paid assistant delegation, later retrieval, feedback, review, uncertain retries
 and permission boundaries. It uses the Product E2E fixtures, launcher, evidence

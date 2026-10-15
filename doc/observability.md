@@ -175,7 +175,7 @@ GitHub identity selection, secret resolution, managed AI runtime preparation,
 skill inventory, connector assignments, connector skill preparation and delivery,
 connection instructions, and agent identity. Their names are
 `heartbeat.prepare.configuration_<step>`, using the closed names in
-`server/src/services/heartbeat/preparation-timing.ts`. These intervals are inside
+`server/src/services/execution-preparation-timing.ts`. These intervals are inside
 `execution_configuration`; do not add them to its duration. They remain available
 when a later setup step fails before the provider lifecycle trace starts.
 
@@ -193,6 +193,52 @@ Search by that hash without a root-name filter to include these preparation
 traces; the provider lifecycle trace is created later and can have a different
 trace ID. Without an endpoint, tracing remains a no-op. These spans add no
 first-party Telemetry events or database run-log writes.
+
+Workspace preparation also records `heartbeat.prepare.workspace_<step>` spans
+for source resolution, provisioning policy, base validation, source access,
+provisioning, retained source access, workspace record creation and updates,
+task binding, operation binding, configuration records, repository admission,
+project repositories, and recovery-root reservation. These intervals are inside
+`heartbeat.prepare.workspace`. Repeated bindings or updates have separate spans.
+Do not add these intervals to the containing workspace duration. They use the
+same run hash and contain no workspace paths, commands, or returned records.
+
+The `paperclip.native-controller` tracer records separate
+`native.controller.<phase>` root spans around GitHub access setup, wake binding,
+backend construction, connector assignments, assigned MCP discovery, tool
+authority, companion selection and Runner binary resolution. It also records
+GitHub shutdown, coordinator release, instruction checkpoints and collection,
+and warm-session release. These intervals can occur between the existing native
+preparation, execution and settlement spans. They are controller work, not model
+turn time, and carry only the existing run hash. Nested phases overlap their
+containing backend or lifecycle intervals; do not add both durations.
+
+All preparation timing uses the endpoint gate, even when another library has
+registered a tracer provider. Tracer lookup, callback, status or ending failures
+cannot repeat work or replace its result or error. Automatic database children
+are not guaranteed: an aggregate workspace trace can contain just one span.
+If a process exits before an operation settles, its open span may not be exported.
+
+With an endpoint, `paperclip.controller-startup` records independent
+`controller.startup.<phase>` root spans for tool reviews, gateway sessions,
+delivery-worker readiness, accounting, plugin-worker readiness, native recovery,
+hot-restart adoption, orphan reaping, scheduled retries, queued runs, and goal
+recovery. These spans have no custom attributes. Each ends when its awaited
+phase settles, including failures. They separate controller readiness from
+provider startup; they are not agent-run durations. A disabled endpoint takes
+the direct work path without a tracer lookup or additional log messages.
+Tracing failures cannot repeat recovery or replace its result or error.
+
+Native recovery and orphan reaping each run a native finalization
+reconciliation pass; the periodic recovery loop runs it on every scheduler tick.
+With an endpoint, a pass that takes at least one second records, after it ends,
+a `controller.native_reconciliation` root span from `paperclip.native-reconciliation`
+with one child span per phase: `legacy_workspace_exports`,
+`obsolete_policy_reviews`, `automatic_completion_reviews`, `candidate_scan` and
+`candidates`. The pass span carries `paperclip.native_reconciliation.scoped` and,
+once known, `paperclip.native_reconciliation.candidates` (a count). A failed
+pass marks the pass span and the phase that was running with an error status.
+Faster passes record nothing.
 
 ## Native Runner Trace Spans
 
@@ -745,6 +791,16 @@ provider turn IDs stay in the instance run log. The report reads the caught erro
 only for these labels; its text and stack are not copied, because they bypass the
 executor's identity redaction. These observations do not change close, quarantine
 or recovery behavior.
+
+Remote runner reattachment failures also record `remoteRunnerRecoveryStage`
+and `remoteRunnerRecoveryReason` from the saved run. These fields contain
+closed labels for marker reads and process verification. They distinguish
+missing or unsafe markers, invalid or missing fingerprints, changed or
+unavailable process identity, and failed or timed-out probes. Paths, PIDs,
+nonces, command lines and transport output are excluded. The existing
+`runner_remote_process_identity_unavailable` error message and native failure
+classification remain unchanged. The coordinator also saves these labels in
+its failure detail and recovery evidence. A later failure clears stale labels.
 
 ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
 `acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before

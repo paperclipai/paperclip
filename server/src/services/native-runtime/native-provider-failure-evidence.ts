@@ -9,8 +9,7 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown> : {};
 }
 
-/** Re-derive authority from immutable run-bound evidence, including after restart. */
-export async function readPersistedNativeProviderFailure(
+async function observePersistedNativeTurnFailure(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,
   turnId: string | null,
@@ -41,7 +40,30 @@ export async function readPersistedNativeProviderFailure(
       row.sourcePayloadSha256 !== nativeSha256(parsed.event)) return null;
   const observed = createNativeProviderFailureObservation(execution.provider);
   observed.observe(parsed.event);
-  return observed.forTerminal(turnId, terminal);
+  return observed;
+}
+
+/** Re-derive authority from immutable run-bound evidence, including after restart. */
+export async function readPersistedNativeProviderFailure(
+  ...args: Parameters<typeof observePersistedNativeTurnFailure>
+) {
+  const [, , turnId, terminal] = args;
+  return (await observePersistedNativeTurnFailure(...args))?.forTerminal(turnId, terminal) ?? null;
+}
+
+/**
+ * Recovery can finalize before heartbeat saves the adapter result. Rebuild the
+ * classified failure and the diagnostics-only turn failure from one event.
+ */
+export async function readPersistedNativeFailureEvidence(
+  ...args: Parameters<typeof observePersistedNativeTurnFailure>
+) {
+  const [, , turnId, terminal] = args;
+  const observed = await observePersistedNativeTurnFailure(...args);
+  return {
+    providerFailure: observed?.forTerminal(turnId, terminal) ?? null,
+    turnFailure: observed?.unclassifiedTurnFailure(turnId, terminal) ?? null,
+  };
 }
 
 export async function readPersistedNativeModelRejection(

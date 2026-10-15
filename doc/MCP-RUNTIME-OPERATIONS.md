@@ -36,6 +36,18 @@ delivery path. Managed gateway discovery excludes historical native assignments.
 Their stored rows remain available for existing runs. Explicit company gateways
 continue to use their configured scopes.
 
+## Client-side tool-call deadline
+
+The gateway bounds each provider call, but the agent's MCP client also needs a
+bound. Without one, a gateway request that never answers holds the agent turn
+until the adapter execution timeout ends the run. Claude's default MCP tool
+timeout is far longer than a run, and ACP `mcpServers` entries have no
+per-server timeout field. So when an ACP Claude run receives runtime MCP
+servers, the ACPX engine sets `MCP_TOOL_TIMEOUT` to 15 minutes. A call that
+passes this deadline returns an MCP error to the model, and the turn
+continues. An `MCP_TOOL_TIMEOUT` value in the adapter `env` configuration
+takes priority.
+
 ## Metrics
 
 The board runtime health API summarizes one-hour event windows plus current durable slot state:

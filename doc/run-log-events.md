@@ -139,6 +139,11 @@ proofs, encryption keys, environment variables, provider credentials, command
 arguments, or an unsanitized stderr stream. Detailed failed-attempt diagnostics
 remain in the bounded `native_run_finalizations.recovery_history` ledger.
 
+For a prepared remote workspace interrupted before its first executor claim,
+that ledger records `remote_execution_never_claimed` with a
+`bootstrap_incomplete` disposition. The provider attempt remains zero during
+classification; the executor increments it before starting provider work.
+
 For a local Codex turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
 `error.recoverable: true`. It records the interrupted turn, not a final task
@@ -275,6 +280,13 @@ settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
 
+## System notices and final replies
+
+Automatic comments with a stored `system_notice` presentation, including
+workspace-ready notices, remain available as progress information. They do not
+occupy the run's final reply slot. Final response selection still preserves
+ordinary explicit agent comments and excludes receipt-bound generated progress.
+
 ## ACP terminal failure diagnostics
 
 The shared ACP adapter engine preserves typed terminal session failures in the
@@ -325,10 +337,24 @@ the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+A lease lost during run setup (for example a rejected renewal while preparing
+the workspace) settles the run `failed` with error code `controller_lease_lost`,
+the same `controller_lease` cancellation evidence, and
+`executionRecovery.providerWorkStarted: false`. Recovery retries it as transient
+infrastructure instead of blocking on `setup_failed`. A setup-phase error after
+provider dispatch began keeps `setup_failed`, so started work is never retried.
 The local lifecycle event includes this evidence. Started cancellations without
 an expected stop are also reported to Sentry; its cancellation diagnostics contain
 only source, expectedness, initiator type, and the closed lease-loss cause, never
 initiator IDs or reason text.
+A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
+during setup that fails the run before adapter dispatch. It holds the closed
+cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
+last successful renewal), `renewalPendingMs` (age of a renewal query still in
+flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
+`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
+at a stalled database query; a long `deadlineLateMs` points at a blocked event
+loop. Failure reports carry these bounded numbers and the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use

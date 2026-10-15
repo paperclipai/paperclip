@@ -1,0 +1,168 @@
+{
+  "audit": {
+    "file": "ui/src/components/IssueAttachmentsSection.test.tsx",
+    "base": "c39262305b6b48a5decd564af8369083cd972b33",
+    "originalSha256": "938aead11f9ccd2246049fe7ebe82800c3bdc8ff7c17fc20017d03ecc659d73a",
+    "candidateSha256": "e7cc76d20708169e8eadba692d6f9bc9e7ba32cb18075e72c8aaceb420705a94",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 1,
+    "rootRendersRemoved": 1,
+    "netTestLinesRemoved": 22,
+    "migrations": [
+      {
+        "retired": "renders video attachments through the same player used for artifact outputs",
+        "keeper": "lets video attachments open the shared media gallery",
+        "setupAstEqual": false,
+        "setupBindingNormalization": "Inline fresh vi.fn becomes existing keeper fresh named vi.fn; provider/attachment/delete callback/flush unchanged",
+        "guards": [
+          "const video = container.querySelector(\"video\");",
+          "expect(video?.getAttribute(\"src\")).toBe(\"/api/attachments/video-attachment/content\");",
+          "expect(video?.getAttribute(\"controls\")).not.toBeNull();",
+          "expect(fetchSpy).not.toHaveBeenCalled();"
+        ],
+        "registeredInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "0f1b173c8a399bb8c3e831edac6805634304a749faffcfff7b8b1900da3d34a3",
+  "mutationVerifierSha256": "a05f5ba9071c0ce7ce8eac1bc0f6c7dd83401c4e720816389d779f8919312064",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "41996a845a818368c4fe0a7a4b31474ddc1b35c56c9aff524dcfae3218a1112c",
+      "logSha256": "cf1b9e033afd854462df31d4d65f4e604f317f6473c1f75c25b91ccf46e3e92c",
+      "total": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "e9db5edd68d2e89898848aa90dabf75957fb703813c429472f80fbae92d194b4",
+      "logSha256": "67fe4596626962ac86f547b251f992158d5a28063a2c62962816433c3e837ed2",
+      "total": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "source",
+      "owner": "ui/src/components/IssueAttachmentsSection.tsx",
+      "sourceSha256": "2ba7827325ed63d57fad24f31144e54c48c0618584c0cd013b26acf93e7f525b",
+      "title": "lets video attachments open the shared media gallery",
+      "mutation": {
+        "before": "<OutputVideoPlayer src={attachment.contentPath} title={filename} />",
+        "after": "<OutputVideoPlayer src=\"/wrong-video.webm\" title={filename} />",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(video?.getAttribute(\"src\")).toBe(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "26bb673ede3119522a715a31928f8066c41c6538e78139e5a1dde1e879964fd5",
+        "logSha256": "5f31a93058981f8a4a0b9c109b851aad78153f734eb723cc04998fb3ffca555b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "41c490f0613aaf4958ad6ccc613dcf31053f2f528b1c7b2a252230470bc7d8ae",
+        "logSha256": "984bfe91fe92dcb4518504ae6fe21205466e3c775c2dde6806934471d73ab7d5",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected '/wrong-video.webm' to be '/api/attachments/video-attachment/con\u2026' // Object.is equality\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueAttachmentsSection.test.tsx:206:40\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "controls",
+      "owner": "ui/src/components/IssueAttachmentsSection.tsx",
+      "sourceSha256": "2ba7827325ed63d57fad24f31144e54c48c0618584c0cd013b26acf93e7f525b",
+      "title": "lets video attachments open the shared media gallery",
+      "mutation": {
+        "before": "<OutputVideoPlayer src={attachment.contentPath} title={filename} />",
+        "after": "<video src={attachment.contentPath} />",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(video?.getAttribute(\"controls\")).not.toBeNull()",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "5f63925596e95dc930e831668536812e50bb21f3c49e5d6d72458b4fe8e9558d",
+        "logSha256": "9685b1259ff56dade8aee65c3388084bb032c0a1bd584e7635cf64a90ae7ef34",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "738045b821839a3fe5b3ff8ab0c8abd6508462105a7ffde2ae24cd2a76d0f1e5",
+        "logSha256": "19e35c954f8972b9d86f893ee59877ad1ee28eaff8856c22fdeac4f4f49ebfab",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected null not to be null\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueAttachmentsSection.test.tsx:207:49\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "fetch",
+      "owner": "ui/src/components/IssueAttachmentsSection.tsx",
+      "sourceSha256": "2ba7827325ed63d57fad24f31144e54c48c0618584c0cd013b26acf93e7f525b",
+      "title": "lets video attachments open the shared media gallery",
+      "mutation": {
+        "before": "  const filename = attachmentFilename(attachment);\n  return (\n    <Card id={`attachment-${attachment.id}`} className=\"block scroll-mt-20 overflow-hidden py-0\">",
+        "after": "  const filename = attachmentFilename(attachment);\n  void fetch(attachment.contentPath);\n  return (\n    <Card id={`attachment-${attachment.id}`} className=\"block scroll-mt-20 overflow-hidden py-0\">",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(fetchSpy).not.toHaveBeenCalled()",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "fa3a3edf2518552cf54db294e33be650bbf026a1b9505f8dfd4b7baba5de5d8d",
+        "logSha256": "1ba024b01f756729fdfbc1a7f9b535b8cd16a650bc1da99d8ea9d5a79521f796",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "b43dea15a78ffa00aa10d67a79932d6b8bba5a6a57d8dfb828d8693e277e019b",
+        "logSha256": "130e9a50e1cb3db653a4324ce9aa86b785d9275436606793f823073f6432ab0d",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times\n\nReceived:\n\n  1st vi.fn() call:\n\n    Array [\n      \"/api/attachments/video-attachment/content\",\n    ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2214:51)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueAttachmentsSection.test.tsx:208:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

@@ -1,4 +1,5 @@
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
@@ -97,7 +98,21 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     responsibleUserId: row.responsibleUserId,
     contextSnapshot: parseObject(row.contextSnapshot),
     configurationIncompletePayload: Object.keys(configurationIncompletePayload).length > 0 ? configurationIncompletePayload : null,
+    operatorStopped: isOperatorStoppedRunRow(row),
   };
+}
+
+const OPERATOR_STOP_ERROR_CODES = new Set(["operator_interrupted", "agent_paused"]);
+
+/** Mirrors recovery's `isOperatorCancelledRun`, plus agent pause, for the release-time recovery tail. */
+export function isOperatorStoppedRunRow(row: Pick<HeartbeatRunRow, "status" | "errorCode" | "resultJson">): boolean {
+  if (row.status !== "cancelled") return false;
+  const cancellation = readRunCancellation(row.resultJson);
+  if (cancellation?.source === "queued_message") return false;
+  if (cancellation?.source === "operator" && cancellation.expected) return true;
+  if (row.errorCode && OPERATOR_STOP_ERROR_CODES.has(row.errorCode)) return true;
+  const actorType = parseObject(row.resultJson).cancelledByActorType;
+  return actorType === "user" || actorType === "board";
 }
 
 function toIssueSnapshot(row: IssueRow): IssueSnapshot {
@@ -1096,6 +1111,11 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               sql`${agentWakeupRequests.payload}->>'issueId' = ${issueRow.id}`,
             )).limit(1)
           : [];
+        const cancellation = readRunCancellation(run.resultJson);
+        const queuedOperatorStop = run.runtimeMode === "legacy" && run.status === "cancelled" &&
+          run.runtimeModeResolvedAt === null && run.startedAt === null && run.processStartedAt === null &&
+          run.processPid === null && run.processGroupId === null &&
+          cancellation?.source === "operator" && cancellation.expected;
         const preDrainFacts: PreDrainFacts = {
           issueRowPresent: issueRow !== null,
           executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
@@ -1111,7 +1131,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           executionCancellationAcknowledged:
             isAcknowledgedNativeReassignmentStop(run) ||
             (run.status === "cancelled" &&
-            (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
+            (queuedOperatorStop || parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
             !interruptedQueue),
         };
         const preDrain = decidePreDrain(preDrainFacts);

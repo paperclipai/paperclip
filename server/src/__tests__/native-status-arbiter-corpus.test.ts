@@ -1822,7 +1822,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     };
   }
 
-  it("executes all 53 fixtures in their production consumers and joins all 70 matrix rows", async () => {
+  it("executes all 53 fixtures, joins all 70 matrix rows, and rejects mutated comparison fields", async () => {
     expect(corpus.schema).toBe("paperclip.status-authority-conformance.v1");
     expect(corpus.fixtures).toHaveLength(53);
 
@@ -1869,11 +1869,6 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           .toBe(requiredConsumerForMatrixRow(result.matrixRow));
       }
     }
-  }, 60_000);
-
-  it("fails independently when any asserted field category is mutated", async () => {
-    const observations = new Map<string, FixtureObservation>();
-    for (const fixture of corpus.fixtures) observations.set(fixture.id, await executeFixture(fixture));
 
     for (const fixture of corpus.fixtures) {
       const observed = observations.get(fixture.id)!;

@@ -2031,32 +2031,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
   });
 
-  it("requires reconciliation for a classified Codex harness crash", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const runId = randomUUID();
-    const now = new Date("2026-07-24T12:00:00.000Z");
-
-    await seedRetryFixture({
-      runId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "codex_harness_crash",
-      errorFamily: "transient_upstream",
-    });
-
-    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
-
-    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
-      now,
-      random: () => 0.5,
-    });
-
-    expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
-
-    await cleanupRetryFixture();
-  });
 
   it("requires reconciliation for an error-code-only Codex harness crash", async () => {
     const companyId = randomUUID();

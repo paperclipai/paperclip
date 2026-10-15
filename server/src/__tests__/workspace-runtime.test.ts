@@ -1204,27 +1204,6 @@ describe("realizeExecutionWorkspace", () => {
     ]);
   });
 
-  it("does not reset a reused worktree with untracked changes", async () => {
-    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
-
-    const initial = await realizeWorktreeForTest(repoRoot, null);
-    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
-    await fs.writeFile(path.join(initial.cwd, "scratch.txt"), "uncommitted scratch\n", "utf8");
-
-    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
-
-    const reused = await realizeWorktreeForTest(repoRoot, null);
-
-    expect(reused.created).toBe(false);
-    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
-    await expect(fs.readFile(path.join(reused.cwd, "scratch.txt"), "utf8")).resolves.toBe(
-      "uncommitted scratch\n",
-    );
-    expect(reused.warnings).toEqual([
-      expect.stringContaining("is behind origin/master by 1 commit"),
-    ]);
-  });
-
   it("does not reset a reused worktree with untracked changes when status.showUntrackedFiles=no", async () => {
     const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
 

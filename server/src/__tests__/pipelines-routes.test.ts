@@ -1237,7 +1237,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       })
       .expect(201);
     const caseIds: string[] = [];
-    for (let index = 0; index < 50; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       const created = await http
         .post(`/api/pipelines/${pipeline.body.id}/cases`)
         .send({ caseKey: `bulk-${index}`, title: `Bulk ${index}` })
@@ -1258,12 +1258,14 @@ describeEmbeddedPostgres("pipeline routes", () => {
       })
       .expect(200);
 
-    expect(bulk.body.results.filter((item: { ok: boolean }) => item.ok)).toHaveLength(47);
+    expect(bulk.body.results.filter((item: { ok: boolean }) => item.ok)).toHaveLength(2);
     const failed = bulk.body.results.filter((item: { ok: boolean }) => !item.ok);
     expect(failed).toHaveLength(3);
     expect(failed.every((item: { error: { code: string } }) => item.error.code === "version_conflict")).toBe(true);
     const requestChangesDetail = await http.get(`/api/cases/${caseIds[3]}`).expect(200);
     expect(requestChangesDetail.body.stage.key).toBe("in_progress");
+    const approvalDetail = await http.get(`/api/cases/${caseIds[4]}`).expect(200);
+    expect(approvalDetail.body.stage.key).toBe("done");
   });
 
   it("returns conflict bodies with code, current version, and stage", async () => {

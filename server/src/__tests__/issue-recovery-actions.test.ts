@@ -1753,6 +1753,36 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(list.body.actions).toHaveLength(1);
   });
 
+  it("lists a settled reconciliation hold that still blocks replay", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: runId,
+      nextAction: "Preserve recorded work without replay.",
+      evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+
+    const list = await request(createApp()).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+
+    expect(list.body.active).toBeNull();
+    expect(list.body.actions).toEqual([
+      expect.objectContaining({
+        id: action!.id,
+        status: "resolved",
+        cause: "legacy_execution_requires_reconciliation",
+        evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      }),
+    ]);
+  });
+
   it("projects recovery action metadata into the structured wake payload", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const action = await issueRecoveryActionService(db).upsertSourceScoped({

@@ -8,6 +8,7 @@ import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
+import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
 export {
@@ -321,12 +322,6 @@ import {
 import { HttpError, notFound } from "../errors.js";
 
 import { logger } from "../middleware/logger.js";
-import {
-  scrubGitCredentialText,
-} from "./git-credentials.js";
-// Re-exported because heartbeat's workspace surface exposed the scrubber before the
-// git-credentials module became its canonical home; existing importers keep working.
-export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 
 import {
@@ -953,6 +948,7 @@ export function heartbeatService(
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
+    findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
@@ -1940,6 +1936,23 @@ export function heartbeatService(
     let requiredWorkspaceRestoreEvidence: Record<string, unknown> | null = null;
     let providerResourceDispositionForRun:
       ProviderResourceDisposition | undefined;
+    const preserveNativeWorkspaceOnFailure = async () => {
+      const failureRun = await getRun(run.id);
+      if (failureRun?.runtimeMode === "native"
+        && parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared") {
+        providerResourceDispositionForRun = "stop_and_retain";
+        try {
+          await preserveNativeFailedWorkspace(db, failureRun, {
+            allowPreterminal: true,
+            restartRecovery: runOptions.nativeRestartRecovery,
+          });
+        } catch (recoveryError) {
+          if (recoveryError instanceof NativeWorkspaceFinalizationBusyError) nativeOwnershipHeld = true;
+          else logger.error({ err: recoveryError, runId: run.id }, "failed to record retained native workspace recovery");
+        }
+      }
+      return !nativeOwnershipHeld;
+    };
     let nativeLifecycleTelemetryForRun:
       | {
           provider: string;
@@ -2624,7 +2637,7 @@ export function heartbeatService(
           projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
         },
         config: { config, sourceWorkspaceConfig, issueAssigneeOverrides },
-        services: { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder },
+        services: { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder },
       }));
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
@@ -3597,6 +3610,7 @@ export function heartbeatService(
           }
           return;
         }
+        if (!(await preserveNativeWorkspaceOnFailure())) return;
         await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
           output: runOutput,
@@ -3643,8 +3657,11 @@ export function heartbeatService(
           },
         );
       } else {
-        await runCompletion.failRunSetup({
-          run, runId, outerErr, identityRedactor, readFailureReportSecrets,
+        await preserveNativeWorkspaceOnFailure();
+        if (!nativeOwnershipHeld) await runCompletion.failRunSetup({
+          run, runId, outerErr, signal: executionControl.controller.signal,
+          providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+          identityRedactor, readFailureReportSecrets,
         });
       }
     } finally {

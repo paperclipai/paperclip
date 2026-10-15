@@ -305,7 +305,8 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
-      const scheduledRoutines = req.query.scheduledWake === "1";
+      const scheduledIssueMonitors = req.query.scheduledWake === "2";
+      const scheduledRoutines = req.query.scheduledWake === "1" || scheduledIssueMonitors;
       if (scheduledRoutines && req.actor.source !== "cloud_control") {
         throw forbidden("Scheduled wake reports require Cloud control authority");
       }
@@ -320,7 +321,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
         () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines);
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors);
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }

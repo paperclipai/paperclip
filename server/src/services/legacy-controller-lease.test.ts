@@ -4,8 +4,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
-  renewLegacyControllerLease, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
+  renewLegacyControllerLease, revokeExpiredLegacyController, revokeExpiredLegacyControllerWithState,
+  watchLegacyControllerLease } from "./legacy-controller-lease.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
@@ -79,6 +80,16 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(attempts.filter(Boolean)).toHaveLength(1);
     expect(await renewLegacyControllerLease(db, run)).toBe(false);
   });
+  it("revocation reports the committed dispatch boundary instead of the caller's stale snapshot", async () => {
+    const stale = await seed();
+    expect(await renewLegacyControllerLease(db, stale, "dispatching")).toBe(true);
+    await expire(stale.id);
+    expect(stale.executionStage).toBe("preparing");
+    expect(await revokeExpiredLegacyControllerWithState(db, stale)).toEqual({
+      executionStage: "dispatching", processPid: null, processGroupId: null,
+    });
+    expect(await revokeExpiredLegacyControllerWithState(db, stale)).toBeNull();
+  });
   it("a crash after revocation permits a later recovery claim", async () => {
     const run = await seed();
     await expire(run.id);
@@ -136,6 +147,44 @@ describe("legacy controller lease loss attribution", () => {
       await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + 1);
       expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
       expect(controller.signal.reason.leaseLossCause).toBe("renewal_error");
+      expect(controller.signal.reason.leaseLossTiming).toMatchObject({ renewalPendingMs: null, deadlineLateMs: null, renewalCount: 0 });
     } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
+  type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
+  const watchedRun = (leaseMs: number) => ({ id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy",
+    controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + leaseMs) }) as WatchArgs[1];
+
+  it("records a renewal still in flight when a stalled query reaches the deadline", async () => {
+    let calls = 0;
+    const stallingDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => {
+      calls += 1;
+      return calls <= 2 ? Promise.resolve([{ id: "run" }]) : new Promise(() => {});
+    } }) }) }) } as unknown as WatchArgs[0];
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(stallingDb, watchedRun(LEGACY_CONTROLLER_LEASE_MS), controller);
+    try {
+      await vi.advanceTimersByTimeAsync(2 * LEGACY_CONTROLLER_RENEW_MS);
+      expect(controller.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_LEASE_MS + 1);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
+      expect(controller.signal.reason.leaseLossTiming).toEqual({ sinceRenewalMs: LEGACY_CONTROLLER_LEASE_MS,
+        renewalPendingMs: LEGACY_CONTROLLER_LEASE_MS - LEGACY_CONTROLLER_RENEW_MS, deadlineLateMs: 0, renewalCount: 2 });
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
+  it("records how late the deadline ran when the event loop was blocked", async () => {
+    const idleDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as WatchArgs[0];
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(idleDb, watchedRun(10), controller);
+    try {
+      const blockedUntil = Date.now() + 80;
+      while (Date.now() < blockedUntil) { /* hold the event loop past the deadline */ }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
+      expect(controller.signal.reason.leaseLossTiming.deadlineLateMs).toBeGreaterThanOrEqual(60);
+      expect(controller.signal.reason.leaseLossTiming.renewalPendingMs).toBeNull();
+    } finally { watch.stop(); }
   });
 });

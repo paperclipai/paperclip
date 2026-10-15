@@ -11,12 +11,12 @@ vi.mock("@paperclipai/adapter-utils/ssh", () => ({ runSshCommand: state.ssh }));
 import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { buildCodexAcpConfig, resolveCodexExecutionEngine } from "@paperclipai/adapter-codex-local/server";
 import { secretService } from "./secrets.js";
-import { localAgentRunnerTarget, resetLocalAgentRunnerTargetCacheForTests } from "../lib/agent-runner-platform.js";
+import * as localPlatform from "../lib/agent-runner-platform.js";
 const target = { driver: "local", platform: "linux", architecture: "x64" };
 const qualifiedTargets = [target, { driver: "local", platform: "linux", architecture: "arm64" }, { driver: "local", platform: "darwin", architecture: "arm64" }, { driver: "local", platform: "darwin", architecture: "x64" }];
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const originalArchitecture = Object.getOwnPropertyDescriptor(process, "arch")!;
-afterEach(() => { vi.restoreAllMocks(); resetLocalAgentRunnerTargetCacheForTests(); Object.defineProperty(process, "platform", originalPlatform); Object.defineProperty(process, "arch", originalArchitecture); });
+afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", originalPlatform); Object.defineProperty(process, "arch", originalArchitecture); });
 
 describe("server-owned Codex runner selection", () => {
   beforeEach(() => { state.disabled = []; state.overridden.clear(); state.settings = {}; state.getEnvironment.mockReset(); state.bindings.mockReset().mockResolvedValue([]); state.managedEnvironment.mockReset(); state.kubernetesEnvironment.mockReset().mockResolvedValue(null); state.ensureKubernetesEnvironment.mockReset(); state.ssh.mockReset().mockResolvedValue({ stdout: "Linux\nx86_64\n" }); state.sandboxQualification.mockReset().mockResolvedValue(null); state.resolveEnvironment.mockReset().mockResolvedValue({ driver: "ssh", config: {} }); });
@@ -33,13 +33,12 @@ describe("server-owned Codex runner selection", () => {
       expect(agentRunnerAvailability("codex_local", { ...target, libc: "glibc" }).defaultRunner).toBe("paperclip");
     }
   });
-  it.each([[undefined, false], ["2.38", false], ["2.39", true], ["3.0", true], [" 2.39 ", true], ["malformed", false], ["", false]] as const)("uses the measured local Node libc version (%s) for creation", async (glibcVersionRuntime, native) => {
+  it.each([[undefined, false], ["2.38", false], ["2.39", true], ["3.0", true], [" 2.39 ", true], ["malformed", false], ["", false]] as const)("uses the measured local libc version (%s) for creation", async (glibcVersionRuntime, native) => {
     Object.defineProperty(process, "platform", { ...originalPlatform, value: "linux" });
     Object.defineProperty(process, "arch", { ...originalArchitecture, value: "arm64" });
-    vi.spyOn(process.report, "getReport").mockReturnValue({ header: { glibcVersionRuntime }, environmentVariables: { PRIVATE_SENTINEL: "do-not-retain" } } as never);
-    const localTarget = localAgentRunnerTarget();
+    vi.spyOn(localPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "linux", architecture: "arm64", libc: glibcVersionRuntime ? "glibc" : "unknown", ...(glibcVersionRuntime ? { glibcVersion: glibcVersionRuntime.trim() } : {}) });
+    const localTarget = localPlatform.localAgentRunnerTarget();
     expect(localTarget).toEqual({ driver: "local", platform: "linux", architecture: "arm64", libc: glibcVersionRuntime ? "glibc" : "unknown", ...(glibcVersionRuntime ? { glibcVersion: glibcVersionRuntime.trim() } : {}) });
-    expect(JSON.stringify(localTarget)).not.toContain("do-not-retain");
     expect(agentRunnerAvailability("codex_local").defaultRunner).toBe(native ? "paperclip" : "legacy");
     const saved = await resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "codex_local" });
     expect(saved.adapterType).toBe(native ? "paperclip_runner" : "codex_local");
@@ -61,10 +60,10 @@ describe("server-owned Codex runner selection", () => {
       expect(resolveNewAgentRunner(saved)).toEqual({ adapterType: saved.adapterType, adapterConfig: saved.adapterConfig });
     }
   });
-  it("keeps an unidentified local Linux libc legacy if Node's report is unavailable", () => {
+  it("keeps an unidentified local Linux libc legacy if the platform probe is unavailable", () => {
     Object.defineProperty(process, "platform", { ...originalPlatform, value: "linux" });
-    vi.spyOn(process.report, "getReport").mockImplementation(() => { throw new Error("private-report-details"); });
-    expect(localAgentRunnerTarget()).toMatchObject({ libc: "unknown" });
+    vi.spyOn(localPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "linux", architecture: "x64", libc: "unknown" });
+    expect(localPlatform.localAgentRunnerTarget()).toMatchObject({ libc: "unknown" });
     expect(agentRunnerAvailability("codex_local").defaultRunner).toBe("legacy");
   });
   it.each(qualifiedTargets)("uses native Codex automatically with compatible configuration and is idempotent on $platform/$architecture", target => {

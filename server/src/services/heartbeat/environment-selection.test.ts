@@ -53,7 +53,7 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
         projectExecutionWorkspacePolicy: null, issueExecutionWorkspaceSettings: null,
       },
       config: { config: {}, sourceWorkspaceConfig: {}, issueAssigneeOverrides: null },
-      services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db), instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: vi.fn(async () => null) },
+      services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db), instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: vi.fn(async () => null), findExecutionWorkspaceHolder: vi.fn(async () => null) },
     };
     const workspace = async () => {
       const created = await executionWorkspaceService(db).create({ companyId: company.id, projectId: project.id, sourceIssueId: issue.id, name: "Saved workspace", mode: "isolated_workspace", strategyType: "git_worktree", cwd: home, providerRef: home });

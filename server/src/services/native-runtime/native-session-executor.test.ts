@@ -1,3 +1,5 @@
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -50,6 +52,7 @@ import {
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
+import { RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
@@ -590,9 +593,40 @@ describe("remote controller restart adoption", () => {
       ? { stdout: "nonce\n123\n2026-09-19T10:00:00.000Z\nrunner\n", stderr: "", exitCode: 0, timedOut: false }
       : original(request));
     await expect(verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }))
-      .rejects.toThrow("runner_remote_process_identity_unavailable");
+      .rejects.toMatchObject({
+        message: "runner_remote_process_identity_unavailable",
+        remoteRunnerRecovery: { stage: "identity_marker", reason: "fingerprint_missing" },
+      });
   });
-  it.each(["start ticks", "boot identity"])("rejects PID reuse after the live %s changes", async (change) => {
+  it.each([
+    [31, "marker_missing"], [32, "marker_unsafe"], [33, "marker_read_failed"],
+  ] as const)("records the closed reason for marker read exit %s", async (exitCode, reason) => {
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => request.args[2] === "paperclip-runner-recovery-identity"
+      ? { stdout: "", stderr: "private transport text", exitCode, timedOut: false }
+      : original(request));
+    await expect(verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }))
+      .rejects.toMatchObject({ message: "runner_remote_process_identity_unavailable",
+        remoteRunnerRecovery: { stage: "identity_marker", reason } });
+  });
+  it.each(["timeout", "transport"] as const)("records a marker %s without retaining transport text", async failure => {
+    const { target, execute } = fixture();
+    const transportError = new Error("private bridge response");
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-identity") return original(request);
+      if (failure === "transport") throw transportError;
+      return { stdout: "", stderr: "private bridge response", exitCode: -1, timedOut: true };
+    });
+    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const diagnostic = readRemoteRunnerRecoveryError(error);
+    expect(diagnostic).toEqual({ stage: "identity_marker", reason: failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+    if (failure === "transport") expect(error).toBe(transportError);
+    else expect(error).toMatchObject({ message: "runner_remote_process_identity_unavailable" });
+  });
+  it.each(["start ticks", "boot identity", "fingerprint probe"])("rejects a changed or unavailable live %s", async (change) => {
     const root = await mkdtemp(join(tmpdir(), "remote-generation-"));
     const proc = join(root, "proc");
     const markerPath = join(root, "runner-process.identity");
@@ -619,17 +653,38 @@ describe("remote controller restart adoption", () => {
         args[1] = args[1].replaceAll("/proc/", `${proc}/`);
         args[3] = markerPath;
         let exitCode = 0;
-        try { execFileSync("sh", args, { stdio: "pipe" }); } catch { exitCode = 4; }
+        try { execFileSync("sh", args, { stdio: "pipe" }); } catch (error) { exitCode = (error as { status?: number }).status ?? 4; }
         return { stdout: "", stderr: "", exitCode, timedOut: false };
       });
       const adopted = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" });
       expect(await adopted.isAlive()).toBe(true);
       if (change === "start ticks") await writeFile(join(proc, String(pid), "stat"), stat(101));
-      else await writeFile(join(proc, "sys/kernel/random/boot_id"), "abcd-5678\n");
+      else if (change === "boot identity") await writeFile(join(proc, "sys/kernel/random/boot_id"), "abcd-5678\n");
+      else await rm(join(proc, String(pid), "stat"));
       expect(await adopted.isAlive()).toBe(false);
       await expect(verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }))
-        .rejects.toThrow("runner_remote_process_identity_unavailable");
+        .rejects.toMatchObject({ message: "runner_remote_process_identity_unavailable", remoteRunnerRecovery: {
+          stage: "process_verification", reason: change === "fingerprint probe" ? "fingerprint_unavailable" : "process_generation_changed",
+        } });
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each(["liveness", "timeout", "transport"] as const)("retains the reason for a failed process %s probe", async failure => {
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    const transportError = new Error("provider_transport_failed: private bridge response");
+    execute.mockImplementation(async request => {
+      if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+      if (failure === "transport") throw transportError;
+      return { stdout: "", stderr: "private probe output", exitCode: failure === "liveness" ? 45 : -1, timedOut: failure === "timeout" };
+    });
+    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const diagnostic = readRemoteRunnerRecoveryError(error);
+    expect(diagnostic).toEqual({ stage: "process_verification", reason: failure === "liveness" ? "process_not_running" : failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+    if (failure === "transport") {
+      expect(error).toBe(transportError);
+      expect(nativeSessionFailureSourceCode(error)).toBe("provider_transport_failed");
+    }
   });
   it("rejects a stale process marker", async () => {
     const { execute, target } = fixture();
@@ -2587,12 +2642,6 @@ describe("remote runner build metadata", () => {
     durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
-
-  it("accepts the current contract with the required transport", () => {
-    expect(() =>
-      assertRemoteRunnerBuildMetadata(current, "listen_ws"),
-    ).not.toThrow();
-  });
 
   it("requires an explicit Dot bridge capability only for remote Dot execution", () => {
     expect(() => assertRemoteRunnerBuildMetadata(current, "listen_ws", "openai_dot_mcp"))
@@ -8683,6 +8732,26 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("persists closed remote recovery evidence without replacing saved run results", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const remoteRunnerRecovery = { stage: "identity_marker", reason: "fingerprint_missing" } as const;
+    const failure = new RemoteRunnerRecoveryError(remoteRunnerRecovery);
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({ update: vi.fn(async () => null) } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+    await expect(executePaperclipNativeSession({ db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner" })).rejects.toBe(failure);
+    expect(updates.find(update => update.table === nativeRunFinalizations && update.values.failureDetail)?.values.failureDetail)
+      .toMatchObject({ remoteRunnerRecovery });
+    const resultJson = updates.find(update => update.table === heartbeatRuns && update.values.error)?.values.resultJson as SQL;
+    const query = new PgDialect().sqlToQuery(resultJson);
+    expect(query.sql).toContain('coalesce("heartbeat_runs"."result_json",');
+    expect(query.sql).toContain("- 'remoteRunnerRecovery'");
+    expect(query.params).toContain(JSON.stringify({ remoteRunnerRecovery }));
+    expect(state.upsertRecoveryAction).toHaveBeenCalledWith(expect.objectContaining({ evidence: expect.objectContaining({ remoteRunnerRecovery }) }));
+    expect(state.execute).toHaveBeenCalledOnce();
+    } finally { service.mockRestore(); }
+  });
   it("blocks a denied Cursor task and gives recovery to the operator without another provider attempt", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const failure = new NativePermissionDeclinedError();
@@ -10060,33 +10129,54 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it("keeps assigned MCP credentials on the control plane for remote Codex", async () => {
-    const assignedMcpTools = { definitions: () => [], has: () => false, execute: vi.fn() };
-    state.createAssignedMcpTools.mockResolvedValueOnce(assignedMcpTools);
-    state.createBackend.mockClear();
-    state.createTransport.mockClear();
-    state.toolAuthorityDefinitions.mockClear();
-    await createRunnerdBackend({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-assigned-mcp",
-      runnerEnvironment: {
-        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/assigned-test",
-        PAPERCLIP_NATIVE_MCP_TOKEN: "private-run-token",
-      },
-      runnerExecutionTarget: {
-        kind: "remote", transport: "sandbox", providerKey: "daytona",
-        leaseId: "lease-assigned-mcp", remoteCwd: "/home/daytona/paperclip-workspace",
-        runner: { execute: vi.fn() },
-      } as never,
-    });
-    expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({
-      gatewayPublicId: "assigned-test", bearerToken: "private-run-token",
-    }));
-    expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
-    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
-    const options = state.createTransport.mock.calls[0]![0] as { environment: NodeJS.ProcessEnv };
-    expect(options.environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
-    expect(options.environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
-    expect(options.environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+    try {
+      const assignedMcpTools = { definitions: () => [], has: () => false, execute: vi.fn() };
+      state.createAssignedMcpTools.mockResolvedValueOnce(assignedMcpTools);
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.toolAuthorityDefinitions.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(execution), execution, runnerInstanceId: "runner-assigned-mcp",
+        runnerEnvironment: {
+          PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+          PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/assigned-test",
+          PAPERCLIP_NATIVE_MCP_TOKEN: "private-run-token",
+        },
+        runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", providerKey: "daytona",
+          leaseId: "lease-assigned-mcp", remoteCwd: "/home/daytona/paperclip-workspace",
+          runner: { execute: vi.fn() },
+        } as never,
+      });
+      expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({
+        gatewayPublicId: "assigned-test", bearerToken: "private-run-token",
+      }));
+      expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const options = state.createTransport.mock.calls[0]![0] as { environment: NodeJS.ProcessEnv };
+      expect(options.environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
+      expect(options.environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+      expect(options.environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+      await provider.forceFlush();
+      const spans = exporter.getFinishedSpans();
+      expect(spans.map(span => span.name)).toEqual(expect.arrayContaining([
+        "native.controller.assigned_mcp", "native.controller.tool_authority",
+        "native.controller.wake_binding", "native.controller.companion_selection",
+      ]));
+      for (const span of spans) {
+        expect(Object.keys(span.attributes)).toEqual(["paperclip.task.run.run_id"]);
+        expect(JSON.stringify(span.attributes)).not.toContain("private-run-token");
+      }
+    } finally {
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
   });
 
   it("makes remote authority archival idempotent and returns the archived state", async () => {

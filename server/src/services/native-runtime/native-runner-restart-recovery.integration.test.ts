@@ -14,6 +14,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
@@ -40,6 +41,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.js", async () => {
@@ -255,7 +257,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       issueId,
       phase: "observed",
     });
-    return { db, issueId, runId, native };
+    const [preparedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    return { db, issueId, runId, native, preparedProfile: preparedRun.runnerProfileJson };
   }
 
   function transportOptions(
@@ -1068,6 +1071,120 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       { controllerGeneration: 5, providerAttempt: 0 },
     ]);
   });
+
+  it("recovers an unclaimed remote startup once without requiring a provider checkpoint", async () => {
+    const fixture = await seedRun("REMOTE-UNCLAIMED");
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const dispositions = (await Promise.all([successor, { ...successor, bootId: randomUUID() }].map(controller =>
+      claimNativeRestartRecoveries({ db: fixture.db, controller, restartKind: "hard", runIds: [fixture.runId] }),
+    ))).flat();
+    expect(dispositions.filter(row => row.kind === "bootstrap_incomplete")).toEqual([
+      expect.objectContaining({ runId: fixture.runId, providerAttempt: 0, controllerGeneration: 1 }),
+    ]);
+    expect(dispositions.filter(row => row.kind === "awaiting_evidence")).toHaveLength(1);
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", nativeSessionId: fixture.native.normalizedSessionId });
+    expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
+  it.each([false, true])("yields an original preparation after remote recovery claims its run (expired lease=%s)", async (expired) => {
+    const fixture = await seedRun(`REMOTE-PREPARATION-${expired}`);
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const execution = buildNativeExecutionInput({
+      companyId, agentId, runId: fixture.runId,
+      issue: { id: fixture.issueId, identifier: null, title: "Resume prepared work", description: null, workMode: "standard" },
+      taskPrompt: "Resume prepared work", provider: "codex",
+      workspace: { id: randomUUID(), cwd: runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: fixture.native.normalizedSessionId,
+      runtimeContext: nativeRuntimeContextFixture(),
+      completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Resume prepared work", criteria: [{ id: "result", requirement: "Complete work" }] } },
+    });
+    let prepared!: () => void, release!: () => void;
+    const preparing = new Promise<void>(resolveReady => { prepared = resolveReady; });
+    const continuePreparation = new Promise<void>(resolveContinue => { release = resolveContinue; });
+    const openSession = vi.fn(async () => { throw new Error("Losing preparation must not open a provider"); });
+    const descriptor = vi.fn(async () => { throw new Error("Losing preparation must not configure a provider"); });
+    const original = executePaperclipNativeSession({
+      db: fixture.db, execution, runnerInstanceId: fixture.native.runnerInstanceId,
+      backend: { descriptor, openSession },
+      preparationSpans: [{ name: "heartbeat.prepare_after_environment", startedAtMs: Date.now(), endedAtMs: Date.now() }],
+      onEvent: async event => {
+        if (event.payload?.span === "heartbeat.prepare_after_environment") {
+          prepared();
+          await continuePreparation;
+        }
+      },
+    }).catch(error => error);
+    try {
+      await Promise.race([preparing, original.then(error => { throw error; })]);
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, restartKind: "hard", runIds: [fixture.runId] })).toEqual([
+        { kind: "awaiting_evidence", runId: fixture.runId, reason: "current_controller_preparing" },
+      ]);
+      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
+      expect(claim.kind).toBe("bootstrap_incomplete");
+      if (expired) await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const [before] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      release();
+      expect(await original).toBeInstanceOf(NativeControllerDetachedForRestartError);
+      expect(openSession).not.toHaveBeenCalled();
+      expect(descriptor).not.toHaveBeenCalled();
+      expect((await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)))[0]).toEqual(before);
+      expect((await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0].status).toBe("running");
+      expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+    } finally {
+      release();
+      await original;
+    }
+  });
+
+  function remotePreparedWorkspace() {
+    return { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+      descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+      workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: randomUUID(),
+      remoteCwd: "/workspace", resourceDisposition: "destroy" };
+  }
+
+  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
+    "keeps remote startup recovery blocked with contradictory %s evidence", async (kind) => {
+      const fixture = await seedRun(`REMOTE-${kind}`);
+      let profile = fixture.preparedProfile;
+      if (kind === "unfenced") {
+        profile = { ...profile };
+        delete profile.nativePreparationFencingVersion;
+        await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, fixture.runId));
+        const [olderRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        await prepareNativeHeartbeatRun({ db: fixture.db,
+          run: { ...olderRun, runnerProfileJson: { ...profile, nativePreparationFencingVersion: 1 } },
+          issue: { id: fixture.issueId, title: "Older preparation", description: null }, environmentLeaseId: "older-lease" });
+        const [unchanged] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(unchanged.runnerProfileJson).not.toHaveProperty("nativePreparationFencingVersion");
+        profile = unchanged.runnerProfileJson;
+      }
+      await fixture.db.update(heartbeatRuns).set({
+        runnerProfileJson: { ...profile, nativeWorkspaceSync: kind === "invalid-workspace" ? {} : remotePreparedWorkspace(),
+          ...(kind === "checkpoint" ? { sessionCheckpoint: {} } : {}) },
+        ...(kind === "process" ? { processPid: 2_000_000_001 } : {}),
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      if (kind === "claimed" || kind === "generation") await fixture.db.update(nativeRunFinalizations)
+        .set(kind === "claimed" ? { attempt: 1 } : { controllerGeneration: 1 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (kind === "launch" || kind === "provider-event") await fixture.db.insert(heartbeatRunEvents).values({
+        companyId, runId: fixture.runId, agentId, seq: 1, stream: "system", level: "info",
+        eventType: kind === "launch" ? "native.process_start_requested" : "item.updated",
+        ...(kind === "provider-event" ? { sourceEventId: "provider-event-1" } : {}),
+      });
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([
+        { kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" },
+      ]);
+    },
+  );
 
   it.each([2, 3])("recovers a checkpointed restart interruption within provider budget %s", async (attempt) => {
     const fixture = await seedRun(`INTERRUPTED-${attempt}`);

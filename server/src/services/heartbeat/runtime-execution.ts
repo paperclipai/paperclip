@@ -264,6 +264,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     );
   }
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
+  let preserveRunGatewayTokens = false;
   const inspectFinalizeWorkspaceBranch = async () => {
     const workspaceRecord = persistedExecutionWorkspace?.id
       ? await executionWorkspacesSvc.getStoredById(
@@ -986,11 +987,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       // Preserve the provider and its run for the new controller. This
       // also keeps generic teardown from terminalizing/releasing its lease.
       input.effects.onNativeSessionResumeScheduled();
+      preserveRunGatewayTokens = true;
       throw adapterErr;
     }
     if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
       input.effects.onNativeOwnershipHeld();
       throw adapterErr;
+    }
+    if (nativeRuntimeResolution.kind === "native" && nativeWorkspaceSync?.reference.state === "prepared") {
+      input.effects.onProviderResourceDisposition("stop_and_retain");
     }
     await db
       .update(heartbeatRuns)
@@ -1128,7 +1133,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     throw adapterErr;
   } finally {
     try {
-      await revokeHeartbeatRunGatewayTokens({
+      if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,
         companyId: agent.companyId,
         runId: run.id,

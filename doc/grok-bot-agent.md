@@ -19,6 +19,13 @@ assignment delivery and an authenticated reply before **Done** becomes available
 Use **Save & exit** to preserve unfinished setup. See the official
 [routine instructions](https://cursor.com/help/grok-bot/routines).
 
+Manage the Bot from its agent's **Runtime** settings. This shows connection
+health, routine configuration, and verification. Model selection, local paths,
+and runtime tests are managed outside Paperclip; use **Verify connection** to
+check both directions. Use **Reconnect agent access** to restore the same agent's
+connection. Select **Copy code** beside the masked one-use pairing code, then
+paste it into Paperclip's authorization page. Keep it out of Bot chat.
+
 Assign ordinary tasks to the agent. Read its progress, answer its question cards,
 and review its documents and files in the task thread. The Bot can initiate a
 new task from its Grok conversation through the admitted work-session tools.
@@ -41,6 +48,23 @@ Publication also verifies stored filename, byte size and SHA-256. Normal Runner
 completion verifies that receipt against the upload and admitted assignment.
 A visible attachment without that verified publication does not satisfy a task
 that requires a file output.
+
+## Feedback and pending operations
+
+An assignment wake starts a Grok routine. Once the Bot accepts that work,
+Paperclip keeps new comments and asynchronous operation receipts durable without
+starting another routine for that session. Silence does not mean the Bot is idle.
+Acceptance and the final webhook handoff are serialized. If acceptance finishes
+while credentials are loading, the unsent wake is cancelled. Stop and
+authenticated acknowledgements remain independent of a pending HTTP response.
+Human-question answers and resolved durable waits resume through normal Runner
+admission and a new assignment wake.
+
+If a tool returns pending, poll `paperclip_grok_operation_status` with the same
+assignment and request IDs for its durable outcome. Do not repeat it under a new
+ID or perform dependent work first. An unknown outcome requires reconciliation. At safe boundaries and before finishing,
+the Bot reads its inbox and current task history for queued feedback. Current
+assignment reads include these instructions, including for existing connections.
 
 ## Recovery and stop
 

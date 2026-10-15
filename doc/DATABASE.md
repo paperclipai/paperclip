@@ -36,6 +36,13 @@ secret redaction still run on the bounded result set.
 Agent detail links fetch an older selected run by ID when it is outside the
 history page, and verify that it belongs to the current company and agent.
 
+Saved-run policy and parent-report lookups read only the `executionPolicy`
+value or the legacy `issueId` and `taskId` values from a run context. PostgreSQL projects
+those JSON values before it sends the row to the controller. Unused prompt and
+launch context does not travel with each policy or parent-report check. JSON
+types, task-key precedence, and company and agent identity checks are preserved.
+Each decision still reads current data; this is not an authorization cache.
+
 To compare the real summary and full history queries with an earlier revision:
 
 ```sh
@@ -52,6 +59,12 @@ across company history for each workspace. Repository admission repeats these
 reads while holding its company provenance lock, so that plan can delay other
 agent launches. Missing, malformed, noncanonical, and foreign-company source
 IDs still deny access.
+
+The subsequent source-task enumeration also keeps `issues.id` as a UUID. Its
+OR predicate combines the workspace binding index with the task primary key.
+Casting that ID to text forces another scan of company history even after the
+workspace privacy query has passed. The workspace authorization regression
+suite checks both plans and verifies the attached and retained source results.
 
 To compare this query on a disposable fixture with 13,429 tasks:
 
@@ -868,6 +881,8 @@ Migration [0336_big_crystal.sql](../packages/db/src/migrations/0336_big_crystal.
 Migration [0337_exotic_proemial_gods.sql](../packages/db/src/migrations/0337_exotic_proemial_gods.sql) adds internal `execution_workspace_repository_roots` records. A company and hash of its canonical physical path uniquely identify a sticky `anonymous_only` or `managed` acquisition reservation. Short transactions serialize reservations with repository requests and credential promotion, preventing private publication after low-trust admission checks. Records have no workspace foreign key: mutable workspace metadata, relocation, archival or deletion cannot release a physical folder still accessible to an admitted run. There is no automatic mode change or reservation deletion.
 
 Migration [0338_absurd_vengeance.sql](../packages/db/src/migrations/0338_absurd_vengeance.sql) adds internal `execution_workspace_repository_access` provenance. Company/canonical-root source entries retain execution-workspace and source-project identities; reader entries retain the exact admitted run, task, agent and responsible user. New repository receipts also record their root at creation; legacy receipts receive no inferred origin. Shared project-source entries retain which physical owners require workspace write authority. Current admission, selection, requests and publication check the current task’s writer against those owners; retained past readers and file APIs still require only read authority. Genuine isolated copies retain source read access without requiring shared-folder write access. An existing linked worktree can recover a missing isolated-copy proof only after Git registration and its captured source owner are verified. Configured local sibling copies retain deny-only task/project source ownership on the bound task root before materialization; ordinary repository clones create no isolation proof. The shared root fence checks every reader against every source before admission and future publication, including tasks without repository requests. File APIs apply the same source privacy without writing provenance. These entries grant no authority and have no workspace or run deletion cascade; unavailable retained identity fails closed. Automatic provenance release is deferred, so a newly incompatible permission scope requires a separate physical root.
+
+Repository admission loads retained workspace and task sources in bounded batches. Readers share source rows and privacy evaluation for identical principals, but each retained run receives its own trust and responsible-user decision. The snapshot lasts only for one read batch; later admission and publication reload current authority. Keep source-loading query counts bounded as both workspace history and retained reader counts grow.
 
 Git-source capture checks the actual common Git storage directory and verified
 checkout owners. Separately stored metadata does not make its parent a checkout.

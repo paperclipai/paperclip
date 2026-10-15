@@ -345,9 +345,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
-  const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
-  const showInlineAdapterTestEnvironmentButton =
-    showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
@@ -629,8 +626,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     : adapterType;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(isCodexHarness ? harnessType : adapterType);
-  const isDotRunner = adapterType === "paperclip_runner" && (isCreate ? props.values.adapterSchemaValues?.provider : eff("adapterConfig", "provider", config.provider)) === "openai_dot";
-  const isLocal = !isDotRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
+  const runnerProvider = adapterType === "paperclip_runner"
+    ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
+    : undefined;
+  const isDotRunner = runnerProvider === "openai_dot";
+  const isGrokBotRunner = runnerProvider === "grok_bot";
+  const isExternalBotRunner = isDotRunner || isGrokBotRunner;
+  const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
+  const showInlineAdapterTestEnvironmentButton =
+    showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
+  const isLocal = !isExternalBotRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
   
   // The legacy working directory is an absolute path on the host, so the
   // managed-sandbox-only policy hides it. A stored value stays untouched; it is
@@ -909,14 +915,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : "Local";
 
-  const runnerProvider = adapterType === "paperclip_runner"
-    ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
-      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
-    : undefined;
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
-  const connectionModels = useConnectionModels(selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
+  const connectionModels = useConnectionModels(isExternalBotRunner ? null : selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = isCodexHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
@@ -932,7 +934,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
     }),
-    enabled: Boolean(selectedCompanyId) && !connectionModels,
+    enabled: Boolean(selectedCompanyId) && !isExternalBotRunner && !connectionModels,
   });
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
@@ -983,8 +985,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // Resolve the effective instructions-file gate once. The instructions file
     // is an absolute host path, so the managed-sandbox-only policy hides it for
     // every adapter without a per-adapter edit.
-    hideInstructionsFile: hideInstructionsFile || hideHostPaths || isDotRunner,
-    managedSandboxOnly: hideHostPaths || isDotRunner,
+    hideInstructionsFile: hideInstructionsFile || hideHostPaths || isExternalBotRunner,
+    managedSandboxOnly: hideHostPaths || isExternalBotRunner,
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
   };
 
@@ -1624,7 +1626,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          {showAdapterTypeField && (
+          {showAdapterTypeField && isGrokBotRunner && (
+            <Field label="Harness" hint={help.adapterType}>
+              <div className="inline-flex items-center gap-1.5">
+                <AdapterMark type="grok_bot" className="size-4" />
+                <span>Grok Bot</span>
+                <ExperimentalBadge />
+              </div>
+            </Field>
+          )}
+          {showAdapterTypeField && !isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={isDotRunner ? "openai_dot" : isCodexHarness ? harnessType : adapterType}
@@ -1697,7 +1708,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isDotRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+          {!isExternalBotRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}

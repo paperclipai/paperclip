@@ -2460,7 +2460,20 @@ describe("IssueDetail", () => {
       renderIssueView();
     });
     await flushReact();
+
+    expect(
+      container.querySelector('[data-testid="task-chat-thread"]'),
+    ).not.toBeNull();
+    expect(mockIssueChatThreadRender).toHaveBeenCalled();
+
     await flushReact();
+
+    expect(
+      container.querySelector('[aria-label="Open file in this issue"]'),
+    ).toBeNull();
+
+    expect(container.textContent).not.toContain("Plan decomposition");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
 
     expect(container.textContent).not.toContain("Sub-issues");
     expect(mockIssuesListRender.mock.calls).not.toContainEqual([
@@ -4331,35 +4344,6 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("hides the plan decomposition panel by default", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue());
-
-    await act(async () => {
-      renderIssueView();
-    });
-
-    await flushReact();
-    await flushReact();
-
-    expect(container.textContent).not.toContain("Plan decomposition");
-    expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
-  });
-
-  it("hides file viewer entry points by default", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue());
-
-    await act(async () => {
-      renderIssueView();
-    });
-
-    await flushReact();
-    await flushReact();
-
-    expect(
-      container.querySelector('[aria-label="Open file in this issue"]'),
-    ).toBeNull();
-  });
-
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
@@ -4377,31 +4361,6 @@ describe("IssueDetail", () => {
     expect(
       container.querySelector('[aria-label="Open file in this issue"]'),
     ).not.toBeNull();
-  });
-
-  it("hides the properties sidebar on the first onboarding task until a plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
-    mockIssuesApi.get.mockResolvedValue(
-      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
-    );
-    // No plan yet: the hook's 404 resolves to null.
-    mockIssuesApi.getDocument.mockResolvedValue(null);
-
-    await act(async () => {
-      renderIssueView();
-    });
-
-    await flushReact();
-    await flushReact();
-
-    // Panel content is withheld — openPanel is never invoked, so the sidebar
-    // stays hidden without touching the persisted panelVisible preference.
-    expect(mockOpenPanel).not.toHaveBeenCalled();
-    expect(mockClosePanel).toHaveBeenCalled();
   });
 
   it("starts a planning-mode task as chat-only until its plan document exists", async () => {
@@ -4488,6 +4447,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
     expect(mockOpenPanel).not.toHaveBeenCalled();
+    expect(mockClosePanel).toHaveBeenCalled();
 
     // Even though panelVisible is true, the suppressed first task routes the
     // single breadcrumb panel control through its per-task opt-in behavior.
@@ -5227,20 +5187,6 @@ describe("IssueDetail", () => {
         delete window.isSecureContext;
       }
     }
-  });
-
-  it("renders the task chat thread as the default thread", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue());
-
-    await act(async () => {
-      renderIssueView();
-    });
-    await flushReact();
-
-    expect(
-      container.querySelector('[data-testid="task-chat-thread"]'),
-    ).not.toBeNull();
-    expect(mockIssueChatThreadRender).toHaveBeenCalled();
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {

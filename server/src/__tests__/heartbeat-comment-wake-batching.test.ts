@@ -201,6 +201,98 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
 
+  function wakeCompanyRow(
+    rowId: (typeof companies.$inferInsert)["id"],
+    issuePrefix: (typeof companies.$inferInsert)["issuePrefix"],
+  ): typeof companies.$inferInsert {
+    return {
+      id: rowId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    };
+  }
+
+  function wakeUserCommentRow(
+    companyId: (typeof issueComments.$inferInsert)["companyId"],
+    issueId: (typeof issueComments.$inferInsert)["issueId"],
+    authorUserId: (typeof issueComments.$inferInsert)["authorUserId"],
+    body: (typeof issueComments.$inferInsert)["body"],
+  ): typeof issueComments.$inferInsert {
+    return {
+      companyId,
+      issueId,
+      authorUserId,
+      body,
+    };
+  }
+
+  function wakeGatewayAgentRow(
+    rowId: (typeof agents.$inferInsert)["id"],
+    companyId: (typeof agents.$inferInsert)["companyId"],
+    name: (typeof agents.$inferInsert)["name"],
+    gateway: { url: string },
+  ): typeof agents.$inferInsert {
+    return {
+      id: rowId,
+      companyId,
+      name,
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: gateway.url,
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
+        payloadTemplate: {
+          message: "wake now",
+        },
+        waitTimeoutMs: 2_000,
+      },
+      runtimeConfig: {},
+      permissions: {},
+    };
+  }
+
+  function wakeIssueRow(
+    rowId: (typeof issues.$inferInsert)["id"],
+    companyId: (typeof issues.$inferInsert)["companyId"],
+    title: (typeof issues.$inferInsert)["title"],
+    assigneeAgentId: (typeof issues.$inferInsert)["assigneeAgentId"],
+    issuePrefix: string,
+  ): typeof issues.$inferInsert {
+    return {
+      id: rowId,
+      companyId,
+      title,
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    };
+  }
+
+  function selectDeferredWakeForAgent(
+    companyId: (typeof agentWakeupRequests.$inferSelect)["companyId"],
+    agentId: (typeof agentWakeupRequests.$inferSelect)["agentId"],
+  ) {
+    return db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase(
       "paperclip-heartbeat-comment-wake-",
@@ -262,13 +354,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
+    await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
     await db.insert(agents).values({
       id: agentId,
@@ -338,17 +424,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     expect(followupRun).toBeNull();
 
-    const deferred = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          eq(agentWakeupRequests.agentId, agentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
+    const deferred = await selectDeferredWakeForAgent(companyId, agentId);
 
     expect(deferred).not.toBeNull();
     expect(deferred?.reason).toBe("issue_execution_deferred");
@@ -384,13 +460,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
+    await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
     await db.insert(agents).values({
       id: agentId,
@@ -460,17 +530,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     expect(followupRun).toBeNull();
 
-    const deferred = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          eq(agentWakeupRequests.agentId, agentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
+    const deferred = await selectDeferredWakeForAgent(companyId, agentId);
 
     expect(deferred).toMatchObject({
       reason: "issue_execution_deferred",
@@ -508,56 +568,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Batch wake comments",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Batch wake comments", agentId, issuePrefix));
 
       const comment1 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "First comment",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "First comment"))
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
@@ -588,22 +608,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const comment2 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Second comment",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Second comment"))
         .returning()
         .then((rows) => rows[0]);
       const comment3 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Third comment",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Third comment"))
         .returning()
         .then((rows) => rows[0]);
 
@@ -640,31 +650,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(thirdRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, agentId);
         return Boolean(deferred);
       });
 
-      const deferredWake = await db
-        .select()
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.agentId, agentId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+      const deferredWake = await selectDeferredWakeForAgent(companyId, agentId);
 
       const deferredContext = (
         deferredWake?.payload as Record<string, unknown> | null
@@ -746,48 +736,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: { "x-openclaw-token": "gateway-token" },
-          payloadTemplate: { message: "wake now" },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Discard deferred follow-up",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Discard deferred follow-up", agentId, issuePrefix));
       const firstComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "First comment",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "First comment"))
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
@@ -816,12 +770,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const discardedComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Delete this before the current turn finishes",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Delete this before the current turn finishes"))
         .returning()
         .then((rows) => rows[0]);
       expect(
@@ -902,34 +851,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
       await db.insert(issues).values({
         id: issueId,
@@ -945,12 +869,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const comment1 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Start work",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Start work"))
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
@@ -1047,56 +966,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Reopen after deferred comment",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Reopen after deferred comment", agentId, issuePrefix));
 
       const comment1 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "First comment",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "First comment"))
         .returning()
         .then((rows) => rows[0]);
 
@@ -1128,12 +1007,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const comment2 = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Please handle this follow-up after you finish",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Please handle this follow-up after you finish"))
         .returning()
         .then((rows) => rows[0]);
 
@@ -1155,17 +1029,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(deferredRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, agentId);
         return Boolean(deferred);
       });
 
@@ -1258,13 +1122,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const wakeReason = "issue_commented";
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user"]);
 
       await db.insert(agents).values([
@@ -1310,17 +1168,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         },
       ]);
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Agent feedback at completion boundary",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Agent feedback at completion boundary", assigneeAgentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(assigneeAgentId, {
         source: "assignment",
@@ -1380,17 +1228,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(deferredRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, targetAgentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, targetAgentId);
         return Boolean(deferred);
       });
 
@@ -1491,199 +1329,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("cancels a deferred wake containing only a comment authored by the closing run", async () => {
-    const gateway = await createControlledGatewayServer();
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
 
-    try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
-
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Local CLI Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
-
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Self-comment must not reopen",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
-
-      const firstRun = await heartbeat.wakeup(agentId, {
-        source: "assignment",
-        triggerDetail: "system",
-        reason: "issue_assigned",
-        payload: { issueId },
-        contextSnapshot: {
-          issueId,
-          taskId: issueId,
-          wakeReason: "issue_assigned",
-        },
-        requestedByActorType: "system",
-        requestedByActorId: null,
-      });
-
-      expect(firstRun).not.toBeNull();
-      await waitFor(async () => {
-        const run = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, firstRun!.id))
-          .then((rows) => rows[0] ?? null);
-        return run?.status === "running";
-      });
-      await waitFor(() => gateway.getAgentPayloads().length === 1);
-
-      // Local-CLI agents post comments under user auth, but stamp the heartbeat
-      // run id on each comment via createdByRunId. Simulate that here: a "user"
-      // comment that was actually authored by the run that is about to close
-      // the issue. Without the Path A guard this would trigger a reopen.
-      const selfComment = await db
-        .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "local-cli-user",
-          createdByRunId: firstRun?.id ?? null,
-          body: "Closing comment from the same run",
-        })
-        .returning()
-        .then((rows) => rows[0]);
-
-      const deferredRun = await heartbeat.wakeup(agentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_commented",
-        payload: { issueId, commentId: selfComment.id },
-        contextSnapshot: {
-          issueId,
-          taskId: issueId,
-          commentId: selfComment.id,
-          wakeCommentId: selfComment.id,
-          wakeReason: "issue_commented",
-        },
-        requestedByActorType: "user",
-        requestedByActorId: "local-cli-user",
-      });
-
-      expect(deferredRun).toBeNull();
-
-      await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        return Boolean(deferred);
-      });
-
-      // Running records admission. Wait for provider acceptance before
-      // simulating completion by that provider, or startup correctly rejects
-      // the already-closed task before this scenario reaches its follow-up.
-      await waitFor(() => gateway.getAgentPayloads().length >= 1);
-      await db
-        .update(issues)
-        .set({
-          status: "done",
-          completedAt: new Date(),
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, issueId));
-
-      gateway.releaseFirstWait();
-
-      await waitFor(async () => {
-        const run = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, firstRun!.id))
-          .then((rows) => rows[0] ?? null);
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-            ),
-          )
-          .then(
-            (rows) =>
-              rows.find((request) => request.status === "cancelled") ?? null,
-          );
-        return (
-          run?.status === "succeeded" &&
-          deferred?.error ===
-            "Deferred wake contained only comments authored by the finishing run"
-        );
-      }, 90_000);
-
-      expect(gateway.getAgentPayloads()).toHaveLength(1);
-      const runs = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId));
-      expect(runs).toHaveLength(1);
-
-      const issueAfterPromotion = await db
-        .select({
-          status: issues.status,
-          completedAt: issues.completedAt,
-        })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
-
-      expect(issueAfterPromotion).toMatchObject({
-        status: "done",
-      });
-      expect(issueAfterPromotion?.completedAt).not.toBeNull();
-    } finally {
-      gateway.releaseFirstWait();
-      await gateway.close();
-    }
-  }, 120_000);
 
   it("promotes an interaction continuation with its full authoritative source comment after removing a coalesced self-comment", async () => {
     const gateway = await createControlledGatewayServer(async turn => {
@@ -1697,47 +1343,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "local-cli-user", "external-user"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Local CLI Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Local CLI Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Interaction continuation survives self-comment filtering",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Interaction continuation survives self-comment filtering", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -1781,12 +1392,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       ].join("\n");
       const sourceComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "external-user",
-          body: fullSourceInstruction,
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "external-user", fullSourceInstruction))
         .returning()
         .then((rows) => rows[0]);
 
@@ -1914,13 +1520,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       const heartbeat = heartbeatService(db);
 
       try {
-        await db.insert(companies).values({
-          id: companyId,
-          name: "Paperclip",
-          issuePrefix,
-          requireBoardApprovalForNewAgents: false,
-          defaultResponsibleUserId: "responsible-user",
-        });
+        await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
         await db.insert(agents).values({
           id: agentId,
           companyId,
@@ -2398,47 +1998,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "local-cli-user", "user-1"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Local CLI Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Local CLI Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Human follow-up must survive mixed deferred batches",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Human follow-up must survive mixed deferred batches", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -2496,12 +2061,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const humanComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Real follow-up from a human after the run closes",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Real follow-up from a human after the run closes"))
         .returning()
         .then((rows) => rows[0]);
 
@@ -2524,17 +2084,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(secondDeferredRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, agentId);
         return Boolean(deferred);
       });
 
@@ -2618,46 +2168,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Deleted follow-up must not reopen",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Deleted follow-up must not reopen", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -2686,12 +2201,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const queuedComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "Please look at this once you finish",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Please look at this once you finish"))
         .returning()
         .then((rows) => rows[0]);
 
@@ -2714,17 +2224,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(deferredRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, agentId);
         return Boolean(deferred);
       });
 
@@ -2806,46 +2306,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Local CLI Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Local CLI Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Self-authored note must not reopen",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Self-authored note must not reopen", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -2902,17 +2367,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(deferredRun).toBeNull();
 
       await waitFor(async () => {
-        const deferred = await db
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
+        const deferred = await selectDeferredWakeForAgent(companyId, agentId);
         return Boolean(deferred);
       });
 
@@ -2947,11 +2402,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(async () => {
+        const run = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
         const [wake] = await db
           .select({ status: agentWakeupRequests.status })
           .from(agentWakeupRequests)
           .where(eq(agentWakeupRequests.id, queuedWake!.id));
-        return wake?.status === "cancelled";
+        return wake?.status === "cancelled" && run !== null && run.status !== "queued" && run.status !== "running";
       }, 90_000);
 
       const [cancelledWake] = await db
@@ -2967,6 +2427,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       // queue must not promote a second run for the same agent to re-read its
       // own note, and the issue must stay in the state the run's completion left it in.
       expect(gateway.getAgentPayloads()).toHaveLength(1);
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: firstRun!.id, status: "succeeded" });
       const issueAfterCompletion = await db
         .select({ status: issues.status, completedAt: issues.completedAt })
         .from(issues)
@@ -2992,47 +2458,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "local-cli-user", "user-1"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Local CLI Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Local CLI Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Interaction continuation survives self-comment filtering",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Interaction continuation survives self-comment filtering", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -3158,47 +2589,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user"]);
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Require a comment",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Require a comment", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -3324,13 +2720,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
       await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
 
       await db.insert(agents).values([
@@ -3407,12 +2797,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       const mentionComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "@Mentioned Agent please inspect this after the current run.",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "@Mentioned Agent please inspect this after the current run."))
         .returning()
         .then((rows) => rows[0]);
 
@@ -3505,13 +2890,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
       await db.insert(agents).values([
         {
@@ -3556,26 +2935,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         },
       ]);
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Mention should not steal execution ownership",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: primaryAgentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Mention should not steal execution ownership", primaryAgentId, issuePrefix));
 
       const mentionComment = await db
         .insert(issueComments)
-        .values({
-          companyId,
-          issueId,
-          authorUserId: "user-1",
-          body: "@Mentioned Agent please inspect this.",
-        })
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "@Mentioned Agent please inspect this."))
         .returning()
         .then((rows) => rows[0]);
 
@@ -3633,46 +2997,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const heartbeat = heartbeatService(db);
 
     try {
-      await db.insert(companies).values({
-        id: companyId,
-        name: "Paperclip",
-        issuePrefix,
-        requireBoardApprovalForNewAgents: false,
-        defaultResponsibleUserId: "responsible-user",
-      });
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
 
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Gateway Agent",
-        role: "engineer",
-        status: "idle",
-        adapterType: "openclaw_gateway",
-        adapterConfig: {
-          url: gateway.url,
-          headers: {
-            "x-openclaw-token": "gateway-token",
-          },
-          payloadTemplate: {
-            message: "wake now",
-          },
-          waitTimeoutMs: 2_000,
-        },
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        title: "Use existing comment",
-        status: "todo",
-        priority: "medium",
-        responsibleUserId: "responsible-user",
-        assigneeAgentId: agentId,
-        issueNumber: 1,
-        identifier: `${issuePrefix}-1`,
-      });
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Use existing comment", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
         source: "assignment",
@@ -3782,13 +3111,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     // no-ops under suppression and would leave the promoted wake at "queued".
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
+    await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
     await db.insert(agents).values([
       {
         id: finishingAgentId,
@@ -4019,13 +3342,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     // no-ops under suppression and would leave the promoted wake at "queued".
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
+    await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
     await db.insert(agents).values([
       {
         id: finishingAgentId,
@@ -4096,12 +3413,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       payload: { issueId },
     });
 
-    const holdComment = await db.insert(issueComments).values({
-      companyId,
-      issueId,
-      authorUserId: "hold-user",
-      body: "Please continue despite the hold",
-    }).returning().then((rows) => rows[0]!);
+    const holdComment = await db.insert(issueComments).values(wakeUserCommentRow(companyId, issueId, "hold-user", "Please continue despite the hold")).returning().then((rows) => rows[0]!);
     const verifiedWakeId = randomUUID();
     await db.insert(agentWakeupRequests).values({
       id: verifiedWakeId,

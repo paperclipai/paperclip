@@ -19,7 +19,7 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE } from "./native-provider-failure.js";
 import { collectRunFailureDiagnostics } from "../run-failure-diagnostics.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
-import { readPersistedNativeModelRejection } from "./native-provider-failure-evidence.js";
+import { readPersistedNativeFailureEvidence, readPersistedNativeModelRejection } from "./native-provider-failure-evidence.js";
 import { heartbeatService } from "../heartbeat.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
@@ -136,6 +136,9 @@ describe("native completed failure diagnostics", () => {
       expect(adapter.errorCode).toBe(classified ? "native_provider_model_rejected" : undefined);
       expect(adapter.errorMessage).toBe(classified ? NATIVE_MODEL_REJECTION_MESSAGE : scenario === "succeeded" ? null : `Native session ${terminal.runTerminalState}`);
       expect(adapter.resultJson?.nativeProviderFailure).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : undefined);
+      // Only a committed, unclassified failure of the terminal turn explains the generic message.
+      const turnFailure = scenario === "unknown-error" ? { provider: "codex", category: "turn_failed", codexErrorInfo: "other" } : undefined;
+      expect(adapter.resultJson?.nativeTurnFailure).toEqual(turnFailure);
       expect(adapter.nativeFinalization).toMatchObject({ result, terminal, turnId, workspaceFinalizeStatus: "pending" });
       expect(provider.execute).toHaveBeenCalledTimes(1);
       expect(execution.provider).toEqual({ kind: "codex", model });
@@ -145,7 +148,7 @@ describe("native completed failure diagnostics", () => {
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
       expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).toHaveLength(scenario.startsWith("untrusted-") ? 0 : 1);
       const diagnostics = collectRunFailureDiagnostics({ ...run, resultJson: adapter.resultJson ?? null }, {});
-      expect(diagnostics.provider).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : {});
+      expect(diagnostics.provider).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : turnFailure ?? {});
       expect(JSON.stringify(diagnostics)).not.toContain(model);
       expect(JSON.stringify(diagnostics)).not.toContain("Private");
       const [persistedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
@@ -153,6 +156,7 @@ describe("native completed failure diagnostics", () => {
       expect(await readPersistedNativeModelRejection(db, persistedRun, turnId, terminal)).toEqual(classified ? {
         errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic: NATIVE_MODEL_REJECTION_DIAGNOSTIC,
       } : null);
+      expect((await readPersistedNativeFailureEvidence(db, persistedRun, turnId, terminal)).turnFailure).toEqual(turnFailure ?? null);
       if (classified) {
         if (scenario === "committed") {
           // Neither saved display diagnostics nor a different execution binding
@@ -197,6 +201,7 @@ describe("native completed failure diagnostics", () => {
         expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual(acceptedBefore);
         const [finalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         expect(finalRun).toMatchObject({ status: "failed", errorCode: "native_provider_model_rejected", error: NATIVE_MODEL_REJECTION_MESSAGE });
+        expect(finalRun.resultJson?.nativeTurnFailure).toBeUndefined();
         const [finalIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
         expect(finalIssue.status).toBe(scenario.endsWith("-review") ? "in_review" : ownerChanged ? "in_progress" : "blocked");
         const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
@@ -264,6 +269,10 @@ describe("native completed failure diagnostics", () => {
         await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
         const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
         expect(decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
+        // Recovery finalized before heartbeat saved the adapter result, so the
+        // turn failure must come from the persisted runner event.
+        const [finalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(finalRun.resultJson?.nativeTurnFailure).toEqual(turnFailure);
         const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
         expect(wakes.filter(wake => wake.payload?.issueId === issueId)).toHaveLength(1);
       }

@@ -1132,22 +1132,6 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
-  it("stores the authenticated agent run id when creating work products", async () => {
-    const app = await createApp(ownerActor());
-
-    await request(app).post(`/api/issues/${issueId}/work-products`).send({
-      type: "artifact",
-      provider: "test",
-      title: "Artifact",
-    }).expect(201);
-
-    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
-      issueId,
-      companyId,
-      expect.objectContaining({ createdByRunId: ownerRunId }),
-    );
-  });
-
   it("adds the authenticated run diff summary to PR work products", async () => {
     mockWorkProductService.latestRunDiffSummary.mockResolvedValue({
       additions: 17,

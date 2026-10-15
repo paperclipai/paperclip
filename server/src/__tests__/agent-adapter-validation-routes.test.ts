@@ -361,6 +361,7 @@ describe("agent routes adapter validation", () => {
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["some_other_adapter"]);
 
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -727,21 +728,6 @@ describe("agent routes adapter validation", () => {
       expect(probe).not.toHaveBeenCalled();
       expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
     } finally { await unregisterTestAdapter("paperclip_runner"); }
-  });
-
-  it("still creates an agent on an adapter that is registered and enabled", async () => {
-    const { registerServerAdapter } = await import("../adapters/index.js");
-    registerServerAdapter(externalAdapter);
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["some_other_adapter"]);
-
-    const app = await createApp();
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({ name: "Enabled Harness", adapterType: "external_test" }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 
   it("defaults new Codex on a qualified Linux target while the experimental flag is off", async () => {

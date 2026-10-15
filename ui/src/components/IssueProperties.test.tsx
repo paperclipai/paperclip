@@ -475,6 +475,31 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
   return root;
 }
 
+function seniorProductEngineer() {
+  return {
+    id: "agent-1",
+    name: "Senior Product Engineer",
+    role: "engineer",
+    title: null,
+    status: "active",
+    adapterType: "codex_local",
+    icon: null,
+  };
+}
+
+function reviewPolicyStages(): Pick<IssueExecutionPolicy, "stages"> {
+  return {
+    stages: [
+      {
+        id: "00000000-0000-4000-8000-000000000010",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
+      },
+    ],
+  };
+}
+
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
 
@@ -2239,15 +2264,7 @@ describe("IssueProperties", () => {
 
   it("hides model options when the issue uses the responsible default", async () => {
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
 
     const root = renderProperties(container, {
@@ -2269,15 +2286,7 @@ describe("IssueProperties", () => {
   it("edits existing custom assignee model options from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
     mockAgentsApi.adapterModels.mockResolvedValue([
       { id: "gpt-6-astra", label: "gpt-6-astra" },
@@ -2391,15 +2400,7 @@ describe("IssueProperties", () => {
   it("clears existing assignee adapter overrides from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
 
     const root = renderProperties(container, {
@@ -2663,16 +2664,7 @@ describe("IssueProperties", () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue({
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
       }),
       childIssues: [],
       onUpdate,
@@ -2721,16 +2713,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_progress",
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
         executionState: createExecutionState(),
       }),
       childIssues: [],
@@ -2747,16 +2730,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_review",
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
         executionState: createExecutionState({
           status: "pending",
           currentStageType: "review",

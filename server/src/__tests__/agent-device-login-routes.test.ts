@@ -3,7 +3,7 @@ import request from "supertest";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
@@ -386,8 +386,11 @@ describe("adapter device-login routes", () => {
   // `afterEach` whether or not the route removed them itself.
   const accountHomeTestDirs: string[] = [];
 
-  beforeEach(() => {
+  beforeAll(() => {
     vi.resetModules();
+  });
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockDeviceLoginPromotion.mockResolvedValue({
       outcome: "promoted",
@@ -1330,9 +1333,6 @@ describe("adapter device-login routes", () => {
       accountHomeDir,
       accountHomeCreated: true,
     });
-    // `vi.resetModules()` in `beforeEach` gives the route module a fresh copy
-    // of `../errors.js`. Import the conflict helper from that same fresh copy,
-    // so the route's `err instanceof HttpError` check sees a matching class.
     const { conflict: freshConflict } =
       await vi.importActual<typeof import("../errors.js")>("../errors.js");
     mockSecretService.create.mockRejectedValueOnce(

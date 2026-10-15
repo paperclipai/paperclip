@@ -92,7 +92,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     if (!selected.selected) throw new Error("Expected selection");
     const saved = await read(run.id);
     expect(saved).toMatchObject({ runtimeMode: "native", driverKind: "codex_app_server", nativePhase: "observed", nativeSessionId: expect.any(String), runnerInstanceId: selected.nativeRunnerInstanceId,
-      runnerProfileJson: { nativeExecutionInput: selected.nativeExecution, recoveryEventInventoryVersion: 1 } });
+      runnerProfileJson: { nativeExecutionInput: selected.nativeExecution, recoveryEventInventoryVersion: 1, nativePreparationFencingVersion: 1 } });
     expect(await db.select().from(completionContracts)).toHaveLength(1);
     expect(selected.getNativeFreshSessionHandoff).toBe(input.session.getFreshSessionHandoff);
     expect(input.onNativeOwnershipHeld).not.toHaveBeenCalled();
@@ -123,6 +123,24 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(run.id)).runnerProfileJson).toMatchObject({
       nativeExecutionInput: { task: { description: "Configured GitHub instruction skills:\n/configured" } },
     });
+  });
+
+  it("does not upgrade an older preparation from supplied runtime profile data", async () => {
+    const { input, run } = await fixture();
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution || input.nativeRuntimeResolution.kind !== "native") {
+      throw new Error("Expected native selection");
+    }
+    const saved = await read(run.id);
+    const olderProfile = { ...saved.runnerProfileJson };
+    delete olderProfile.nativePreparationFencingVersion;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: olderProfile }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    input.session.persistedRunnerProfile = { ...olderProfile, nativePreparationFencingVersion: 1 };
+    Object.assign(input.nativeRuntimeResolution.profile, { nativePreparationFencingVersion: 1 });
+    expect((await selectHeartbeatRuntime(db, input)).selected).toBe(true);
+    expect((await read(run.id)).runnerProfileJson).not.toHaveProperty("nativePreparationFencingVersion");
   });
 
   it("restores the immutable admitted input and saved checkpoint when newer context arrives", async () => {

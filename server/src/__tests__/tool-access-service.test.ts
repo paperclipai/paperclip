@@ -10826,20 +10826,14 @@ describeEmbeddedPostgres("tool access service", () => {
       };
     }
 
-    it("records the over-grant on the shared organization grant", async () => {
+    it("keeps the over-grant warning when a refresh asserts no scope", async () => {
       const lane = await connectSharedSlack("channels:read chat:write");
 
-      // The organization grant is created before OAuth has any credentials, so it used to be
-      // the one record with no provenance at all.
       expect((await lane.readGrant()).providerTenant?.oauth).toMatchObject({
         scopes: ["channels:read", "chat:write"],
         scopeSource: "provider",
         unrequestedScopes: ["chat:write"],
       });
-    });
-
-    it("keeps the over-grant warning when a refresh asserts no scope", async () => {
-      const lane = await connectSharedSlack("channels:read chat:write");
 
       await lane.refreshWithScope(null);
 

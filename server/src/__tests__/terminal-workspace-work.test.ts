@@ -22,7 +22,7 @@ function setup() {
   });
   coordinators.push(coordinator);
   const service = {
-    sweepTerminalWorkspaces: vi.fn(async (_limit?: number, _signal?: AbortSignal) => ({ checked: 0 })),
+    sweepTerminalWorkspaces: vi.fn(async (_limit?: number, _signal?: AbortSignal, _options?: { compact?: boolean }) => ({ checked: 0 })),
     hasTerminalWorkspaceSweepContinuation: vi.fn(() => false),
     nextTerminalWorkspaceSweepAt: vi.fn(async (): Promise<number | null> => null),
   };
@@ -42,6 +42,17 @@ describe("terminal workspace work", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(idleWorkSnapshot().active).toBe(0);
     expect(worker.hasUnrecoveredWork()).toBe(false);
+  });
+
+  it("skips compaction only in the startup sweep that readiness waits for", async () => {
+    const s = setup();
+    s.service.hasTerminalWorkspaceSweepContinuation.mockReturnValueOnce(true);
+    await s.start().ready;
+    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls[0]?.[2]).toEqual({ compact: false });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(2);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]).toEqual({ compact: true });
   });
 
   it("restores the cooldown deadline, lets commits preempt it, and parks after cleanup", async () => {

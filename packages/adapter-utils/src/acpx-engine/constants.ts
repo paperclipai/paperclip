@@ -26,6 +26,16 @@ export const ACPX_HANDSHAKE_TRANSPORT_POLL_MS = 250;
 // much smaller than the whole-adapter execution timeout.
 export const ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS = 30_000;
 
+// The per-call deadline Claude applies to MCP tool calls (`MCP_TOOL_TIMEOUT`)
+// when Paperclip attaches runtime MCP servers. Claude's own default is far
+// longer than a run, so a gateway call that never answers holds the turn until
+// the 4h sandbox backstop ends the run. The gateway bounds each provider call
+// at 60s and approval preparation at 2 minutes; this leaves wide headroom over
+// both.
+// On expiry Claude returns an MCP error to the model and the turn continues.
+// A user-configured `MCP_TOOL_TIMEOUT` still wins.
+export const ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS = 15 * 60 * 1000;
+
 // The closed ACP `ToolKind` enum. Run diagnostics may report these labels for
 // pending tool calls; tool titles, names, and inputs never leave the run.
 // Any other reported kind is collapsed to "unknown".

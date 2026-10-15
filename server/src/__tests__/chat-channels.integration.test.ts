@@ -6037,46 +6037,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
     }
 
-    it("persists registration before enabling the runtime and preserves unrelated commands", async () => {
-      const f = await registrationFixture();
-      try {
-        await f.configure();
-        const connected = await f.service.get(f.endpoint.id);
-        expect(connected?.capabilities).toMatchObject({
-          slashCommands: true,
-          ephemeralMessages: true,
-        });
-        expect(
-          f.runtime.configurations.get(f.endpoint.id)?.callbacks.onSlashCommand,
-        ).toBeTypeOf("function");
-        expect(f.calls).toEqual(["GET", "POST"]);
-        expect(f.commandRows().map((row) => row.name)).toEqual([
-          "other",
-          "paperclip",
-        ]);
-        const [registration] = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, f.endpoint.id),
-              eq(chatActions.kind, "discord_command_registration"),
-            ),
-          );
-        expect(registration?.status).toBe("processed");
-        expect(registration?.payload.registration).toMatchObject({
-          phase: "registered",
-        });
-        expect(JSON.stringify(registration)).not.toContain(
-          f.credentials.botToken,
-        );
-        await f.service.reconcileProviderRuntimes();
-        expect(f.calls).toEqual(["GET", "POST"]);
-      } finally {
-        await retireRegistrationFixture(f.service, f.endpoint.id);
-      }
-    });
-
     it("keeps mention setup usable on registration failure and upgrades automatically when due", async () => {
       const f = await registrationFixture("unavailable");
       try {
@@ -6150,6 +6110,37 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         )!.callbacks;
         expect(originalCallbacks.onMessage).toBeTypeOf("function");
         expect(originalCallbacks.onSlashCommand).toBeTypeOf("function");
+        const connected = await f.service.get(f.endpoint.id);
+        expect(connected?.capabilities).toMatchObject({
+          slashCommands: true,
+          ephemeralMessages: true,
+        });
+        expect(
+          f.runtime.configurations.get(f.endpoint.id)?.callbacks.onSlashCommand,
+        ).toBeTypeOf("function");
+        expect(f.calls).toEqual(["GET", "POST"]);
+        expect(f.commandRows().map((row) => row.name)).toEqual([
+          "other",
+          "paperclip",
+        ]);
+        const [registration] = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, f.endpoint.id),
+              eq(chatActions.kind, "discord_command_registration"),
+            ),
+          );
+        expect(registration?.status).toBe("processed");
+        expect(registration?.payload.registration).toMatchObject({
+          phase: "registered",
+        });
+        expect(JSON.stringify(registration)).not.toContain(
+          f.credentials.botToken,
+        );
+        await f.service.reconcileProviderRuntimes();
+        expect(f.calls).toEqual(["GET", "POST"]);
         const shutdown = vi.spyOn(original!, "shutdown");
         const targetRestart = vi.fn(async () => {
           throw new Error(

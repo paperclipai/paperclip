@@ -108,7 +108,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     };
     const completion = createHeartbeatRunCompletion(db, deps);
     const failure = (err: unknown): FailHeartbeatRunInput => ({ ...input, runId: run.id, err, identityRedactor: createAgentIdentityRedactor("private-identity-material"), requiredWorkspaceRestoreEvidence: { workspaceRestoreFailure: { reason: "missing_base" } }, legacyAdapterEntered: true, goalCheckpointSession: { current: null }, previousSessionDisplayId: "previous-session", taskSession: null });
-    const setup = (outerErr: unknown) => ({ run, runId: run.id, outerErr, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
+    const setup = (outerErr: unknown, providerDispatchStarted = false) => ({ run, runId: run.id, outerErr, signal: controller.signal, providerDispatchStarted, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
@@ -173,6 +173,27 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: {
       workspaceRestoreFailure: { reason: "missing_base" },
       cancellation: { source: "controller_lease", expected: false, reason: "Legacy controller lease lost (renewal_rejected)" } } });
+  });
+
+  it("records the watchdog timings with a lease loss that stops the adapter", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 61_000, renewalPendingMs: 58_000, deadlineLateMs: 2, renewalCount: 41 }));
+    await f.completion.completeRun(f.input);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ controllerLeaseLoss: {
+      cause: "renewal_deadline", sinceRenewalMs: 61_000, renewalPendingMs: 58_000, deadlineLateMs: 2, renewalCount: 41 } });
+  });
+
+  it("records the lease-loss cause and timings when setup fails on the abort reason", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 60_004, renewalPendingMs: null, deadlineLateMs: 55_000, renewalCount: 3 }));
+    await f.completion.failRunSetup(f.setup(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost", resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      controllerLeaseLoss: { cause: "renewal_deadline", sinceRenewalMs: 60_004, renewalPendingMs: null,
+        deadlineLateMs: 55_000, renewalCount: 3 } } });
   });
 
   it("keeps a stop requested before the lease loss when the adapter throws", async () => {
@@ -305,6 +326,34 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
       configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main", defaultBranch: "master", attemptedRefs: ["origin/main"], fingerprint: "workspace_base_ref:origin/main" },
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     } });
+  });
+
+  it("records a lease lost before dispatch as a retryable host stop, not an opaque setup failure", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_rejected"));
+    await f.completion.failRunSetup(f.setup(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost", resultJson: {
+      cancellation: { source: "controller_lease", expected: false, reason: "Legacy controller lease lost (renewal_rejected)" },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", expect.any(String), expect.objectContaining({ keepIdleOnFailure: true }));
+  });
+
+  it("attributes a lease loss even when a setup step throws its own abort error", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline"));
+    await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
+      resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it("does not make a lease loss retryable once provider work has started", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));
+    await f.completion.failRunSetup(f.setup(new Error("usage capture write failed"), true));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed",
+      resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_error)" } } });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", expect.any(String), expect.objectContaining({ keepIdleOnFailure: false }));
   });
 
   it("leaves a winning terminal outcome and agent state untouched after a late setup error", async () => {

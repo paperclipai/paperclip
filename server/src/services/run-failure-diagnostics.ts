@@ -1,7 +1,7 @@
 import { readWorkspaceBaseRefDiagnostic } from "./workspace-base-ref-diagnostics.js";
 import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import type { heartbeatRuns } from "@paperclipai/db";
-import { readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
+import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
@@ -9,7 +9,8 @@ import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/w
 import { ACP_TOOL_KINDS } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
-import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { readRemoteRunnerRecoveryDiagnostic } from "./native-runtime/remote-runner-recovery-diagnostics.js";
 import { MANAGED_GIT_WORKTREE_REASON_CODES, PERSISTED_WORKSPACE_SOURCE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -239,6 +240,11 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  const remoteRunnerRecovery = readRemoteRunnerRecoveryDiagnostic(read(result, "remoteRunnerRecovery"));
+  if (remoteRunnerRecovery) {
+    execution.remoteRunnerRecoveryStage = remoteRunnerRecovery.stage;
+    execution.remoteRunnerRecoveryReason = remoteRunnerRecovery.reason;
+  }
   const configuration = read(result, "configurationIncomplete");
   if (run.errorCode === "configuration_incomplete" && read(configuration, "reason") === "workspace_base_ref_unresolved") {
     const diagnostic = readWorkspaceBaseRefDiagnostic(read(configuration, "baseRefDiagnostic"));
@@ -284,6 +290,14 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     execution.cancellationSource = "unknown";
     execution.cancellationExpected = false;
   }
+  const leaseLoss = readControllerLeaseLoss(read(result, "controllerLeaseLoss"));
+  if (leaseLoss) {
+    execution.controllerLeaseLossCause = leaseLoss.cause;
+    if (leaseLoss.sinceRenewalMs !== undefined) execution.controllerLeaseSinceRenewalMs = leaseLoss.sinceRenewalMs;
+    if (leaseLoss.renewalPendingMs !== undefined) execution.controllerLeaseRenewalPendingMs = leaseLoss.renewalPendingMs;
+    if (leaseLoss.deadlineLateMs !== undefined) execution.controllerLeaseDeadlineLateMs = leaseLoss.deadlineLateMs;
+    if (leaseLoss.renewalCount !== undefined) execution.controllerLeaseRenewalCount = leaseLoss.renewalCount;
+  }
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",
@@ -326,6 +340,8 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   const provider = scalars(read(result, "terminalSessionFailure"), ["category", "title", "details"]);
   const nativeProviderFailure = readNativeModelRejectionDiagnostic(read(result, "nativeProviderFailure"));
   if (nativeProviderFailure) Object.assign(provider, nativeProviderFailure);
+  const nativeTurnFailure = readNativeTurnFailureDiagnostic(read(result, "nativeTurnFailure"));
+  if (nativeTurnFailure) Object.assign(provider, nativeTurnFailure);
   const truncatedFields: string[] = [];
   const providerTruncation = read(read(result, "terminalSessionFailure"), "truncatedFields");
   if (Array.isArray(providerTruncation)) {

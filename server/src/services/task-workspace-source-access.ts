@@ -2,7 +2,8 @@ import { executionWorkspaces, issues, type Db } from "@paperclipai/db";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { forbidden } from "../errors.js";
 import { accessService } from "./access.js";
-import { executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { authorizationService, executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type WorkspaceAccessContext = { write?: boolean; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null };
@@ -46,7 +47,7 @@ export async function assertTaskWorkspaceAccess(
   const sources = await db.select({ id: issues.id }).from(issues).where(and(
     eq(issues.companyId, companyId),
     or(eq(issues.executionWorkspaceId, workspaceId), retainedIssueIds.length > 0
-      ? inArray(sql<string>`${issues.id}::text`, retainedIssueIds) : undefined),
+      ? inArray(sql`${issues.id}`, retainedIssueIds.map(id => canonicalExecutionUuid(sql`${id}::text`))) : undefined),
   ));
   const sourceIds = new Set(sources.map(source => source.id));
   if (retainedIssueIds.some(id => !sourceIds.has(id))) throw forbidden("Task workspace source is no longer accessible");
@@ -58,5 +59,63 @@ export async function assertTaskWorkspaceAccess(
   for (const source of sources) {
     const decision = await access.decide({ actor, action: "issue:read", resource: { type: "issue", companyId, issueId: source.id } });
     if (!decision.allowed) throw forbidden("Task workspace retains files outside this actor's authorization boundary");
+  }
+}
+
+export async function assertTaskWorkspacesReadAccess(
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, workspaceIds: Iterable<string>,
+) {
+  return assertTaskWorkspacesReadAccessForActors(db, [actor], companyId, workspaceIds);
+}
+
+export async function assertTaskWorkspacesReadAccessForActors(
+  db: Db | DbTransaction, actors: AuthorizationActor[], companyId: string, workspaceIds: Iterable<string>,
+) {
+  const ids = [...new Set(workspaceIds)];
+  if (!ids.length || !actors.length) return;
+  const privacyActors = [...new Map(actors.map(actor => [JSON.stringify({ ...actor, runId: undefined }), actor])).values()];
+  const privacy = and(...await Promise.all(privacyActors.map(actor => executionWorkspaceReadSqlCondition(db, actor))));
+  const projectIds = new Set<string>(), sourceIds = new Set<string>();
+  let needsCompanyRead = false;
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const batch = ids.slice(offset, offset + 500);
+    const workspaces = await db.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId,
+      sourceIssueId: executionWorkspaces.sourceIssueId, metadata: executionWorkspaces.metadata,
+    }).from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, batch), privacy));
+    if (workspaces.length !== batch.length) throw forbidden("Task workspace access is no longer available");
+    const retained = new Set(workspaces.flatMap(workspace => [
+      ...Object.keys(workspace.metadata?._issuePrivacySources ?? {}), ...(workspace.sourceIssueId ? [workspace.sourceIssueId] : []),
+    ]));
+    const attached = await db.select({ id: issues.id, workspaceId: issues.executionWorkspaceId }).from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.executionWorkspaceId, batch)));
+    const attachedWorkspaceIds = new Set(attached.map(source => source.workspaceId));
+    for (const source of attached) sourceIds.add(source.id);
+    const retainedIds = [...retained];
+    for (let start = 0; start < retainedIds.length; start += 500) {
+      const retainedBatch = retainedIds.slice(start, start + 500);
+      const sources = await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId),
+        inArray(sql`${issues.id}`, retainedBatch.map(id => canonicalExecutionUuid(sql`${id}::text`)))));
+      const found = new Set(sources.map(source => source.id));
+      if (retainedBatch.some(id => !found.has(id))) throw forbidden("Task workspace source is no longer accessible");
+      for (const source of sources) sourceIds.add(source.id);
+    }
+    for (const workspace of workspaces) {
+      if (workspace.projectId) projectIds.add(workspace.projectId);
+      else if (!workspace.sourceIssueId && !Object.keys(workspace.metadata?._issuePrivacySources ?? {}).length
+        && !attachedWorkspaceIds.has(workspace.id)) needsCompanyRead = true;
+    }
+  }
+  const resources = [
+    ...[...projectIds].map(projectId => ({ type: "project" as const, companyId, projectId })),
+    ...[...sourceIds].map(issueId => ({ type: "issue" as const, companyId, issueId })),
+    ...(needsCompanyRead ? [{ type: "company" as const, companyId }] : []),
+  ];
+  const batches = await authorizationService(db).decideReadsForActors(actors, resources);
+  for (const decisions of batches) for (let index = 0; index < decisions.length; index++) {
+    if (decisions[index].allowed) continue;
+    throw forbidden(resources[index].type === "issue"
+      ? "Task workspace retains files outside this actor's authorization boundary"
+      : resources[index].type === "company"
+        ? "An unscoped workspace is outside this actor's authorization boundary" : decisions[index].explanation);
   }
 }

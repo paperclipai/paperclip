@@ -6143,6 +6143,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
   ): Promise<PaperclipSkillEntry[]> {
+    if (options.onlyKeys?.size === 0 || (!options.onlyKeys && options.selectionConfig && !options.includeLegacy
+      && readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills.length === 0)) return [];
     const skills = await listFull(companyId);
     const selectedKeys = options.onlyKeys ?? (options.selectionConfig ? new Set(
       (options.includeLegacy ? resolveLegacyPaperclipDesiredSkillNames : resolvePaperclipDesiredSkillNames)(

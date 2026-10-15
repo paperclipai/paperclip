@@ -13,6 +13,28 @@ import { skillFileBytes } from '../services/skill-snapshot.js';
 const sha = 'a'.repeat(40);
 const md = (name: string) => `---\nname: ${name}\ndescription: A useful skill\n---\nFollow these instructions.\n`;
 describe('GitHub skill repository discovery', () => {
+  it('batches each dependency frontier instead of spawning a Git read for every Markdown file', async () => {
+    const files = {
+      ...Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`skills/skill-${i}/SKILL.md`, md(`skill-${i}`) + '\n[Guide](../../shared/guide.md)'])),
+      'shared/guide.md': '[Details](details.md)',
+      'shared/details.md': '[Guide](guide.md) [Data](data.json)',
+      'shared/data.json': '{"example":true}',
+      ...Object.fromEntries(Array.from({ length: 10_000 }, (_, i) => [`unrelated/${i}.txt`, ''])),
+    };
+    const fixture = githubFixture(files);
+    const snapshot = await fixture.openSnapshot({ repositoryUrl: '', ref: 'main' });
+    const read = snapshot.readBlob;
+    const singleReads = vi.spyOn(snapshot, 'readBlob');
+    const batches = vi.fn(async (entries: typeof snapshot.entries) => new Map(await Promise.all(entries.map(async entry => [entry.sha, await read(entry)] as const))));
+    snapshot.readBlobs = batches;
+    fixture.openSnapshot = async () => snapshot;
+    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository' }, fixture);
+    expect(scan.repositoryFiles?.map(file => file.path).sort()).toEqual(Object.keys(files).filter(name => !name.startsWith('unrelated/')).sort());
+    expect(scan.candidates.every(skill => skill.error === null)).toBe(true);
+    expect(singleReads).not.toHaveBeenCalled();
+    expect(batches.mock.calls.map(([entries]) => entries.length)).toEqual([64, 1, 1, 1]);
+  });
+
   it('keeps skill folders and transitive shared files when unrelated repository files exceed the package limit', async () => {
     const fixture = githubFixture({
       'skills/main/SKILL.md': md('main') + '\nRead [shared](../../shared/guide.md) and [helper](../helper/SKILL.md).',

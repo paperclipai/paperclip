@@ -6,11 +6,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
+import { issuesApi } from "../api/issues";
 vi.mock("../lib/router", () => ({
   Link: ({ to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => <a href={to} {...props} />,
 }));
 vi.mock("../api/agents", () => ({ agentsApi: { retryFailedRun: vi.fn() } }));
 vi.mock("../api/activity", () => ({ activityApi: { runsForIssue: vi.fn() } }));
+vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: vi.fn() } }));
 
 describe("stopped task recovery notice", () => {
   let root: Root;
@@ -19,6 +21,7 @@ describe("stopped task recovery notice", () => {
   const onRetried = vi.fn();
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(issuesApi.recoveryActions).mockResolvedValue({ active: null, actions: [] });
     container = document.createElement("div"); document.body.append(container);
     root = createRoot(container);
     client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -168,5 +171,76 @@ describe("stopped task recovery notice", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("Environment cleanup is still running.");
     expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
     expect(onRetried).not.toHaveBeenCalled();
+  });
+  it("shows a settled hold's decision even when there is no active recovery action", async () => {
+    vi.mocked(issuesApi.recoveryActions).mockResolvedValue({ active: null, actions: [{
+      id: "recovery", status: "resolved", resolutionNote: "The last tool outcome could not be verified.",
+      evidence: { runId: "cancelled-run", automaticRecovery: { replay: "blocked" } },
+    }] as never });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" issueStatus="blocked" canManage onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent", runStatus: "cancelled",
+        cause: "legacy_execution_requires_reconciliation", nextAction: "Send a new message after inspecting the run.",
+      }} />
+    </QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(issuesApi.recoveryActions).toHaveBeenCalledWith("task");
+    expect(container.querySelector("details")?.textContent).toContain("The last tool outcome could not be verified.");
+    expect(container.querySelector("details")?.textContent).toContain("stopped automatic retries");
+    expect(container.querySelector("button")).toBeNull();
+    expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
+  });
+  it("does not show a different run's historical recovery decision", async () => {
+    vi.mocked(issuesApi.recoveryActions).mockResolvedValue({ active: null, actions: [{
+      id: "recovery", status: "resolved", resolutionNote: "Old decision",
+      evidence: { runId: "another-run", automaticRecovery: { replay: "blocked" } },
+    }] as never });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" issueStatus="blocked" canManage onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent",
+        cause: "legacy_execution_requires_reconciliation", nextAction: "Inspect the current run.",
+      }} />
+    </QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(container.querySelector("details")).toBeNull();
+    expect(container.textContent).not.toContain("Old decision");
+  });
+  it("reports a recovery history read failure without hiding the current guidance", async () => {
+    vi.mocked(issuesApi.recoveryActions).mockRejectedValue(new Error("History unavailable"));
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" issueStatus="blocked" canManage onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent",
+        cause: "legacy_execution_requires_reconciliation", nextAction: "Inspect the current run.",
+      }} />
+    </QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("History unavailable");
+    expect(container.textContent).toContain("Inspect the current run.");
+  });
+  it("refreshes a decision while the same stopped run remains open", async () => {
+    vi.useFakeTimers();
+    try {
+      const action = { id: "recovery", status: "active", resolutionNote: "Inspection pending", evidence: { runId: "cancelled-run" } };
+      vi.mocked(issuesApi.recoveryActions).mockResolvedValue({ active: null, actions: [action] } as never);
+      await act(async () => root.render(<QueryClientProvider client={client}>
+        <ExecutionBlockerNotice companyId="company" issueId="task" issueStatus="blocked" canManage onRetried={onRetried} blocker={{
+          recoveryActionId: "recovery", runId: "cancelled-run", agentId: "agent",
+          cause: "legacy_execution_requires_reconciliation", nextAction: "Inspect the current run.",
+        }} />
+      </QueryClientProvider>));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.textContent).toContain("Inspection pending");
+      vi.mocked(issuesApi.recoveryActions).mockResolvedValue({ active: null, actions: [{ ...action,
+        status: "resolved", resolutionNote: "Preserved work; automatic replay stopped", evidence: {
+          runId: "cancelled-run", automaticRecovery: { replay: "blocked" },
+        },
+      }] } as never);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_001); });
+      expect(issuesApi.recoveryActions).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain("Preserved work; automatic replay stopped");
+      expect(container.textContent).not.toContain("Inspection pending");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

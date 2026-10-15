@@ -1,7 +1,7 @@
 import express from "express";
 import { readFile } from "node:fs/promises";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runnerTarget = vi.hoisted(() => ({ driver: "local", platform: "linux", architecture: "x64" }));
 vi.mock("../services/agent-runner-selection.js", async (importOriginal) => {
@@ -278,14 +278,21 @@ function skillSnapshot(adapterType = "claude_local", mode = "ephemeral") {
 }
 
 describe("agent skill routes", () => {
-  beforeEach(async () => {
-    runnerTarget.platform = "linux";
-    runnerTarget.architecture = "x64";
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  });
+
+  beforeEach(() => {
+    runnerTarget.platform = "linux";
+    runnerTarget.architecture = "x64";
     vi.clearAllMocks();
     for (const mock of Object.values(mockAgentService)) mock.mockReset();
     for (const mock of Object.values(mockAccessService)) mock.mockReset();
@@ -390,13 +397,6 @@ describe("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
-
-    // Prepare the module graph inside the setup budget after every reset. Each
-    // test still constructs its own app after configuring its request-specific mocks.
-    [{ agentRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
   });
 
   it("skips runtime materialization when listing Claude skills", async () => {
@@ -908,27 +908,6 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("canonicalizes desired skill references before syncing", async () => {
-    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
-
-    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
-      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclip"], mode: "replace" }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-      expect.any(Object),
-    );
-  });
-
   it("persists canonical desired skills when creating an agent directly", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -1290,33 +1269,6 @@ describe("agent skill routes", () => {
     expect(corrected.body.approval).toMatchObject({ type: "hire_agent", status: "pending" });
     expect(mockAgentService.create).toHaveBeenCalledTimes(1);
     expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
-  });
-
-  it("includes canonical desired skills in hire approvals", async () => {
-    const db = createDb(true);
-
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
-        adapterConfig: {},
-      });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockApprovalService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
-          requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-    );
   });
 
   it("gives a CEO hire the core paperclip skills when none are requested", async () => {

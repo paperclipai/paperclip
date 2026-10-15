@@ -1,46 +1,39 @@
+import { execFile } from "node:child_process";
 import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 
-type LinuxLibc = { libc: "glibc" | "unknown"; glibcVersion?: string };
+type LocalRunnerTarget = {
+  driver: "local";
+  platform: NodeJS.Platform;
+  architecture: string;
+  libc?: "glibc" | "unknown";
+  glibcVersion?: string;
+};
 
-// `excludeNetwork` is part of the Node 24 report API, but the installed Node
-// type definitions do not declare it yet.
-type ProcessReportWithNetworkSetting = NodeJS.ProcessReport & { excludeNetwork: boolean };
-
-let cachedLinuxLibc: LinuxLibc | undefined;
-
-// The C library cannot change while the process runs, so detect it once.
-// `process.report.getReport()` blocks the event loop. Unless `excludeNetwork`
-// is set, it also resolves the endpoints of every open socket with synchronous
-// reverse DNS. A slow resolver then stalls the server for seconds per socket,
-// on every caller, so the report always excludes network data.
-function detectLinuxLibc(): LinuxLibc {
-  if (cachedLinuxLibc) return cachedLinuxLibc;
-  let detected: LinuxLibc = { libc: "unknown" };
-  const report = process.report as ProcessReportWithNetworkSetting;
-  const previousExcludeNetwork = report.excludeNetwork;
+async function detectLocalRunnerTarget(): Promise<LocalRunnerTarget> {
+  const target: LocalRunnerTarget = {
+    driver: "local", platform: process.platform, architecture: process.arch,
+  };
+  if (target.platform !== "linux") return target;
+  target.libc = "unknown";
   try {
-    report.excludeNetwork = true;
-    const { header } = report.getReport() as { header?: { glibcVersionRuntime?: unknown } };
-    if (typeof header?.glibcVersionRuntime === "string" && header.glibcVersionRuntime.trim()) {
-      detected = { libc: "glibc", glibcVersion: header.glibcVersionRuntime.trim() };
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile("getconf", ["GNU_LIBC_VERSION"], {
+        encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1_024,
+      }, (error, output) => error ? reject(error) : resolve(output));
+    });
+    const version = /^glibc\s+(\d+\.\d+(?:\.\d+)?)$/.exec(stdout.trim())?.[1];
+    if (version) {
+      target.libc = "glibc";
+      target.glibcVersion = version;
     }
-  } catch {
-    /* An unidentified libc must not select a GNU/Linux binary. */
-  } finally {
-    report.excludeNetwork = previousExcludeNetwork;
-  }
-  cachedLinuxLibc = detected;
-  return detected;
+  } catch {}
+  return target;
 }
 
-export function resetLocalAgentRunnerTargetCacheForTests(): void {
-  cachedLinuxLibc = undefined;
-}
+const localTarget = await detectLocalRunnerTarget();
 
-export function localAgentRunnerTarget(): { driver: "local"; platform: NodeJS.Platform; architecture: string; libc?: "glibc" | "unknown"; glibcVersion?: string } {
-  if (process.platform !== "linux") return { driver: "local", platform: process.platform, architecture: process.arch };
-  const { libc, glibcVersion } = detectLinuxLibc();
-  return { driver: "local", platform: process.platform, architecture: process.arch, libc, ...(glibcVersion === undefined ? {} : { glibcVersion }) };
+export function localAgentRunnerTarget(): LocalRunnerTarget {
+  return { ...localTarget };
 }
 
 export function localPaperclipRunnerSupported(): boolean {

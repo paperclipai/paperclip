@@ -1624,6 +1624,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // cache; after a restart compaction re-scans, finds nothing, and records it.
   const compactedTerminalAt = new Map<string, number>();
   const compactionTrashPurgedAt = new Map<string, number>();
+  // Worktree parent directories whose trash a `compact: false` sweep skipped.
+  // The next compacting sweep purges them first, because that sweep may have
+  // archived the last workspace in a directory, and no later candidate would
+  // reach it.
+  const deferredCompactionTrashParents = new Set<string>();
   const pullRequestStateCache = new Map<
     string,
     {
@@ -2072,6 +2077,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // independent of the per-cycle compaction memo, so leftover trash is found
   // after a restart and after a workspace has nothing left to compact. Each
   // worktree parent directory is checked at most once per interval.
+  function deferCompactionTrashPurge(workspace: ExecutionWorkspaceRow) {
+    const worktreePath = workspace.providerRef ?? workspace.cwd;
+    if (workspace.providerType !== "git_worktree" || !worktreePath) return;
+    if (deferredCompactionTrashParents.size >= 1024) return;
+    deferredCompactionTrashParents.add(path.dirname(path.resolve(worktreePath)));
+  }
+
+  // Checks the abort signal before each directory. A stopping server leaves the
+  // unprocessed directories queued for the next sweep.
+  async function purgeDeferredCompactionTrash(signal?: AbortSignal) {
+    for (const parentDir of [...deferredCompactionTrashParents]) {
+      signal?.throwIfAborted();
+      deferredCompactionTrashParents.delete(parentDir);
+      compactionTrashPurgedAt.set(parentDir, now().getTime());
+      await purgeStaleWorkspaceCompactionTrash(parentDir, WORKSPACE_COMPACTION_TRASH_STALE_MS).catch((error) => {
+        logger.warn({ err: error, parentDir }, "failed to purge stale workspace compaction trash");
+      });
+    }
+  }
+
   async function purgeCompactionTrashIfDue(workspace: ExecutionWorkspaceRow) {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
     if (workspace.providerType !== "git_worktree" || !worktreePath) return;
@@ -3074,7 +3099,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
     },
 
-    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal) => {
+    // `compact: false` skips workspace compaction and compaction-trash deletion
+    // for this sweep only. Pending compactions keep their deadlines, so a later
+    // sweep runs them.
+    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean } = {}) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
       // skipped tick is safe: the next tick runs the sweep with intact state.
@@ -3100,6 +3128,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const previousBoundary = terminalSweepBoundary;
       terminalSweepInProgress = true;
       try {
+      if (options.compact !== false) await purgeDeferredCompactionTrash(signal);
       const baseCandidateFilter = and(
         inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
         isNull(executionWorkspaces.closedAt),
@@ -3170,7 +3199,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         signal?.throwIfAborted();
-        await purgeCompactionTrashIfDue(workspace);
+        // Trash deletion is part of compaction, so a sweep that skips compaction
+        // also leaves leftover trash for a later sweep.
+        if (options.compact !== false) await purgeCompactionTrashIfDue(workspace);
+        else deferCompactionTrashPurge(workspace);
         const issueTree = await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);
         const reopenPending = metadataHasReopenPendingConsumption(
@@ -3199,7 +3231,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const archiveDueAt = latestTerminalAt + workspaceReaperCooldownMs;
         terminalWorkspaceDeadlines.set(workspace.id, reopenPending ? now().getTime()
           : compactionPending ? Math.min(compactionDueAt, archiveDueAt) : archiveDueAt);
-        if (compactionPending && compactionDueAt <= now().getTime()) {
+        if (compactionPending && options.compact !== false && compactionDueAt <= now().getTime()) {
           try {
             const outcome = await compactTerminalWorkspace(workspace, signal);
             if (outcome === "compacted") result.compacted += 1;

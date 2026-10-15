@@ -61,6 +61,12 @@ const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
 });
 
+const QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME = Object.freeze({
+  ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
+  packageName: "@anthropic-ai/claude-agent-sdk-linux-arm64",
+  executableDigest: "sha256:0292fa22ac2fd43e16be9d0e511ddd8347280d6e0ebaca744ef5b27e05d8d0f8",
+});
+
 const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
   arm64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
@@ -389,6 +395,7 @@ function isDeclaredHoistedProviderPlatform(root: string, manifest: string, issue
   const platformQualification = [
     { qualified: QUALIFIED_CODEX_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: true },
     { qualified: QUALIFIED_CLAUDE_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: false },
+    { qualified: QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME, os: "linux", cpu: "arm64", alias: false },
     { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.arm64, os: "darwin", cpu: "arm64", alias: false },
     { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.x64, os: "darwin", cpu: "x64", alias: false },
   ].find(value => value.qualified.packageName === packageName);
@@ -1020,7 +1027,9 @@ async function verifyQualifiedRuntimeExecutable(input: {
     input.profile.agent === "claude"
       ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")
         ? QUALIFIED_CLAUDE_DARWIN_RUNTIMES[process.arch]
-        : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
+        : process.platform === "linux" && process.arch === "arm64"
+          ? QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME
+          : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
       : input.profile.agent === "codex"
         ? QUALIFIED_CODEX_LINUX_X64_RUNTIME
         : null;
@@ -1034,7 +1043,7 @@ async function verifyQualifiedRuntimeExecutable(input: {
     );
   }
   if (!((process.platform === "linux" && process.arch === "x64")
-    || (input.profile.agent === "claude" && process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")))) {
+    || (input.profile.agent === "claude" && ["linux", "darwin"].includes(process.platform) && (process.arch === "arm64" || process.arch === "x64")))) {
     throw new Error(
       `ACPX ${input.profile.agent} verified runtime executable is unavailable for ${process.platform} ${process.arch}`,
     );

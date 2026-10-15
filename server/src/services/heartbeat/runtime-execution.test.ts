@@ -176,7 +176,10 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.effects.onNativeDispatchStarted).toHaveBeenCalledOnce();
     expect(input.effects.onLegacyAdapterEntered).not.toHaveBeenCalled();
     expect(await finalizations()).toHaveLength(0);
-    expectCleanup(input);
+    if (error instanceof NativeControllerDetachedForRestartError) {
+      expect(revokeHeartbeatRunGatewayTokens).not.toHaveBeenCalled();
+      expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
+    } else expectCleanup(input);
   });
 
   it("dispatches native execution with the selected session and persists its usage", async () => {
@@ -229,6 +232,25 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await finalizations()).toMatchObject([{
       status: "succeeded", metadata: { owningService: "native_workspace_finalizer" },
     }]);
+  });
+
+  it("retains an unexported native source before provider-error teardown", async () => {
+    const { input, run } = await fixture(true);
+    input.workspace.nativeWorkspaceSync = {
+      mode: "host_current",
+      reference: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: "destroy" },
+      restoreWorkspace: vi.fn(), cleanup: vi.fn(),
+    };
+    const error = new Error("runner_remote_process_identity_unavailable");
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    input.instructions.releaseInstructionCopy = vi.fn(async () => {
+      expect(input.effects.onProviderResourceDisposition).toHaveBeenCalledWith("stop_and_retain");
+    });
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(input.workspace.nativeWorkspaceSync.restoreWorkspace).not.toHaveBeenCalled();
+    expectCleanup(input);
   });
 
   it("records a failed barrier if the successful finalization write fails", async () => {

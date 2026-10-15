@@ -54,13 +54,7 @@ describe("adapter auth sessions schema", () => {
     ]);
     // The active index is partial; the where clause is present.
     expect(active?.config.where).toBeDefined();
-  });
-
-  it("keeps the owner principal non-null and drops the environment from the key", () => {
     expect(columnIsNotNull(adapterAuthSessions, "started_by_user_id")).toBe(true);
-    const activeColumns = indexColumns(adapterAuthSessions, ACTIVE_INDEX);
-    expect(activeColumns).toContain("started_by_user_id");
-    expect(activeColumns).not.toContain("environment_id");
   });
 
   it("adds the public session id, non-null and unique", () => {

@@ -1367,7 +1367,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
     ],
-    definitionMetadata: { version: 6, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 7, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      remoteCodexRestart: "same-active-process-lease-native-prefix-and-workspace-receipt",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
   },
   {

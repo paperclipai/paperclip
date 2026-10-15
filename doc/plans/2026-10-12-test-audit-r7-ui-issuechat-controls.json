@@ -1,0 +1,145 @@
+{
+  "audit": {
+    "file": "ui/src/components/IssueChatThread.test.tsx",
+    "base": "e3effbb9e5c66b838f67fd487987c8bf1007e413",
+    "originalSha256": "226728e901d702ff59651f4b0d1a6fa33b34654a8410c58f2f42cebf7022113e",
+    "candidateSha256": "4c8db9834c9bd6bd3ca77420d6dc5ec872903d35f6168dc177a5247372867593",
+    "retired": "does not auto-scroll to the latest comment on initial load",
+    "keeper": "can keep the page at the top on initial load while preserving manual jump-to-latest",
+    "sameEnclosingHooks": true,
+    "exactSubsetPrefixStatements": 20,
+    "exactSubsetCleanupStatements": 4,
+    "keeperBytesUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "allOtherProgramAstUnchanged": true,
+    "registeredInvocationsRemoved": 1,
+    "rootRendersRemoved": 1,
+    "netTestLinesRemoved": 50,
+    "newHelpers": 0,
+    "retainedExactInitialGuards": [
+      "expect(elementScrollToMock).not.toHaveBeenCalled();",
+      "expect(scrollIntoViewMock).not.toHaveBeenCalled();"
+    ]
+  },
+  "verifierSha256": "d5589d82c62e06412eae150b239b5552526428b764362485070ac3846a95789a",
+  "mutationVerifierSha256": "97072371ef809b8bdefbf09dcacd261989132a4135d67fcf857152dd179d2f03",
+  "runs": [
+    {
+      "kind": "baseline",
+      "total": 100,
+      "passed": 100,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "efc81cf6ef5ca2bc0f495d185bb10ea905dcb003b084fc20ea29d76f122ed7e2",
+      "logSha256": "4d1be86a78cc5a8868d9fc99e53b4ddaa1d94deac818cea48952b887ca3cbca0"
+    },
+    {
+      "kind": "candidate",
+      "total": 99,
+      "passed": 99,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "82badc1cc88a0e72db6dace6d9bae69d239d53eb9a187c9b286a6a6c4bfb75e5",
+      "logSha256": "0eb343b1ddd666c246c4df358a8b9210cfe97f9ecef7e8abe756103b4e16a7a3"
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "initial-auto-scroll",
+      "owner": "ui/src/components/IssueChatThread.tsx",
+      "sourceSha256": "23624e4e25b60c9ce8cc91fa548bfd46e18666723e5aa8d9f882846ded3bdf82",
+      "title": "can keep the page at the top on initial load while preserving manual jump-to-latest",
+      "mutation": {
+        "before": "    if (!autoScrollToLatestOnInitialLoad) return;",
+        "after": "    // Regression: ignore caller initial-scroll opt-out.",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": ".not.toHaveBeenCalled();",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "018d96099478a6400770da42da7a7af754e12a05c0ad3981b270fcd0d9317a7f",
+        "logSha256": "34e23348df52acad5ab2e1c6374125ae9f746f21dd3ea6bc5d4155fceb71590d",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "5a6c5faccd5b873cf5ddf2ef18b14f12fc2b3d596c15c11ca606d84a76ecd1d6",
+        "logSha256": "c87b37dcd855277f778930cf10f4ee89dd4c19627cebfd5d6452378c9ee44530",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 6 times\n\nReceived:\n\n  1st vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"smooth\",\n        \"top\": 114916,\n      },\n    ]\n\n  2nd vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"auto\",\n        \"top\": 114916,\n      },\n    ]\n\n  3rd vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"auto\",\n        \"top\": 114916,\n      },\n    ]\n\n  4th vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"auto\",\n        \"top\": 114916,\n      },\n    ]\n\n  5th vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"auto\",\n        \"top\": 114916,\n      },\n    ]\n\n  6th vi.fn() call:\n\n    Array [\n      Object {\n        \"behavior\": \"auto\",\n        \"top\": 114916,\n      },\n    ]\n\n\nNumber of calls: 6\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2214:51)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueChatThread.test.tsx:1217:37\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary-controls.json",
+      "sha256": "bad49e7bc92dea919df6b980bfa45e7452984cf31a6fd4655b355ba0444ff9a6"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary.md",
+      "sha256": "cd6f173584db0d485004af6f85b1ce78fa65b19d8c6ef582b061f0d232c6c1ed"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments-controls.json",
+      "sha256": "c4ff66a3226e1edafd286cad0ca45c9445795b46944cf70d606c59a754913f3a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments.md",
+      "sha256": "d38715393c95306d10e871a5a2c9a32f105fa1452871cd7ad030d86dbbdb7416"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route-controls.json",
+      "sha256": "0a72a7770ec749f2c0507a74d395e65d70b722d0b9d2a767a2c066a67ed46382"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route.md",
+      "sha256": "9b5e1543163d6c9d0958aa3e377a593ec458f6674ce1ddb2bf3ca158786f09c4"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar-controls.json",
+      "sha256": "ae9f24746e67432cf6247c5da130b9c1bba46fc85112c0610d3f18545dfce326"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar.md",
+      "sha256": "5e267441c43aa8375fa5c54edcbd2879428d657708be9a2ab372aa66e4792886"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline-controls.json",
+      "sha256": "6a86b07770f1cd8d758334fb61c46254197a7f533d24c056fc9a52c317488291"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline.md",
+      "sha256": "612dc3ec4c3d435888055ba20a7f28230ce89ea8b071b8c38d1ea2c147074a96"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

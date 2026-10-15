@@ -907,7 +907,7 @@ describe("instance settings routes", () => {
       await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
       expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
       await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
-      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined, false);
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined, false, false);
     });
 
     it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
@@ -934,21 +934,21 @@ describe("instance settings routes", () => {
       const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
-      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined, false);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined, false, false);
       expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
     });
 
-    it("reserves routine deadline reports for verified Cloud control callers", async () => {
+    it.each(["1", "2"])("reserves scheduling capability %s for verified Cloud control callers", async version => {
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
       for (const source of ["session", "cloud_tenant", "local_implicit"]) {
         await request(createApp({ ...adminActor, source }))
-          .get("/api/instance/task-drain?idleSleepSafety=1&scheduledWake=1&ownerId=fixture-owner").expect(403);
+          .get(`/api/instance/task-drain?idleSleepSafety=1&scheduledWake=${version}&ownerId=fixture-owner`).expect(403);
       }
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
       await request(createApp({ ...adminActor, source: "cloud_control" }))
-        .get("/api/instance/task-drain?idleSleepSafety=1&scheduledWake=1&ownerId=fixture-owner").expect(200);
+        .get(`/api/instance/task-drain?idleSleepSafety=1&scheduledWake=${version}&ownerId=fixture-owner`).expect(200);
       expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-        "fixture-owner", expect.any(Function), undefined, undefined, true);
+        "fixture-owner", expect.any(Function), undefined, undefined, true, version === "2");
     });
 
     it("uses the live worker manager for inspection and releases only the owned hold", async () => {
@@ -983,7 +983,7 @@ describe("instance settings routes", () => {
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
       await request(app).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
       expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-        "fixture-owner", expect.any(Function), undefined, backup, false);
+        "fixture-owner", expect.any(Function), undefined, backup, false, false);
       mockReadIdleSleepSafety.mockClear();
       await request(createApp(nonAdminActor, undefined, backup)).get("/api/instance/task-drain?idleSleepSafety=1").expect(403);
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
@@ -1005,7 +1005,7 @@ describe("instance settings routes", () => {
         const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
         await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
         expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-          "fixture-owner", expect.any(Function), undefined, backup, false);
+          "fixture-owner", expect.any(Function), undefined, backup, false, false);
       } finally {
         delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
       }

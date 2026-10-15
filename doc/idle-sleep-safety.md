@@ -74,6 +74,41 @@ Verify a full scheduled sleep/wake/execution cycle on staging before enabling
 this host capability. The [tests](../server/src/__tests__/idle-sleep-safety.test.ts)
 cover ownership, future deadlines, changed generations and conservative fallback.
 
+## Passive issues and scheduled monitors
+
+Signed Cloud control callers can request `scheduledWake=2` to include issue
+monitoring alongside routines. Earlier hosts requesting `scheduledWake=1`
+retain the routine-only rules, including the conservative open-issue check.
+Browser administrators and tenant credentials cannot request either extension.
+
+With the second capability, backlog tasks, unassigned todo tasks, explicit
+blocked tasks and human-owned tasks may be passive records. Their presence
+alone does not require compute. An assigned onboarding first task is also
+passive with an idle assignee before its first run, user-authored comment or user-resolved opening
+card. This uses the same awaiting-user predicate as recovery; a seeded greeting
+does not start work. User input still enters through the host wake path.
+Execution locks, automated pending review,
+conversation state, unknown state and dependency repair remain blockers. A
+blocked task whose blockers have all finished stays awake for reconciliation.
+Enabled task watchdogs and unsupported recovery keep their existing checks.
+Incoming changes still require the hosting admission and wake path.
+
+An active issue monitor needs a saved future `monitor_next_check_at` matching
+its validated execution policy, a company-scoped agent, no outstanding dispatch
+claim, and remaining attempts and timeout. Due, malformed, quota-recovery,
+unowned and inconsistent monitors keep the workspace awake. Inspection does
+not clear schedules, advance attempts or dispatch an agent.
+
+The combined report uses `version: 2` and a scheduled proof with `version: 1`
+and `kind: "routines_and_issue_monitors"`. Its deadline is the earliest required
+routine or monitor time across all companies. Its generation binds the current
+process, idle owner and inspected catalogs. Hosts must acknowledge this known
+proof kind, persist the alarm and validate the unchanged owned report before
+stopping compute. Existing hosts reject the new kind. Monitor dispatch and
+startup catch-up continue through the existing scheduler and atomic claims;
+self-hosted scheduling is unchanged. This capability does not cover all future
+work in the instance: every other safety check continues to apply.
+
 ## Retry history
 
 Retry promotion keeps `scheduled_retry_at` on a run for inspection. That date
