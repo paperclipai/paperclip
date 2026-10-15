@@ -22,7 +22,10 @@ describe("public repository paid workflow security", () => {
     expect(manual.match(/test "\$REPOSITORY_ID" = 1170821064/gu)).toHaveLength(2);
     expect(manual.slice(manual.indexOf('  manual_image:'))).toContain('runs-on: ubuntu-latest');
     expect(manual).toContain('repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH');
-    expect(manual).toContain('ref: ${{ needs.authorize_manual.outputs.target_sha }}');
+    // Release artifact consumption runs trusted workflow code; ordinary image
+    // builds check out only the maintainer-authorized source revision.
+    expect(manual).toContain("ref: ${{ inputs.release_run_id != '' && github.sha || needs.authorize_manual.outputs.target_sha }}");
+    expect(manual).toContain('RELEASE_RUN_ID: ${{ inputs.release_run_id }}');
     expect(manual).toContain('SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}');
     expect([...manual.matchAll(/secrets\.([A-Z_]+)/gu)].map(match => match[1])).toEqual(["GITHUB_TOKEN"]);
     expect(manual).toContain('pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile');
