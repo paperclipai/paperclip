@@ -4123,6 +4123,8 @@ export function recoveryService(
           eq(routines.status, "active"),
           eq(routineTriggers.kind, "schedule"),
           eq(routineTriggers.enabled, true),
+          // The scheduler skips archived triggers, so they never replace work.
+          eq(routineTriggers.archived, false),
           isNotNull(routineTriggers.cronExpression),
           isNotNull(routineTriggers.timezone),
           isNotNull(routineTriggers.nextRunAt),

@@ -9602,6 +9602,15 @@ export function issueService(db: Db) {
       // serialized operation. Recovery locks the same parent row before it
       // decides that no blocker exists, so it cannot cancel between creation
       // of a blocking child and insertion of its relation.
+      // Lock order matches `update`: the company privacy-tree lock first, then
+      // the parent row. `create` below takes the same company lock again.
+      const parentCompany = await tx
+        .select({ companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, parentIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!parentCompany) throw notFound("Parent issue not found");
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${parentCompany.companyId}`}, 0))`);
       const parent = await tx
         .select()
         .from(issues)

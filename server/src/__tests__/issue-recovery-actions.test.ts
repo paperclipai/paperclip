@@ -1109,6 +1109,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
   });
 
+  it("blocks a routine_execution firing whose schedule trigger is archived instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // The scheduler skips archived triggers, so a trigger that keeps its
+    // schedule fields after archiving still never fires a replacement.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 913,
+      withExecutionRun: true,
+    });
+    await db.update(routineTriggers).set({ archived: true }).where(eq(routineTriggers.companyId, companyId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
   it("blocks a routine_execution firing whose project is paused instead of cancelling (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     // The trigger is enabled and due, but a paused project makes `tickScheduledTriggers`
