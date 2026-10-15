@@ -3,8 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, heartbeatRuns, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
-import { ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON } from "./execution-workspaces.js";
-import { stopRuntimeServicesForExecutionWorkspace } from "./workspace-runtime.js";
+import { stopIdleSessionRuntimeServicesForExecutionWorkspace } from "./workspace-runtime.js";
 
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const OPEN_WORKSPACE_STATUSES = ["active", "idle", "in_review"] as const;
@@ -22,68 +21,98 @@ const SUPERSEDED_SHARED_SESSION_GRACE_MS = 15 * 60_000;
 
 type CleanupActor = Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
 
-type SharedSessionArchiveSource = "superseded_session" | "terminal_issue";
-
 /**
- * Archives one shared session record. A shared session points at the project workspace
- * directory, so this function changes no file on disk and never sets `cleanup_failed`.
- * Isolated worktrees are not handled here: the terminal workspace reaper
- * (`executionWorkspaceService.sweepTerminalWorkspaces`) archives and cleans them after
- * the work is merged.
+ * Archives one superseded shared session record. A shared session points at the project
+ * workspace directory, so this function changes no file on disk and never sets
+ * `cleanup_failed`. Isolated worktrees and terminal issues stay with the terminal workspace
+ * reaper (`executionWorkspaceService.sweepTerminalWorkspaces`).
+ *
+ * The decision and the write happen in one transaction. It locks the issues linked to the
+ * session, then the session row, in the same order as `bindTaskWorkspace`, and re-checks
+ * under those locks that the session is still stale, that no other open issue uses it, and
+ * that no queued or running heartbeat uses it. A binding or reuse that commits first wins.
  */
 async function archiveSharedSession(
   db: Db,
   input: {
     companyId: string;
     workspaceId: string;
+    issueId: string;
+    staleBefore: Date;
     actor: CleanupActor;
-    source: SharedSessionArchiveSource;
   },
 ): Promise<boolean> {
   const closedAt = new Date();
-  const cleanupReason = input.source === "terminal_issue"
-    ? ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON
-    : SUPERSEDED_SHARED_SESSION_CLEANUP_REASON;
-  const archived = await db
-    .update(executionWorkspaces)
-    .set({
-      status: "archived",
-      closedAt,
-      cleanupEligibleAt: null,
-      cleanupReason,
-      updatedAt: closedAt,
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, input.workspaceId),
-        eq(executionWorkspaces.companyId, input.companyId),
-        eq(executionWorkspaces.mode, "shared_workspace"),
-        inArray(executionWorkspaces.status, [...OPEN_WORKSPACE_STATUSES]),
-      ),
-    )
-    .returning({ id: executionWorkspaces.id })
-    .then((rows) => rows[0] ?? null);
-  if (!archived) return false;
-
-  // A terminal issue keeps its link: it records where the work ran. Only a
-  // superseded session is unlinked, because a newer session replaced it.
-  if (input.source !== "terminal_issue") {
-    await db
-      .update(issues)
-      .set({ executionWorkspaceId: null, updatedAt: closedAt })
+  const archived = await db.transaction(async (tx) => {
+    await tx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.executionWorkspaceId, input.workspaceId)))
+      .for("no key update");
+    const [session] = await tx
+      .select({ id: executionWorkspaces.id, lastUsedAt: executionWorkspaces.lastUsedAt })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.workspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+          eq(executionWorkspaces.mode, "shared_workspace"),
+          inArray(executionWorkspaces.status, [...OPEN_WORKSPACE_STATUSES]),
+        ),
+      )
+      .for("update");
+    if (!session) return false;
+    if (session.lastUsedAt && session.lastUsedAt.getTime() >= input.staleBefore.getTime()) return false;
+    const [otherOpenIssue] = await tx
+      .select({ id: issues.id })
+      .from(issues)
       .where(
         and(
           eq(issues.companyId, input.companyId),
           eq(issues.executionWorkspaceId, input.workspaceId),
+          notInArray(issues.status, [...TERMINAL_ISSUE_STATUSES]),
+          sql`${issues.id} <> ${input.issueId}`,
         ),
-      );
-  }
+      )
+      .limit(1);
+    if (otherOpenIssue) return false;
+    const [liveRun] = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId' = ${input.workspaceId}`,
+        ),
+      )
+      .limit(1);
+    if (liveRun) return false;
+    await tx
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt,
+        cleanupEligibleAt: null,
+        cleanupReason: SUPERSEDED_SHARED_SESSION_CLEANUP_REASON,
+        updatedAt: closedAt,
+      })
+      .where(eq(executionWorkspaces.id, input.workspaceId));
+    // A newer session replaced this one, so no issue should still point at it.
+    await tx
+      .update(issues)
+      .set({ executionWorkspaceId: null, updatedAt: closedAt })
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.executionWorkspaceId, input.workspaceId)));
+    return true;
+  });
+  if (!archived) return false;
 
   const warnings: string[] = [];
   try {
-    // Stop only the services that this session owns. Do not pass the session cwd: it is
-    // the project workspace directory, and services of other sessions also run there.
-    await stopRuntimeServicesForExecutionWorkspace({
+    // Stop only services that this session owns and that no live run leases. A newer
+    // session can reuse a service that this session started, and project-owned services
+    // belong to the project workspace, so both keep running.
+    await stopIdleSessionRuntimeServicesForExecutionWorkspace({
       db,
       executionWorkspaceId: input.workspaceId,
     });
@@ -92,7 +121,7 @@ async function archiveSharedSession(
     warnings.push(message);
     await db
       .update(executionWorkspaces)
-      .set({ cleanupReason: `${cleanupReason} | ${message}`, updatedAt: new Date() })
+      .set({ cleanupReason: `${SUPERSEDED_SHARED_SESSION_CLEANUP_REASON} | ${message}`, updatedAt: new Date() })
       .where(eq(executionWorkspaces.id, input.workspaceId));
   }
 
@@ -105,7 +134,7 @@ async function archiveSharedSession(
     action: "execution_workspace.shared_session_archived",
     entityType: "execution_workspace",
     entityId: input.workspaceId,
-    details: { source: input.source, warnings },
+    details: { source: "superseded_session", warnings },
   });
   return true;
 }
@@ -133,19 +162,15 @@ async function listLiveRunWorkspaceIds(db: Db, companyId: string, issueId: strin
  * Each run on an issue creates its own shared_workspace session, but only the session that
  * issues.execution_workspace_id points at was archived. Sessions of earlier runs stayed open:
  * one instance had 870 open sessions for 252 issues, and up to 45 sessions for one issue.
+ * The queries here only pick candidates; `archiveSharedSession` decides under locks.
  */
-async function archiveSharedSessionsOfIssue(
+async function archiveSupersededSharedSessionsOfIssue(
   db: Db,
   input: {
     companyId: string;
     issueId: string;
-    keepWorkspaceId: string | null;
+    keepWorkspaceId: string;
     actor: CleanupActor;
-    source: SharedSessionArchiveSource;
-    /** Archive sessions of any age. Use this only when the issue is terminal. */
-    ignoreGrace?: boolean;
-    /** Also archive this session when it is shared, even if another issue created it. */
-    linkedWorkspaceId?: string | null;
     now?: Date;
   },
 ): Promise<string[]> {
@@ -160,45 +185,23 @@ async function archiveSharedSessionsOfIssue(
         eq(executionWorkspaces.companyId, input.companyId),
         eq(executionWorkspaces.mode, "shared_workspace"),
         inArray(executionWorkspaces.status, [...OPEN_WORKSPACE_STATUSES]),
-        input.linkedWorkspaceId
-          ? or(
-              eq(executionWorkspaces.sourceIssueId, input.issueId),
-              eq(executionWorkspaces.id, input.linkedWorkspaceId),
-            )
-          : eq(executionWorkspaces.sourceIssueId, input.issueId),
-        ...(input.ignoreGrace ? [] : [lt(executionWorkspaces.lastUsedAt, staleBefore)]),
+        eq(executionWorkspaces.sourceIssueId, input.issueId),
+        lt(executionWorkspaces.lastUsedAt, staleBefore),
       ),
     );
   const candidateIds = candidates
     .map((row) => row.id)
     .filter((id) => id !== input.keepWorkspaceId && !protectedWorkspaceIds.has(id));
-  if (candidateIds.length === 0) return [];
-
-  // Keep a session that an open issue other than this one still uses.
-  const usedByOtherOpenIssue = new Set(
-    await db
-      .select({ executionWorkspaceId: issues.executionWorkspaceId })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, input.companyId),
-          inArray(issues.executionWorkspaceId, candidateIds),
-          notInArray(issues.status, [...TERMINAL_ISSUE_STATUSES]),
-          sql`${issues.id} <> ${input.issueId}`,
-        ),
-      )
-      .then((rows) => rows.map((row) => row.executionWorkspaceId)),
-  );
 
   const archivedIds: string[] = [];
   for (const workspaceId of candidateIds) {
-    if (usedByOtherOpenIssue.has(workspaceId)) continue;
     try {
       const archived = await archiveSharedSession(db, {
         companyId: input.companyId,
         workspaceId,
+        issueId: input.issueId,
+        staleBefore,
         actor: input.actor,
-        source: input.source,
       });
       if (archived) archivedIds.push(workspaceId);
     } catch (error) {
@@ -223,14 +226,7 @@ export function executionWorkspaceLifecycleService(db: Db) {
     actor: CleanupActor;
     now?: Date;
   }): Promise<string[]> {
-    return archiveSharedSessionsOfIssue(db, {
-      companyId: input.companyId,
-      issueId: input.issueId,
-      keepWorkspaceId: input.keepWorkspaceId,
-      actor: input.actor,
-      source: "superseded_session",
-      now: input.now,
-    });
+    return archiveSupersededSharedSessionsOfIssue(db, input);
   }
 
   return {

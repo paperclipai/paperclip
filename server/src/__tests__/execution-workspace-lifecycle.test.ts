@@ -222,6 +222,40 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
     expect(await pathExists(path.join(fixture.worktreePath, "untracked.txt"))).toBe(true);
   }, 20_000);
 
+  it("lets the reaper keep a shared session that another open issue still uses", async () => {
+    const fixture = await createFixture(["done", "todo"], "shared_workspace");
+    const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]);
+    await db.update(issues).set({ executionWorkspaceId: prior }).where(eq(issues.id, fixture.issueIds[1]));
+    const reaper = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+
+    await reaper.sweepTerminalWorkspaces();
+
+    expect(await statusOf(prior)).toBe("active");
+    const other = await db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+      .where(eq(issues.id, fixture.issueIds[1])).then((rows) => rows[0]);
+    expect(other.executionWorkspaceId).toBe(prior);
+  }, 20_000);
+
+  it("keeps a superseded session that another open issue has bound", async () => {
+    const fixture = await createFixture(["in_review", "todo"], "shared_workspace");
+    const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]);
+    // Another issue reuses the old session before the archive decision is made.
+    await db.update(issues).set({ executionWorkspaceId: prior }).where(eq(issues.id, fixture.issueIds[1]));
+
+    const archived = await lifecycle.archiveSupersededSharedSessionsForIssue({
+      companyId: fixture.companyId,
+      issueId: fixture.issueIds[0],
+      keepWorkspaceId: fixture.executionWorkspaceId,
+      actor,
+    });
+
+    expect(archived).toEqual([]);
+    expect(await statusOf(prior)).toBe("active");
+    const other = await db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+      .where(eq(issues.id, fixture.issueIds[1])).then((rows) => rows[0]);
+    expect(other.executionWorkspaceId).toBe(prior);
+  }, 20_000);
+
   it("archives shared sessions of previous runs and keeps the current one", async () => {
     const fixture = await createFixture(["in_review"], "shared_workspace");
     const priorA = await insertPriorSharedSession(fixture, fixture.issueIds[0]);

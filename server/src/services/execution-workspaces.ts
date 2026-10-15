@@ -4046,6 +4046,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND live_run.company_id = ${workspace.companyId}
                   AND live_run.status IN ('queued', 'running')
               )`,
+              // A shared session can be bound by another open issue. Its source
+              // tree being closed does not make the session unused.
+              ...(sharedSession ? [sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${issues} other_issue
+                WHERE other_issue.company_id = ${workspace.companyId}
+                  AND other_issue.execution_workspace_id = ${workspace.id}
+                  AND other_issue.id IS DISTINCT FROM ${workspace.sourceIssueId}
+                  AND other_issue.status NOT IN ('done', 'cancelled')
+              )`] : []),
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (
                   SELECT root.id, root.status
