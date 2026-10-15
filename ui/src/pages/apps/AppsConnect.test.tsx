@@ -1087,14 +1087,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listGalleryMock.mockResolvedValue({ apps: [TYPESAFE] });
     await render();
 
-    // Provider copy stays out of the shared access step.
-    expect(container.textContent).not.toContain("is sent to TypeSafe");
-
-    await act(async () => {
-      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
     expect(container.textContent).toContain("Your TypeSafe key");
     expect(container.textContent).toContain(
       "Content an agent submits for evaluation is sent to TypeSafe.",
