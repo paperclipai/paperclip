@@ -26,6 +26,8 @@ import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLeg
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
+import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase } from "./execution-preparation-timing.js";
+import { executionWorkspaceLifecycleService } from "./execution-workspace-lifecycle.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
@@ -947,6 +949,7 @@ export function heartbeatService(
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db, { pluginWorkerManager: options.pluginWorkerManager });
+  const executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime =
     options.environmentRuntime ??
@@ -2780,6 +2783,7 @@ export function heartbeatService(
           workspaceWorkers: options.pluginWorkerManager,
           envOrchestrator,
           executionWorkspacesSvc,
+          executionWorkspaceLifecycle,
           workspaceOperationsSvc,
           resolveWorkspaceForRun,
           resolveReusedGitWorkspaceAnchor,
@@ -4006,6 +4010,20 @@ export function heartbeatService(
             .catch(err => {
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
+        }
+        // An issue that became terminal during this run deferred the archive of its
+        // shared sessions until the run finished.
+        const terminalIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        if (terminalIssueId) {
+          await executionWorkspaceLifecycle.finishDeferredCleanup({
+            issueId: terminalIssueId,
+            actor: { actorType: "agent", actorId: run.agentId, agentId: run.agentId, runId: run.id },
+          }).catch((err) => {
+            logger.warn(
+              { err, issueId: terminalIssueId, runId: run.id },
+              "failed to archive shared execution workspace sessions of a terminal issue",
+            );
+          });
         }
         await startNextQueuedRunForAgent(run.agentId);
       }

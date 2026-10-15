@@ -2537,7 +2537,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
-        workspaceCwd: workspace.cwd,
+        // The cwd of a shared session is the project workspace directory, where the
+        // services of other sessions also run. Stop only the services of this session.
+        workspaceCwd: workspace.mode === "shared_workspace" ? null : workspace.cwd,
       });
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
@@ -3848,12 +3850,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const readinessKey = workspace.providerType === "plugin" ? `plugin:${workspace.id}:${readExecutionWorkspaceLifecycleGeneration(workspace.metadata)}` : workspacePath
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
-        let inspection = readinessByWorkingTree.get(readinessKey);
-        if (!inspection) {
+        // A shared session points at the project workspace directory. Archiving it
+        // changes no file on disk, so it needs no git inspection and no merge proof.
+        const sharedSession = workspace.mode === "shared_workspace";
+        let inspection = sharedSession ? undefined : readinessByWorkingTree.get(readinessKey);
+        if (!sharedSession && !inspection) {
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
         }
-        const { git, statusInspectionSucceeded } = await inspection;
+        const { git, statusInspectionSucceeded } = sharedSession
+          ? { git: null, statusInspectionSucceeded: true }
+          : await inspection!;
         if (!statusInspectionSucceeded) {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
@@ -3881,12 +3888,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        if (!sharedSession && assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          !sharedSession
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
