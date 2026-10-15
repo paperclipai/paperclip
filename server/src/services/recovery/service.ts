@@ -4682,6 +4682,15 @@ export function recoveryService(
         continue;
       }
 
+      const agent = await getAgent(agentId);
+      // A deliberate pause holds all assigned and review work, including
+      // review-path repair and successful legacy runs. Resume returns it to
+      // the normal sweep.
+      if (shouldHoldRecoveryForPausedAgent(agent, issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       // Terminal run/wake rows survive a restart even if finalization never
       // reached the escalation transaction. Retry that idempotent disposition
@@ -4707,14 +4716,6 @@ export function recoveryService(
         latestRun?.status === "succeeded" &&
         parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
       ) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const agent = await getAgent(agentId);
-      // A deliberate pause holds all assigned and review work, including
-      // successful legacy runs. Resume returns it to the normal sweep.
-      if (shouldHoldRecoveryForPausedAgent(agent, issue.companyId)) {
         result.skipped += 1;
         continue;
       }
