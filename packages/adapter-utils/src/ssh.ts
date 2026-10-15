@@ -14,7 +14,17 @@ import {
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import {
+  mergeDirectoryWithBaseline,
+  throwIfWorkspaceRestoreAborted,
+  workspaceRestoreCancelledError,
+} from "./workspace-restore-merge.js";
+export {
+  WORKSPACE_RESTORE_CANCELLED,
+  isWorkspaceRestoreCancelled,
+  throwIfWorkspaceRestoreAborted,
+  workspaceRestoreCancelledError,
+} from "./workspace-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,
@@ -595,16 +605,28 @@ async function clearLocalDirectory(
   );
 }
 
-async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
+async function copyDirectoryContents(
+  sourceDir: string,
+  targetDir: string,
+  signal?: AbortSignal | null,
+): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true });
   const entries = await fs.readdir(sourceDir);
-  await Promise.all(entries.map(async (entry) => {
-    await fs.cp(path.join(sourceDir, entry), path.join(targetDir, entry), {
-      recursive: true,
-      force: true,
-      preserveTimestamps: true,
-    });
-  }));
+  // Copy in bounded chunks so an operator cancellation raised mid-restore can
+  // still preempt the silent multi-GB local apply. A single in-flight `fs.cp`
+  // remains uninterruptible; the check between chunks bounds the overrun to one
+  // chunk instead of the whole tree.
+  const CONCURRENCY = 8;
+  for (let offset = 0; offset < entries.length; offset += CONCURRENCY) {
+    throwIfWorkspaceRestoreAborted(signal);
+    await Promise.all(entries.slice(offset, offset + CONCURRENCY).map(async (entry) => {
+      await fs.cp(path.join(sourceDir, entry), path.join(targetDir, entry), {
+        recursive: true,
+        force: true,
+        preserveTimestamps: true,
+      });
+    }));
+  }
 }
 
 async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGitWorkspaceSnapshot | null> {
@@ -849,7 +871,9 @@ async function exportGitWorkspaceFromSsh(input: {
   importedRef?: string;
   resetLocalWorkspace?: boolean;
   onProgress?: RuntimeProgressSink;
+  signal?: AbortSignal | null;
 }): Promise<string> {
+  throwIfWorkspaceRestoreAborted(input.signal);
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
@@ -1528,7 +1552,19 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /**
+   * Run-scoped operator cancellation. Checked before opening the transfer and
+   * again after the stream completes, before the destructive local
+   * clear + copy. The in-flight transfer itself is not preempted: it already
+   * reports progress and is bounded by the transferred bytes. Skipped restores
+   * leave the local checkout untouched.
+   */
+  signal?: AbortSignal | null;
 }): Promise<void> {
+  if (input.signal?.aborted) {
+    await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
+    throw workspaceRestoreCancelledError();
+  }
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -1626,8 +1662,17 @@ export async function syncDirectoryFromSsh(input: {
     });
     await progress?.finish();
 
+    // The terminal 100% line above covers only the remote stream. The local
+    // apply below is silent and historically ran for tens of minutes on large
+    // checkouts while the run row stayed `running` with no live worker.
+    // Yield here when cancelled instead of clearing the shared checkout, so
+    // the existing cancellation machinery can terminalize the run promptly.
+    if (input.signal?.aborted) {
+      await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
+      throw workspaceRestoreCancelledError();
+    }
     await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
-    await copyDirectoryContents(stagingDir, input.localDir);
+    await copyDirectoryContents(stagingDir, input.localDir, input.signal);
   } catch (error) {
     await progress?.fail();
     throw error;
@@ -1702,7 +1747,13 @@ export async function restoreWorkspaceFromSshExecution(input: {
   restoreGitHistory?: boolean;
   onProgress?: RuntimeProgressSink;
   repositories?: Array<{ path: string; baselineSnapshot?: DirectorySnapshot }>;
+  /** Run-scoped operator cancellation; see {@link syncDirectoryFromSsh}. */
+  signal?: AbortSignal | null;
 }): Promise<void> {
+  if (input.signal?.aborted) {
+    await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
+    throw workspaceRestoreCancelledError();
+  }
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const repositories = input.repositories ?? [];
   for (const repository of repositories) {
@@ -1732,6 +1783,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
       restoreGitHistory: input.restoreGitHistory,
       onProgress: input.onProgress,
       progressLabel: repository.path,
+      signal: input.signal,
     });
   }
   await restoreWorkspaceRootFromSsh({
@@ -1743,6 +1795,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     onProgress: input.onProgress,
     progressLabel: "workspace",
     hasProjectRepositories: repositories.length > 0,
+    signal: input.signal,
   });
 }
 
@@ -1755,6 +1808,8 @@ async function restoreWorkspaceRootFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel: string;
   hasProjectRepositories?: boolean;
+  /** Run-scoped operator cancellation; see {@link syncDirectoryFromSsh}. */
+  signal?: AbortSignal | null;
 }): Promise<void> {
   const remoteDir = input.remoteDir;
   if (input.baselineSnapshot) {
@@ -1771,6 +1826,7 @@ async function restoreWorkspaceRootFromSsh(input: {
           importedRef: importedRef ?? undefined,
           resetLocalWorkspace: false,
           onProgress: input.onProgress,
+          signal: input.signal,
         })
         : null;
       await syncDirectoryFromSsh({
@@ -1780,11 +1836,13 @@ async function restoreWorkspaceRootFromSsh(input: {
         exclude: input.baselineSnapshot.exclude,
         onProgress: input.onProgress,
         progressLabel: input.progressLabel,
+        signal: input.signal,
       });
       await mergeDirectoryWithBaseline({
         baseline: input.baselineSnapshot,
         sourceDir: stagingDir,
         targetDir: input.localDir,
+        signal: input.signal,
         // Git history advances via integrateImportedGitHead; the working tree
         // still comes from the remote file snapshot so dirty remote edits win.
         beforeApply: importedHead
@@ -1816,6 +1874,7 @@ async function restoreWorkspaceRootFromSsh(input: {
       remoteDir,
       localDir: input.localDir,
       onProgress: input.onProgress,
+      signal: input.signal,
     });
     await syncDirectoryFromSsh({
       spec: input.spec,
@@ -1825,6 +1884,7 @@ async function restoreWorkspaceRootFromSsh(input: {
       preserveLocalEntries: [".git", ...projectRepositoryEntries],
       onProgress: input.onProgress,
       progressLabel: input.progressLabel,
+      signal: input.signal,
     });
     return;
   }
@@ -1836,6 +1896,7 @@ async function restoreWorkspaceRootFromSsh(input: {
     exclude: [".paperclip-runtime"],
     onProgress: input.onProgress,
     progressLabel: input.progressLabel,
+    signal: input.signal,
   });
 }
 

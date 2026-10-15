@@ -680,8 +680,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
+  // Forward the run-scoped cancellation signal so an operator Stop raised
+  // while the SSH restore's silent multi-GB local apply is pending yields
+  // with `workspace_restore_cancelled` instead of holding the run `running`
+  // until the copy finishes. Live restores keep their full grace.
+  const restoreSignal = ctx.signal ?? null;
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
-    ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
+    ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line), restoreSignal)
     : null;
   const effectivePromptBundleAddDir = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.assetDirs.skills ??

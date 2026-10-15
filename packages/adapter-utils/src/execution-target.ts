@@ -277,7 +277,13 @@ export interface PreparedAdapterExecutionTargetRuntime {
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  /**
+   * Restore the staged workspace back onto the host. `signal` carries
+   * run-scoped operator cancellation; the SSH transport yields with
+   * `workspace_restore_cancelled` on an aborted signal instead of blocking
+   * terminalization through a silent multi-GB apply.
+   */
+  restoreWorkspace(onProgress?: RuntimeProgressSink, signal?: AbortSignal | null): Promise<void>;
 }
 
 export interface AdapterExecutionTargetProcessOptions {
