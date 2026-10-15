@@ -119,6 +119,28 @@ export interface CanonicalProviderEvent {
 
 const MAX_OUTPUT = 64 * 1024;
 
+/**
+ * Set by a bounded provider transport on the object that owns a string it
+ * shortened before parsing, keyed by property name. JSON serialization skips
+ * symbol keys, so the marker never reaches persisted payloads.
+ */
+export const OMITTED_PROVIDER_TEXT = Symbol("paperclip.omittedProviderText");
+export interface OmittedProviderText {
+  chars: number;
+  bytes: number;
+}
+
+function omittedProviderText(
+  owner: Record<string, unknown>,
+  key: string,
+): OmittedProviderText | null {
+  const marker = (owner as Record<PropertyKey, unknown>)[OMITTED_PROVIDER_TEXT];
+  const entry = record(record(marker)[key]);
+  return Number.isSafeInteger(entry.chars) && Number.isSafeInteger(entry.bytes)
+    ? { chars: Number(entry.chars), bytes: Number(entry.bytes) }
+    : null;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -430,6 +452,7 @@ function digest(value: string): string {
 
 function boundedOutput(
   value: string,
+  omitted: OmittedProviderText | null = null,
 ): Pick<
   Record<string, unknown>,
   "output" | "outputBytes" | "outputTruncated" | "outputDigest"
@@ -438,6 +461,15 @@ function boundedOutput(
   const output = Buffer.from(value)
     .subarray(Math.max(0, bytes - MAX_OUTPUT))
     .toString("utf8");
+  // The transport retained only an excerpt. Report the provider's real size;
+  // a digest of the excerpt would misidentify the output, so none is claimed.
+  if (omitted)
+    return {
+      output,
+      outputBytes: omitted.bytes,
+      outputTruncated: true,
+      outputDigest: null,
+    };
   return {
     output,
     outputBytes: bytes,
@@ -986,7 +1018,15 @@ export function canonicalProviderEventsFromOpenCodePart(
     );
     // OpenCode places terminal tool failures in `state.error`, not `output`.
     // Preserve the bounded provider message so a failed row is actionable.
-    const output = text(state.output, text(part.output, text(state.error)));
+    const outputOwner: [Record<string, unknown>, string] | null =
+      typeof state.output === "string"
+        ? [state, "output"]
+        : typeof part.output === "string"
+          ? [part, "output"]
+          : typeof state.error === "string"
+            ? [state, "error"]
+            : null;
+    const output = outputOwner ? text(outputOwner[0][outputOwner[1]]) : "";
     const payload = {
       schema: "paperclip.tool.execution.v1",
       executionId: itemId,
@@ -1010,7 +1050,10 @@ export function canonicalProviderEventsFromOpenCodePart(
       exitCode: integer(state.exit),
       progress:
         status === "running" ? text(state.title).slice(0, 4000) || null : null,
-      ...boundedOutput(output),
+      ...boundedOutput(
+        output,
+        outputOwner ? omittedProviderText(...outputOwner) : null,
+      ),
     };
     const eventType =
       nativeStatus === "pending"

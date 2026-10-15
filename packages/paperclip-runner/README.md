@@ -732,3 +732,16 @@ canonical event retained for that command. The header marker `🖇️ v0.1.2`
 identifies the current console iteration.
 
 `create_task` accepts an optional initial `status` of `backlog` or `todo`. Use `backlog` when the user wants a saved task or plan without execution: assignment and the initial plan are committed without scheduling a wake, even when dependencies are already complete. Omitting status preserves immediate delegation (`todo`, or `blocked` for unresolved dependencies).
+
+### Oversized OpenCode events
+
+The OpenCode driver keeps SSE frames up to 1,048,576 characters exact. It compacts longer
+frames while retaining tool identity, status, and bounded output excerpts. This
+also applies when a complete large frame arrives inside one network chunk.
+Canonical tool rows mark shortened output, report its original byte count, and
+do not claim a digest for text that was not retained. A structure that cannot
+fit the compacted bound produces a diagnostic; the event stream continues.
+
+Tool output and error fields have reserved retention space and size records,
+so large input values cannot consume their output tails or make excerpts look
+complete. A separator split between reads does not count against the frame limit.
