@@ -157,6 +157,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
+    agentLifecycleState?: "ready" | "preparing" | "verifying" | "resuming";
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
@@ -189,6 +190,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       name: "Monitor Bot",
       role: "engineer",
       status: input?.agentStatus ?? "active",
+      lifecycleState: input?.agentLifecycleState ?? "ready",
       adapterType: "process",
       adapterConfig: {
         command: process.execPath,
@@ -711,6 +713,47 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_exhausted");
     expect(activity).toContain("issue.monitor_recovery_wake_skipped");
+  });
+
+  it("still delivers the recovery wake to an owner that is paused only because it is resuming", async () => {
+    const { issueId, agentId } = await seedFixture({
+      agentStatus: "paused",
+      agentLifecycleState: "resuming",
+      monitor: { timeoutAt: "2026-04-11T12:00:00.000Z", recoveryPolicy: "wake_owner" },
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      clearReason: "timeout_exceeded",
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "issue_monitor_recovery")))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).not.toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows.map((row) => row.body));
+    expect(comments.some((body) => body.includes("could not be woken"))).toBe(false);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).not.toContain("issue.monitor_recovery_wake_skipped");
   });
 
   it("exhausts (not endlessly defers) a monitor whose timeoutAt has already passed via a transient dispatch error", async () => {

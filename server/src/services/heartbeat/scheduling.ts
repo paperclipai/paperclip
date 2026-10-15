@@ -60,6 +60,7 @@ import { logger } from "../../middleware/logger.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import { evaluateAgentInvokability, evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
+import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import type { Db } from "@paperclipai/db";
 import type { issueService } from "../issues.js";
 import type { createHeartbeatQueue } from "./queue.js";
@@ -433,10 +434,13 @@ export function createHeartbeatScheduling(
     };
 
     const ownerAgent = await getAgent(input.claimed.assigneeAgentId!);
-    const ownerInvokability = await evaluateAgentInvokabilityFromDb(db, ownerAgent);
+    const ownerInvokability = await evaluateAgentInvokabilityFromDb(
+      db,
+      ownerAgent && isAgentAwaitingSetup(ownerAgent) ? { ...ownerAgent, status: "idle" } : ownerAgent,
+    );
     if (!ownerInvokability.invokable) {
       await fallBackToRecoveryComment(ownerInvokability.reason ?? "not invokable");
-      return false;
+      return true;
     }
 
     const acceptedRecoveryKeys = [
@@ -502,7 +506,7 @@ export function createHeartbeatScheduling(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         await fallBackToRecoveryComment(err.message);
-        return false;
+        return true;
       }
       throw err;
     }
