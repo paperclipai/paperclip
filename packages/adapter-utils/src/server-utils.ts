@@ -4851,6 +4851,7 @@ export async function runChildProcess(
   opts: {
     cwd: string;
     env: Record<string, string>;
+    inheritEnv?: boolean;
     timeoutSec: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -4871,7 +4872,7 @@ export async function runChildProcess(
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...(opts.inheritEnv === false ? {} : sanitizeInheritedPaperclipEnv(process.env)),
       ...opts.env,
     };
 
