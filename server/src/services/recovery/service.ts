@@ -2141,6 +2141,23 @@ export function recoveryService(
     return result?.awaiting === true;
   }
 
+  // A paused company is a deliberate operator stop, not stranded work. No run
+  // can start while the pause holds, so every assigned issue of that company
+  // looks abandoned and `getInvocationBlock` answers with a company block for
+  // all of them. Escalating on that answer outlives the pause: resuming the
+  // company does not reopen a blocked issue, which has no dispatch queue, no
+  // monitor and no blocker of its own. This reads the live row on purpose. A
+  // pause can start at any point of a sweep, so a snapshot taken before the
+  // sweep would leave exactly that window open.
+  async function isCompanyPaused(companyId: string) {
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    return company?.status === "paused";
+  }
+
   async function readInvocationBudgetBlock(
     issue: RecoveryIssue,
     agentId: string,
@@ -4542,6 +4559,7 @@ export function recoveryService(
     };
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
+
     const unfinishedGoalBindings = new Set<string>();
     if (candidateIssueIds.length > 0) {
       const pausedGoals = await db
@@ -4566,6 +4584,10 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      if (await isCompanyPaused(issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.originKind === "chat_channel") {
         if (opts?.skipExternalConversationSettlement) {
 
@@ -4836,6 +4858,12 @@ export function recoveryService(
         }
       }
       const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      // Preserve the cause observed with the block even if the company resumes
+      // before ownership is checked.
+      if (budgetBlock?.cause === "company_paused") {
+        result.skipped += 1;
+        continue;
+      }
       // A temporary hold (accounting still settling) only delays the task's
       // start or continuation; it is not a reason to escalate. Leave the task
       // as it is: settling accounting wakes this recovery again, which then
