@@ -95,7 +95,8 @@ Both probe endpoints require a board actor that is local-implicit or an instance
 administrator; ordinary agent identity and company membership alone are denied.
 The saved sandbox probe also resolves company/environment and secret access
 before allocating a fresh lease. Its measurement is company-bound to an immutable
-image digest, effective provider configuration and active custom-image identity;
+image digest or verified Daytona snapshot ID, effective provider configuration
+and active custom-image identity;
 only confirmed cleanup permits recording it. A draft probe does not record saved
 qualification. Reading stored qualification does not lease/provision a target and
 does not grant an agent permission to probe or manage that target.
@@ -117,7 +118,8 @@ at the scoped commit. A connection-only success or a fixture cannot certify
 native compatibility, account authentication or agent access.
 
 Scoped Verification: `not-run` — on one authorized owned target, compare pinned
-image proof with mutable/snapshot and changed-config controls; require independent
+image and provider snapshot-ID proof with mutable-image, unverified-snapshot
+and changed-config/account controls; require independent
 cleanup evidence before recording proof. Assert agent/non-admin board denial,
 secret-context denial where the actor lacks access and forged-proof rejection.
 Verify API reads hide the private record and metadata-only updates cannot overwrite it. Then use

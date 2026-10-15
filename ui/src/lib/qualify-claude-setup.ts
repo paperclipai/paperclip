@@ -8,10 +8,11 @@ export function needsClaudeSetupQualification(input: {
   environment?: Pick<Environment, "driver" | "config"> | null;
 }): boolean {
   const config = input.environment?.config;
+  const immutableImage = typeof config?.image === "string" && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(config.image) && !config.snapshot;
+  const daytonaSnapshot = config?.provider === "daytona" && typeof config.snapshot === "string" && !!config.snapshot.trim() && !config.image;
   return !input.savedAgentId && input.adapterType === "claude_local" && input.runner === "auto"
-    && input.environment?.driver === "sandbox" && typeof config?.image === "string"
-    && /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(config.image)
-    && !config.snapshot && !config.template && !config.templateRef;
+    && input.environment?.driver === "sandbox" && (immutableImage || daytonaSnapshot)
+    && !config?.template && !config?.templateRef;
 }
 
 export async function qualifyClaudeSetup(input: Parameters<typeof needsClaudeSetupQualification>[0] & {

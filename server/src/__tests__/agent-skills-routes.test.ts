@@ -1178,7 +1178,8 @@ describe("agent skill routes", () => {
     { adapterType: "codex_local", runner: "auto", platform: "win32", expectedType: "codex_local" },
   ];
   const creationRunnerCases = [...codexRunnerCases,
-    { adapterType: "claude_local", runner: "auto", platform: "linux", expectedType: "claude_local" },
+    { adapterType: "claude_local", runner: "auto", platform: "linux", expectedType: "paperclip_runner" },
+    { adapterType: "claude_local", runner: "legacy", platform: "linux", expectedType: "claude_local" },
     { adapterType: "claude_local", runner: "auto", platform: "darwin", expectedType: "paperclip_runner" },
     { adapterType: "claude_local", runner: "legacy", platform: "darwin", expectedType: "claude_local" },
   ];

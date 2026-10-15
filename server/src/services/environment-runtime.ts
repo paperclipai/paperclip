@@ -43,6 +43,7 @@ import {
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { qualifiedSandboxSnapshotId, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
 import { verifyNativeHarnessBackupStamp } from "./native-runtime/native-harness-backup-stamp.js";
 import {
   collectEnvironmentSecretRefs,
@@ -435,6 +436,8 @@ function stripSecretRefValuesFromPluginLeaseMetadata(input: {
 export interface EnvironmentDriverAcquireInput {
   companyId: string;
   environment: Environment;
+  /** Saved environment before run-only lease retention settings. */
+  configuredEnvironment?: Environment;
   issueId: string | null;
   agentId: string | null;
   /**
@@ -454,6 +457,8 @@ export interface EnvironmentDriverAcquireInput {
    * configured default adapter.
    */
   adapterType: string | null;
+  /** Resolve an immutable provider snapshot identity for an explicit platform probe. */
+  resolveSnapshotIdentity?: boolean;
   /**
    * Force applying the active custom-image template even when issueId and
    * heartbeatRunId are null. Operator-initiated `Test` probes set this so the
@@ -1843,15 +1848,30 @@ function createSandboxEnvironmentDriver(
     driver: "sandbox",
 
     async acquireRunLease(input) {
+      const configuredEnvironment = input.configuredEnvironment ?? input.environment;
+      // A warm run may change retention, but must not replace the boot binding
+      // or account used for qualification and custom-template resolution.
+      if (configuredEnvironment.id !== input.environment.id
+        || configuredEnvironment.driver !== input.environment.driver
+        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined })
+          !== stableStringify({ ...input.environment.config, reuseLease: undefined })) {
+        throw new Error("Run environment does not match its saved configuration.");
+      }
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
+      const selectedTemplate: { value: SandboxTemplateIdentity } = { value: null };
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, configuredEnvironment, {
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
+        onResolvedCustomImageTemplate: identity => { selectedTemplate.value = identity; },
       });
       if (parsed.driver !== "sandbox" || storedParsed.driver !== "sandbox") {
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
       }
+      const pinnedSnapshotId = input.adapterType === "paperclip_runner"
+        ? qualifiedSandboxSnapshotId(configuredEnvironment, input.companyId, parsed.config, selectedTemplate.value) : null;
+      if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease };
+      if (pinnedSnapshotId) parsed.config = { ...parsed.config, snapshot: pinnedSnapshotId };
 
       // Check if this provider should be handled by a plugin.
       if (!isBuiltinSandboxProvider(parsed.config.provider)) {
@@ -1882,7 +1902,8 @@ function createSandboxEnvironmentDriver(
         }
 
         const workerConfig = stripSandboxProviderEnvelope(parsed.config);
-        const storedConfig = storedParsed.config;
+        const storedConfig = pinnedSnapshotId ? { ...storedParsed.config, snapshot: pinnedSnapshotId } : storedParsed.config;
+        if (pinnedSnapshotId) delete storedConfig.image;
         const providerConfigForLease = sandboxConfigForLeaseMetadata(storedConfig);
         // Require the reusable-lease capability AND a worker that verifies the
         // reuse methods. The provider must first opt in through the declaration:
@@ -2122,6 +2143,7 @@ function createSandboxEnvironmentDriver(
                 // environment's default adapter image (a pi agent then runs in the
                 // opencode image and the harness binary is missing at exec time).
                 adapterType: input.adapterType ?? undefined,
+                ...(input.resolveSnapshotIdentity ? { resolveSnapshotIdentity: true } : {}),
                 // Forward a caller deadline so the provider configures a provider-side
                 // expiry at or before it and returns the real provider expiry.
                 ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
@@ -3992,6 +4014,8 @@ export function environmentRuntimeService(
     async acquireRunLease(input: {
       companyId: string;
       environment: Environment;
+      /** Saved environment before run-only lease retention settings. */
+      configuredEnvironment?: Environment;
       issueId: string | null;
       agentId?: string | null;
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
@@ -4000,6 +4024,7 @@ export function environmentRuntimeService(
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
+      resolveSnapshotIdentity?: boolean;
       /**
        * Force applying the active custom-image template even for ad-hoc (no
        * issue/run) invocations. Operator `Test` probes set this so the runtime
@@ -4030,6 +4055,7 @@ export function environmentRuntimeService(
       const lease = await driver.acquireRunLease({
         companyId: input.companyId,
         environment: input.environment,
+        configuredEnvironment: input.configuredEnvironment,
         issueId: input.issueId,
         agentId: input.agentId ?? null,
         heartbeatRunId: input.heartbeatRunId,
@@ -4037,6 +4063,7 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
+        resolveSnapshotIdentity: input.resolveSnapshotIdentity,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
         requestedExpiresAt: input.requestedExpiresAt ?? null,
         assertCompanyBinding: input.assertCompanyBinding,

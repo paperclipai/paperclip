@@ -635,6 +635,11 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  /** Explicit platform probes may request a provider-owned immutable snapshot
+   * identity. Supporting providers create by that ID and return snapshotIdentity
+   * in lease metadata. Older providers may omit it; the host then cannot qualify
+   * a mutable snapshot name. Ordinary discovery must not allocate a sandbox. */
+  resolveSnapshotIdentity?: boolean;
   workspaceMode?: string;
   requestedCwd?: string;
   agentId?: string;

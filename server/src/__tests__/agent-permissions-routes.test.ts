@@ -1811,7 +1811,7 @@ describe("agent permission routes", () => {
 
   for (const adapterCase of sshCapableAdapterCases) {
     it(`allows creating a ${adapterCase.adapterType} agent with an SSH default environment`, async () => {
-      const expectedAdapterType = adapterCase.adapterType === "codex_local" ? "paperclip_runner" : adapterCase.adapterType;
+      const expectedAdapterType = ["codex_local", "claude_local"].includes(adapterCase.adapterType) ? "paperclip_runner" : adapterCase.adapterType;
       const environmentId = "33333333-3333-4333-8333-333333333333";
       mockEnvironmentService.getById.mockResolvedValue({
         id: environmentId,
@@ -1855,6 +1855,7 @@ describe("agent permission routes", () => {
       );
       if (["codex_local", "claude_local"].includes(adapterCase.adapterType)) {
         if (adapterCase.adapterType === "codex_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "codex" });
+        else expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" });
         const { AGENT_RUNNER_SSH_PLATFORM_COMMAND } = await import("../services/agent-runner-selection.js");
         expect(mockRunSshCommand).toHaveBeenCalledWith(expect.objectContaining({ host: "qa.example.invalid" }), AGENT_RUNNER_SSH_PLATFORM_COMMAND, { timeoutMs: 10_000 });
       } else {

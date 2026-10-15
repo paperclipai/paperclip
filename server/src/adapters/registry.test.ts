@@ -118,6 +118,23 @@ describe("native ACPX environment checks", () => {
     })]);
   });
 
+  it.each([
+    ["claude", "claude-opus-5-5", "aarch64", "warn"],
+    ["claude", "claude-opus-5-5", "arm64", "warn"],
+    ["claude", "claude-opus-5-5", "armv7l", "fail"],
+    ["grok", "grok-4.7", "aarch64", "fail"],
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731", "aarch64", "fail"],
+  ])("checks the selected remote %s architecture %s without widening other providers", async (agent, model, architecture, status) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { provider: "acpx", acpxAgent: agent, model },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: `Linux\n${architecture}\n` }) } },
+    });
+    expect(result.status).toBe(status);
+    expect(result.checks[0].code).toBe(status === "warn" ? "acpx_remote_runtime_unverified" : "acpx_runtime_unavailable");
+    expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
   it("identifies an incomplete installation and gives the operator a repair", async () => {
     probeInstallation.mockRejectedValue(Object.assign(new Error("The Claude ACP runtime package is missing. Reinstall or rebuild Paperclip."), { code: "ACPX_RUNTIME_PACKAGE_MISSING" }));
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
@@ -181,7 +198,9 @@ describe("native ACPX environment checks", () => {
     ["Linux\nx86_64\n", "warn"],
     ["Darwin\nx86_64\n", "warn"],
     ["Darwin\narm64\n", "warn"],
-    ["Linux\naarch64\n", "fail"],
+    ["Linux\naarch64\n", "warn"],
+    ["Linux\narm64\n", "warn"],
+    ["Linux\narmv7l\n", "fail"],
     ["", "fail"],
   ])("qualifies the SSH platform from its own uname output %j", async (stdout, status) => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");

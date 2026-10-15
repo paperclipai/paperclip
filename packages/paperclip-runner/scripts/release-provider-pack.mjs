@@ -7,17 +7,24 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
     : JSON.stringify(value);
 
 /** Release assembly must reject a self-consistent pack built for another release. */
-export function verifyReleaseProviderPack(identity, sourceRevision) {
+export function verifyReleaseProviderPack(identity, sourceRevision, target = "linux-x64") {
   const payload = identity?.payload;
   if (identity?.schema !== "paperclip-runner/remote-provider-pack/v1" || !payload
-    || payload.target?.platform !== "linux" || payload.target?.architecture !== "x64"
-    || payload.runnerSourceRevision !== sourceRevision) throw new Error("Remote provider pack must match the release source and Linux x64 target");
+    || !["linux-x64", "linux-arm64"].includes(target)
+    || payload.target?.platform !== "linux" || `linux-${payload.target?.architecture}` !== target
+    || payload.runnerSourceRevision !== sourceRevision) throw new Error(`Remote provider pack must match the release source and ${target === "linux-x64" ? "Linux x64" : target} target`);
   if (identity.digest !== `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`) {
     throw new Error("Remote provider-pack payload digest mismatch");
   }
   if (payload.pins?.acpx !== profiles.acpxVersion
     || ["grok", "claude", "codex"].some(agent => payload.acpxProfileDigests?.[agent] !== profiles.profiles[agent].commandDigest)) {
     throw new Error("Remote provider-pack ACPX profiles do not match this release");
+  }
+  if (target === "linux-arm64") {
+    if (Object.keys(payload.providers ?? {}).length || Object.keys(payload.candidateProviders ?? {}).length) {
+      throw new Error("Linux ARM64 pack must not expand other providers qualification");
+    }
+    return identity;
   }
   const current = profiles.profiles.cursor;
   for (const cursor of [payload.providers?.cursor, ...(Object.hasOwn(payload.candidateProviders ?? {}, "cursor") ? [payload.candidateProviders.cursor] : [])]) {

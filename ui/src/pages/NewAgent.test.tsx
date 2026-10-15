@@ -10,11 +10,12 @@ import {
 
 describe("New agent setup", () => {
   it.each([
-    ["paperclip", "Connect"], ["legacy", "Connect"],
-    ["paperclip", "Finish setup"], ["legacy", "Finish setup"],
-  ] as const)("qualifies new managed Claude and saves measured %s defaults through %s", async (measured, step) => {
+    ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
+    ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
+    ["paperclip", "Connect", "snapshot"], ["paperclip", "Finish setup", "snapshot"],
+  ] as const)("qualifies new managed Claude and saves measured %s defaults through %s from %s", async (measured, step, source) => {
     const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
-    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: { provider: "daytona", image } }]);
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: { provider: "daytona", ...(source === "snapshot" ? { snapshot: "managed-snapshot" } : { image }) } }]);
     settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
     settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: false });
     api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });

@@ -30,3 +30,17 @@ export async function prepareVerifiedRemoteProviderPack(input: {
     if (scope) await input.trace!.end(scope, { outcome: failed ? "failed" : "ok" });
   }
 }
+
+export async function useVerifiedPreinstalledRemoteProviderPack(input: {
+  candidates: readonly string[];
+  verifyAndLink: (root: string) => Promise<void>;
+}): Promise<boolean> {
+  for (const candidate of input.candidates) {
+    try {
+      await input.verifyAndLink(candidate);
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}

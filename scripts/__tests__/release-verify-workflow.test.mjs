@@ -826,6 +826,13 @@ function nativeProducer() {
   return readWorkflow('release-verify.yml').split('  runner_binaries:\n')[1];
 }
 
+test('native provider packs and the image use the same exact Node version', () => {
+  const version = nativeProducer().match(/node-version: ([0-9.]+)/)?.[1];
+  assert.equal(version, '24.21.0');
+  const image = readFileSync(path.join(repoRoot, 'docker/daytona-runner/Dockerfile'), 'utf8');
+  assert.ok(image.includes(`FROM node:${version}-bookworm@sha256:`));
+});
+
 test('native dependency caches are target-bound and unmerged master callers cannot save them', () => {
   const producer = nativeProducer();
   const cache = producer.split('      - name: Cache native Rust dependencies\n')[1].split('\n      - ')[0];

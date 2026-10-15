@@ -141,6 +141,50 @@ describe("Daytona sandbox provider plugin", () => {
     __resetDaytonaSandboxHandleCacheForTest();
   });
 
+  const snapshotRecord = { id: "a6b9e7d0-f886-471a-b461-640dd03e8d0f", name: "managed-snapshot", organizationId: "provider-account", createdAt: "2026-10-07T23:19:57.133Z" };
+  const snapshotProbe = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "probe-1",
+    resolveSnapshotIdentity: true, config: { apiKey: "fixture-key", snapshot: "managed-snapshot", reuseLease: false } };
+
+  it("qualifies a named snapshot by creating from its immutable provider ID", async () => {
+    mockSnapshotGet.mockResolvedValue(snapshotRecord);
+    mockCreate.mockResolvedValue(createMockSandbox());
+    const lease = await plugin.definition.onEnvironmentAcquireLease!(snapshotProbe);
+    expect(mockSnapshotGet).toHaveBeenCalledWith("managed-snapshot");
+    expect(mockCreate.mock.calls[0][0].snapshot).toBe(snapshotRecord.id);
+    expect(lease.metadata).toMatchObject({ snapshot: "managed-snapshot", snapshotIdentity: {
+      ...snapshotRecord, provider: "daytona", requestedRef: "managed-snapshot",
+    } });
+  });
+
+  it("does not resolve snapshot names during ordinary acquisition", async () => {
+    mockCreate.mockResolvedValue(createMockSandbox());
+    await plugin.definition.onEnvironmentAcquireLease!({ ...snapshotProbe, resolveSnapshotIdentity: undefined });
+    expect(mockSnapshotGet).not.toHaveBeenCalled();
+    expect(mockCreate.mock.calls[0][0].snapshot).toBe("managed-snapshot");
+  });
+
+  it.each([{ id: "mutable-name" }, { organizationId: "" }, { name: "different-name" }, { createdAt: "invalid" }])(
+    "rejects unverified snapshot identity %j before allocation", async invalid => {
+      mockSnapshotGet.mockResolvedValue({ ...snapshotRecord, ...invalid });
+      await expect(plugin.definition.onEnvironmentAcquireLease!(snapshotProbe)).rejects.toThrow("immutable snapshot identity");
+      expect(mockCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never allocates after a snapshot identity lookup times out", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLookup!: (value: typeof snapshotRecord) => void;
+      mockSnapshotGet.mockReturnValue(new Promise(resolve => { resolveLookup = resolve; }));
+      const result = plugin.definition.onEnvironmentAcquireLease!(snapshotProbe).catch(error => error);
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(await result).toBeInstanceOf(Error);
+      resolveLookup(snapshotRecord);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockCreate).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("declares environment lifecycle handlers", async () => {
     expect(await plugin.definition.onHealth?.()).toEqual({
       status: "ok",

@@ -42,8 +42,8 @@ Automated: [environment UI](../../ui/src/pages/CompanyEnvironments.test.tsx), [d
 
 Manual: Save a disposable target, reload it, and run its available probe. Verify both success and missing-credential/reachability errors identify the target. Confirm unavailable providers are not offered as working run targets.
 
-For an immutable sandbox image, pin the OCI image with `@sha256` and explicitly
-probe the saved environment in the intended company. The existing connection
+For an immutable sandbox image, pin the OCI image with `@sha256`, or select
+a Daytona snapshot whose provider ID can be verified, and explicitly probe the saved environment in the intended company. The existing connection
 probe allocates a fresh lease and can measure its OS, architecture and libc.
 Qualification is recorded only when the selected image/configuration matches
 the live lease and cleanup is confirmed. Inspect `platformQualificationRecorded`
@@ -52,7 +52,10 @@ the image has native runtime qualification.
 
 The measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
-and name-only snapshots do not qualify. Changing the target or image invalidates
+and snapshots without verified provider identities do not qualify. Daytona
+qualification creates by provider ID and binds native execution to that same ID;
+a deleted ID fails instead of resolving a replacement name. Changing the target,
+account, image or active captured template invalidates
 the record; normal metadata edits cannot forge or overwrite it, and API reads
 omit the private metadata. Reading this evidence for discovery or creation does
 not allocate a sandbox. The draft `probe-config` checks are not a saved-image

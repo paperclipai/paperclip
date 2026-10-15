@@ -1974,10 +1974,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
-    it.each(["paperclip", "legacy"] as const)("qualifies managed Claude during Connect and tests/hire with measured %s configuration", async measured => {
+    it.each([["paperclip", "image"], ["legacy", "image"], ["paperclip", "snapshot"], ["legacy", "snapshot"]] as const)("qualifies managed Claude during Connect and tests/hire with measured %s configuration from %s", async (measured, source) => {
       mockAdapterBuild.buildAdapterConfig.mockImplementation(values => buildClaudeLocalConfig(values!));
       mockEnvironmentsApi.list.mockResolvedValue([{ ...SANDBOX_ENVIRONMENT, config: {
-        provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}`,
+        provider: "daytona", ...(source === "snapshot" ? { snapshot: "managed-snapshot" } : { image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` }),
       } }]);
       const discovery = (runner: "paperclip" | "legacy") => [
         setupAdapterInfo({ type: "claude_local", loaded: true, disabled: false, defaultRunner: runner, supportedRunners: [runner] }),

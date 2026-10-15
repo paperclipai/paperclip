@@ -210,6 +210,8 @@ type DaytonaSnapshotService = {
   delete?: (snapshot: unknown) => Promise<void>;
 };
 
+type SnapshotIdentity = { provider: "daytona"; requestedRef: string; id: string; name: string; organizationId: string; createdAt: string };
+
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
 // Quota-safety defaults (minutes). Daytona counts *stopped* sandboxes against
@@ -672,6 +674,7 @@ function leaseMetadata(input: {
   resumedFromState?: string | null;
   sandboxState?: string | null;
   workspaceSentinel?: WorkspaceSentinelResult;
+  snapshotIdentity?: SnapshotIdentity;
 }) {
   return {
     provider: "daytona",
@@ -681,6 +684,7 @@ function leaseMetadata(input: {
     sandboxState: input.sandboxState ?? input.sandbox.state ?? null,
     image: input.config.image,
     snapshot: input.config.snapshot,
+    ...(input.snapshotIdentity ? { snapshotIdentity: input.snapshotIdentity } : {}),
     target: input.sandbox.target,
     timeoutMs: input.config.timeoutMs,
     reuseLease: input.config.reuseLease,
@@ -956,6 +960,7 @@ async function createSandbox(
     purpose?: string;
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
     onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
+    onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateRuntimeResourceRequest(config);
@@ -963,6 +968,23 @@ async function createSandbox(
     throw new Error(resourceRequestError);
   }
   const client = createDaytonaClient(config);
+  let createConfig = config;
+  if ("resolveSnapshotIdentity" in params && params.resolveSnapshotIdentity && config.snapshot && !config.image) {
+    // This read happens only during explicit qualification. The SDK does not
+    // bound snapshot.get; a timed-out read must never continue into allocation.
+    const snapshot = await withLivenessTimeout("snapshot.identity", Math.min(config.timeoutMs || 10_000, 10_000),
+      () => client.snapshot.get(config.snapshot!));
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(snapshot.id ?? "")
+      || !snapshot.name || !snapshot.organizationId || !snapshot.createdAt
+      || (config.snapshot !== snapshot.id && config.snapshot !== snapshot.name)
+      || !Number.isFinite(Date.parse(String(snapshot.createdAt)))) {
+      throw new Error("Daytona did not return an immutable snapshot identity. Retry the connection probe or select Legacy runner.");
+    }
+    const identity: SnapshotIdentity = { provider: "daytona", requestedRef: config.snapshot,
+      id: snapshot.id, name: snapshot.name, organizationId: snapshot.organizationId, createdAt: new Date(snapshot.createdAt).toISOString() };
+    createConfig = { ...config, snapshot: identity.id };
+    options.onSnapshotIdentity?.(identity);
+  }
   // The SDK can create a sandbox and then throw while waiting for it to start.
   // Keep an attempt-specific provider name so that failure cannot lose ownership.
   const attemptId = randomUUID();
@@ -977,7 +999,7 @@ async function createSandbox(
   }), "paperclip-create-attempt": attemptId };
   // The SDK mutates params.labels (for example, code-toolbox-language).
   // Preserve our immutable ownership snapshot for validation and retry.
-  const createParams = { ...buildCreateParams(config, { ...labels }), name };
+  const createParams = { ...buildCreateParams(createConfig, { ...labels }), name };
   const cleanup: PluginEnvironmentCreationCleanup = {
     providerLeaseId: name, companyId: params.companyId, environmentId: params.environmentId,
     ...("runId" in params ? { runId: params.runId } : {}),
@@ -2505,6 +2527,7 @@ const plugin = definePlugin({
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    let snapshotIdentity: SnapshotIdentity | undefined;
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
     const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
@@ -2548,8 +2571,9 @@ const plugin = definePlugin({
     };
     const acquire = async (): Promise<PluginEnvironmentLease> => {
       const sandbox = await createSandbox(params, config, {
-        onCreateAttempt: (attempt) => { cleanup = attempt; },
+        onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
         onCreateFailure: observeFailure,
+        onSnapshotIdentity: identity => { snapshotIdentity = identity; },
       });
       try {
         assertActive();
@@ -2609,6 +2633,7 @@ const plugin = definePlugin({
             remoteCwd,
             resumedLease: false,
             workspaceSentinel,
+            snapshotIdentity,
           }),
         };
       } catch (error) {

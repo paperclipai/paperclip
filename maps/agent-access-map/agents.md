@@ -31,7 +31,9 @@ native hires.
 
 Creation requests can use `runner: auto | paperclip | legacy`; the server resolves
 and persists execution configuration. Claude Auto selects the native ACPX profile
-on qualified Apple Silicon; saved runner/model/provider overrides survive edits
+on qualified macOS and GNU/Linux x64/ARM64 targets; unknown environment
+qualification remains Legacy. Darwin SSH defaults to Legacy while preserving
+explicit native assets and saved execution. Saved runner/model/provider overrides survive edits
 and approval activation. This selection does not grant connection access or
 bypass hiring authorization. Source: [runner resolver](../../server/src/services/agent-runner-selection.ts).
 
