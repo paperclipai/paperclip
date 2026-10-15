@@ -949,6 +949,76 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("cancelled this recurring-run artifact");
   });
 
+  it("cancels a dead routine_execution firing that left a pending native question (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 905,
+      withExecutionRun: true,
+    });
+    const runId = routineIssue.executionRunId!;
+    const questionSet = {
+      schema: "paperclip.question_set.v1",
+      title: "Digest scope",
+      questions: [{
+        id: "scope",
+        prompt: "Include archived items?",
+        required: true,
+        answerMode: "single_select",
+        options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+      }],
+    };
+    const [question] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: routineIssue.id,
+      sourceRunId: runId,
+      createdByAgentId: coderId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "none",
+      idempotencyKey: `paperclip-runner-question:${runId}:request`,
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Include archived items?",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+        }],
+        runtimeRequestId: "request",
+        supersedeOnUserComment: false,
+        questionSet: questionSet as never,
+      },
+    }).returning();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: runId,
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    // The terminal update queues the native-question cancellation for after
+    // commit instead of throwing and rolling the cancellation back.
+    expect(result?.status).toBe("cancelled");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("cancelled");
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, question!.id));
+    expect(interaction?.status).not.toBe("pending");
+  });
+
   it("still blocks a routine_execution firing that has a real first-class blocker (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineIssue = await seedRoutineExecutionIssue({

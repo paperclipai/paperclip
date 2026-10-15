@@ -4220,6 +4220,10 @@ export function recoveryService(
     //
     // Clear the execution-lock columns as we finalize so the cancelled artifact
     // does not linger as an "open" routine execution holding the run pointer.
+    // Terminal updates in an external transaction queue their activity and
+    // native-question cancellations; both run only after the cancellation commits.
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
     const transition = await db.transaction(async (tx) => {
       const locked = await issuesSvc.getByIdForUpdate(input.issue.id, tx);
       if (!locked) return null;
@@ -4244,11 +4248,13 @@ export function recoveryService(
         executionAgentNameKey: null,
         executionLockedAt: null,
         checkoutRunId: null,
-      }, tx);
+      }, tx, publications, postCommitActions);
       return { kind: "cancelled" as const, issue: updated };
     });
     if (!transition) return null;
     if (transition.kind === "stale") return transition.issue;
+    for (const publication of publications) publishActivity(publication);
+    await executeIssuePostCommitActions(db, postCommitActions);
     const updated = transition.issue;
 
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null;
