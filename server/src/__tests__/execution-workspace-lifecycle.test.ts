@@ -17,6 +17,7 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -24,6 +25,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { executionWorkspaceLifecycleService } from "../services/execution-workspace-lifecycle.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import {
+  ensureRuntimeServicesForRun,
+  releaseRuntimeServicesForRun,
+  stopRuntimeServicesForExecutionWorkspace,
+} from "../services/workspace-runtime.js";
 
 const execFileAsync = promisify(execFile);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -48,6 +54,7 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
   let lifecycle!: ReturnType<typeof executionWorkspaceLifecycleService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const tempDirs = new Set<string>();
+  const startedServiceWorkspaces = new Set<string>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspace-lifecycle-");
@@ -56,6 +63,11 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
   }, 20_000);
 
   afterEach(async () => {
+    for (const executionWorkspaceId of startedServiceWorkspaces) {
+      await stopRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId });
+    }
+    startedServiceWorkspaces.clear();
+    await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(workspaceOperations);
     await db.delete(heartbeatRuns);
@@ -281,6 +293,170 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
       .then((rows) => rows[0]);
     expect(issue.executionWorkspaceId).toBe(fixture.executionWorkspaceId);
   }, 20_000);
+
+  /**
+   * Starts a real long-running service for a session and returns its pid. The
+   * service writes its own pid, because the runtime starts it through a shell.
+   */
+  async function startSessionService(input: {
+    fixture: { companyId: string; agentId: string; projectId: string; projectWorkspaceId: string; worktreePath: string; issueIds: string[] };
+    executionWorkspaceId: string;
+    name: string;
+    reuseScope: "execution_workspace" | "project_workspace";
+    keepLease?: boolean;
+  }) {
+    const pidFile = path.join(input.fixture.worktreePath, `${input.name}.pid`);
+    const script = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
+    const runId = randomUUID();
+    // A finished run started the service; it does not keep the session alive.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.fixture.companyId,
+      agentId: input.fixture.agentId,
+      status: "succeeded",
+      startedAt: new Date(Date.now() - 60 * 60_000),
+      finishedAt: new Date(Date.now() - 59 * 60_000),
+      contextSnapshot: { issueId: input.fixture.issueIds[0] },
+    });
+    startedServiceWorkspaces.add(input.executionWorkspaceId);
+    const [service] = await ensureRuntimeServicesForRun({
+      db,
+      runId,
+      agent: { id: input.fixture.agentId, name: "Workspace lifecycle agent", companyId: input.fixture.companyId },
+      issue: { id: input.fixture.issueIds[0]!, identifier: "PAP-1", title: "Issue 1" },
+      workspace: {
+        baseCwd: input.fixture.worktreePath,
+        source: "project_primary",
+        projectId: input.fixture.projectId,
+        workspaceId: input.fixture.projectWorkspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+        strategy: "project_primary",
+        cwd: input.fixture.worktreePath,
+        branchName: null,
+        worktreePath: null,
+        warnings: [],
+        created: false,
+      },
+      executionWorkspaceId: input.executionWorkspaceId,
+      config: {
+        workspaceRuntime: {
+          services: [{
+            name: input.name,
+            command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+            lifecycle: "shared",
+            reuseScope: input.reuseScope,
+            stopPolicy: { type: "manual" },
+          }],
+        },
+      },
+      adapterEnv: {},
+    });
+    if (!input.keepLease) await releaseRuntimeServicesForRun(runId);
+    let pid = 0;
+    for (let attempt = 0; attempt < 100 && !pid; attempt += 1) {
+      pid = Number(await fs.readFile(pidFile, "utf8").catch(() => "0"));
+      if (!pid) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(pid).toBeGreaterThan(0);
+    return { id: service!.id, pid, runId };
+  }
+
+  function processAlive(pid: number) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function waitForExit(pid: number) {
+    for (let attempt = 0; attempt < 100 && processAlive(pid); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !processAlive(pid);
+  }
+
+  async function serviceStatus(id: string) {
+    return db
+      .select({ status: workspaceRuntimeServices.status })
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, id))
+      .then((rows) => rows[0]?.status ?? null);
+  }
+
+  it("stops an idle session service and keeps leased and project-owned services running", async () => {
+    const fixture = await createFixture(["in_review"], "shared_workspace");
+    const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]!);
+    const idle = await startSessionService({ fixture, executionWorkspaceId: prior, name: "idle", reuseScope: "execution_workspace" });
+    const leased = await startSessionService({
+      fixture, executionWorkspaceId: prior, name: "leased", reuseScope: "execution_workspace", keepLease: true,
+    });
+    const projectOwned = await startSessionService({ fixture, executionWorkspaceId: prior, name: "project", reuseScope: "project_workspace" });
+
+    const archived = await lifecycle.archiveSupersededSharedSessionsForIssue({
+      companyId: fixture.companyId,
+      issueId: fixture.issueIds[0]!,
+      keepWorkspaceId: fixture.executionWorkspaceId,
+      actor,
+    });
+
+    expect(archived).toEqual([prior]);
+    expect(await waitForExit(idle.pid)).toBe(true);
+    expect(await serviceStatus(idle.id)).toBe("stopped");
+    expect(processAlive(leased.pid)).toBe(true);
+    expect(await serviceStatus(leased.id)).toBe("running");
+    expect(processAlive(projectOwned.pid)).toBe(true);
+    expect(await serviceStatus(projectOwned.id)).toBe("running");
+    await releaseRuntimeServicesForRun(leased.runId);
+  }, 30_000);
+
+  it("archives the session and records the warning when stopping a service fails", async () => {
+    const fixture = await createFixture(["in_review"], "shared_workspace");
+    const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]!);
+    const idle = await startSessionService({ fixture, executionWorkspaceId: prior, name: "idle", reuseScope: "execution_workspace" });
+    // Controlled fault: the stopped-state write for runtime services fails once.
+    let failNextServiceWrite = true;
+    const faultyDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "update") {
+          return (table: unknown) => {
+            if (table === workspaceRuntimeServices && failNextServiceWrite) {
+              failNextServiceWrite = false;
+              throw new Error("runtime service store unavailable");
+            }
+            return target.update(table as never);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const archived = await executionWorkspaceLifecycleService(faultyDb).archiveSupersededSharedSessionsForIssue({
+      companyId: fixture.companyId,
+      issueId: fixture.issueIds[0]!,
+      keepWorkspaceId: fixture.executionWorkspaceId,
+      actor,
+    });
+
+    expect(failNextServiceWrite).toBe(false);
+    expect(archived).toEqual([prior]);
+    expect(await statusOf(prior)).toBe("archived");
+    const [session] = await db
+      .select({ cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, prior));
+    expect(session?.cleanupReason).toContain("runtime service store unavailable");
+    const [activity] = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, prior));
+    expect(activity?.details).toMatchObject({ warnings: ["runtime service store unavailable"] });
+    // The process stop ran before the failing write, so nothing keeps running.
+    expect(await waitForExit(idle.pid)).toBe(true);
+  }, 30_000);
 
   it("keeps a concurrently opened shared session that another live run still owns", async () => {
     const fixture = await createFixture(["in_review"], "shared_workspace");
