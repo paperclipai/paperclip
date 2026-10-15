@@ -1268,7 +1268,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...identityNames,
         ])];
         args.splice(args.indexOf("exec") + 1, 0, "-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
-          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
+          "-c", "shell_environment_policy.exclude=[]", "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
       }
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null
