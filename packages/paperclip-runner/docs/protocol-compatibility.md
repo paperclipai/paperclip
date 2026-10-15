@@ -154,7 +154,16 @@ policy in the closed provider configuration: `approvalPolicy` for Codex and
 provider-session identity, so an incompatible idle or recovered session is
 replaced on the next execution. An active turn is never mutated in place.
 
-`paperclip.native-execution-input.v5` is the current input format. It retains
+`paperclip.native-execution-input.v5` remains the ordinary input format.
+Claude inputs with explicitly configured effort use v7 with the optional
+`provider.claudeEffort` field. V7 retains the compact v3 model envelope; effort
+is host configuration, never model-visible task text. V6 remains the separate
+OpenAI Dot format. Readers retain persisted v1-v6 contracts. Claude effort is
+acknowledged on each ACP connection before prompting, bound into the session
+identity and recovery checkpoint, and cross-checked against the public provider
+descriptor. Missing effort retains the provider default; values are never clamped.
+
+The v5 input format It retains
 the v4 permission pinning and adds optional completion-source references;
 `paperclip.native-model-envelope.v3` is the corresponding explicit model
 projection. Readers continue to accept persisted v1-v4 inputs, and v5 readers
@@ -295,3 +304,15 @@ not part of the contract. Native attempt output is
 fields but rejects unknown required versions and inconsistent terminal,
 semantic-denial, usage, or transcript facts. Full fields and the deterministic
 gate are exercised by the package-local deterministic conformance suite.
+
+
+## Claude effort after the Codex default merge
+
+Native input v7 adds configured Claude effort while retaining v1–v6 readers,
+including v6 Dot and Grok Bot bindings. The shared executor retains the merged
+Codex close/cleanup implementation. Copilot's shared source attestation advances
+to pending profile 19 rather than overwriting the merged profile-18 fixture;
+its provider executable and permission closure are unchanged. Historical private
+Claude profile-18 evidence remains source-bound under its separate fixture name.
+Pi profile 25 retains its existing identity. These source identities require
+fresh packaged compatibility checks; earlier provider runs are not relabeled.

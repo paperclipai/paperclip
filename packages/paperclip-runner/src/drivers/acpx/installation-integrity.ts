@@ -30,6 +30,7 @@ import {
 import type { Readable, Writable } from "node:stream";
 
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -652,11 +653,13 @@ export async function verifyQualifiedAcpxInstallation(
 ): Promise<VerifiedAcpxInstallation> {
   // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
-  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver && process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT !== undefined) {
-    resolvePackageJson = createAcpxPackageJsonResolver(
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
-    );
+  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {
+    const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+    const authority = boundRoot === undefined ? resolveInstalledProviderAuthority(import.meta.url) : {
+      root: boundRoot,
+      manifest: process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+    };
+    if (authority) resolvePackageJson = createAcpxPackageJsonResolver(authority.root, authority.manifest);
   }
   const builtin = profile.agent === "grok";
   if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {

@@ -134,6 +134,7 @@ state. Readiness observes shutdown; resumed startup cannot reactivate ingress
 after close. These are lifecycle controls, separate from installed provider proof.
 The real daemon readiness and recovery controls require their existing native
 fixtures in hosted CI; passing credential-free controls does not qualify them.
+A primary setup timeout remains a failure even when teardown also fails.
 
 For remote setup shutdown, verify that each durable-state read respects the
 remaining suspension deadline. A late result cannot establish suspension or

@@ -75,6 +75,21 @@ describe("ACPX recovery identity", () => {
     expect(customMode.mode).toBe("provider-custom-mode");
   });
 
+  it("binds Claude effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, claudeEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, claudeEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, claudeEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).claudeEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, claudeEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, claudeEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+
   it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {
     const fixture = await recoveryFixture();
     const profile = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");

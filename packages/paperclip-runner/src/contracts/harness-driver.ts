@@ -458,6 +458,7 @@ export interface AcpxSessionIdentity {
   /** Effective provider mode identifier, bound to the session identity. */
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

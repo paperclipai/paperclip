@@ -1181,6 +1181,15 @@ export const providerDescriptorSchema = {
         "high",
         "max"
       ]
+    },
+    "claudeEffort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
     }
   },
   "allOf": [
@@ -1197,6 +1206,26 @@ export const providerDescriptorSchema = {
           },
           "agent": {
             "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "claudeEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "claude"
           }
         },
         "required": [

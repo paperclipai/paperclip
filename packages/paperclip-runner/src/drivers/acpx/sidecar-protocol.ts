@@ -47,6 +47,7 @@ export interface AcpxSidecarOpenParams {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   permissionModePinned: boolean;
   providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
@@ -69,6 +70,7 @@ export interface AcpxExpectedSessionIdentity {
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

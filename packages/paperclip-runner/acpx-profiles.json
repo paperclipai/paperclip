@@ -14,12 +14,12 @@
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 22,
+      "agentProfileVersion": 25,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:e92078bee3c23bec4100aa589013a44613d054cd686826534025d8019e9f39a9",
+      "commandDigest": "sha256:dd67387487dadb08da76534c057dc0aa059f7698d1779cbd5fc452813828167a",
       "requiresProviderPolicy": true
     },
     "cursor": {
@@ -32,12 +32,12 @@
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 18,
+      "agentProfileVersion": 19,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:2ec904f44218f51058fa83d7437b26c4551e1c65e6f2c55f5a6386fa4061e96d",
+      "commandDigest": "sha256:a4c7e955df18bf2448224ecce2120b43ede8054fe00e7b33b4044b8bd284b321",
       "requiresProviderPolicy": true,
       "qualificationStatus": "pending"
     },

@@ -1,3 +1,4 @@
+import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
 import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
@@ -9,6 +10,7 @@ import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeCo
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V7 = "paperclip.native-execution-input.v7" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V4 = "paperclip.native-execution-input.v4" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v5" as const;
@@ -238,6 +240,13 @@ export interface NativeExecutionInputV5 extends Omit<NativeExecutionInputV4, "sc
   completionSources?: NativeCompletionSources;
 }
 
+export type NativeProviderConfigV7 = Exclude<NativeProviderConfigV5, { kind: "acpx" }>
+  | (Extract<NativeProviderConfigV5, { kind: "acpx" }> & { claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max" });
+export interface NativeExecutionInputV7 extends Omit<NativeExecutionInputV5, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V7;
+  provider: NativeProviderConfigV7;
+}
+
 export interface NativeExecutionInputV6 extends Omit<NativeExecutionInputV5, "schema" | "provider" | "workspace" | "session"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V6;
   provider: { kind: ExternalBotProviderKind; model: null; binding: DotBindingSnapshot };
@@ -245,7 +254,7 @@ export interface NativeExecutionInputV6 extends Omit<NativeExecutionInputV5, "sc
   session: Omit<NativeExecutionInputV5["session"], "driverKind"> & { driverKind: "openai_dot_mcp" | "grok_bot_mcp" };
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6;
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -373,7 +382,8 @@ function parseExternalNativeExecutionInput(input: Record<string, unknown>): Nati
 export function parseNativeExecutionInput(value: unknown): NativeExecutionInput {
   const input = record(value, "input");
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseExternalNativeExecutionInput(input);
-  const isV5 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
+  const isV7 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7;
+  const isV5 = isV7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
   const isV4 = isV5 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V4;
   const isV3 = isV4 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V3;
   const isV2 = isV3 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V2;
@@ -505,7 +515,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV7 ? ["claudeEffort"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
         : provider.kind === "opencode" && isV4
@@ -528,7 +538,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
-  let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
+  let parsedProvider: NativeProviderConfigV7 | NativeProviderConfig | NativeProviderConfigV5;
   if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
@@ -644,6 +654,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     } else if (provider.permissionPolicy !== "interactive") {
       throw new NativeExecutionInputError("input.provider.permissionPolicy must be interactive");
     }
+    const claudeEffort = resolveClaudeEffort(provider.agent, provider.claudeEffort);
     const profile = record(provider.profile, "input.provider.profile");
     exactKeys(profile, [
       "driverKind",
@@ -682,6 +693,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
       ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
+      ...(claudeEffort === undefined ? {} : { claudeEffort }),
       ...(provider.piThinkingLevel === undefined ? {} : { piThinkingLevel: provider.piThinkingLevel as "off" | "low" | "high" | "max" }),
       profile: {
         driverKind: "acpx_runtime",
@@ -836,6 +848,12 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     provider: parsedProvider as NativeProviderConfigV4,
   };
   if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
+  if (isV7) return {
+    ...withPermissions,
+    schema: NATIVE_EXECUTION_INPUT_SCHEMA_V7,
+    provider: parsedProvider as NativeProviderConfigV7,
+    ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
+  };
   return {
     ...withPermissions,
     schema: NATIVE_EXECUTION_INPUT_SCHEMA,
@@ -902,7 +920,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")

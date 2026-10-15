@@ -199,6 +199,13 @@ ownership checks still apply. No agent gains session or recovery control.
 PostgreSQL regressions cover valid native/Legacy callbacks and rejected bindings;
 revised live execution and actor authorization remain `not-run`.
 
+Scoped source-only evidence: [configuration changes](../../server/src/services/agent-configuration.ts)
+and [native execution/recovery](../../server/src/services/native-runtime/native-session-executor.ts)
+retain existing execution on unrelated edits and use recorded run configuration
+for active/recovered runs. Explicit runner changes use revisions and session
+invalidation. Verify saved configuration, current versus historical run identity,
+restart and follow-up without granting session-reset authority to an agent.
+
 Scoped Evidence: `source-only` — the
 [native transport](../../packages/paperclip-runner/src/live/runnerd-codex-transport.ts)
 joins owned startup before certifying cleanup. Rejected duplicates cannot replace

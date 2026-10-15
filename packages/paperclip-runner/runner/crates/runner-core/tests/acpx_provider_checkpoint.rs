@@ -52,6 +52,7 @@ fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
         pi_thinking_level: None,
+        claude_effort: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -80,6 +81,7 @@ fn identity() -> AcpxProviderSessionIdentity {
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
         mode: None,
         pi_thinking_level: None,
+        claude_effort: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
