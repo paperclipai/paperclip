@@ -192,6 +192,16 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       const visibleSignals = await request(server).get(`/api/companies/${companyId}/issues`).set("Authorization", `Bearer ${jwt}`);
       expect(visibleSignals.status).toBe(200);
       expect(visibleSignals.body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
+      // A signal whose origin run does not belong to this watchdog stays hidden,
+      // and the title filter runs before the batched origin check.
+      await db.insert(issues).values({ companyId, title: "[watchdog-blind] Неподтвержденный запуск",
+        status: "todo", assigneeAgentId: receiverId, createdByAgentId: agentId,
+        originKind: "watchdog_service_signal", originId: `${agentId}/blind`, originRunId: randomUUID() });
+      const listSignals = (q?: string) => request(server).get(`/api/companies/${companyId}/issues`)
+        .query(q === undefined ? {} : { q }).set("Authorization", `Bearer ${jwt}`);
+      expect((await listSignals()).body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
+      expect((await listSignals("ПРОВЕРИТЬ")).body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
+      expect((await listSignals("нет такого сигнала")).body).toEqual([]);
       const repeat = (id: string) => request(server).post(`/api/issues/${id}/comments`)
         .set("Authorization", `Bearer ${jwt}`).send({ body: "[watchdog-blind] Повторный сигнал" });
       expect((await repeat(fakeId)).status).toBe(403);
