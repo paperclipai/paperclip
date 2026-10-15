@@ -1,5 +1,5 @@
 import { isUuidLike } from "@paperclipai/shared";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, companySecrets, companySecretBindings, type Db } from "@paperclipai/db";
 import { forbidden, HttpError } from "../errors.js";
 
@@ -108,8 +108,10 @@ export async function assertWatchdogSecret(db: Db, context: WatchdogServiceConte
   return { ...binding, versionSelector: binding.versionSelector === "latest" ? "latest" as const : Number(binding.versionSelector) };
 }
 
-export async function listWatchdogSignals(db: Db, context: WatchdogServiceContext) {
+/** `readCondition` applies the caller's private-issue access: signal origin grants none. */
+export async function listWatchdogSignals(db: Db, context: WatchdogServiceContext, readCondition?: SQL<boolean>) {
   const candidates = await db.select().from(issues).where(and(
+    ...(readCondition ? [readCondition] : []),
     eq(issues.companyId, context.companyId), eq(issues.assigneeAgentId, context.assigneeAgentId),
     inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
     or(and(eq(issues.createdByAgentId, context.agentId), eq(issues.originKind, "watchdog_service_signal")),

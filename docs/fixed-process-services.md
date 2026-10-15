@@ -1,18 +1,54 @@
-# Ограниченный служебный процесс
+# Fixed-command service processes
 
-Администратор может закрепить команду process-агента через `adapterConfig.fixedCommand: true`. Для такого процесса обязательны сохранённые `command`, `args` и `cwd`. Постоянный агентский ключ разрешает собственное чтение и пустой запрос запуска; он не разрешает изменение конфигурации или чтение секрета. Не используйте этот режим для агента, которому нужно самостоятельно выбирать команды.
+An administrator can pin the command of a `process` agent with `adapterConfig.fixedCommand: true`.
+This mode requires saved `command`, `args` and `cwd` values. Do not use it for an agent that must
+choose its own commands.
 
-Окружение также закреплено. До разрешения секретов сравниваются сохранённые и эффективные переменные, включая ссылки на секреты; дополнительные переменные карточки, проекта, рутины или среды исполнения отвергаются. Значения секретов разрешает существующая служба секретов. Затем сервер сохраняет снимок окружения в памяти и проверяет его перед запуском. Запрос не может передать или подделать этот снимок. Штатные переменные временного каталога прогона и транспорта GitHub формируются контроллером отдельно; результат снова фиксируется перед передачей адаптеру. Изменение значения после проверки также отвергается.
+## Persistent key
 
-Доступ к секрету остаётся у временного JWT действующего прогона с существующей привязкой секрета. Постоянный ключ не заменяет JWT, а завершённый прогон теряет доступ. Значения секретов не записываются в конфигурацию, журнал или снимок на диске.
+The persistent agent key can read its own agent record and send an empty trigger to its own
+agent (`wakeup` or `heartbeat/invoke`, body limited to `idempotencyKey`). The key cannot change
+configuration and cannot read secret values. The response contains only status and the fixed
+parameters that the wrapper needs to reconcile a trigger. It does not return environment values,
+secret references or permissions.
 
-Для согласованных сигналов администратор может дополнительно задать `watchdogService`: `assigneeAgentId`, список `signals` с полями `type` и `marker`, необязательный список `legacyIssues`. Сервер устанавливает контекст по сохранённой конфигурации и активному прогону. Маркер в тексте не создаёт полномочий. Новые карточки получают серверное происхождение; комментарии допустимы только в открытых карточках нужной компании и исполнителя с проверенным происхождением. Прежние карточки требуют точного административного закрепления ID, типа и снимка полей происхождения.
+## Environment
 
-Проверка повторяется перед записью комментария. Существующий лимит действий на прогон и журнал разрешений/отказов сохраняются. Служебный комментарий не выражает решение ревьюера и не меняет поля карточки. Изменение конфигурации самим агентом, другим агентом или через одобрение заявки агентом запрещено.
+The environment is also pinned. Before secret resolution, the server compares the saved and the
+effective variables, including secret references. It rejects extra variables from the issue,
+project, routine or execution environment. The existing secret service resolves secret values.
+The server then keeps an in-memory snapshot of the environment and checks it before dispatch. A
+request cannot send or replace this snapshot. The controller adds the run scratch and GitHub
+transport variables separately and takes a new snapshot before it gives the run to the adapter.
+A change after the check is rejected. The child process gets only the approved environment and
+server run data (`inheritEnv: false`). Other adapters and ordinary processes keep their existing
+behavior.
 
-Перед внедрением выполните `fixed-process-secret-http.test.ts`, `fixed-process-execution.test.ts` и `fixed-process-configuration.test.ts`. Они проверяют разрешённый запуск, выдачу и ротацию синтетического секрета, отзыв доступа, запрет подмены окружения и границы сигналов. Исполняйте их на изолированной базе.
+## Secrets
 
+Secret access stays with the temporary JWT of the active run and its existing secret binding.
+The persistent key does not replace the JWT, and a finished run loses access. Secret values are
+not written to configuration, logs or a snapshot on disk.
 
-Служебному сторожу доступна выдача только секрета с административной привязкой `env.DOKPLOY_KEY`. Другие привязки того же агента права сторожа не расширяют. Чтение карточек и комментариев использует ту же проверку открытого сигнала, назначения и происхождения, что и повторный сигнал. Список также исключает посторонние карточки. Ответ постоянному ключу содержит только состояние и фиксированные параметры, нужные обёртке для сверки запуска; окружение, ссылки на секреты и разрешения не возвращаются.
+## Watchdog signals
 
-При `fixedCommand` дочерний процесс получает только утверждённое окружение и серверные данные прогона. Наследование произвольных переменных сервера отключено через `inheritEnv: false`; остальные адаптеры и обычные процессы сохраняют прежнее поведение.
+An administrator can also set `watchdogService`: `assigneeAgentId`, a `signals` list with `type`
+and `marker`, and an optional `legacyIssues` list. The server builds the context from the saved
+configuration and the active run. A marker in text grants no access.
+
+- New issues get a server-set origin.
+- Reads and comments are allowed only on open issues of the configured company and assignee with
+  a verified origin. The issue list also applies the caller's private-issue access.
+- Legacy issues need an exact administrative pin of the issue ID, type and origin fields.
+- The watchdog run can read only the secret that an administrator bound to the agent at `env.DOKPLOY_KEY`. Other bindings of the same agent do not extend this access.
+
+The server checks the target again before it writes a comment. The existing per-run action limit
+and the permit/deny audit log stay in place. A service comment is not a reviewer decision and
+does not change issue fields. The agent itself, another agent or an agent-approved request cannot
+change this configuration.
+
+## Tests
+
+Run `fixed-process-secret-http.test.ts`, `fixed-process-execution.test.ts`,
+`fixed-process-configuration.test.ts` and `watchdog-service-request.test.ts` on an isolated
+database before you enable this mode.
