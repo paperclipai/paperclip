@@ -8575,9 +8575,8 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues", async (req, res) => {
     const watchdog = trustedWatchdogContext(req);
     if (watchdog) {
-      const signals = await listWatchdogSignals(db, watchdog, await issueReadSqlCondition(db, req.actor));
-      const query = typeof req.query.q === "string" ? req.query.q.toLowerCase() : "";
-      res.json(signals.filter((issue) => issue.title.toLowerCase().includes(query)));
+      const query = typeof req.query.q === "string" ? req.query.q : "";
+      res.json(await listWatchdogSignals(db, watchdog, await issueReadSqlCondition(db, req.actor), query));
       return;
     }
 

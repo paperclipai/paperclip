@@ -1,7 +1,7 @@
 import { isUuidLike } from "@paperclipai/shared";
 import { and, eq, inArray, or, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, companySecrets, companySecretBindings, type Db } from "@paperclipai/db";
-import { forbidden, HttpError } from "../errors.js";
+import { forbidden } from "../errors.js";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -72,29 +72,52 @@ export function watchdogSignalOrigin(context: WatchdogServiceContext, body: Reco
   return { originKind: "watchdog_service_signal", originId: `${context.agentId}/${signal.type}`, originRunId: context.runId };
 }
 
-export async function assertWatchdogCommentTarget(db: Db, context: WatchdogServiceContext, issueId: string) {
-  if (!isUuidLike(issueId)) throw forbidden("Invalid watchdog signal identifier.");
-  const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, context.companyId)));
-  if (!issue || !["todo", "in_progress", "in_review", "blocked"].includes(issue.status) ||
+type WatchdogSignalMatch =
+  | { ok: true; signal: WatchdogServiceContext["signals"][number]; originRunId: string | null }
+  | { ok: false; reason: string };
+
+/**
+ * Checks an issue row against the watchdog context without database reads. A
+ * match with an `originRunId` still needs that run verified for this watchdog.
+ */
+function matchWatchdogSignal(context: WatchdogServiceContext, issue: typeof issues.$inferSelect): WatchdogSignalMatch {
+  if (!["todo", "in_progress", "in_review", "blocked"].includes(issue.status) ||
       issue.assigneeAgentId !== context.assigneeAgentId) {
-    throw forbidden("Issue is not an open signal assigned to the incident owner.");
+    return { ok: false, reason: "Issue is not an open signal assigned to the incident owner." };
   }
-  const legacy = context.legacyIssues.find((pin) => pin.issueId === issueId &&
+  const legacy = context.legacyIssues.find((pin) => pin.issueId === issue.id &&
     ["createdByAgentId", "createdByUserId", "originKind", "originId", "originRunId"].every(
       (key) => pin[key] === issue[key as keyof typeof issue],
     ));
-  if (legacy) return context.signals.find((signal) => signal.type === legacy.type)!;
+  if (legacy) return { ok: true, signal: context.signals.find((signal) => signal.type === legacy.type)!, originRunId: null };
   const signal = context.signals.find((item) => issue.originId === `${context.agentId}/${item.type}`);
   if (!signal || issue.createdByAgentId !== context.agentId ||
       issue.originKind !== "watchdog_service_signal" || !issue.originRunId || !isUuidLike(issue.originRunId)) {
-    throw forbidden("Issue provenance is not bound to this watchdog service.");
+    return { ok: false, reason: "Issue provenance is not bound to this watchdog service." };
   }
-  const [originRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.id, issue.originRunId), eq(heartbeatRuns.agentId, context.agentId),
+  return { ok: true, signal, originRunId: issue.originRunId };
+}
+
+/** Origin runs among `runIds` that belong to this watchdog, read in one query. */
+async function verifiedWatchdogOriginRunIds(db: Db, context: WatchdogServiceContext, runIds: string[]) {
+  if (runIds.length === 0) return new Set<string>();
+  const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    inArray(heartbeatRuns.id, runIds), eq(heartbeatRuns.agentId, context.agentId),
     eq(heartbeatRuns.companyId, context.companyId),
   ));
-  if (!originRun) throw forbidden("Watchdog signal origin is not verified.");
-  return signal;
+  return new Set(rows.map((row) => row.id));
+}
+
+export async function assertWatchdogCommentTarget(db: Db, context: WatchdogServiceContext, issueId: string) {
+  if (!isUuidLike(issueId)) throw forbidden("Invalid watchdog signal identifier.");
+  const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, context.companyId)));
+  if (!issue) throw forbidden("Issue is not an open signal assigned to the incident owner.");
+  const match = matchWatchdogSignal(context, issue);
+  if (!match.ok) throw forbidden(match.reason);
+  if (match.originRunId && !(await verifiedWatchdogOriginRunIds(db, context, [match.originRunId])).has(match.originRunId)) {
+    throw forbidden("Watchdog signal origin is not verified.");
+  }
+  return match.signal;
 }
 
 export async function assertWatchdogSecret(db: Db, context: WatchdogServiceContext, key: string) {
@@ -108,8 +131,16 @@ export async function assertWatchdogSecret(db: Db, context: WatchdogServiceConte
   return { ...binding, versionSelector: binding.versionSelector === "latest" ? "latest" as const : Number(binding.versionSelector) };
 }
 
-/** `readCondition` applies the caller's private-issue access: signal origin grants none. */
-export async function listWatchdogSignals(db: Db, context: WatchdogServiceContext, readCondition?: SQL<boolean>) {
+/**
+ * `readCondition` applies the caller's private-issue access: signal origin grants none.
+ * `titleQuery` filters before verification, which reads all origin runs in one query.
+ */
+export async function listWatchdogSignals(
+  db: Db,
+  context: WatchdogServiceContext,
+  readCondition?: SQL<boolean>,
+  titleQuery = "",
+) {
   const candidates = await db.select().from(issues).where(and(
     ...(readCondition ? [readCondition] : []),
     eq(issues.companyId, context.companyId), eq(issues.assigneeAgentId, context.assigneeAgentId),
@@ -117,14 +148,14 @@ export async function listWatchdogSignals(db: Db, context: WatchdogServiceContex
     or(and(eq(issues.createdByAgentId, context.agentId), eq(issues.originKind, "watchdog_service_signal")),
       inArray(issues.id, context.legacyIssues.map((pin) => pin.issueId as string))),
   ));
-  const verified = [];
-  for (const issue of candidates) {
-    try {
-      await assertWatchdogCommentTarget(db, context, issue.id);
-      verified.push(issue);
-    } catch (error) {
-      if (!(error instanceof HttpError) || error.status !== 403) throw error;
-    }
-  }
-  return verified;
+  const query = titleQuery.toLowerCase();
+  const matched = candidates
+    .filter((issue) => issue.title.toLowerCase().includes(query))
+    .map((issue) => ({ issue, match: matchWatchdogSignal(context, issue) }))
+    .filter((entry) => entry.match.ok);
+  const originRunIds = matched.flatMap(({ match }) => match.ok && match.originRunId ? [match.originRunId] : []);
+  const verifiedRuns = await verifiedWatchdogOriginRunIds(db, context, [...new Set(originRunIds)]);
+  return matched
+    .filter(({ match }) => match.ok && (!match.originRunId || verifiedRuns.has(match.originRunId)))
+    .map(({ issue }) => issue);
 }
