@@ -11,7 +11,6 @@ const run = (errorCode: string | null) =>
 describe("ACPX continuation retry classification", () => {
   it.each([
     "acpx_session_init_failed",
-    "acpx_session_config_failed",
     "acpx_turn_failed",
     "acpx_backend_unavailable",
     "acpx_timeout",
@@ -31,6 +30,8 @@ describe("ACPX continuation retry classification", () => {
     // the configuration, so burning the transient retry budget on them is pure noise.
     expect(classifyContinuationFailure(run("acpx_auth_required")).kind).toBe("default");
     expect(classifyContinuationFailure(run("acpx_backend_missing")).kind).toBe("default");
+    // Also raised for a runtime without config controls or a rejected option.
+    expect(classifyContinuationFailure(run("acpx_session_config_failed")).kind).toBe("default");
   });
 
   it("keeps non-retryable codes non-retryable", () => {

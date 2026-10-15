@@ -1104,6 +1104,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, executionIssueId));
     expect(updatedIssue?.status).toBe("cancelled");
     expect(updatedIssue?.executionRunId).toBeNull();
+    expect(updatedIssue?.cancelledAt).toBeInstanceOf(Date);
 
     const [updatedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId));
     expect(updatedRun?.status).toBe("failed");

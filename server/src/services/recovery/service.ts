@@ -537,8 +537,9 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   // mid-turn, provider tokens exhausted), not because the issue lost its execution
   // path. Without these the ACPX adapters fall into the `default` bucket, get a
   // single retry, and are escalated to `blocked` on the first infrastructure blip.
+  // `acpx_session_config_failed` stays out: it also reports a runtime without
+  // config controls or a rejected option, which a retry cannot repair.
   "acpx_session_init_failed",
-  "acpx_session_config_failed",
   "acpx_turn_failed",
   "acpx_backend_unavailable",
   "acpx_timeout",
@@ -4131,6 +4132,8 @@ export function recoveryService(
         .update(issues)
         .set({
           status: "cancelled",
+          // Workspace cleanup measures closed time from cancelledAt.
+          cancelledAt: new Date(),
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
