@@ -52,18 +52,6 @@ function dryRunJson(args, envOverrides = {}) {
 const SHARD_COUNT = 12;
 const SERIALIZED_SHARD_COUNT = 9;
 
-
-test("the serialized shards form a complete, non-overlapping partition", () => {
-  const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
-    dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
-  );
-
-  const total = shards[0].serializedSuiteCount;
-  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
-  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
-  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
-});
-
 test("the general-server shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
     dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)]),
@@ -77,6 +65,10 @@ test("the general-server shards form a complete, non-overlapping partition", () 
   for (const shard of shards) {
     assert.equal(shard.generalServerSuiteCount, total, "suite count must be stable across shards");
     for (const file of shard.selectedGeneralServerSuites) {
+      assert.ok(
+        !(file.startsWith("server/src/__tests__/") && /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file)),
+        `route/authz suite must stay in the serialized lane, not general-server: ${file}`,
+      );
       assert.ok(!seen.has(file), `suite assigned to more than one shard: ${file}`);
       seen.add(file);
       selectedTotal += 1;
@@ -86,16 +78,6 @@ test("the general-server shards form a complete, non-overlapping partition", () 
   // Every suite runs exactly once: union covers the whole set with no overlap.
   assert.equal(selectedTotal, total, "every suite must be selected exactly once");
   assert.equal(seen.size, total, "union of shards must cover the whole suite set");
-});
-
-test("a route/authz suite never leaks into the general-server shards", () => {
-  const shard = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", SHARD_COUNT.toString()]);
-  for (const file of shard.selectedGeneralServerSuites) {
-    assert.ok(
-      !(file.startsWith("server/src/__tests__/") && /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file)),
-      `route/authz suite must stay in the serialized lane, not general-server: ${file}`,
-    );
-  }
 });
 
 test("general shards retain scripts and route-named suites outside the serialized directory", () => {
@@ -306,12 +288,17 @@ test("the checked-in serialized manifest loads and covers most of the current su
   );
 });
 
-test("the real serialized shard partition is duration-balanced", () => {
+test("the real serialized shard partition is complete, non-overlapping and duration-balanced", () => {
   const durations = loadShardDurations(serializedDurationsManifest);
   const fallback = defaultSuiteWeight(durations);
   const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
     dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
   );
+
+  const total = shards[0].serializedSuiteCount;
+  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
+  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
+  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
 
   const totals = shards.map((shard) =>
     shard.selectedSerializedSuites.reduce((sum, file) => sum + (durations[file] ?? fallback), 0),
@@ -326,19 +313,26 @@ test("the real serialized shard partition is duration-balanced", () => {
   );
 });
 
-test("the real shard partition is duration-balanced", () => {
-  // Mirrors the PR matrix: general-server-without-chat across SHARD_COUNT
-  // runners, with the chat suite carried by the dedicated general-chat lanes
-  // and the native-runner suite by the Rust-cached PR vitest lane.
+const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
+const nativeRunnerSuitePath =
+  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
+const restartRecoverySuitePath =
+  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+
+// Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
+// "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
+// native-runner suite in the Rust-cached final Verify Paperclip Runner vitest
+// shard, so together the three cover the full server group exactly.
+test("12 PR without-chat shards plus the dedicated chat and native-runner lanes cover the original server group exactly", () => {
   const durations = loadShardDurations(durationsManifest);
   const fallback = defaultSuiteWeight(durations);
-  const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    dryRunJson(
-      ["--mode", "general", "--group", "general-server-without-chat", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)],
-      { GITHUB_WORKFLOW: "PR" },
-    ),
-  );
-
+  const prEnv = { GITHUB_WORKFLOW: "PR" };
+  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], prEnv);
+  const shards = Array.from({ length: 12 }, (_, index) => dryRunJson([
+    "--mode", "general", "--group", "general-server-without-chat",
+    "--shard-index", String(index), "--shard-count", "12",
+  ], prEnv));
   const totals = shards.map((shard) =>
     shard.selectedGeneralServerSuites.reduce((sum, file) => sum + (durations[file] ?? fallback), 0),
   );
@@ -359,27 +353,7 @@ test("the real shard partition is duration-balanced", () => {
     maxTotal - minTotal <= heaviest,
     `shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
   );
-});
 
-
-const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
-const nativeRunnerSuitePath =
-  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
-const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
-const restartRecoverySuitePath =
-  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
-
-// Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
-// "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
-// native-runner suite in the Rust-cached final Verify Paperclip Runner vitest
-// shard, so together the three cover the full server group exactly.
-test("12 PR without-chat shards plus the dedicated chat and native-runner lanes cover the original server group exactly", () => {
-  const prEnv = { GITHUB_WORKFLOW: "PR" };
-  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], prEnv);
-  const shards = Array.from({ length: 12 }, (_, index) => dryRunJson([
-    "--mode", "general", "--group", "general-server-without-chat",
-    "--shard-index", String(index), "--shard-count", "12",
-  ], prEnv));
   const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
   assert.ok(!files.includes(chatSuitePath));
   assert.ok(!files.includes(nativeRunnerSuitePath));

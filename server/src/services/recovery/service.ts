@@ -13,7 +13,7 @@ import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
-import { hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
@@ -495,6 +495,8 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
+  // The host lost run ownership before dispatch; no provider work began.
+  CONTROLLER_LEASE_LOST_FAILURE_CODE,
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([

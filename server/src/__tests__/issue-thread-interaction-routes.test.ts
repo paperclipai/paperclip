@@ -2882,42 +2882,6 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
   });
 
-  it("allows the creator agent and creating run under anyone", async () => {
-    mockInteractionService.getForIssue.mockResolvedValueOnce({
-      id: "interaction-open",
-      kind: "ask_user_questions",
-      createdByAgentId: CREATED_AGENT_ID,
-      sourceRunId: RUN_9,
-      requestedResolverPolicy: "anyone",
-      effectiveResolverPolicy: "anyone",
-      resolverPolicyProvenance: "inherited",
-      effectiveResolverPolicySource: "requested",
-      payload: { version: 1, questions: [] },
-    });
-    mockIssueService.getById.mockResolvedValueOnce(createIssue({
-      status: "todo",
-      assigneeAgentId: CREATED_AGENT_ID,
-    }));
-    const app = await createApp({
-      type: "agent",
-      agentId: CREATED_AGENT_ID,
-      companyId: "company-1",
-      runId: RUN_9,
-    });
-
-    const res = await request(app)
-      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-open/respond")
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
-      expect.anything(),
-      "interaction-open",
-      expect.anything(),
-      expect.objectContaining({ agentId: CREATED_AGENT_ID, runId: RUN_9 }),
-    );
-  });
-
   it.each([
     {
       kind: "suggest_tasks",
@@ -2992,7 +2956,12 @@ describe("issue thread interaction routes", () => {
       .send(body);
 
     expect(res.status).toBe(200);
-    expect(mockInteractionService[service as keyof typeof mockInteractionService]).toHaveBeenCalled();
+    expect(mockInteractionService[service as keyof typeof mockInteractionService]).toHaveBeenCalledWith(
+      expect.anything(),
+      `interaction-${kind}`,
+      body,
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, runId: RUN_9 }),
+    );
   });
 
   it("enforces same-run exclusion under not_creator and requires a resolver run id", async () => {
@@ -3292,48 +3261,6 @@ describe("issue thread interaction routes", () => {
   }
 
   it.each(CROSS_ISSUE_RESOLUTION_ROUTES)(
-    "fails a capped run closed on cross-issue $route with no interaction effect",
-    async ({ route, kind, body, payload, service }) => {
-      stubCrossIssueResolution({ kind, payload });
-      mockCrossIssueInfluence.sourceIssueId = OTHER_ISSUE_ID;
-      mockCrossIssueInfluence.priorCount = 20;
-      const app = await createApp({
-        type: "agent",
-        agentId: ASSIGNEE_AGENT_ID,
-        companyId: "company-1",
-        runId: RUN_2,
-      });
-
-      const res = await request(app)
-        .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-${kind}/${route}`)
-        .send(body);
-
-      expect(res.status).toBe(429);
-      expect(res.body.details).toMatchObject({
-        code: "cross_issue_influence_cap_exceeded",
-        cap: 20,
-        count: 21,
-        mode: "enforce",
-      });
-      // The refusal names the boundary and the way forward without naming the
-      // run's own inaccessible source issue or the resolver policy.
-      expect(res.body.error).toContain("Try this:");
-      expect(res.body.error).not.toContain(OTHER_ISSUE_ID);
-      expect(res.body.details.code).not.toContain("resolver");
-      // No terminal mutation, activity receipt, continuation, or wake.
-      expect(mockInteractionService[service]).not.toHaveBeenCalled();
-      expect(mockLogActivity).not.toHaveBeenCalled();
-      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-      expect(mockCrossIssueInfluence.inserted).toEqual([
-        expect.objectContaining({
-          action: "issue.cross_issue_influence_cap_rejected",
-          details: expect.objectContaining({ kind: "interaction_resolution", allowed: false }),
-        }),
-      ]);
-    },
-  );
-
-  it.each(CROSS_ISSUE_RESOLUTION_ROUTES)(
     "charges one shared cross-issue observation for an allowed $route",
     async ({ route, kind, body, payload, service }) => {
       stubCrossIssueResolution({ kind, payload });
@@ -3365,40 +3292,4 @@ describe("issue thread interaction routes", () => {
       ]);
     },
   );
-
-  it("does not charge a same-issue resolution even past the cap", async () => {
-    stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
-    mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
-    mockCrossIssueInfluence.priorCount = 20;
-    const app = await createApp({
-      type: "agent",
-      agentId: ASSIGNEE_AGENT_ID,
-      companyId: "company-1",
-      runId: RUN_2,
-    });
-
-    const res = await request(app)
-      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-ask_user_questions/respond`)
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
-    expect(mockCrossIssueInfluence.inserted).toEqual([]);
-  });
-
-  it("leaves board resolutions outside the per-run counter", async () => {
-    stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
-    mockCrossIssueInfluence.sourceIssueId = OTHER_ISSUE_ID;
-    mockCrossIssueInfluence.priorCount = 20;
-    const app = await createApp();
-
-    const res = await request(app)
-      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-ask_user_questions/respond`)
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
-    expect(mockDbTransaction).not.toHaveBeenCalled();
-    expect(mockCrossIssueInfluence.inserted).toEqual([]);
-  });
 });

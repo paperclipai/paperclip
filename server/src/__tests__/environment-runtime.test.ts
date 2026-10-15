@@ -1368,7 +1368,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("acquires and releases a local run lease through the runtime seam", async () => {
+  it("acquires and releases a projectless local run lease through the runtime seam", async () => {
     const { companyId, environment, runId } = await seedEnvironment();
 
     const acquired = await runtime.acquireRunLease({
@@ -1380,6 +1380,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(acquired.lease.status).toBe("active");
+    expect(acquired.lease.executionWorkspaceId).toBeNull();
     expect(acquired.lease.metadata).toMatchObject({
       driver: "local",
       executionWorkspaceMode: null,
@@ -1400,22 +1401,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .from(environmentLeases)
       .where(eq(environmentLeases.id, acquired.lease.id));
     expect(rows[0]?.status).toBe("released");
-  });
-
-  it("allows projectless runs through the runtime seam", async () => {
-    const { companyId, environment, runId } = await seedEnvironment();
-
-    const acquired = await runtime.acquireRunLease({
-      companyId,
-      environment,
-      issueId: null,
-      heartbeatRunId: runId,
-      persistedExecutionWorkspace: null,
-    });
-
-    expect(acquired.lease.executionWorkspaceId).toBeNull();
-    expect(acquired.leaseContext.executionWorkspaceId).toBeNull();
-    expect(acquired.leaseContext.executionWorkspaceMode).toBeNull();
   });
 
   it("rejects truly unsupported drivers before acquiring a lease", async () => {

@@ -201,7 +201,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
   it("upgrades renumbered recovery migrations and replays their schema idempotently", async () => {
     const connectionString = await createTempDatabase();
-    await applyPendingMigrations(connectionString);
     const recoveryFiles = [
       "0250_exotic_dakota_north.sql", "0251_narrow_mastermind.sql",
       "0252_friendly_kate_bishop.sql", "0253_real_firebrand.sql",
@@ -271,7 +270,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -324,7 +322,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -368,7 +365,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -398,7 +394,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -470,7 +465,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -564,7 +558,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -630,7 +623,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -696,7 +688,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -770,7 +761,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const builtInResourcesHash = await migrationHash(
         "0140_built_in_managed_resources.sql",
@@ -874,7 +864,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -1007,7 +996,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const repairSweepHash = await migrationHash(
         "0135_repair_run_responsible_user_updated_at_sweep.sql",
@@ -1403,7 +1391,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -1980,7 +1967,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     "replays the idempotent provider trace migration",
     async () => {
       const connectionString = await createTempDatabase();
-      await applyPendingMigrations(connectionString);
       const hash = await migrationHash(
         "0234_provider_trace_records.sql",
       );
@@ -2008,7 +1994,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     "removes retired model profiles from live records and configuration revisions",
     async () => {
       const connectionString = await createTempDatabase();
-      await applyPendingMigrations(connectionString);
       const hash = await migrationHash("0236_remove_cheap_model_profiles.sql");
       const companyId = "10000000-0000-4000-8000-000000000236";
       const agentId = "20000000-0000-4000-8000-000000000236";

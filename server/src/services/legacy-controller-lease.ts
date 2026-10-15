@@ -10,6 +10,10 @@ export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
+/** A lease lost before adapter dispatch: no provider work began, so the
+ * continuation is retryable rather than an opaque `setup_failed`. */
+export const CONTROLLER_LEASE_LOST_FAILURE_CODE = "controller_lease_lost";
+
 /** Abort reason for a lost lease, so completion can attribute the stop. */
 export class LegacyControllerLeaseLostError extends Error {
   constructor(

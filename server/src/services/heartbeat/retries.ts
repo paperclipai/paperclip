@@ -16,6 +16,7 @@ import {
   accountingForScheduledRetry,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -320,9 +321,12 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     "error" | "errorCode" | "resultJson"
   >,
 ) {
+  // `controller_lease_lost` is only recorded before provider dispatch, so the
+  // retry cannot repeat started work.
   if (
     run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
-    run.errorCode === "process_lost"
+    run.errorCode === "process_lost" ||
+    run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE
   ) {
     return true;
   }

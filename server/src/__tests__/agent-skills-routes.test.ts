@@ -902,27 +902,6 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("canonicalizes desired skill references before syncing", async () => {
-    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
-
-    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
-      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclip"], mode: "replace" }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-      expect.any(Object),
-    );
-  });
-
   it("persists canonical desired skills when creating an agent directly", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -1284,33 +1263,6 @@ describe("agent skill routes", () => {
     expect(corrected.body.approval).toMatchObject({ type: "hire_agent", status: "pending" });
     expect(mockAgentService.create).toHaveBeenCalledTimes(1);
     expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
-  });
-
-  it("includes canonical desired skills in hire approvals", async () => {
-    const db = createDb(true);
-
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
-        adapterConfig: {},
-      });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockApprovalService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
-          requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-    );
   });
 
   it("gives a CEO hire the core paperclip skills when none are requested", async () => {

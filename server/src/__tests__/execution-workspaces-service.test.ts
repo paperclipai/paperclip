@@ -719,25 +719,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   it("reports a squash cross-branch delivery as merged_via_pr and suppresses the ancestry warning", async () => {
-    const repoRoot = await createTempRepo();
-    tempDirs.add(repoRoot);
-    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-delivery-${randomUUID()}`);
-    tempDirs.add(worktreePath);
-    await runGit(repoRoot, ["branch", "PAP-16015-delivery"]);
-    await runGit(repoRoot, ["worktree", "add", worktreePath, "PAP-16015-delivery"]);
-    await fs.writeFile(path.join(worktreePath, "delivered.txt"), "delivered\n", "utf8");
-    await runGit(worktreePath, ["add", "delivered.txt"]);
-    await runGit(worktreePath, ["commit", "-m", "Delivered change"]);
-
     const seeded = await seedTerminalWorkspace();
-    pullRequestDetailsByKey.set(`${seeded.companyId}:10623`, {
-      state: "merged",
-      headRef: "PAP-16015-delivery",
-      headSha: await readGit(worktreePath, ["rev-parse", "HEAD"]),
-    });
     await db.update(executionWorkspaces).set({
-      cwd: worktreePath,
-      providerRef: worktreePath,
+      cwd: seeded.worktreePath,
+      providerRef: seeded.worktreePath,
       providerType: "git_worktree",
       baseRef: "main",
       repoUrl: "https://github.com/paperclipai/paperclip.git",

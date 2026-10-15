@@ -390,26 +390,33 @@ describe("CompanyImport", () => {
   }
 
   it("submits the import as an async job, then activates selected agents and routines", async () => {
-    await renderPageAndImport();
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await renderPageAndImport();
 
-    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ pauseAutomations: true }),
-    );
-    // The page polls the job it was handed and runs the same activation path
-    // the synchronous response used to drive.
-    expect(mockCompaniesApi.getImportJob).toHaveBeenCalledWith("job-1");
-    expect(container.textContent).toContain("Import complete");
-    expect(container.textContent).toContain("Activate imported agents and routines");
-    expect(container.textContent).toContain("Coder");
-    expect(container.textContent).toContain("Weekly Report");
+      expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ pauseAutomations: true }),
+      );
+      // The page polls the job it was handed and runs the same activation path
+      // the synchronous response used to drive.
+      expect(mockCompaniesApi.getImportJob).toHaveBeenCalledWith("job-1");
+      expect(container.textContent).toContain("Import complete");
+      expect(container.textContent).toContain("Activate imported agents and routines");
+      expect(container.textContent).toContain("Coder");
+      expect(container.textContent).toContain("Weekly Report");
 
-    await clickButton((text) => text.startsWith("Activate selected"));
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
 
-    expect(mockAgentsApi.resume).toHaveBeenCalledWith("agent-1");
-    expect(mockRoutinesApi.update).toHaveBeenCalledWith("routine-1", { status: "active" });
-    expect(container.textContent).toContain("activated");
-    expect(container.textContent).not.toContain("failed:");
-    expect(findButton((text) => text === "Go to dashboard")).toBeTruthy();
+      await clickButton((text) => text.startsWith("Activate selected"));
+
+      expect(mockAgentsApi.resume).toHaveBeenCalledWith("agent-1");
+      expect(mockRoutinesApi.update).toHaveBeenCalledWith("routine-1", { status: "active" });
+      expect(container.textContent).toContain("activated");
+      expect(container.textContent).not.toContain("failed:");
+      expect(findButton((text) => text === "Go to dashboard")).toBeTruthy();
+    } finally {
+      invalidateSpy.mockRestore();
+    }
   });
 
   it("keeps activating remaining items and surfaces per-item failures", async () => {
@@ -1010,18 +1017,6 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("it may have restarted while the import ran");
     expect(container.textContent).not.toContain("Import completed");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
-  });
-
-  it("refreshes the company list on a full import success", async () => {
-    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
-    try {
-      await renderPageAndImport();
-
-      expect(container.textContent).toContain("Import complete");
-      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
-    } finally {
-      invalidateSpy.mockRestore();
-    }
   });
 
   it("resumes watching a stored import job on mount", async () => {

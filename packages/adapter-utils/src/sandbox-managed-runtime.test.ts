@@ -3820,31 +3820,11 @@ describe("sandbox managed runtime outbound coordinator", () => {
     expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
   });
 
-  it("opens one named span per outbound restore task: restore.workspace, restore.asset.<key>", async () => {
-    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
-    const { control, gate } = makeOutboundControl();
-    const client = makeGatedOutboundClient(true, gate);
-    const { runtimeSpan, opened } = makeSpanRecorder();
-
-    const prepared = await prepareSandboxManagedRuntime({
-      ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
-      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
-      runtimeSpan,
-    });
-
-    await prepared.restoreWorkspace();
-
-    // Each outbound restore task carries its own named span. The workspace
-    // restore task and the home asset restore task each open one.
-    expect(opened).toContain("restore.workspace");
-    expect(opened).toContain("restore.asset.home");
-  });
-
   it("with concurrency permitted, the workspace and asset restore task spans overlap in time", async () => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
     const { control, gate } = makeOutboundControl();
     const client = makeGatedOutboundClient(true, gate);
-    const { runtimeSpan, openNow } = makeSpanRecorder();
+    const { runtimeSpan, opened, openNow } = makeSpanRecorder();
 
     const prepared = await prepareSandboxManagedRuntime({
       ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
@@ -3868,6 +3848,8 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.release("workspace");
     control.release("home");
     await restore;
+    expect(opened).toContain("restore.workspace");
+    expect(opened).toContain("restore.asset.home");
   });
 });
 

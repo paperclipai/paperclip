@@ -1293,7 +1293,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
 
-  it("treats assigneeAgentId='null' as an explicit unassigned filter", async () => {
+  it("filters and counts unassigned issues with assigneeAgentId='null'", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const assignedIssueId = randomUUID();
@@ -1334,14 +1334,16 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     const result = await svc.list(companyId, { assigneeAgentId: "null" });
     expect(result.map((issue) => issue.id)).toEqual([unassignedIssueId]);
+    await expect(svc.count(companyId, { assigneeAgentId: "null" })).resolves.toBe(1);
   });
 
-  it("keeps UUID assignee filtering behavior unchanged", async () => {
+  it("filters and counts only issues assigned to the requested UUID", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const otherAgentId = randomUUID();
     const assignedIssueId = randomUUID();
     const otherIssueId = randomUUID();
+    const unassignedIssueId = randomUUID();
 
     await seedIssueCompany(db, companyId);
 
@@ -1387,13 +1389,22 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         priority: "medium",
         assigneeAgentId: otherAgentId,
       },
+      {
+        id: unassignedIssueId,
+        companyId,
+        title: "Unassigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+      },
     ]);
 
     const result = await svc.list(companyId, { assigneeAgentId });
     expect(result.map((issue) => issue.id)).toEqual([assignedIssueId]);
+    await expect(svc.count(companyId, { assigneeAgentId })).resolves.toBe(1);
   });
 
-  it("rejects malformed assigneeAgentId filter values", async () => {
+  it("rejects malformed assigneeAgentId filters in list and count", async () => {
     const companyId = randomUUID();
     await seedIssueCompany(db, companyId);
     await db.insert(issues).values({
@@ -1407,95 +1418,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(
       svc.list(companyId, { assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
-  });
-
-  it("counts only unassigned issues for assigneeAgentId='null'", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const unassignedIssueId = randomUUID();
-
-    await seedIssueCompany(db, companyId);
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: unassignedIssueId,
-        companyId,
-        title: "Unassigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: null,
-      },
-    ]);
-
-    await expect(svc.count(companyId, { assigneeAgentId: "null" })).resolves.toBe(1);
-  });
-
-  it("counts UUID-assigned issues with assigneeAgentId", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const otherIssueId = randomUUID();
-
-    await seedIssueCompany(db, companyId);
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: otherIssueId,
-        companyId,
-        title: "Other issue",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    await expect(svc.count(companyId, { assigneeAgentId })).resolves.toBe(1);
-  });
-
-  it("rejects malformed assigneeAgentId filter values in count", async () => {
-    const companyId = randomUUID();
-    await seedIssueCompany(db, companyId);
-
     await expect(
       svc.count(companyId, { assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
@@ -2796,26 +2718,45 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(byId.get(unblockedId)?.blockedBy).toEqual([]);
   });
 
-  it("trims list payload fields that can grow large on issue index routes", async () => {
+  it("trims large list payloads and preserves description preview boundaries", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
     const longDescription = "x".repeat(5_000);
+    const exactPreviewId = randomUUID();
+    const nullDescriptionId = randomUUID();
+    const multibyteBoundaryId = randomUUID();
 
     await seedIssueCompany(db, companyId);
 
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Large issue",
-      description: longDescription,
-      status: "todo",
-      priority: "medium",
-      executionPolicy: { stages: Array.from({ length: 20 }, (_, index) => ({ index, kind: "review", notes: "y".repeat(400) })) },
-      executionState: { history: Array.from({ length: 20 }, (_, index) => ({ index, body: "z".repeat(400) })) },
-      executionWorkspaceSettings: { notes: "w".repeat(2_000) },
-    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Large issue",
+        description: longDescription,
+        status: "todo",
+        priority: "medium",
+        executionPolicy: { stages: Array.from({ length: 20 }, (_, index) => ({ index, kind: "review", notes: "y".repeat(400) })) },
+        executionState: { history: Array.from({ length: 20 }, (_, index) => ({ index, body: "z".repeat(400) })) },
+        executionWorkspaceSettings: { notes: "w".repeat(2_000) },
+      },
+      {
+        id: exactPreviewId, companyId, title: "Exact preview issue",
+        description: "x".repeat(1200), status: "todo", priority: "medium",
+      },
+      {
+        id: nullDescriptionId, companyId, title: "Null description issue",
+        description: null, status: "todo", priority: "medium",
+      },
+      {
+        id: multibyteBoundaryId, companyId, title: "Multibyte boundary issue",
+        description: `${"x".repeat(1199)}— still valid after truncation`,
+        status: "todo", priority: "medium",
+      },
+    ]);
 
-    const [result] = await svc.list(companyId);
+    const byId = new Map((await svc.list(companyId)).map((issue) => [issue.id, issue]));
+    const result = byId.get(issueId);
 
     expect(result).toBeTruthy();
     expect(result?.description).toHaveLength(1200);
@@ -2823,72 +2764,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.executionPolicy).toBeNull();
     expect(result?.executionState).toBeNull();
     expect(result?.executionWorkspaceSettings).toBeNull();
-  });
 
-  it("marks list descriptions as not truncated when they fit the preview limit", async () => {
-    const companyId = randomUUID();
-    const issueId = randomUUID();
-    const description = "x".repeat(1200);
-
-    await seedIssueCompany(db, companyId);
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Exact preview issue",
-      description,
-      status: "todo",
-      priority: "medium",
-    });
-
-    const [result] = await svc.list(companyId);
-
-    expect(result?.description).toHaveLength(1200);
-    expect(result?.descriptionTruncated).toBe(false);
-  });
-
-  it("marks null list descriptions as not truncated", async () => {
-    const companyId = randomUUID();
-    const issueId = randomUUID();
-
-    await seedIssueCompany(db, companyId);
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Null description issue",
-      description: null,
-      status: "todo",
-      priority: "medium",
-    });
-
-    const [result] = await svc.list(companyId);
-
-    expect(result?.description).toBeNull();
-    expect(result?.descriptionTruncated).toBe(false);
-  });
-
-  it("does not let description preview truncation split multibyte characters", async () => {
-    const companyId = randomUUID();
-    const issueId = randomUUID();
-    const description = `${"x".repeat(1199)}— still valid after truncation`;
-
-    await seedIssueCompany(db, companyId);
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Multibyte boundary issue",
-      description,
-      status: "todo",
-      priority: "medium",
-    });
-
-    const [result] = await svc.list(companyId);
-
-    expect(result?.description).toHaveLength(1200);
-    expect(result?.description?.endsWith("—")).toBe(true);
-    expect(result?.descriptionTruncated).toBe(true);
+    expect(byId.get(exactPreviewId)?.description).toHaveLength(1200);
+    expect(byId.get(exactPreviewId)?.descriptionTruncated).toBe(false);
+    expect(byId.get(nullDescriptionId)?.description).toBeNull();
+    expect(byId.get(nullDescriptionId)?.descriptionTruncated).toBe(false);
+    expect(byId.get(multibyteBoundaryId)?.description).toHaveLength(1200);
+    expect(byId.get(multibyteBoundaryId)?.description?.endsWith("—")).toBe(true);
+    expect(byId.get(multibyteBoundaryId)?.descriptionTruncated).toBe(true);
   });
 });
 
@@ -2983,9 +2866,10 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     // Extend the chain 60 levels below the delegator-created ancestor so the
     // match sits far above the new child's parent.
     let parentId = midId;
+    const descendants: (typeof issues.$inferInsert)[] = [];
     for (let index = 0; index < 60; index += 1) {
       const childId = randomUUID();
-      await db.insert(issues).values({
+      descendants.push({
         id: childId,
         companyId,
         title: `Deep child ${index}`,
@@ -2997,6 +2881,8 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
       });
       parentId = childId;
     }
+
+    await db.insert(issues).values(descendants);
 
     const found = await svc.findOpenAncestorCreatedByAgent(parentId, delegatorId);
     expect(found?.id).toBe(midId);
@@ -4413,8 +4299,8 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockerB = randomUUID();
     const blockedIssueId = randomUUID();
     await db.insert(issues).values([
-      { id: blockerA, companyId, title: "Blocker A", status: "done", priority: "medium" },
-      { id: blockerB, companyId, title: "Blocker B", status: "todo", priority: "medium" },
+      { id: blockerA, companyId, title: "Blocker A", status: "done", priority: "medium", executionWorkspaceId: null },
+      { id: blockerB, companyId, title: "Blocker B", status: "todo", priority: "medium", executionWorkspaceId: null },
       {
         id: blockedIssueId,
         companyId,
@@ -4431,13 +4317,15 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await svc.update(blockerB, { status: "done" });
 
-    await expect(svc.listWakeableBlockedDependents(blockerA)).resolves.toEqual([
+    const wakeable = await svc.listWakeableBlockedDependents(blockerA);
+    expect(wakeable).toEqual([
       expect.objectContaining({
         id: blockedIssueId,
         assigneeAgentId,
         blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
       }),
     ]);
+    expect(wakeable[0]?.blockerIssueIds).toHaveLength(2);
   });
 
   it("treats done blockers on a shared workspace as ready while a foreign issue is in-flight", async () => {
@@ -4609,49 +4497,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       isDependencyReady: true,
       pendingFinalizeBlockerIssueIds: [],
     });
-  });
-
-  it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-
-    await seedIssueCompany(db, companyId);
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "QA",
-      role: "qa",
-      status: "active",
-      adapterType: "claude_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    const blockerId = randomUUID();
-    const dependentId = randomUUID();
-    await db.insert(issues).values([
-      // Done blocker with no execution workspace ever attached (e.g. closed manually).
-      { id: blockerId, companyId, title: "Manual done blocker", status: "done", priority: "medium" },
-      {
-        id: dependentId,
-        companyId,
-        title: "Dependent",
-        status: "blocked",
-        priority: "medium",
-        assigneeAgentId,
-      },
-    ]);
-    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
-
-    // No executionWorkspaceId → no barrier → dependent should be wakeable.
-    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
-      expect.objectContaining({
-        id: dependentId,
-        assigneeAgentId,
-        blockerIssueIds: [blockerId],
-      }),
-    ]);
   });
 
   it("reports dependency readiness for blocked issue chains", async () => {
