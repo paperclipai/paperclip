@@ -68,7 +68,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -372,6 +372,7 @@ function setsEqual<T>(left: Set<T>, right: Set<T>) {
 function runMetrics(run: HeartbeatRun) {
   const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
   const result = (run.resultJson ?? null) as Record<string, unknown> | null;
+  const usageUnavailable = hasUnavailableProviderAccounting(result);
   const input = usageNumber(usage, "inputTokens", "input_tokens");
   const output = usageNumber(usage, "outputTokens", "output_tokens");
   const cached = usageNumber(
@@ -385,11 +386,12 @@ function runMetrics(run: HeartbeatRun) {
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
   return {
-    input,
-    output,
-    cached,
-    cost,
-    totalTokens: visibleRunTokenTotal(usage),
+    usageUnavailable,
+    input: usageUnavailable ? null : input,
+    output: usageUnavailable ? null : output,
+    cached: usageUnavailable ? null : cached,
+    cost: usageUnavailable ? null : cost,
+    totalTokens: usageUnavailable ? null : visibleRunTokenTotal(usage),
     provider,
     model,
   };
@@ -1290,7 +1292,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            canRunWithProviderTrace={canUseProviderTrace}
+            canRunWithProviderTrace={canUseProviderTrace && supportsRawProviderTrace(currentAgent.adapterType, currentAgent.adapterConfig)}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -1738,7 +1740,9 @@ export function AgentOverview({
     for (const issue of assignedIssues) map.set(issue.id, issue);
     return map;
   }, [assignedIssues]);
-  const configuredModel = asNonEmptyString(agent.adapterConfig?.model)
+  const configuredModel = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse"
+    ? "Managed by Muse"
+    : asNonEmptyString(agent.adapterConfig?.model)
     ?? asNonEmptyString(agent.adapterConfig?.modelName)
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
@@ -2021,7 +2025,7 @@ export function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot"].includes(catalogProvider ?? ""),
+    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot", "muse"].includes(catalogProvider ?? ""),
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
@@ -3306,10 +3310,11 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {summary.slice(0, 60)}
         </span>
       )}
-      {(metrics.totalTokens > 0 || metrics.cost > 0) && (
+      {(metrics.usageUnavailable || (metrics.totalTokens ?? 0) > 0 || (metrics.cost ?? 0) > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
-          {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
+          {metrics.usageUnavailable && <span>Usage and cost unavailable</span>}
+          {metrics.totalTokens !== null && metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.cost !== null && metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
     </Link>
@@ -3419,6 +3424,27 @@ export function AgentFileRunNotice({ resultJson }: { resultJson: HeartbeatRun["r
   </>;
 }
 
+export function RunAccountingMetrics({ run }: { run: HeartbeatRun }) {
+  const metrics = runMetrics(run);
+  if (!metrics.usageUnavailable && ![metrics.input, metrics.output, metrics.cached, metrics.cost].some(value => (value ?? 0) > 0)) return null;
+  const values = [
+    ["Input", metrics.input === null ? "Unavailable" : formatTokens(metrics.input)],
+    ["Output", metrics.output === null ? "Unavailable" : formatTokens(metrics.output)],
+    ["Cached", metrics.cached === null ? "Unavailable" : formatTokens(metrics.cached)],
+    ["Cost", metrics.cost === null ? "Unavailable" : metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"],
+  ];
+  return (
+    <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
+      {values.map(([label, value]) => (
+        <div key={label}>
+          <div className="text-xs text-muted-foreground">{label}</div>
+          <div className="text-sm font-medium font-mono">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3445,6 +3471,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
   const paperclipDeveloperMode =
     experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const canRerunWithProviderTrace = canUseProviderTrace && supportsRawProviderTrace(adapterType, adapterConfig);
   const { data: providerTraceRows } = useQuery({
     queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
     queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
@@ -3619,7 +3646,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
-  const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
   const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
   const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
@@ -3693,7 +3719,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 runId={run.id}
                 enabled={paperclipDeveloperMode && canUseProviderTrace}
               />
-              {canUseProviderTrace && !["queued", "running"].includes(run.status) ? (
+              {canRerunWithProviderTrace && !["queued", "running"].includes(run.status) ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3858,27 +3884,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             <RunRetryDetails run={run} agentRouteId={agentRouteId} />
           </div>
 
-          {/* Right column: metrics */}
-          {hasMetrics && (
-            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
-              <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
-              </div>
-            </div>
-          )}
+          <RunAccountingMetrics run={run} />
         </div>
 
         {/* Collapsible session row */}
@@ -3994,7 +4000,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         open={inspectorOpen}
         onOpenChange={setInspectorOpen}
         onRerunWithTrace={
-          canUseProviderTrace && !["queued", "running"].includes(run.status)
+          canRerunWithProviderTrace && !["queued", "running"].includes(run.status)
             ? () => rerunWithTrace.mutate()
             : undefined
         }

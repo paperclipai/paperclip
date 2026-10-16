@@ -1,6 +1,10 @@
 # Bring personal Muse onto the shared external Runner
 
-Date: 2026-10-09. Status: implementation plan; the port and live qualification have not started.
+Date: 2026-10-09. Status: historical investigation and implementation plan.
+Implementation continued on October 10 using the [accepted architecture](2026-10-10-muse-runner-architecture.md)
+and `origin/master` at `0e37a385e678d1a568f483c31ae1c19024d2df98`.
+The baseline table below records the original investigation. Live qualification
+has not started; see the [current compatibility limit](../muse-personal-agent.md#current-compatibility-and-release-gates).
 
 ## Recommendation
 
@@ -151,7 +155,11 @@ Acceptance: hire approval, name/role draft, reload/resume, concurrent setup wind
 
 First prove a real research/document task, a clarification answered in Paperclip, a follow-up assignment, and proactive read/create/comment from a fresh Muse conversation. Then run a new bounded 24-hour qualification with at least 20 unattended samples and sustained idle periods. The previous experiment remains stopped; none of its replies count toward this run.
 
-Use the recovered qualification tooling after adapting it to the new receipts and generation identities. Schedule deterministic sample slots; never enqueue over active or uncertain work. A simulated worker or direct chat intervention cannot make an unattended sample pass. Preserve intervention and outage classifications in secret-free evidence.
+Use the recovered qualification tooling after adapting it to the new receipts and generation identities. Schedule deterministic sample slots; never enqueue over active or uncertain work.
+
+Future checker state version 3 retains a terminal failed sample and may collect a distinct later current-hour slot only after exactly one fenced, unclaimed assignment and its matching failed native run are established, with a healthy connection and no live assignment, pending input, uncertainty, or stop hold. It never retries a failed task or catches up a missed hour. A lost task-create response can be retried with its original idempotency key only within that same slot hour. After the hour passes, an uncertain creation without an issue ID remains unresolved and blocks later slots; it is neither dropped nor created late. Version 3 refuses version 2 state; existing campaigns must finish and clean up with their original checker and state. Continuing collection does not make a failed campaign pass: the unchanged grader requires at least 20 successful native samples and success for every persisted sample.
+
+A simulated worker or direct chat intervention cannot make an unattended sample pass. Preserve intervention and outage classifications in secret-free evidence.
 
 Record requested hook interval and actual signal-contact gaps separately. Predeclare the five-second qualification threshold (the earlier harness used at least 90% of steady-state gaps at seven seconds or less); retain a sustained idle window of at least two hours. Separate scheduler queue-to-offer, queue-to-authenticated-claim, claim-to-accepted-result, and queue-to-native-finalization latency. Report counts, tails, missing claims, pending results, and failures, not only averages.
 

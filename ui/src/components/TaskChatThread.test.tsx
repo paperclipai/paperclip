@@ -2573,6 +2573,77 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it.each(["Muse", "Dot"].flatMap(
+    (provider) => [false, true].map((hasTranscript) => ({ provider, hasTranscript })),
+  ))(
+    "hides a previous agent's Retry while waiting for $provider acceptance (transcript: $hasTranscript)",
+    async ({ provider, hasTranscript }) => {
+      const onRetryFailedRun = vi.fn();
+      if (hasTranscript) transcriptState.transcriptByRun.set("previous-failure", [{
+        kind: "assistant", ts: "2026-08-25T18:00:01.000Z", text: "Starting the task.",
+      }]);
+      const failedRun = {
+        runId: "previous-failure",
+        runtimeMode: "legacy" as const,
+        status: "failed",
+        errorCode: "legacy_process_exited",
+        agentId: "previous-agent",
+        agentName: "Direct Codex",
+        adapterType: "codex_local",
+        createdAt: "2026-08-25T18:00:00.000Z",
+        startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      };
+      const waitingRun = {
+        runId: "external-offer",
+        runtimeMode: "native" as const,
+        status: "queued",
+        agentId: "external-agent",
+        agentName: provider,
+        adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:01:00.000Z",
+        startedAt: null,
+        finishedAt: null,
+        execution: {
+          phase: "waiting_for_provider" as const,
+          label: `Waiting for ${provider}`,
+          cause: null,
+          lastConfirmedActivityAt: null,
+          retryAt: null,
+          attempt: 1,
+          maxAttempts: 3,
+          recoveryOwner: null,
+          nextAction: null,
+          permittedActions: [],
+          predecessorRunId: null,
+          successorRunId: null,
+        },
+      };
+      const renderRun = (waiting: boolean) => render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={waiting ? [failedRun, waitingRun] : [failedRun]}
+        />,
+      );
+      // The linked projection must guard Retry before active/live-run polling arrives.
+      renderRun(true);
+      expect(container.textContent).toContain("Your message is preserved.");
+      expect(container.textContent).not.toContain("You can retry this message now.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+      expect(onRetryFailedRun).not.toHaveBeenCalled();
+      renderRun(false);
+      expect(container.textContent).toContain("You can retry this message now.");
+      const retry = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      expect(retry).not.toBeNull();
+      flushSync(() => retry!.click());
+      await Promise.resolve();
+      expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("previous-failure");
+    },
+  );
+
   it.each(["active execution", "pending decision", "recovery hold"].flatMap(
     (gate) => [false, true].map((hasTranscript) => ({ gate, hasTranscript })),
   ))(

@@ -589,6 +589,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ) return false;
       return [
         "working",
+        "waiting_for_provider",
         "retry_scheduled",
         "reconnecting",
         "finishing",
