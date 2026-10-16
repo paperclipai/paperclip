@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareCodexRuntimeConfig } from "./runtime-config.js";
+import { prepareCodexRuntimeConfig, resetCodexRuntimeConfigLeasesForTests } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -233,6 +233,24 @@ describe("prepareCodexRuntimeConfig", () => {
     }
   });
 
+  it("keeps provider settings for an overlapping run until the last run cleans up", async () => {
+    const home = await makeCodexHome();
+    await fs.writeFile(path.join(home, "config.toml"), 'model = "original"\n', "utf8");
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    const runA = await prepareCodexRuntimeConfig({ env, codexHome: home });
+    const runB = await prepareCodexRuntimeConfig({ env, codexHome: home });
+
+    await runA.cleanup();
+    // Run B is still live: its provider routing must survive run A's cleanup,
+    // and a provider-less prepare must not self-heal the file under it.
+    await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+
+    await runB.cleanup();
+    expect(await readConfigToml(home)).toBe('model = "original"\n');
+    await expect(fs.access(path.join(home, "config.toml.paperclip-backup"))).rejects.toThrow();
+  });
+
   it("reads PAPERCLIP_CODEX_PROVIDERS from process.env when absent from the run env", async () => {
     const home = await makeCodexHome();
     process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify(BIFROST_PROVIDERS);
@@ -342,6 +360,7 @@ describe("prepareCodexRuntimeConfig", () => {
       codexHome: home,
     });
     expect(await readConfigToml(home)).toContain('env_key = "OPENAI_API_KEY"');
+    resetCodexRuntimeConfigLeasesForTests();
 
     const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
     expect(prepared.notes.some((n) => n.includes("backup"))).toBe(true);
@@ -383,6 +402,7 @@ describe("prepareCodexRuntimeConfig", () => {
     });
     // Simulate a crash: cleanup never runs, the managed blocks persist.
     void crashed;
+    resetCodexRuntimeConfigLeasesForTests();
     expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
 
     const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });

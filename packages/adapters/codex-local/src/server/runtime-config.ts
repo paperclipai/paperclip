@@ -322,6 +322,17 @@ function configTomlBackupPath(configTomlPath: string): string {
   return `${configTomlPath}.paperclip-backup`;
 }
 
+// Runs of the same agent can overlap and share one CODEX_HOME. Each config.toml
+// with merged providers is held by every run that prepared it; only the last
+// run to finish restores the original, so an earlier cleanup never removes the
+// provider settings a later run still needs.
+const activeConfigLeases = new Map<string, { holders: number; original: string | null }>();
+
+/** Test hook: forget live leases, as a crashed server process would. */
+export function resetCodexRuntimeConfigLeasesForTests() {
+  activeConfigLeases.clear();
+}
+
 // Merge custom Codex model providers supplied via PAPERCLIP_CODEX_PROVIDERS
 // into the managed CODEX_HOME's config.toml.
 //
@@ -355,8 +366,9 @@ export async function prepareCodexRuntimeConfig(input: {
   );
 
   if (!parsed) {
-    // Self-heal state left behind by a crashed run (cleanup() never ran).
-    if (input.codexHome) {
+    // Self-heal state left behind by a crashed run (cleanup() never ran). A
+    // live run in this process still holds the merged file, so leave it alone.
+    if (input.codexHome && !activeConfigLeases.has(path.join(input.codexHome, "config.toml"))) {
       const configTomlPath = path.join(input.codexHome, "config.toml");
       const reason = notes.length === 0 ? " (PAPERCLIP_CODEX_PROVIDERS is no longer set)" : "";
       const backupPath = configTomlBackupPath(configTomlPath);
@@ -405,9 +417,17 @@ export async function prepareCodexRuntimeConfig(input: {
 
   const configTomlPath = path.join(input.codexHome, "config.toml");
   const backupPath = configTomlBackupPath(configTomlPath);
+  const lease = activeConfigLeases.get(configTomlPath);
+  if (lease) lease.holders += 1;
+  else activeConfigLeases.set(configTomlPath, { holders: 1, original: null });
+  const heldLease = activeConfigLeases.get(configTomlPath)!;
   // A surviving backup from an interrupted run is the true pre-run content;
-  // the current config.toml would still carry that run's managed blocks.
-  const original = (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath));
+  // the current config.toml would still carry that run's managed blocks. A
+  // run joining a live lease reuses the original the first holder recorded.
+  const original = lease
+    ? lease.original
+    : (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath));
+  heldLease.original = original;
   const providerNames = Object.keys(parsed.providers);
   const base = stripConflictingDefinitions(
     stripManagedCodexProviderBlocks(original ?? ""),
@@ -428,6 +448,9 @@ export async function prepareCodexRuntimeConfig(input: {
       }.`,
     ],
     cleanup: async () => {
+      heldLease.holders -= 1;
+      if (heldLease.holders > 0) return;
+      activeConfigLeases.delete(configTomlPath);
       if (original === null) {
         await fs.rm(configTomlPath, { force: true });
       } else {
