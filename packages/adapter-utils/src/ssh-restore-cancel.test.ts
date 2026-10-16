@@ -124,6 +124,14 @@ describe("ssh workspace restore cancellation", () => {
     expect(progressLines.some((line) => line.includes("Skipping SSH workspace restore"))).toBe(true);
   });
 
+  it("captureDirectorySnapshot yields before walking when cancelled", async () => {
+    const rootDir = await makeTempDir("paperclip-snapshot-cancel-");
+    await writeFile(path.join(rootDir, "file.txt"), "content", "utf8");
+
+    await expect(captureDirectorySnapshot(rootDir, { exclude: [], signal: abortedSignal() }))
+      .rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+  });
+
   it("mergeDirectoryWithBaseline yields before mutating the target when cancelled", async () => {
     const sourceDir = await makeTempDir("paperclip-merge-source-");
     const targetDir = await makeTempDir("paperclip-merge-target-");
