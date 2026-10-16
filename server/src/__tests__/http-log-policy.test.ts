@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isPrivateWebhookHttpRequest,
+  isPrivateMuseHttpRequest,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "../middleware/http-log-policy.js";
@@ -186,5 +187,17 @@ describe("shouldSilenceHttpSuccessLog", () => {
         404,
       ),
     ).toBe(false);
+  });
+});
+
+
+describe("Muse HTTP privacy",()=>{
+  it("protects OAuth, worker bodies and rejected namespace variants",()=>{
+    for(const path of ["/api/muse/v1/oauth/authorize?pairing_ticket=private", "/api/muse/v1/commands", "/api/muse/unknown/private", "/API/MUSE/v1/token", "http://host.invalid/api/%6duse/v1/commands", "/api/%256duse/v1/queries", "/api/companies/company/agents/agent/muse-binding", "/api/companies/company/muse-invitations"])
+      for(const method of ["GET","POST","DELETE"]){expect(isPrivateMuseHttpRequest(path)).toBe(true);expect(isSecretSensitiveHttpRequest(method,path)).toBe(true);}
+    expect(isPrivateMuseHttpRequest("/api/muse-extra")).toBe(false);
+    expect(isPrivateMuseHttpRequest("/api/issues/task")).toBe(false);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",503)).toBe(false);
   });
 });

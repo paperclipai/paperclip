@@ -21,6 +21,7 @@ export interface ExecutionBlocker {
 export interface ExecutionProjection {
   phase:
     | "working"
+    | "waiting_for_provider"
     | "reconnecting"
     | "retry_scheduled"
     | "finishing"

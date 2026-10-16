@@ -11,6 +11,7 @@ const defaultModulesRoot = resolve(defaultServerSrc, "modules");
 const layerNames = new Set(["domain", "application", "adapters"]);
 const databasePackages = ["@paperclipai/db", "drizzle-orm", "embedded-postgres", "postgres"];
 const configurationTransactionCallers = new Set([
+  "modules/external-agents/muse.ts", "modules/external-agents/dot.ts",
   "services/secret-proposals.ts", "services/connection-intents.ts", "services/dot-runner-broker.ts",
   "services/public-mcp/oauth.ts", "services/agent-profile-avatar.ts", "services/agent-instruction-revisions.ts", "services/company-skills.ts",
 ]);

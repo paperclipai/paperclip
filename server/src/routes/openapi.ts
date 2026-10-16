@@ -1,5 +1,4 @@
-import { createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema } from "@paperclipai/shared";
-import { updateFastResponseSchema } from "@paperclipai/shared";
+import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
@@ -1750,7 +1749,10 @@ function resolveOperationAuthLevel(
       || key === "POST /api/dot-mcp/requests/{id}/dot-pairing/preview") return "public";
   if (path === "/api/mcp/setup" || path === "/api/mcp/device/consent" || path.startsWith("/api/mcp/requests/") || path.startsWith("/api/mcp/connections")) return "board";
   if (/^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/dot-binding(?:\/event-test)?$/.test(path)) return "board";
-  if (path === "/api/companies/{companyId}/dot-invitations" || path === "/api/companies/{companyId}/grok-invitations"
+  if (path === "/api/companies/{companyId}/dot-invitations") return "board";
+  if (path === "/api/companies/{companyId}/muse-invitations"
+      || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/muse-binding(?:\/(?:verify|revoke|attest-stop|attest-detector-cleanup|qualification))?$/.test(path)) return "board";
+  if (path === "/api/companies/{companyId}/grok-invitations"
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
@@ -12003,6 +12005,71 @@ registerCurrentRoute({
     403: r.forbidden,
     404: r.notFound,
   },
+});
+
+const museBindingPath = "/api/companies/{companyId}/agents/{agentId}/muse-binding";
+const museBindingIdentitySchema = z.object({ bindingId: z.uuid(), generation: z.number().int().positive(), expectedRevision: z.number().int().positive() }).strict();
+const museQualificationIdentitySchema = z.object({ bindingId: z.uuid(), qualificationId: z.uuid() }).strict();
+const museManagementErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable };
+registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/muse-invitations", tags: ["agents"],
+  summary: "Resume the signed-in operator's unfinished personal Muse invitation",
+  responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: "/api/companies/{companyId}/muse-invitations", tags: ["agents"],
+  summary: "Create or resume a personal Muse invitation with company hiring approvals",
+  body: z.object({ name: z.string().trim().min(1).max(100), role: z.string().trim().min(1).max(100) }).strict(),
+  responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "get", path: museBindingPath, tags: ["agents"],
+  summary: "Read personal Muse connection, receiver, verified reply, and stop health",
+  responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: museBindingPath, tags: ["agents"],
+  summary: "Create a short-lived single-use personal Muse pairing ticket",
+  body: z.object({ replaceBindingId: z.uuid().optional(), expectedRevision: z.number().int().positive().optional() }).strict(),
+  responses: { 201: r.ok(z.object({ bindingId: z.uuid(), generation: z.number().int().positive(), revision: z.number().int().positive(),
+    ticket: z.string(), expiresAt: z.string().datetime(), setupInstruction: z.string(), assetVersion: z.literal(MUSE_ASSET_VERSION) })), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: `${museBindingPath}/verify`, tags: ["agents"],
+  summary: "Queue a harmless background reply verification for the current Muse connection",
+  body: museBindingIdentitySchema, responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: `${museBindingPath}/revoke`, tags: ["agents"],
+  summary: "Revoke Muse authority immediately and request best-effort receiver cleanup",
+  body: museBindingIdentitySchema, responses: { 204: { description: "Authority revoked; remote stopping and cleanup may remain unconfirmed" }, ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: `${museBindingPath}/attest-detector-cleanup`, tags: ["agents"],
+  summary: "Record a current operator observation that the exact revoked Muse detector is absent",
+  body: museDetectorCleanupAttestationSchema, responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: `${museBindingPath}/attest-stop`, tags: ["agents"],
+  summary: "Record operator confirmation that the exact remote Muse work boundary stopped",
+  body: z.object({ boundary: museStopBoundarySchema, expectedRevision: z.number().int().positive(), workerStopped: z.literal(true) }).strict(),
+  responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "post", path: `${museBindingPath}/qualification`, tags: ["agents"],
+  summary: "Begin a bounded 24-hour personal Muse qualification with an immutable deadline",
+  body: museQualificationIdentitySchema.extend({ generation: z.number().int().positive(), expectedRevision: z.number().int().positive() }).strict(),
+  responses: { 201: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "get", path: `${museBindingPath}/qualification`, tags: ["agents"],
+  summary: "Read retained receiver and native assignment qualification evidence",
+  query: museQualificationIdentitySchema, responses: { 200: r.ok(), ...museManagementErrors },
+});
+registerCurrentRoute({
+  method: "delete", path: `${museBindingPath}/qualification`, tags: ["agents"],
+  summary: "Stop the exact qualification and revoke its authority",
+  body: museQualificationIdentitySchema, responses: { 204: { description: "Qualification stopped and authority fenced; remote stopping may remain unconfirmed" }, ...museManagementErrors },
 });
 
 const dotInvitationResponseSchema = z.object({

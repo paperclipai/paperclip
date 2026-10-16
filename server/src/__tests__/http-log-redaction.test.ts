@@ -35,6 +35,19 @@ describe("HTTP logger redaction", () => {
     const output = JSON.stringify({ logs: chunks, responses: responses.map(response => response.body) });
     for (const canary of canaries) expect(output).not.toContain(canary);
   });
+  it.each([200,400,500])("keeps Muse OAuth and task payloads out of %i diagnostics",async status=>{
+    const chunks:string[]=[];
+    const stream=new Writable({write(chunk,_encoding,callback){chunks.push(chunk.toString());callback();}});
+    const app=express();app.use(createHttpLogger(pino({redact:[...HTTP_LOG_REDACT_PATHS]},stream)));app.use(express.json());
+    const canary="private-muse-payload-canary";
+    app.use((_req,res)=>{res.setHeader("Location","https://client.example/callback?code="+canary);res.setHeader("x-provider-prose",canary);if(status>=400)(res as any).err=new Error(canary);res.status(status).json({error:status>=400?"invalid_request":undefined});});
+    await request(app).get("/api/muse/v1/oauth/authorize").query({pairing_ticket:canary,state:canary}).set("Referer","https://client.example/?code="+canary);
+    for(const path of ["/api/muse/v1/oauth/token","/api/muse/v1/commands","/api/muse/unknown/"+canary])await request(app).post(path).set("Authorization","Bearer "+canary).send({code:canary,code_verifier:canary,refresh_token:canary,arguments:{description:canary}});
+    const output=chunks.join("");expect(output).not.toContain(canary);
+    const logs=chunks.flatMap(chunk=>chunk.trim().split("\n").filter(Boolean).map(line=>JSON.parse(line)));
+    expect(logs.length).toBe(4);for(const log of logs){expect(log.req.url).toBe("/api/muse/:protocol");if(status>=400)expect(log.reqBody).toBe("[REDACTED]");}
+  });
+
   it("redacts inbound MCP OAuth codes, PKCE verifiers, refresh tokens and redirect credentials", async () => {
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });

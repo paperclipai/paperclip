@@ -2690,6 +2690,18 @@ describe("remote runner build metadata", () => {
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
+  it("accepts the current contract with the required transport", () => {
+    expect(() =>
+      assertRemoteRunnerBuildMetadata(current, "listen_ws"),
+    ).not.toThrow();
+  });
+
+  it("requires the versioned Muse artifact capability and does not accept Dot capability as proof", () => {
+    expect(() => assertRemoteRunnerBuildMetadata(current, "listen_ws", "muse_external_v1")).toThrow("runner_remote_muse_capability_missing");
+    expect(() => assertRemoteRunnerBuildMetadata({ ...current, externalProviderCapabilities: ["openai_dot_mcp"] }, "listen_ws", "muse_external_v1")).toThrow("runner_remote_muse_capability_missing");
+    expect(() => assertRemoteRunnerBuildMetadata({ ...current, externalProviderCapabilities: ["openai_dot_mcp", "muse_external_v1"] }, "listen_ws", "muse_external_v1")).not.toThrow();
+  });
+
   it("requires an explicit Dot bridge capability only for remote Dot execution", () => {
     expect(() => assertRemoteRunnerBuildMetadata(current, "listen_ws", "openai_dot_mcp"))
       .toThrow("runner_remote_dot_capability_missing");
