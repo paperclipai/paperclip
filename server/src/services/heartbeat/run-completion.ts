@@ -33,6 +33,7 @@ import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
+import { redactRunResultSecrets } from "../run-result-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
@@ -605,7 +606,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             ...(adapterResult.nativeFinalization || outcome === "cancelled"
               ? parseObject(latestRun?.resultJson)
               : {}),
-            ...parseObject(adapterResult.resultJson),
+            // Host-side credentials that Paperclip did not inject can reach captured output;
+            // mask token-shaped text before the result is stored.
+            ...redactRunResultSecrets(parseObject(adapterResult.resultJson)),
             ...(adapterResult.executionRecovery
               ? { executionRecovery: adapterResult.executionRecovery }
               : {}),
