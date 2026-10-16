@@ -599,16 +599,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ),
     };
 
-    const persistedResultJson = cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
+    // Host-side credentials that Paperclip did not inject can reach captured output or the summary;
+    // mask token-shaped text in the final merged result before it is stored.
+    const persistedResultJson = redactRunResultSecrets(cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
       mergeRunStopMetadataForAgent(agent, outcome, {
         resultJson: mergeAdapterRecoveryMetadata({
           resultJson: {
             ...(adapterResult.nativeFinalization || outcome === "cancelled"
               ? parseObject(latestRun?.resultJson)
               : {}),
-            // Host-side credentials that Paperclip did not inject can reach captured output;
-            // mask token-shaped text before the result is stored.
-            ...redactRunResultSecrets(parseObject(adapterResult.resultJson)),
+            ...parseObject(adapterResult.resultJson),
             ...(adapterResult.executionRecovery
               ? { executionRecovery: adapterResult.executionRecovery }
               : {}),
@@ -622,7 +622,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         errorMessage: runErrorMessage,
       }),
       adapterResult.summary ?? null,
-    ), runErrorCode, runErrorMessage);
+    ), runErrorCode, runErrorMessage));
 
     const ledgerScope = runLedgerScope;
     const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
