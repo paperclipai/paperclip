@@ -57,6 +57,7 @@ describe("auth routes", () => {
     name: "Jane Example",
     email: "jane@example.com",
     image: "https://example.com/jane.png",
+    twoFactorEnabled: false,
   };
   const originalSentryDsn = process.env.SENTRY_DSN;
   const originalSentryDsnFrontend = process.env.SENTRY_DSN_FRONTEND;

@@ -690,7 +690,7 @@ describe("one-project resolution", () => {
         from: () => ({
           where: () =>
             Promise.resolve([
-              { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+              { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null, twoFactorEnabled: false },
             ]),
         }),
       }),

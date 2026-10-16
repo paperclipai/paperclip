@@ -188,6 +188,11 @@ export const currentUserProfileSchema = z.object({
     z.string().min(1).max(120).nullable(),
   ),
   image: profileImageSchema.nullable(),
+  // Opt-in TOTP two-factor (Better Auth twoFactor plugin). Strictly
+  // per-account: accounts that never enroll stay false and sign in with
+  // password only. The UI settings surface reads this to show enroll /
+  // status / disable state.
+  twoFactorEnabled: z.boolean(),
 });
 
 export type CurrentUserProfile = z.infer<typeof currentUserProfileSchema>;

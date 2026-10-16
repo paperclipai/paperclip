@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, uniqueIndex, index } from "drizzle-orm/pg-core";
 
 export const authUsers = pgTable("user", {
   id: text("id").primaryKey(),
@@ -6,6 +6,11 @@ export const authUsers = pgTable("user", {
   email: text("email").notNull(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
+  // Better Auth two-factor plugin: per-account opt-in flag. The plugin's user
+  // model declares `twoFactorEnabled` (boolean, default false, input: false),
+  // so the Drizzle user table must expose it or any `updateUser({
+  // twoFactorEnabled })` write throws "field does not exist in the user Drizzle schema".
+  twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
@@ -66,3 +71,40 @@ export const authVerifications = pgTable("verification", {
   createdAt: timestamp("created_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
+
+/**
+ * Better Auth `twoFactor` model (the built-in two-factor / TOTP plugin).
+ *
+ * The Drizzle adapter maps the plugin's camelCase model fields
+ * (`secret`, `backupCodes`, `userId`, `verified`, `failedVerificationCount`,
+ * `lockedUntil`) onto this table's JS property names, so the keys below must
+ * stay exactly those camelCase names — the snake_case column names are the
+ * DB-side identity. Mirrors the column set Better Auth 1.7's default
+ * `two_factor` Drizzle schema generates.
+ *
+ * `id` is a TEXT primary key with no DB default: Better Auth's adapter factory
+ * generates a base62 string id in JS on every create and injects it before the
+ * insert, same as `authUsers` / `authVerifications`.
+ *
+ * `secret` is encrypted at write time (symmetricEncrypt keyed off the app
+ * secret). `backupCodes` are stored encrypted because
+ * `server/src/auth/better-auth.ts` configures the plugin with
+ * `backupCodeOptions: { storeBackupCodes: "encrypted" }`; without that
+ * option the plugin writes them in plaintext. Neither value is ever
+ * returned to the client (`returned: false` in the plugin schema).
+ */
+export const twoFactor = pgTable(
+  "two_factor",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    verified: boolean("verified").notNull().default(true),
+    failedVerificationCount: integer("failed_verification_count").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  },
+  (table) => ({
+    userIdIdx: index("two_factor_user_id_idx").on(table.userId),
+  }),
+);

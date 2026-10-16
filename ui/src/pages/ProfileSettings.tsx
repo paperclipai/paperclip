@@ -8,6 +8,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
+import { TwoFactorSettings } from "@/components/TwoFactorSettings";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -271,6 +272,15 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
+
+        <TwoFactorSettings
+          enabled={!!sessionQuery.data?.user.twoFactorEnabled}
+          onStateChanged={() => {
+            // The mutation inside TwoFactorSettings already invalidates the
+            // auth.session query; this is a no-op callback kept for API symmetry
+            // so the component can evolve to request additional refetches.
+          }}
+        />
       </section>
     </div>
   );

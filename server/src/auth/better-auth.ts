@@ -2,6 +2,7 @@ import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { twoFactor } from "better-auth/plugins";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,6 +10,7 @@ import {
   authSessions,
   authUsers,
   authVerifications,
+  twoFactor as twoFactorTable,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
@@ -238,6 +240,49 @@ export function resolveWorkspaceHandoffIdentity(
   };
 }
 
+/**
+ * Assemble the Better Auth plugin list.
+ *
+ * - `twoFactor()` (TOTP + backup codes) is always registered. It is strictly
+ *   opt-in per account: nothing happens at sign-in until a user enables 2FA,
+ *   so email/password and agent/automation logins are unaffected.
+ * - `workspaceLoginHandoffPlugin` is registered only for a managed workspace
+ *   instance: the plugin is what makes `Open workspace` password-independent,
+ *   and a control-plane instance that was never handed a workspace key must not
+ *   expose the exchange at all.
+ */
+function buildBetterAuthPlugins(db: Db, config: Config) {
+  // "encrypted" (top-level) keeps one-time backup codes (a DB leak must not
+  // be an MFA bypass) encrypted at rest under the Better Auth secret. The
+  // plugin's backup-code path does NOT inherit that default — it resolves
+  // from `backupCodeOptions` only — so pass it explicitly. The TOTP secret
+  // is always encrypted by the plugin.
+  const twoFactorPlugin = twoFactor({
+    issuer: "Paperclip",
+    backupCodeOptions: { storeBackupCodes: "encrypted" },
+  });
+  const handoffIdentity = resolveWorkspaceHandoffIdentity(config);
+  if (!handoffIdentity) {
+    return [twoFactorPlugin];
+  }
+  return [
+    twoFactorPlugin,
+    workspaceLoginHandoffPlugin({
+      db,
+      // Re-resolved per exchange so a hot restart cannot keep validating
+      // against an origin the control plane has since republished.
+      resolveExpectedIdentity: () =>
+        resolveWorkspaceHandoffIdentity(config) ?? {
+          key: null,
+          instanceId: null,
+          executionWorkspaceId: null,
+          companyId: null,
+          origin: null,
+        },
+    }),
+  ];
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
@@ -268,6 +313,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         session: authSessions,
         account: authAccounts,
         verification: authVerifications,
+        twoFactor: twoFactorTable,
       },
     }),
     emailAndPassword: {
@@ -281,28 +327,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    // Registered only for a managed workspace instance: the plugin is what makes
-    // `Open workspace` password-independent, and a control-plane instance that
-    // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
-      ? {
-          plugins: [
-            workspaceLoginHandoffPlugin({
-              db,
-              // Re-resolved per exchange so a hot restart cannot keep validating
-              // against an origin the control plane has since republished.
-              resolveExpectedIdentity: () =>
-                resolveWorkspaceHandoffIdentity(config) ?? {
-                  key: null,
-                  instanceId: null,
-                  executionWorkspaceId: null,
-                  companyId: null,
-                  origin: null,
-                },
-            }),
-          ],
-        }
-      : {}),
+    plugins: buildBetterAuthPlugins(db, config),
   };
 
   if (!baseUrl) {
