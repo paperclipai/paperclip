@@ -145,6 +145,25 @@ describe("ssh workspace restore cancellation", () => {
     expect(await readFile(path.join(targetDir, "sentinel.txt"), "utf8")).toBe("untouched\n");
   });
 
+  it("mergeDirectoryWithBaseline checks cancellation before applying remote deletions", async () => {
+    const sourceDir = await makeTempDir("paperclip-merge-source-");
+    const targetDir = await makeTempDir("paperclip-merge-target-");
+    await writeFile(path.join(targetDir, "remote-deleted.txt"), "preserve until live apply\n", "utf8");
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+    const controller = new AbortController();
+
+    await expect(mergeDirectoryWithBaseline({
+      baseline,
+      sourceDir,
+      targetDir,
+      signal: controller.signal,
+      beforeApply: async () => controller.abort(),
+    })).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    await expect(readFile(path.join(targetDir, "remote-deleted.txt"), "utf8"))
+      .resolves.toBe("preserve until live apply\n");
+  });
+
   it("mergeDirectoryWithBaseline still applies the remote snapshot when live", async () => {
     const sourceDir = await makeTempDir("paperclip-merge-source-");
     const targetDir = await makeTempDir("paperclip-merge-target-");

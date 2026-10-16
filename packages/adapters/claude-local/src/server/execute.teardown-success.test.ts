@@ -149,6 +149,25 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
     expect(resultJson.unmanagedBackgroundTask).toMatchObject({ stopped: true });
   });
 
+  it("keeps a lost duplex channel as a transport failure despite a parsed success", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: successStdoutWithAuthProse(),
+      stderr: "",
+      pid: 456,
+      startedAt: new Date().toISOString(),
+      errorCode: "duplex_channel_lost",
+      errorMessage: "control channel closed before clean completion",
+    } as never);
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(result.exitCode).toBe(1);
+  });
+
   it("still classifies a genuine 401 bearer-token failure as auth required", async () => {
     const init = JSON.stringify({
       type: "system",

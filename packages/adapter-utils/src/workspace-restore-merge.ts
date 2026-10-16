@@ -160,13 +160,19 @@ export function directorySnapshotSha256(snapshot: DirectorySnapshot): string {
   return digest.digest("hex");
 }
 
-async function hashFile(filePath: string): Promise<string> {
+async function hashFile(filePath: string, signal?: AbortSignal | null): Promise<string> {
+  throwIfWorkspaceRestoreAborted(signal);
   return await new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = createReadStream(filePath);
+    const onAbort = () => {
+      stream.destroy(workspaceRestoreCancelledError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("close", () => signal?.removeEventListener("abort", onAbort));
   });
 }
 
@@ -174,14 +180,17 @@ const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | nu
 
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
+  signal?: AbortSignal | null,
 ): AsyncGenerator<[string, SnapshotEntry]> {
+  throwIfWorkspaceRestoreAborted(signal);
   const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
+    throwIfWorkspaceRestoreAborted(signal);
     const fullPath = path.join(root, nextRelative);
     try {
       const stats = await fs.lstat(fullPath);
       if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
       if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath, signal) }];
     } catch (error) {
       if (!isVanishedEntry(error)) throw error;
     }
@@ -195,7 +204,7 @@ async function* walkDirectory(
       const [nextRelative, entry] = result.value;
       if (!entry) continue;
       yield [nextRelative, entry];
-      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative);
+      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative, signal);
     }
   };
   const current = relative ? path.join(root, relative) : root;
@@ -206,6 +215,7 @@ async function* walkDirectory(
   if (!dir) return;
   let batch: string[] = [];
   for await (const entry of dir) {
+    throwIfWorkspaceRestoreAborted(signal);
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     batch.push(nextRelative);
@@ -665,7 +675,7 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
 
 export async function captureDirectorySnapshot(
   rootDir: string,
-  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
 ): Promise<DirectorySnapshot> {
   const exclude = [...new Set(options.exclude ?? [])];
   const ignored = workspacePathMatcher(options.ignoredPaths);
@@ -673,7 +683,7 @@ export async function captureDirectorySnapshot(
   try {
     writer = options.diskBacked ? await createWorkspaceManifest("paperclip-workspace-baseline-") : null;
     const memory = new Map<string, SnapshotEntry>();
-    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored)) {
+    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored, "", options.signal)) {
       if (writer) writer.add("baseline", relative, JSON.stringify(entry));
       else memory.set(relative, entry);
     }
@@ -694,10 +704,12 @@ export async function captureDirectorySnapshot(
 
 export async function captureDirectorySnapshotOffThread(
   rootDir: string,
-  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
 ): Promise<DirectorySnapshot> {
+  throwIfWorkspaceRestoreAborted(options.signal);
   if (!options.diskBacked) return captureDirectorySnapshot(rootDir, options);
   const result = await runSnapshotThread({ rootDir, exclude: options.exclude, ignoredPaths: options.ignoredPaths });
+  throwIfWorkspaceRestoreAborted(options.signal);
   try {
     const snapshot = openDirectorySnapshot(result.snapshot);
     ownedDirectorySnapshots.set(snapshot, result.directory);
@@ -800,11 +812,12 @@ export async function mergeDirectoryWithBaseline(input: {
 }): Promise<void> {
   throwIfWorkspaceRestoreAborted(input.signal);
   const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
-  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
+  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true, signal: input.signal };
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   throwIfWorkspaceRestoreAborted(input.signal);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      throwIfWorkspaceRestoreAborted(input.signal);
       await input.beforeApply?.();
       throwIfWorkspaceRestoreAborted(input.signal);
       if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
@@ -814,19 +827,21 @@ export async function mergeDirectoryWithBaseline(input: {
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
       const current = input.snapshots?.current ?? await capture(canonicalTargetDir,
-        input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
+        input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true, signal: input.signal } : options);
       try {
         if (input.conflictPolicy === "reject") {
           const conflicts = directoryMergeConflicts(input.baseline, source, current);
           if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
         }
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
           await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true });
         }
         // Reverse path order visits descendants before their parent directory.
         for (const [relative, entry] of orderedEntries(input.baseline, true)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (entry.kind === "dir" && !source.entries.has(relative)) await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "ENOTDIR") throw error;
           });
@@ -836,6 +851,7 @@ export async function mergeDirectoryWithBaseline(input: {
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
               !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
         }
+        throwIfWorkspaceRestoreAborted(input.signal);
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
     });

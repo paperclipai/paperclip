@@ -1224,12 +1224,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = !parsedSucceeded && proc.errorCode
-      // Forward the transport-level error code from the run-disposition seam
-      // first. A lost duplex control channel surfaces the typed
-      // `duplex_channel_lost` code before any provider classification. A
-      // parsed success keeps authority: the CLI already delivered its terminal
-      // result, so a transport/teardown code must not override it.
+    const resolvedErrorCode = proc.errorCode && (!parsedSucceeded || proc.errorCode === "duplex_channel_lost")
+      // A lost duplex control channel can invalidate delivery even when the
+      // CLI result was successful; preserve that typed transport failure. A
+      // teardown kill after the terminal result has been received is only a
+      // warning and must not override the CLI's success.
       ? proc.errorCode
       : effectiveRequiresLogin
       ? "claude_auth_required"

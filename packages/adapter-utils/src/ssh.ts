@@ -611,21 +611,24 @@ async function copyDirectoryContents(
   signal?: AbortSignal | null,
 ): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true });
-  const entries = await fs.readdir(sourceDir);
-  // Copy in bounded chunks so an operator cancellation raised mid-restore can
-  // still preempt the silent multi-GB local apply. A single in-flight `fs.cp`
-  // remains uninterruptible; the check between chunks bounds the overrun to one
-  // chunk instead of the whole tree.
-  const CONCURRENCY = 8;
-  for (let offset = 0; offset < entries.length; offset += CONCURRENCY) {
+  const copyEntry = async (sourcePath: string, targetPath: string): Promise<void> => {
     throwIfWorkspaceRestoreAborted(signal);
-    await Promise.all(entries.slice(offset, offset + CONCURRENCY).map(async (entry) => {
-      await fs.cp(path.join(sourceDir, entry), path.join(targetDir, entry), {
-        recursive: true,
-        force: true,
-        preserveTimestamps: true,
-      });
-    }));
+    const stat = await fs.lstat(sourcePath);
+    if (stat.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      const entries = await fs.readdir(sourcePath);
+      for (const entry of entries) {
+        await copyEntry(path.join(sourcePath, entry), path.join(targetPath, entry));
+      }
+      await fs.chmod(targetPath, stat.mode);
+      await fs.utimes(targetPath, stat.atime, stat.mtime);
+      return;
+    }
+    await fs.cp(sourcePath, targetPath, { force: true, preserveTimestamps: true });
+  };
+  const entries = await fs.readdir(sourceDir);
+  for (const entry of entries) {
+    await copyEntry(path.join(sourceDir, entry), path.join(targetDir, entry));
   }
 }
 
