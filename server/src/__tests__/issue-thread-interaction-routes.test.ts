@@ -28,6 +28,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
+  getById: vi.fn(),
   listForIssue: vi.fn(),
   getForIssue: vi.fn(),
   create: vi.fn(),
@@ -3325,4 +3326,30 @@ describe("issue thread interaction routes", () => {
       ]);
     },
   );
+});
+
+describe("interaction location route", () => {
+  const INTERACTION_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+  it("returns the fixed v1 location for a readable card", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce({ id: INTERACTION_ID, companyId: "company-1", issueId: ISSUE_ID, status: "pending" });
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "in_review", assigneeAgentId: ASSIGNEE_AGENT_ID }));
+    const res = await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ version: 1, companyId: "company-1", interactionId: INTERACTION_ID, issueId: ISSUE_ID });
+  });
+
+  it("answers 404 for an unknown or malformed id and for another company's card", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce(null);
+    await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`).expect(404);
+    await request(await createApp()).get("/api/companies/company-1/interaction-locations/not-a-uuid").expect(404);
+    mockInteractionService.getById.mockResolvedValueOnce({ id: INTERACTION_ID, companyId: "company-2", issueId: ISSUE_ID, status: "pending" });
+    await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`).expect(404);
+  });
+
+  it("refuses a board actor without access to the company", async () => {
+    const res = await request(await createApp({ type: "board", userId: "u", companyIds: ["company-9"], source: "session", isInstanceAdmin: false }))
+      .get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`);
+    expect(res.status).toBe(403);
+  });
 });

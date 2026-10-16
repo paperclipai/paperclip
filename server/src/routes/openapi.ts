@@ -4885,6 +4885,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/interaction-locations/{interactionId}",
+  tags: ["issues"],
+  summary: "Find the issue that owns an interaction",
+  request: { params: z.object({ companyId: z.string(), interactionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/labels",
   tags: ["issues"],

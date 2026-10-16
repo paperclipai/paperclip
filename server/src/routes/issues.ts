@@ -8869,6 +8869,27 @@ export function issueRoutes(
     res.json(result);
   });
 
+  // Exact-id card lookup: which issue owns this interaction. Lets a client open a card from its id without
+  // scanning issues. The response is a fixed v1 shape; unknown, foreign-company and unreadable ids are all 404.
+  router.get("/companies/:companyId/interaction-locations/:interactionId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const interactionId = req.params.interactionId as string;
+    assertCompanyAccess(req, companyId);
+    if (!isUuidLike(interactionId)) {
+      res.status(404).json({ error: "Interaction not found" });
+      return;
+    }
+    const interaction = await issueThreadInteractionService(db).getById(interactionId);
+    if (!interaction || interaction.companyId !== companyId) {
+      res.status(404).json({ error: "Interaction not found" });
+      return;
+    }
+    const issue = await getAccessibleResource(req, res, getIssueById(req, interaction.issueId), "Interaction not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json({ version: 1, companyId, interactionId: interaction.id, issueId: issue.id });
+  });
+
   router.post(
     "/companies/:companyId/labels",
     validate(createIssueLabelSchema),
