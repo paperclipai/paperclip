@@ -326,7 +326,9 @@ function configTomlBackupPath(configTomlPath: string): string {
 // with merged providers is held by every run that prepared it; only the last
 // run to finish restores the original, so an earlier cleanup never removes the
 // provider settings a later run still needs.
-const activeConfigLeases = new Map<string, { holders: number; original: string | null }>();
+// The original is a promise so a run joining while the first holder is still
+// reading config.toml waits for that read instead of seeing an empty file.
+const activeConfigLeases = new Map<string, { holders: number; original: Promise<string | null> }>();
 
 /** Test hook: forget live leases, as a crashed server process would. */
 export function resetCodexRuntimeConfigLeasesForTests() {
@@ -417,28 +419,48 @@ export async function prepareCodexRuntimeConfig(input: {
 
   const configTomlPath = path.join(input.codexHome, "config.toml");
   const backupPath = configTomlBackupPath(configTomlPath);
-  const lease = activeConfigLeases.get(configTomlPath);
-  if (lease) lease.holders += 1;
-  else activeConfigLeases.set(configTomlPath, { holders: 1, original: null });
-  const heldLease = activeConfigLeases.get(configTomlPath)!;
-  // A surviving backup from an interrupted run is the true pre-run content;
-  // the current config.toml would still carry that run's managed blocks. A
-  // run joining a live lease reuses the original the first holder recorded.
-  const original = lease
-    ? lease.original
-    : (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath));
-  heldLease.original = original;
+  const codexHome = input.codexHome;
+  let heldLease = activeConfigLeases.get(configTomlPath);
+  if (heldLease) {
+    heldLease.holders += 1;
+  } else {
+    // A surviving backup from an interrupted run is the true pre-run content;
+    // the current config.toml would still carry that run's managed blocks. A
+    // run joining a live lease reuses the original the first holder recorded.
+    heldLease = {
+      holders: 1,
+      original: (async () =>
+        (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath)))(),
+    };
+    activeConfigLeases.set(configTomlPath, heldLease);
+  }
+  const lease = heldLease;
+  const releaseLease = () => {
+    lease.holders -= 1;
+    if (lease.holders > 0) return false;
+    if (activeConfigLeases.get(configTomlPath) === lease) activeConfigLeases.delete(configTomlPath);
+    return true;
+  };
+  let original: string | null;
   const providerNames = Object.keys(parsed.providers);
-  const base = stripConflictingDefinitions(
-    stripManagedCodexProviderBlocks(original ?? ""),
-    providerNames,
-    parsed.modelProvider !== null,
-  );
-  await fs.mkdir(input.codexHome, { recursive: true });
-  // Persist the original BEFORE writing the merged file so a run that never
-  // reaches cleanup() can be restored by the next prepare.
-  await fs.writeFile(backupPath, original ?? "", "utf8");
-  await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
+  try {
+    original = await lease.original;
+    const base = stripConflictingDefinitions(
+      stripManagedCodexProviderBlocks(original ?? ""),
+      providerNames,
+      parsed.modelProvider !== null,
+    );
+    await fs.mkdir(codexHome, { recursive: true });
+    // Persist the original BEFORE writing the merged file so a run that never
+    // reaches cleanup() can be restored by the next prepare.
+    await fs.writeFile(backupPath, original ?? "", "utf8");
+    await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
+  } catch (err) {
+    // A failed prepare never gets a cleanup(); drop its hold so the remaining
+    // runs (or the next prepare) still restore the original.
+    releaseLease();
+    throw err;
+  }
 
   return {
     notes: [
@@ -448,9 +470,7 @@ export async function prepareCodexRuntimeConfig(input: {
       }.`,
     ],
     cleanup: async () => {
-      heldLease.holders -= 1;
-      if (heldLease.holders > 0) return;
-      activeConfigLeases.delete(configTomlPath);
+      if (!releaseLease()) return;
       if (original === null) {
         await fs.rm(configTomlPath, { force: true });
       } else {

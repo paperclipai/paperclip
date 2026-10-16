@@ -456,4 +456,39 @@ describe("prepareCodexRuntimeConfig", () => {
     const content = await readConfigToml(home);
     expect(content).toBe("model = \"gpt-5.1-codex\"\n");
   });
+
+  it("keeps the original when two runs prepare the same home at once", async () => {
+    const original = "model = \"gpt-5.1-codex\"\napproval_policy = \"never\"\n";
+    const home = await makeCodexHome(original);
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    const [first, second] = await Promise.all([
+      prepareCodexRuntimeConfig({ env, codexHome: home }),
+      prepareCodexRuntimeConfig({ env, codexHome: home }),
+    ]);
+
+    const merged = await readConfigToml(home);
+    expect(merged).toContain('approval_policy = "never"');
+    expect(merged).toContain("[model_providers.bifrost]");
+
+    await first.cleanup();
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+    await second.cleanup();
+    expect(await readConfigToml(home)).toBe(original);
+  });
+
+  it("releases its hold when preparation fails so later runs still restore the original", async () => {
+    const original = "model = \"gpt-5.1-codex\"\n";
+    const home = await makeCodexHome(original);
+    const backupPath = path.join(home, "config.toml.paperclip-backup");
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    // A directory where the backup goes makes the backup write fail.
+    await fs.mkdir(backupPath);
+    await expect(prepareCodexRuntimeConfig({ env, codexHome: home })).rejects.toThrow();
+    await fs.rm(backupPath, { recursive: true, force: true });
+
+    const next = await prepareCodexRuntimeConfig({ env, codexHome: home });
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+    await next.cleanup();
+    expect(await readConfigToml(home)).toBe(original);
+  });
 });
