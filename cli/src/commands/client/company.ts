@@ -1499,7 +1499,7 @@ export function registerCompanyCommands(program: Command): void {
     company
       .command("feedback:list")
       .description("List feedback traces for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--target-type <type>", "Filter by target type")
       .option("--vote <vote>", "Filter by vote value")
       .option("--status <status>", "Filter by trace status")
@@ -1541,7 +1541,7 @@ export function registerCompanyCommands(program: Command): void {
     company
       .command("feedback:export")
       .description("Export feedback traces for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--target-type <type>", "Filter by target type")
       .option("--vote <vote>", "Filter by vote value")
       .option("--status <status>", "Filter by trace status")
