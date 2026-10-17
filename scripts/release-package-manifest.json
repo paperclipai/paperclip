@@ -65,6 +65,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/openrouter",
+    "name": "@paperclipai/adapter-openrouter",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/shared",
     "name": "@paperclipai/shared",
     "publishFromCi": true
