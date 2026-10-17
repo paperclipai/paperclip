@@ -85,8 +85,50 @@ export function assertRepositoryRetryMatches(row: Pick<RepositoryRow, "repositor
   }
 }
 
+export type StagedConfiguredRoot = { root: string | null; cwd: string | null; repoUrl: string | null };
+export type StagedRepositoryRootResolutions = { workspaceRoots: Map<string, string | null>; inventoryRoots: Map<string, string | null>; configuredRoots: Map<string, StagedConfiguredRoot> };
+
+export async function stageRepositoryRootResolutions(db: Db, companyId: string): Promise<StagedRepositoryRootResolutions> {
+  const [workspaces, inventory, configured] = await Promise.all([
+    db.select({ cwd: executionWorkspaces.cwd }).from(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId)),
+    db.select({ cwd: executionWorkspaces.cwd }).from(executionWorkspaceRepositories).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, executionWorkspaceRepositories.executionWorkspaceId))
+      .where(and(eq(executionWorkspaceRepositories.companyId, companyId), eq(executionWorkspaces.companyId, companyId))),
+    db.select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl }).from(projectWorkspaces).where(eq(projectWorkspaces.companyId, companyId)),
+  ]);
+  const [workspaceRoots, inventoryRoots, configuredEntries] = await Promise.all([
+    resolveRepositoryRoots(workspaces.flatMap(workspace => workspace.cwd ? [workspace.cwd] : [])),
+    resolveRepositoryRoots(inventory.flatMap(peer => peer.cwd ? [peer.cwd] : []), true),
+    // Keep the staged input fields: the locked scan re-reads each row and must
+    // re-resolve whenever the row changed between staging and the lock.
+    Promise.all(configured.map(async source => [source.id, {
+      root: await configuredWorkspaceRoot(source, true), cwd: source.cwd ?? null, repoUrl: source.repoUrl ?? null,
+    }] as const)),
+  ]);
+  return { workspaceRoots, inventoryRoots, configuredRoots: new Map(configuredEntries) };
+}
+
+function stagedConfiguredRootMatches(staged: StagedConfiguredRoot, source: { cwd: string | null; repoUrl: string | null }): boolean {
+  return staged.cwd === (source.cwd ?? null) && staged.repoUrl === (source.repoUrl ?? null);
+}
+
+// Staging touches the filesystem before the company roots lock is held. A failure
+// here (e.g. EIO while scanning a company directory) must not skip the paths that
+// retain captured ownership before denying an operation, so callers that accumulate
+// failures fall back to resolving under the lock, where scan errors are already
+// caught and carried into the post-commit denial.
+async function stageRepositoryRootResolutionsSafely(db: Db, companyId: string): Promise<StagedRepositoryRootResolutions | undefined> {
+  try { return await stageRepositoryRootResolutions(db, companyId); } catch { return undefined; }
+}
+
+async function resolveStagedRepositoryRoots(cwds: string[], staged: Map<string, string | null> | undefined, requireExisting = false): Promise<Map<string, string | null>> {
+  const pending = [...new Set(cwds)].filter(cwd => !staged?.has(cwd));
+  const resolved = pending.length ? await resolveRepositoryRoots(pending, requireExisting) : new Map<string, string | null>();
+  return staged?.size ? new Map([...staged, ...resolved]) : resolved;
+}
+
 async function resolveRepositoryRootSources(tx: Db | DbTransaction, input: {
   companyId: string; cwd: string; sourceWorkspaceId?: string; inspectCurrentAliases?: boolean; preparingCopyProjectIds?: Set<string>;
+  staged?: StagedRepositoryRootResolutions;
 }) {
   const canonicalCwd = await measureRunPhase("workspace.sources.canonicalize", () => canonicalRepositoryRoot(input.cwd));
   const rootKey = createHash("sha256").update(canonicalCwd).digest("hex");
@@ -133,7 +175,7 @@ async function resolveRepositoryRootSources(tx: Db | DbTransaction, input: {
   const workspaces = await measureRunPhase("workspace.sources.inventory", async () => tx.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd }).from(executionWorkspaces)
     .where(eq(executionWorkspaces.companyId, input.companyId)));
   await measureRunPhase("workspace.sources.alias_scan", async () => {
-    const workspaceRoots = await resolveRepositoryRoots(workspaces.flatMap(workspace => workspace.cwd ? [workspace.cwd] : []));
+    const workspaceRoots = await resolveStagedRepositoryRoots(workspaces.flatMap(workspace => workspace.cwd ? [workspace.cwd] : []), input.staged?.workspaceRoots);
     for (const workspace of workspaces) {
       if (!workspace.cwd) continue;
       const peerRoot = workspaceRoots.get(workspace.cwd);
@@ -163,7 +205,7 @@ async function resolveRepositoryRootSources(tx: Db | DbTransaction, input: {
   const knownOrigins = new Set(repositoryOrigins.map(origin => origin.id));
   const recognizedNames = new Set<string>();
   await measureRunPhase("workspace.sources.repository_scan", async () => {
-    const inventoryRoots = await resolveRepositoryRoots(inventory.flatMap(peer => peer.cwd ? [peer.cwd] : []), true);
+    const inventoryRoots = await resolveStagedRepositoryRoots(inventory.flatMap(peer => peer.cwd ? [peer.cwd] : []), input.staged?.inventoryRoots, true);
     const hasReader = entries.some(entry => entry.kind === "reader");
     for (const peer of inventory) {
       const name = path.basename(taskRepositoryRelativePath(peer.identity));
@@ -182,7 +224,7 @@ async function resolveRepositoryRootSources(tx: Db | DbTransaction, input: {
     }
   });
   if ([...publishedNames].some(name => !recognizedNames.has(name))) throw forbidden("Published repository has no retained workspace provenance");
-  const configured = await measureRunPhase("workspace.sources.inventory", async () => tx.select({ projectId: projectWorkspaces.projectId, cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
+  const configured = await measureRunPhase("workspace.sources.inventory", async () => tx.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
     .from(projectWorkspaces).where(eq(projectWorkspaces.companyId, input.companyId)));
   const sourceProjectIds = new Set(overlappingEntries.filter(entry => (entry.kind === "project_source" || entry.kind === "isolated_project_source")).map(entry => entry.scopeId));
   const sharedProjectIds = new Set(overlappingEntries.filter(entry => entry.kind === "shared_project_source" && !isCopiedAncestor(entry.scopeId, entry.canonicalCwd)).map(entry => entry.scopeId));
@@ -200,7 +242,8 @@ async function resolveRepositoryRootSources(tx: Db | DbTransaction, input: {
   await measureRunPhase("workspace.sources.project_scan", async () => {
     for (const source of configured) {
       if (sharedProjectIds.has(source.projectId)) continue;
-      const sourceRoot = await configuredWorkspaceRoot(source, true);
+      const stagedEntry = input.staged?.configuredRoots.get(source.id);
+      const sourceRoot = stagedEntry && stagedConfiguredRootMatches(stagedEntry, source) ? stagedEntry.root : await configuredWorkspaceRoot(source, true);
       if (!sourceRoot || !repositoryRootsOverlap(sourceRoot, canonicalCwd)) continue;
       sourceProjectIds.add(source.projectId);
       if (!isCopiedAncestor(source.projectId, sourceRoot)) sharedProjectIds.add(source.projectId);
@@ -268,7 +311,7 @@ export async function preserveConfiguredProjectWorkspaceRootProvenance(tx: DbTra
 
 export async function preserveExecutionWorkspaceRootProvenance(tx: DbTransaction, input: {
   companyId: string; workspaceId: string; cwd: string | null;
-}): Promise<void> {
+}, staged?: StagedRepositoryRootResolutions): Promise<void> {
   if (!input.cwd) return;
   const directory = await fs.stat(input.cwd).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
@@ -277,7 +320,7 @@ export async function preserveExecutionWorkspaceRootProvenance(tx: DbTransaction
   if (!directory) return;
   if (!directory.isDirectory()) throw forbidden("Workspace files cannot be detached from unverifiable provenance");
   const { canonicalCwd, rootKey, entryKeys, sharedSourceIds, isolatedSourceIds, sourceProjectIds, sharedProjectIds, isolatedProjectIds } = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, {
-    companyId: input.companyId, cwd: input.cwd!, sourceWorkspaceId: input.workspaceId, inspectCurrentAliases: true,
+    companyId: input.companyId, cwd: input.cwd!, sourceWorkspaceId: input.workspaceId, inspectCurrentAliases: true, staged,
   }));
   await retainRepositorySources(tx, { companyId: input.companyId, canonicalCwd, rootKey }, entryKeys,
     [["source", sharedSourceIds], ["isolated_source", isolatedSourceIds], ["project_source", sourceProjectIds], ["shared_project_source", sharedProjectIds], ["isolated_project_source", isolatedProjectIds]]);
@@ -299,9 +342,9 @@ export type IsolatedWorkspaceSourceAccess = {
 };
 
 async function retainGitMetadataOwners(tx: DbTransaction, input: {
-  companyId: string; commonRoot: string; workspaceIds: Set<string>; projectIds: Set<string>;
+  companyId: string; commonRoot: string; workspaceIds: Set<string>; projectIds: Set<string>; staged?: StagedRepositoryRootResolutions;
 }): Promise<void> {
-  const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: input.commonRoot, inspectCurrentAliases: true }));
+  const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: input.commonRoot, inspectCurrentAliases: true, staged: input.staged }));
   const workspaceIds = new Set([...closure.sourceIds, ...input.workspaceIds]);
   const projectIds = new Set([...closure.sourceProjectIds, ...input.projectIds]);
   const readerActors: AuthorizationActor[] = [];
@@ -319,17 +362,18 @@ export async function assertIsolatedWorkspaceSourceReadAccess(db: Db, input: {
   companyId: string; sourceCwd: string; actor: AuthorizationActor; copyKind?: WorkspaceSourceCopyKind;
 }): Promise<IsolatedWorkspaceSourceAccess> {
   const { roots, commonRoot } = await isolatedWorkspaceSourceRoots(db, input.companyId, input.sourceCwd, input.copyKind);
+  const staged = await stageRepositoryRootResolutions(db, input.companyId);
   return measureRunTransaction(db, "workspace", async tx => {
     await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
     const workspaceIds = new Set<string>(), projectIds = new Set<string>();
     for (const cwd of roots) {
-      const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, inspectCurrentAliases: true }));
+      const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, inspectCurrentAliases: true, staged }));
       await measureRunPhase("workspace.readers.sources", () => assertTaskWorkspacesReadAccess(tx, input.actor, input.companyId, closure.sourceIds));
       for (const id of closure.sourceIds) workspaceIds.add(id);
       await measureRunPhase("workspace.readers.projects", () => assertRootProjectAccess(tx, input.actor!, input.companyId, closure.sourceProjectIds));
       for (const id of closure.sourceProjectIds) projectIds.add(id);
     }
-    await retainGitMetadataOwners(tx, { companyId: input.companyId, commonRoot, workspaceIds, projectIds });
+    await retainGitMetadataOwners(tx, { companyId: input.companyId, commonRoot, workspaceIds, projectIds, staged });
     return { companyId: input.companyId, roots, workspaceIds: [...workspaceIds], projectIds: [...projectIds] };
   });
 }
@@ -345,6 +389,7 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
   catch (error) { sourceFailure = error; }
   const canonicalCwd = await measureRunPhase("workspace.sources.canonicalize", () => canonicalRepositoryRoot(input.targetCwd));
   const rootKey = createHash("sha256").update(canonicalCwd).digest("hex");
+  const staged = await stageRepositoryRootResolutionsSafely(db, input.companyId);
   const denied = await measureRunTransaction(db, "workspace", async tx => {
     await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
     const existing = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(executionWorkspaceRepositoryAccess).where(and(
@@ -355,7 +400,7 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
     let failure = sourceFailure;
     for (const cwd of roots) {
       try {
-        const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, inspectCurrentAliases: true }));
+        const closure = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, inspectCurrentAliases: true, staged }));
         for (const id of closure.sourceIds) workspaceIds.add(id);
         for (const id of closure.sourceProjectIds) projectIds.add(id);
       } catch (error) { failure ??= error; }
@@ -388,7 +433,7 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
       }
     } catch (error) { failure ??= error; }
     try {
-      const target = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: canonicalCwd, preparingCopyProjectIds }));
+      const target = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd: canonicalCwd, preparingCopyProjectIds, staged }));
       await measureRunPhase("workspace.readers.trust", () => assertRootProjectTrust(tx, { companyId: input.companyId, actor: input.actor, issueId: input.issueId, projectIds: target.sourceProjectIds }));
       await measureRunPhase("workspace.readers.sources", () => assertTaskWorkspacesReadAccess(tx, input.actor, input.companyId, target.sourceIds));
       await measureRunPhase("workspace.readers.projects", () => assertRootProjectAccess(tx, input.actor!, input.companyId, target.sourceProjectIds,
@@ -573,6 +618,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
   type RootReader = { runId: string; issueId: string; agentId: string };
   async function authorizeRootAccess(tx: DbTransaction, input: {
     companyId: string; cwd: string; sourceWorkspaceId?: string; reader?: RootReader; actor?: AuthorizationActor; issueId?: string; preserveOwnAdmission?: boolean;
+    staged?: StagedRepositoryRootResolutions;
   }) {
     const { canonicalCwd, rootKey, entryKeys, overlappingEntries, sourceIds, sharedSourceIds, isolatedSourceIds, sourceProjectIds, sharedProjectIds, isolatedProjectIds } = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, input));
     const readers = overlappingEntries.filter(entry => entry.kind === "reader");
@@ -632,9 +678,10 @@ export function executionWorkspaceRepositoryService(db: Db) {
     });
   }
   async function reserveRootAccess(input: Parameters<typeof authorizeRootAccess>[1]) {
+    const staged = input.staged ?? await stageRepositoryRootResolutions(db, input.companyId);
     return measureRunTransaction(db, "workspace", async tx => {
       await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
-      await authorizeRootAccess(tx, input);
+      await authorizeRootAccess(tx, { ...input, staged });
     });
   }
   async function reserveAdmissionRoot(companyId: string, cwd: string, mode: "anonymous_only" | "managed") {
@@ -664,6 +711,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
     }
     const available = await catalog(input.companyId, userId, localTrusted);
     const requestedRef = parsed.ref ?? "HEAD";
+    const staged = await stageRepositoryRootResolutions(db, input.companyId);
     const receipt = await measureRunTransaction(db, "workspace", async tx => {
       await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
       const [issue] = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), await issueReadSqlCondition(tx, input.actor))).for("no key update"));
@@ -684,7 +732,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
         await reserveRootPolicy(tx, input.companyId, workspace.cwd, anonymousOnly ? "anonymous_only" : "managed");
       }
       if (!workspace.cwd) throw conflict("The task workspace has no directory for repository preparation");
-      await authorizeRootAccess(tx, { companyId: input.companyId, cwd: workspace.cwd, sourceWorkspaceId: workspace.id, actor: input.actor, issueId: input.issueId });
+      await authorizeRootAccess(tx, { companyId: input.companyId, cwd: workspace.cwd, sourceWorkspaceId: workspace.id, actor: input.actor, issueId: input.issueId, staged });
       if (anonymousOnly) throw forbidden(controllerAcquisitionMessage);
       const existing = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id), or(eq(executionWorkspaceRepositories.repositoryIdentity, source.repositoryIdentity), sql`${executionWorkspaceRepositories.requestKeys} ? ${parsed.requestKey}`))));
       for (const row of existing) {
@@ -727,10 +775,11 @@ export function executionWorkspaceRepositoryService(db: Db) {
     return { workspace, actor };
   }
   async function guardForPublication(input: PublicationInput) {
+    const staged = await stageRepositoryRootResolutions(db, input.companyId);
     await measureRunTransaction(db, "workspace", async tx => {
       await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
       const { workspace } = await publicationBinding(tx, input);
-      await authorizeRootAccess(tx, { companyId: input.companyId, cwd: input.cwd!, sourceWorkspaceId: workspace.id, reader: input });
+      await authorizeRootAccess(tx, { companyId: input.companyId, cwd: input.cwd!, sourceWorkspaceId: workspace.id, reader: input, staged });
     });
   }
   async function prepareConfiguredRepositorySource(input: PublicationInput & { sourceCwd: string }): Promise<() => Promise<void>> {
@@ -744,6 +793,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
         commonRoot = source.commonRoot;
         for (const cwd of source.roots) roots.add(cwd);
       } catch (error) { sourceFailure = error; }
+      const staged = await stageRepositoryRootResolutionsSafely(db, input.companyId);
       const denied = await measureRunTransaction(db, "workspace", async tx => {
         await lockExecutionWorkspaceRootProvenance(tx, input.companyId);
         const { workspace, actor } = await publicationBinding(tx, input);
@@ -756,7 +806,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
         let failure = sourceFailure;
         for (const cwd of roots) {
           try {
-            const source = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd }));
+            const source = await measureRunPhase("workspace.sources", () => resolveRepositoryRootSources(tx, { companyId: input.companyId, cwd, staged }));
             for (const id of source.sourceIds) workspaceIds.add(id);
             for (const id of source.sourceProjectIds) projectIds.add(id);
           } catch (error) { failure ??= error; }
@@ -771,10 +821,10 @@ export function executionWorkspaceRepositoryService(db: Db) {
           [["isolated_source", workspaceIds], ["isolated_project_source", projectIds]]);
         try {
           await authorizeRootAccess(tx, { companyId: input.companyId, cwd: input.cwd!, sourceWorkspaceId: workspace.id,
-            actor, issueId: input.issueId });
+            actor, issueId: input.issueId, staged });
         } catch (error) { failure ??= error; }
         if (!failure && commonRoot) {
-          try { await retainGitMetadataOwners(tx, { companyId: input.companyId, commonRoot, workspaceIds, projectIds }); }
+          try { await retainGitMetadataOwners(tx, { companyId: input.companyId, commonRoot, workspaceIds, projectIds, staged }); }
           catch (error) { failure ??= error; }
         }
         return failure;
