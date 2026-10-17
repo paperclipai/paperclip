@@ -1,7 +1,8 @@
 import { projectService } from "../services/projects.js";
-import { callProjectTool } from "../services/project-tools.js";
+import { callProjectTool, projectToolDefinitions } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
@@ -16,9 +17,127 @@ const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("chat project tool handoff", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
-  beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); }, 60_000);
-  afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
+  const originalApiUrl = process.env.PAPERCLIP_API_URL;
+  beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); process.env.PAPERCLIP_API_URL = server.apiUrl; }, 60_000);
+  afterAll(async () => {
+    await server?.close();
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+    if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL; else process.env.PAPERCLIP_API_URL = originalApiUrl;
+  });
   const call = (fixture: Awaited<ReturnType<typeof server.fixture>>, tool: string, args: Record<string, unknown>) => fixture.authority.execute({ tool, arguments: args, callId: randomUUID() });
+
+  const callChatMcp = async (f: Awaited<ReturnType<typeof server.fixture>>, method: string, params: Record<string, unknown> = {}) => {
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/mcp/project-tools`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
+    });
+    expect(response.status).toBe(200);
+    const envelope = await response.json();
+    expect(envelope.error).toBeUndefined();
+    return envelope.result;
+  };
+  const createChatTask = async (f: Awaited<ReturnType<typeof server.fixture>>, args: Record<string, unknown>) => {
+    const result = await callChatMcp(f, "tools/call", {
+      name: "create_task", arguments: { title: "Ownership verification", idempotencyKey: "ownership", ...args },
+    });
+    if (result.isError) throw new Error(result.content[0].text);
+    return result.structuredContent;
+  };
+
+  it.each(["omitted", "unassigned", "agent", "human", "human-with-null-agent"] as const)(
+    "preserves %s ownership through the chat tool and authenticated issue API",
+    async (ownership) => {
+      const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+      await server.db.update(agents).set({ permissions: { canAssignTasks: true } }).where(eq(agents.id, f.agentId));
+      const explicitAgentId = randomUUID();
+      if (ownership === "agent") {
+        await server.db.insert(agents).values({
+          id: explicitAgentId, companyId: f.companyId, name: "Explicit task owner",
+          adapterType: "paperclip_runner", status: "active",
+          runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+        });
+      }
+      const humanOwned = ownership.startsWith("human");
+      const args = ownership === "omitted" ? {}
+        : ownership === "unassigned" ? { assigneeActorId: null }
+        : ownership === "agent" ? { assigneeActorId: explicitAgentId }
+        : { assigneeUserId: f.responsibleUserId, ...(ownership === "human-with-null-agent" ? { assigneeActorId: null } : {}) };
+      const expected = {
+        assigneeAgentId: humanOwned || ownership === "unassigned" ? null : ownership === "agent" ? explicitAgentId : f.agentId,
+        assigneeUserId: humanOwned ? f.responsibleUserId : null,
+        status: "todo",
+      };
+      const { tools } = await callChatMcp(f, "tools/list");
+      const task = tools.find((tool: { name: string }) => tool.name === "create_task");
+      const validate = new Ajv2020({ strict: true, allErrors: true }).compile(task.inputSchema);
+      expect(validate({ title: "Ownership verification", idempotencyKey: "ownership", ...args }), JSON.stringify(validate.errors)).toBe(true);
+      const result = await createChatTask(f, args);
+      expect(result).toMatchObject(expected);
+      const [saved] = await server.db.select().from(issues).where(eq(issues.id, result.id));
+      expect(saved).toMatchObject(expected);
+      const [conversation] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(conversation.status).toBe("in_progress");
+      if (humanOwned || ownership === "unassigned") {
+        expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, result.id))).toHaveLength(0);
+      }
+    },
+  );
+
+  it("preserves human ownership and pending status on idempotent replay, including changed ownership inputs", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    await server.db.update(agents).set({ permissions: { canAssignTasks: true } }).where(eq(agents.id, f.agentId));
+    const first = await createChatTask(f, { assigneeUserId: f.responsibleUserId });
+    const again = await createChatTask(f, { assigneeUserId: f.responsibleUserId });
+    const changedRetry = await createChatTask(f, { assigneeActorId: f.agentId });
+    const expected = { id: first.id, assigneeAgentId: null, assigneeUserId: f.responsibleUserId, status: "todo" };
+    expect(again).toMatchObject(expected);
+    expect(changedRetry).toMatchObject(expected);
+    expect(await server.db.select().from(issues).where(eq(issues.id, first.id))).toEqual([expect.objectContaining(expected)]);
+  });
+
+  it("rejects mutually exclusive, invalid and cross-company human owners", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const foreign = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    await server.db.update(agents).set({ permissions: { canAssignTasks: true } }).where(eq(agents.id, f.agentId));
+    const before = await server.db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    await expect(createChatTask(f, { assigneeUserId: f.responsibleUserId, assigneeActorId: f.agentId })).rejects.toThrow(/either a human or an agent/);
+    for (const assigneeUserId of [" ", null, 123, "missing-user", foreign.responsibleUserId]) {
+      await expect(createChatTask(f, { assigneeUserId })).rejects.toThrow();
+    }
+    expect(await server.db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(before.length);
+  });
+
+  it.each(["planning", "ask"] as const)("retains %s mode restrictions for human-owned task creation", async (mode) => {
+    const f = await server.fixture({ conversation: true, mode, disableWakeOnDemand: true });
+    await server.db.update(agents).set({ permissions: { canAssignTasks: true } }).where(eq(agents.id, f.agentId));
+    await expect(createChatTask(f, { assigneeUserId: f.responsibleUserId })).rejects.toThrow();
+    expect((await callChatMcp(f, "tools/list")).tools.some((tool: { name: string }) => tool.name === "create_task")).toBe(false);
+    expect(projectToolDefinitions(mode, true).some(tool => tool.name === "create_task")).toBe(false);
+  });
+
+  it.each(["standard", "skill_test"] as const)("advertises valid ownership inputs only on the existing task tool in %s mode", async (mode) => {
+    const f = await server.fixture({ conversation: true, mode, disableWakeOnDemand: true });
+    const tools: ReturnType<typeof projectToolDefinitions> = (await callChatMcp(f, "tools/list")).tools;
+    const task = tools.find(tool => tool.name === "create_task")!;
+    expect(task.inputSchema.properties).toHaveProperty("assigneeUserId");
+    expect(task.inputSchema.required).not.toContain("assigneeUserId");
+    const validate = new Ajv2020({ strict: true, allErrors: true }).compile(task.inputSchema);
+    const input = { title: "Schema ownership verification", idempotencyKey: "schema-ownership" };
+    expect(validate({ ...input, assigneeActorId: null }), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate({ ...input, assigneeUserId: f.responsibleUserId, assigneeActorId: null }), JSON.stringify(validate.errors)).toBe(true);
+    for (const assigneeActorId of [123, false, {}, []]) {
+      expect(validate({ ...input, assigneeActorId })).toBe(false);
+    }
+    for (const assigneeUserId of [null, 123, false, {}, [], ""]) {
+      expect(validate({ ...input, assigneeUserId })).toBe(false);
+    }
+    expect(task.description).toContain("leave the task unassigned");
+    expect(tools.some(tool => tool.name === "set_task_title")).toBe(true);
+    expect(tools.filter(tool => tool.name !== "create_task").every(tool => !("assigneeUserId" in (tool.inputSchema.properties ?? {})))).toBe(true);
+    expect(projectToolDefinitions("standard").some(tool => tool.name === "create_task")).toBe(false);
+  });
 
   it("pages only visible projects and prefilters low-trust agent and run scopes", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });
