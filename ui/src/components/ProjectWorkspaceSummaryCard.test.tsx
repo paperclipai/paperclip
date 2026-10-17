@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps, ReactNode } from "react";
+import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -370,31 +370,39 @@ describe("ProjectWorkspaceSummaryCard", () => {
     expect(branchIconButton).not.toBeNull();
     expect(pathIconButton).not.toBeNull();
 
-    await act(async () => {
-      branchTextButton!.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
-    expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
+    // The feedback expires after 1.5 seconds. Keep that clock stopped while
+    // asserting its visible state on a busy CI host.
+    vi.useFakeTimers();
+    try {
+      await reactAct(async () => {
+        branchTextButton!.click();
+        await Promise.resolve();
+      });
+      expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
+      expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
 
-    await act(async () => {
-      pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
-    expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
+      await reactAct(async () => {
+        pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
+      expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
 
-    await act(async () => {
-      branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(writeClipboard).toHaveBeenCalledWith(summary.branchName);
-    expect(writeClipboard).toHaveBeenCalledWith(summary.cwd);
-
-    act(() => {
-      root.unmount();
-    });
+      writeClipboard.mockClear();
+      await reactAct(async () => {
+        branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(writeClipboard).toHaveBeenNthCalledWith(1, summary.branchName);
+      expect(writeClipboard).toHaveBeenNthCalledWith(2, summary.cwd);
+      expect(writeClipboard).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      vi.useRealTimers();
+    }
   });
   it("colors live service urls green", () => {
     const root = createRoot(container);
