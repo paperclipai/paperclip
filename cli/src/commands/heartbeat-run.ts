@@ -223,10 +223,19 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
       handleEvent(event);
     }
 
-      const runList = (await api.get<(HeartbeatRun | null)[]>(
-        `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}`,
-      )) || [];
-      const currentRun = runList.find((r) => r && r.id === activeRunId) ?? null;
+      // Read the one run we are following by id rather than scanning the
+      // company run list. `GET /companies/:companyId/heartbeat-runs` applies no
+      // LIMIT at all when the caller sends none, so the list form pulled this
+      // agent's entire run history (thousands of rows, and a bind list of every
+      // id in `redactForRuns`) on every 200ms poll to read a single row.
+      // The by-id route is also the only one that projects the fields the
+      // failure report below prints: the list hard-codes `stdoutExcerpt` and
+      // `stderrExcerpt` to NULL and reduces `resultJson` to a summary without
+      // `subtype`/`is_error`/`errors`.
+      const currentRun = await api.get<HeartbeatRun>(
+        `/api/heartbeat-runs/${activeRunId}`,
+        { ignoreNotFound: true },
+      );
 
     if (!currentRun) {
       console.error(pc.red("Heartbeat run disappeared"));
