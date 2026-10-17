@@ -3719,16 +3719,27 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects external value rotations when the provider cannot write values", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const secret = await svc.create(companyId, {
-      name: `external-${randomUUID()}`,
-      provider: "vault",
-      managedMode: "external_reference",
-      externalRef: "kv/data/shared/neon-admin",
-    });
+    // A vault deployment always has an address in scope (the orchestrator sets
+    // VAULT_ADDR / PAPERCLIP_SECRETS_VAULT_ADDR). Provide one so the
+    // metadata-only external_reference link can resolve its managed mount; this
+    // test is about rotate rejecting external-value writes, not the address.
+    const prevAddr = process.env.PAPERCLIP_SECRETS_VAULT_ADDR;
+    process.env.PAPERCLIP_SECRETS_VAULT_ADDR = "http://127.0.0.1:8200";
+    try {
+      const secret = await svc.create(companyId, {
+        name: `external-${randomUUID()}`,
+        provider: "vault",
+        managedMode: "external_reference",
+        externalRef: "kv/data/shared/neon-admin",
+      });
 
-    await expect(svc.rotate(secret.id, { value: "new-admin-key" })).rejects.toThrow(
-      /does not support writing values/,
-    );
+      await expect(svc.rotate(secret.id, { value: "new-admin-key" })).rejects.toThrow(
+        /does not support writing values/,
+      );
+    } finally {
+      if (prevAddr === undefined) delete process.env.PAPERCLIP_SECRETS_VAULT_ADDR;
+      else process.env.PAPERCLIP_SECRETS_VAULT_ADDR = prevAddr;
+    }
   });
 
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {

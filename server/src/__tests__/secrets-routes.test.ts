@@ -572,11 +572,12 @@ describe("secret routes", () => {
 
   it("rejects ready status for coming-soon provider vaults", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
-      provider: "vault",
-      displayName: "Vault draft",
+      provider: "gcp_secret_manager",
+      displayName: "GCP draft",
       status: "ready",
       config: {
-        address: "https://vault.example.com",
+        projectId: "paperclip-prod",
+        location: "global",
       },
     });
 
@@ -677,6 +678,47 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("accessKey");
+  });
+
+  it("accepts a ready vault provider config with the canonical API field names", async () => {
+    mockSecretService.createProviderConfig.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "vault",
+      displayName: "Vault prod",
+      status: "ready",
+      isDefault: true,
+    });
+    const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
+      provider: "vault",
+      displayName: "Vault prod",
+      isDefault: true,
+      config: {
+        address: "https://vault.example.com",
+        mountPath: "secret",
+        secretPathPrefix: "paperclip/prod",
+        versionRetention: 20,
+        auth: { method: "kubernetes", role: "paperclip-server" },
+      },
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.createProviderConfig).toHaveBeenCalledWith(
+      "company-1",
+      {
+        provider: "vault",
+        displayName: "Vault prod",
+        status: undefined,
+        isDefault: true,
+        config: {
+          address: "https://vault.example.com",
+          mountPath: "secret",
+          secretPathPrefix: "paperclip/prod",
+          versionRetention: 20,
+          auth: { method: "kubernetes", role: "paperclip-server" },
+        },
+      },
+      { userId: "user-1", agentId: null },
+    );
   });
 
   it("removes provider vault config locally without deleting remote provider data", async () => {

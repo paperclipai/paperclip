@@ -67,4 +67,12 @@ describe("secret provider registry", () => {
     expect(local?.warnings?.join("\n")).toContain("chmod 600");
     expect(local?.backupGuidance?.join("\n")).toContain("database");
   });
+
+  it("registers the vault provider as a real implementation", () => {
+    const list = listSecretProviders();
+    const vault = list.find((p) => p.id === "vault");
+    expect(vault?.label).toMatch(/Vault|OpenBao/);
+    expect(vault?.supportsManagedValues).toBe(true);
+    expect(vault?.supportsExternalReferences).toBe(true);
+  });
 });

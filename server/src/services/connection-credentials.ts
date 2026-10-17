@@ -5,6 +5,7 @@ import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 import { connectionCredentialConfigPath } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
 export { connectionCredentialConfigPath } from "@paperclipai/shared";
 
@@ -73,7 +74,7 @@ export async function writeConnectionCredential(
   const metadata = {
     name: `${input.connectionName} ${input.label} ${randomUUID().slice(0, 8)}`,
     key: `tool_app.${randomUUID()}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
-    provider: "local_encrypted" as const,
+    provider: getConfiguredSecretProvider(),
     description: `Credential for ${input.connectionName} (${input.configPath}).`,
   };
   if (!input.ownerUserId) {

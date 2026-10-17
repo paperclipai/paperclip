@@ -193,6 +193,30 @@ describe("secret validators", () => {
     ).toThrow(/origin-only HTTP\(S\) URL/i);
   });
 
+  it("accepts non-vault provider config updates without applying the Vault schema", () => {
+    // An update carries no provider field, so it must not validate against the
+    // Vault schema (which would reject AWS `region`, GCP `projectId`, and the
+    // local `backupReminderAcknowledged`). Provider-specific validation runs in
+    // the service via validateProviderConfigPayload.
+    expect(() =>
+      updateSecretProviderConfigSchema.parse({
+        config: { region: "us-east-1", namespace: "production" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      updateSecretProviderConfigSchema.parse({
+        config: { projectId: "paperclip-prod", location: "global" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      updateSecretProviderConfigSchema.parse({
+        config: { backupReminderAcknowledged: true },
+      }),
+    ).not.toThrow();
+  });
+
   it("validates AWS remote import preview and import payloads", () => {
     expect(
       remoteSecretImportPreviewSchema.parse({

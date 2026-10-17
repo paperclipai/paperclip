@@ -44,6 +44,7 @@ import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
@@ -661,7 +662,7 @@ export function aiConnectionService(db: Db) {
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,
             name: input.name,
-            provider: "local_encrypted",
+            provider: getConfiguredSecretProvider(),
           },
           { userId },
         );
@@ -678,7 +679,7 @@ export function aiConnectionService(db: Db) {
             companyId,
             {
               name: `ai-${grantId}`,
-              provider: "local_encrypted",
+              provider: getConfiguredSecretProvider(),
               value: verifiedCredential,
             },
             { userId },

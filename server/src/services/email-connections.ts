@@ -11,6 +11,7 @@ import {
 import type { EmailConnectionInput, EmailCredentialOption } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, notFound } from "../errors.js";
 import { secretService } from "./secrets.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { lockToolConnectionRuntimeInputs, toolAccessService } from "./tool-access.js";
 import { agentmailApi } from "./agentmail-api.js";
 import { logActivity } from "./activity-log.js";
@@ -217,7 +218,7 @@ export function emailConnectionService(
         );
       const secret = await secrets.create(companyId, {
         name: `AgentMail ${identity.scope_type === "inbox" ? "inbox" : "account"} API key ${randomUUID().slice(0, 8)}`,
-        provider: "local_encrypted",
+        provider: getConfiguredSecretProvider(),
         value: input.apiKey,
       });
       const app = await tools.createApplication(companyId, {
