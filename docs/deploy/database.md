@@ -79,6 +79,41 @@ The server opens one postgres.js pool for its own queries (and a second one when
 
 The server ends its pools during shutdown (SIGINT/SIGTERM) and when startup fails after the pool was opened, so a restarting server does not leave idle backends behind. Size `max_connections` on the PostgreSQL side for at least `DATABASE_POOL_MAX` per server process plus your other clients.
 
+## Credential reload (SIGHUP)
+
+When a database credential is issued by a secret manager on a lease (HashiCorp Vault database secrets, AWS RDS credential rotation, a rotating service token), the password changes while the server is running. A paperclip pool opened with the old password would keep using it. `DATABASE_URL_FILE` + `SIGHUP` avoids a restart for exactly this case.
+
+Set `DATABASE_URL_FILE` to the path of a file that always holds the current connection string (the pool's `host`, `port`, `user`, and `database` stay fixed to `DATABASE_URL`; only the password is taken from the file's URL on each reconnect). When set:
+
+1. The pool opens every connection using the password read from the file (postgres.js `pass`), so a write to the file is picked up on the next connection.
+2. The server registers a `SIGHUP` handler. On `SIGHUP` it re-reads the file and, only when the file still points at the same `host`/`port`/`user`/`database` (i.e. a credential rotation, not a repoint), closes the pool. The next query reconnects with the freshly written password.
+
+A `SIGHUP` where the file is unchanged, or that would change the target, is a no-op: a changed target is a configuration change you apply with a restart, not a silent pool reset. `SIGHUP` is registered **only** when `DATABASE_URL_FILE` is set, so a deployment that never rotates its credential sees no behavior change and still treats `SIGHUP` as a no-op.
+
+The handler never throws out of the process: a failed re-read or close logs a warning and keeps the existing pool, so a `SIGHUP` at a bad moment cannot take the server down. The credential reload applies to the application pool; `DATABASE_MIGRATION_URL` (when it points at a different connection) is not affected.
+
+A generic orchestrator triggers it without any Paperclip-specific knowledge:
+
+```hcl
+# Nomad: send SIGHUP on credential-change signal
+services { name = "paperclip" }
+tasks {
+  # Vault agent writes the rotated connection string to the file below.
+  env { name = "DATABASE_URL_FILE" value = "/home/secret/paperclip/database_url" }
+  change_signals {
+    SIGHUP { }
+  }
+}
+```
+
+```sh
+# any orchestrator: rotate the file, then signal
+printf '%s' "$NEW_CONNECTION_STRING" > "$DATABASE_URL_FILE"
+kill -HUP "$PID"
+```
+
+Because only the password is applied live, you may include (or omit) a password in `DATABASE_URL` itself — the file's URL wins. The file only needs to be read-writable by the server process; the server never writes it.
+
 ## Switching Between Modes
 
 | `DATABASE_URL` | Mode |
