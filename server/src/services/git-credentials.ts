@@ -362,24 +362,30 @@ export async function resolveManagedGitHubIdentitySelection(
     : [];
   const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
   const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
+  // COR-4217: a grant without GitHub account metadata can never yield a credential
+  // (credential acquisition requires providerTenant.github), so it must not create
+  // identity ambiguity for healthy grants. Filter inert grants before the
+  // multi-identity guard; if none remain, keep the original set for truthful errors.
+  const usableCandidates = candidates.filter((candidate) => candidate.providerTenant?.github?.userId?.trim());
+  const selectionCandidates = usableCandidates.length > 0 ? usableCandidates : candidates;
   // Reconnecting can create another connection/grant for the same GitHub
   // account. Ambiguity is about provider identities, not the number of rows.
   // Only trust GitHub's stable account ID; equal logins or missing metadata
   // cannot establish that two grants belong to the same person.
-  const githubUserIds = candidates.map((candidate) => candidate.providerTenant?.github?.userId?.trim());
-  if (candidates.length === 0 || (candidates.length > 1 && (
+  const githubUserIds = selectionCandidates.map((candidate) => candidate.providerTenant?.github?.userId?.trim());
+  if (selectionCandidates.length === 0 || (selectionCandidates.length > 1 && (
     githubUserIds.some((id) => !id) || new Set(githubUserIds).size !== 1
   ))) {
     return {
       configured: true, identitySource,
-      error: candidates.length === 0
+      error: selectionCandidates.length === 0
         ? "No managed GitHub identity is available for this run"
         : "More than one managed GitHub identity matches this run",
     };
   }
-  const credentialIds = candidates.flatMap((grant) => grant.credentialSecretRefs
+  const credentialIds = selectionCandidates.flatMap((grant) => grant.credentialSecretRefs
     .filter((ref) => ref.configPath === "oauth.access_token").map((ref) => ref.secretId));
-  const credentialRecords = candidates.length > 1 && credentialIds.length > 0
+  const credentialRecords = selectionCandidates.length > 1 && credentialIds.length > 0
     ? await db.select({
         id: companySecrets.id, status: companySecrets.status, deletedAt: companySecrets.deletedAt,
         scope: companySecrets.scope, ownerUserId: companySecrets.ownerUserId,
@@ -392,7 +398,7 @@ export async function resolveManagedGitHubIdentitySelection(
       ))
     : [];
   const hasCredentialRecord = (grant: typeof connectionGrants.$inferSelect) => {
-    if (candidates.length === 1) return true;
+    if (selectionCandidates.length === 1) return true;
     const github = grant.providerTenant?.github;
     const ref = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
     return Boolean(github && github.installationCount > 0 && github.repositoryCount > 0 && ref
@@ -414,7 +420,7 @@ export async function resolveManagedGitHubIdentitySelection(
     const health = githubConnections.find((connection) => connection.id === candidate.connectionId)?.healthStatus;
     return health === "ok" || health === "healthy" ? 2 : health === "unknown" ? 1 : 0;
   };
-  const grant = candidates.filter((candidate) => candidate.id !== context.excludeGrantId).sort((a, b) =>
+  const grant = selectionCandidates.filter((candidate) => candidate.id !== context.excludeGrantId).sort((a, b) =>
     Number(isAvailable(b)) - Number(isAvailable(a))
     || healthRank(b) - healthRank(a)
     || b.createdAt.getTime() - a.createdAt.getTime()
