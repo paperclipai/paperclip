@@ -655,7 +655,7 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-(--sz-calc-29) flex-col -m-6">
+    <div className="flex h-(--boardchat-mobile-fill) flex-col -m-6 md:h-(--sz-calc-29)">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -949,6 +949,28 @@ export function BoardChat() {
                (mirrors IssueChatThread's composer dock). pointer-events pass through
                the fade so the scrollbar stays usable; the composer re-enables them. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-6 pt-6 pb-5">
+            {/* Mobile: floating feed toggle + sheet drawer. It rides inside the
+                dock's column, above the composer, so it can never cover the
+                send button — a `fixed bottom-20` button landed exactly on top
+                of it (NEXA-261). */}
+            <div className="pointer-events-auto -mr-2 mb-2 flex justify-end md:hidden">
+              <Sheet open={mobileFeedOpen} onOpenChange={setMobileFeedOpen}>
+                <SheetTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="secondary"
+                    className="h-10 w-10 rounded-full shadow-lg"
+                    aria-label="Open agent feed"
+                  >
+                    <Activity className="h-4 w-4" />
+                  </Button>
+                </SheetTrigger>
+                <SheetContent side="bottom" className="h-(--sz-70vh) p-0 rounded-t-xl">
+                  <ActivityFeed />
+                </SheetContent>
+              </Sheet>
+            </div>
             <ChatComposer
               ref={composerRef}
               value={input}
@@ -980,29 +1002,12 @@ export function BoardChat() {
         </div>
 
         {/* Right: Agent Feed — hidden on mobile */}
-        <div className="hidden md:flex md:min-h-0 md:min-w-0 md:flex-1">
+        <div
+          data-testid="board-chat-agent-feed"
+          className="hidden md:flex md:min-h-0 md:min-w-0 md:flex-1"
+        >
           <ActivityFeed />
         </div>
-      </div>
-
-      {/* Mobile: floating feed toggle + sheet drawer */}
-      <div className="md:hidden">
-        <Sheet open={mobileFeedOpen} onOpenChange={setMobileFeedOpen}>
-          <SheetTrigger asChild>
-            <Button
-              type="button"
-              size="icon"
-              variant="secondary"
-              className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full shadow-lg"
-              aria-label="Open agent feed"
-            >
-              <Activity className="h-4 w-4" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="bottom" className="h-(--sz-70vh) p-0 rounded-t-xl">
-            <ActivityFeed />
-          </SheetContent>
-        </Sheet>
       </div>
     </div>
   );
