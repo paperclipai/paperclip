@@ -101,6 +101,19 @@ describe("local process sandbox", () => {
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
+    for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const stat = await fs.lstat(alias).catch(() => null);
+      if (!stat?.isSymbolicLink()) continue;
+      const resolved = await fs.realpath(alias).catch(() => null);
+      if (!resolved?.startsWith("/usr/")) continue;
+      const link = target.args.findIndex((arg, index) =>
+        arg === "--symlink" && target.args[index + 2] === alias);
+      expect(link).toBeGreaterThan(-1);
+      expect(target.args[link + 1]).toBe(await fs.readlink(alias));
+      const mountTargets = target.args.flatMap((arg, index) =>
+        arg === "--bind" || arg === "--ro-bind" ? [target.args[index + 2]] : []);
+      expect(mountTargets).not.toContain(alias);
+    }
   });
 
   it.runIf(process.platform === "linux")("binds a confined absolute alias to the synchronized workspace", async () => {
