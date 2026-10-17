@@ -30,6 +30,8 @@ describe("agent cryptographic identity", () => {
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), "paperclip-identity-"));
     vi.stubEnv("PAPERCLIP_HOME", directory);
+    // This fixture invokes heartbeat directly, without server startup.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-identity-run-secret");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(directory, "master.key"));
     database = await startEmbeddedPostgresTestDatabase("paperclip-identity-");

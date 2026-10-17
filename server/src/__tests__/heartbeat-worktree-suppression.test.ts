@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   costEvents,
@@ -64,6 +64,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   }
 
   beforeAll(async () => {
+    // This fixture invokes heartbeat directly, without server startup.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-worktree-run-secret");
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -94,6 +96,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
   }, 60_000);
 
   async function insertAgentAndIssue() {
