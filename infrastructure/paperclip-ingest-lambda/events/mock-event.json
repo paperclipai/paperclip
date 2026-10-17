@@ -1,0 +1,17 @@
+{
+  "version": "0",
+  "id": "2f9ad8d2-b53f-4ce6-b766-dfd734f4bb3f",
+  "detail-type": "notion.webhook.received",
+  "source": "kinetica.notion",
+  "account": "123456789012",
+  "time": "2026-05-01T00:00:00Z",
+  "region": "us-east-1",
+  "resources": [],
+  "detail": {
+    "eventId": "evt_kin_375_sample",
+    "workspaceId": "notion_workspace_sample",
+    "entity": "task",
+    "operation": "upsert",
+    "entityId": "KIN-375"
+  }
+}
