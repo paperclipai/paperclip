@@ -230,6 +230,42 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("extracts the retry time from the subscription usage-limit wording", () => {
+    // ChatGPT Plus wording reported in #15613: no model name, no
+    // "switch to another model" clause, and a zone-less local reset clock.
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:13 PM.";
+    const now = new Date(2026, 9, 8, 19, 45, 0);
+
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 9, 8, 20, 13, 0, 0).getTime(),
+    );
+  });
+
+  it("rolls a past subscription reset clock to the next local day", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:13 PM.";
+    const now = new Date(2026, 9, 8, 21, 0, 0);
+
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 9, 9, 20, 13, 0, 0).getTime(),
+    );
+  });
+
+  it("parses an explicit timezone hint on the subscription wording", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:31 PM (America/Chicago).";
+    const now = new Date("2026-04-23T03:29:02.000Z");
+
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-23T04:31:00.000Z",
+    );
+  });
+
+  it("returns no retry time for the subscription wording without a clock", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) to keep going.";
+
+    expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
+  });
+
   it("classifies model-capacity messages as provider quota without reset metadata", () => {
     const errorMessage = "The requested model is at capacity. Please try again later.";
 
