@@ -3813,6 +3813,40 @@ export async function readInstalledSkillTargets(
   return out;
 }
 
+/**
+ * A desired skill key that no available entry matches is usually the right
+ * skill written with the wrong namespace (e.g. `company/<companyId>/<slug>`
+ * for a skill the catalog keys as `local/<hash>/<slug>`). When exactly one
+ * available skill carries the requested slug, name it in the warning so the
+ * fix does not require reading the whole catalog. Ambiguous matches are left
+ * unsuggested on purpose.
+ */
+export function suggestAvailableSkillKey(
+  desiredSkill: string,
+  availableEntries: readonly PaperclipSkillEntry[],
+): string | null {
+  const desiredSlug = desiredSkill.split("/").pop();
+  if (!desiredSlug) return null;
+  // An entry whose source is missing cannot be mounted either, so naming it
+  // would send the operator to a key that leaves the warning in place.
+  const matches = availableEntries.filter((entry) => (
+    entry.key !== desiredSkill
+    && entry.sourceStatus !== "missing"
+    && (entry.runtimeName === desiredSlug || entry.key.split("/").pop() === desiredSlug)
+  ));
+  if (matches.length !== 1) return null;
+  return matches[0]!.key;
+}
+
+function buildUnavailableDesiredSkillWarning(
+  desiredSkill: string,
+  availableEntries: readonly PaperclipSkillEntry[],
+): string {
+  const suggestion = suggestAvailableSkillKey(desiredSkill, availableEntries);
+  const base = `Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`;
+  return suggestion ? `${base} Did you mean "${suggestion}"?` : base;
+}
+
 export function buildRuntimeMountedSkillSnapshot(
   options: RuntimeMountedSkillSnapshotOptions,
 ): AdapterSkillSnapshot {
@@ -3881,9 +3915,7 @@ export function buildRuntimeMountedSkillSnapshot(
 
   for (const desiredSkill of desiredSkills) {
     if (availableByKey.has(desiredSkill)) continue;
-    warnings.push(
-      `Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`,
-    );
+    warnings.push(buildUnavailableDesiredSkillWarning(desiredSkill, availableEntries));
     entries.push({
       key: desiredSkill,
       runtimeName: null,
@@ -4013,9 +4045,7 @@ export function buildPersistentSkillSnapshot(
 
   for (const desiredSkill of desiredSkills) {
     if (availableByKey.has(desiredSkill)) continue;
-    warnings.push(
-      `Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`,
-    );
+    warnings.push(buildUnavailableDesiredSkillWarning(desiredSkill, availableEntries));
     entries.push({
       key: desiredSkill,
       runtimeName: null,
