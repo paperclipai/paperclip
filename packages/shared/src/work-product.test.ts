@@ -135,3 +135,32 @@ describe("create issue work product with resource ref", () => {
     expect(result.metadata?.resourceRef).toBeUndefined();
   });
 });
+
+describe("createIssueWorkProductSchema unknown keys", () => {
+  const validPayload = {
+    type: "document" as const,
+    provider: "test",
+    title: "t",
+  };
+
+  it("accepts a valid create payload", () => {
+    const result = createIssueWorkProductSchema.parse(validPayload);
+    expect(result.type).toBe("document");
+    expect(result.provider).toBe("test");
+    expect(result.title).toBe("t");
+    expect(result.status).toBe("active");
+  });
+
+  it("rejects an unknown content key instead of stripping it", () => {
+    const parsed = createIssueWorkProductSchema.safeParse({
+      ...validPayload,
+      content: "KEEP ME",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error("Expected unknown content key to fail validation");
+    }
+    expect(JSON.stringify(parsed.error.issues)).toContain("content");
+  });
+});
