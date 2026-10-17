@@ -228,6 +228,7 @@ Core fields:
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
+- paperclipMcp (object, optional): { enabled: boolean, tools?: string[] }. ACP engine, local runs only. When enabled, the Codex session gets Paperclip's own MCP server as `paperclip-api`, started with the run's credentials, so routine Paperclip API calls do not need shell network access. tools is the allowlist of MCP tool names and defaults to the issue workflow tools (paperclipGetIssue, paperclipGetHeartbeatContext, paperclipListComments, paperclipCheckoutIssue, paperclipUpdateIssue, paperclipAddComment). Off by default.
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

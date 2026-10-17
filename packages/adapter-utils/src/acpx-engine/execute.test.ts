@@ -180,6 +180,7 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    resolvePaperclipMcpEntrypoint?: () => Promise<string | null>;
   } = {},
 ) {
   // Skill reconciliation must never inspect or modify the developer's real
@@ -201,6 +202,7 @@ async function runExecutor(
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
+    ...(options.resolvePaperclipMcpEntrypoint ? { resolvePaperclipMcpEntrypoint: options.resolvePaperclipMcpEntrypoint } : {}),
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
       return buildRuntime(
@@ -8492,4 +8494,240 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+});
+
+describe("Paperclip MCP server for Codex ACP runs", () => {
+  async function makeMcpEntrypoint() {
+    const root = await makeTempRoot();
+    const entrypoint = path.join(root, "stdio.js");
+    await fs.writeFile(entrypoint, "#!/usr/bin/env node\n");
+    const resolved = await fs.realpath(entrypoint);
+    return { entrypoint: resolved, resolvePaperclipMcpEntrypoint: async () => resolved };
+  }
+
+  function codexConfigOf(meta: Record<string, unknown>[]): Record<string, unknown> | null {
+    const raw = (meta[0]?.env as Record<string, string> | undefined)?.CODEX_CONFIG;
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+  }
+
+  const defaultTools = [
+    "paperclipGetIssue",
+    "paperclipGetHeartbeatContext",
+    "paperclipListComments",
+    "paperclipCheckoutIssue",
+    "paperclipUpdateIssue",
+    "paperclipAddComment",
+  ];
+
+  it("is off by default and leaves the Codex startup config untouched", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const absent = await runExecutor({ agent: "codex", model: "gpt-5.6-sol" }, { resolvePaperclipMcpEntrypoint });
+    expect(codexConfigOf(absent.meta)).toEqual({ model: "gpt-5.6-sol" });
+    const disabled = await runExecutor(
+      { agent: "codex", model: "gpt-5.6-sol", paperclipMcp: { enabled: false, tools: defaultTools } },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    expect(codexConfigOf(disabled.meta)).toEqual({ model: "gpt-5.6-sol" });
+  });
+
+  it("exposes only the allowlisted tools through a stdio server that receives credentials by name", async () => {
+    const { entrypoint, resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const { meta } = await runExecutor(
+      { agent: "codex", model: "gpt-5.6-sol", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint, authToken: "assigned-run-token" },
+    );
+    const config = codexConfigOf(meta) as { mcp_servers: Record<string, Record<string, unknown>> };
+    expect(Object.keys(config.mcp_servers)).toEqual(["paperclip-api"]);
+    expect(config.mcp_servers["paperclip-api"]).toEqual({
+      command: process.execPath,
+      args: [entrypoint],
+      env_vars: [
+        "PAPERCLIP_API_URL",
+        "PAPERCLIP_API_KEY",
+        "PAPERCLIP_RUN_ID",
+        "PAPERCLIP_AGENT_ID",
+        "PAPERCLIP_COMPANY_ID",
+      ],
+      default_tools_approval_mode: "approve",
+      enabled_tools: defaultTools,
+    });
+    expect(config.mcp_servers["paperclip-api"]?.enabled_tools).not.toContain("paperclipApiRequest");
+    expect(config.mcp_servers["paperclip-api"]?.enabled_tools).not.toContain("paperclipCreateIssue");
+    expect(JSON.stringify(config)).not.toContain("assigned-run-token");
+  });
+
+  it("accepts a narrower or explicit allowlist and rejects malformed tool names", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const { meta, logs } = await runExecutor(
+      {
+        agent: "codex",
+        paperclipMcp: { enabled: true, tools: ["paperclipAddComment", "paperclipAddComment", "bad name", "--flag"] },
+      },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    const config = codexConfigOf(meta) as { mcp_servers: Record<string, Record<string, unknown>> };
+    expect(config.mcp_servers["paperclip-api"]?.enabled_tools).toEqual(["paperclipAddComment"]);
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] Ignoring invalid paperclipMcp tool names: bad name, --flag.\n",
+    });
+  });
+
+  it("does not start a server when the allowlist is empty", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const { meta, logs } = await runExecutor(
+      { agent: "codex", paperclipMcp: { enabled: true, tools: [] } },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    expect(codexConfigOf(meta)).toBeNull();
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] paperclipMcp has no valid tools; continuing without it.\n",
+    });
+  });
+
+  it("keeps sandbox, approval and network settings exactly as configured", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const { meta } = await runExecutor(
+      { agent: "codex", model: "gpt-5.6-sol", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    expect(Object.keys(codexConfigOf(meta) ?? {}).sort()).toEqual(["mcp_servers", "model"]);
+
+    const withUserPolicy = await runExecutor(
+      {
+        agent: "codex",
+        paperclipMcp: { enabled: true },
+        env: { CODEX_CONFIG: JSON.stringify({ approval_policy: "on-request", sandbox_workspace_write: { network_access: false } }) },
+      },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    const config = codexConfigOf(withUserPolicy.meta) as Record<string, unknown>;
+    expect(config.approval_policy).toBe("on-request");
+    expect(config.sandbox_workspace_write).toEqual({ network_access: false });
+    expect(Object.keys(config).sort()).toEqual(["approval_policy", "mcp_servers", "sandbox_workspace_write"]);
+  });
+
+  it("merges with user MCP servers without replacing them", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const { meta } = await runExecutor(
+      {
+        agent: "codex",
+        paperclipMcp: { enabled: true },
+        env: { CODEX_CONFIG: JSON.stringify({ mcp_servers: { memory: { command: "memory-mcp" } } }) },
+      },
+      { resolvePaperclipMcpEntrypoint },
+    );
+    const config = codexConfigOf(meta) as { mcp_servers: Record<string, unknown> };
+    expect(Object.keys(config.mcp_servers).sort()).toEqual(["memory", "paperclip-api"]);
+    expect(config.mcp_servers.memory).toEqual({ command: "memory-mcp" });
+  });
+
+  it("continues without the server and says so when no usable binary exists", async () => {
+    const { meta, logs } = await runExecutor(
+      { agent: "codex", model: "gpt-5.6-sol", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint: async () => null },
+    );
+    expect(codexConfigOf(meta)).toEqual({ model: "gpt-5.6-sol" });
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] paperclipMcp is enabled but no usable Paperclip MCP server was found for this run; continuing without it.\n",
+    });
+  });
+
+  it("is not injected into remote runs", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const localCwd = await makeTempRoot();
+    const remoteCwd = await makeTempRoot();
+    const { meta, logs } = await runExecutor(
+      { agent: "codex", model: "gpt-5.6-sol", cwd: localCwd, stateDir: path.join(localCwd, "state"), paperclipMcp: { enabled: true } },
+      {
+        resolvePaperclipMcpEntrypoint,
+        authToken: "real-run-jwt",
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        },
+      },
+    );
+    expect(codexConfigOf(meta)).toEqual({ model: "gpt-5.6-sol" });
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] paperclipMcp is only available for local runs; continuing without it.\n",
+    });
+  });
+
+  it("carries each run's own credentials in the process environment, never in the shared config", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const first = await runExecutor(
+      { agent: "codex", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint, authToken: "token-run-one" },
+    );
+    const second = await runExecutor(
+      { agent: "codex", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint, authToken: "token-run-two" },
+    );
+    const liveEnvOf = (run: typeof first) => (run.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(liveEnvOf(first).PAPERCLIP_API_KEY).toBe("token-run-one");
+    expect(liveEnvOf(second).PAPERCLIP_API_KEY).toBe("token-run-two");
+    expect(codexConfigOf(first.meta)).toEqual(codexConfigOf(second.meta));
+    expect(JSON.stringify([codexConfigOf(first.meta), codexConfigOf(second.meta)])).not.toMatch(/token-run-/);
+  });
+
+  it("launches a fresh server for each run even when warm runtimes are configured", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const runWarm = async () => {
+      const stateDir = path.join(await makeTempRoot(), "state");
+      let created = 0;
+      let ensured = 0;
+      const execute = createAcpxEngineExecutor({
+        resolvePaperclipMcpEntrypoint,
+        warmHandles: new Map(),
+        createRuntime: () => {
+          created += 1;
+          return buildRuntime(undefined, () => { ensured += 1; }) as never;
+        },
+      });
+      const config = {
+        agent: "codex",
+        stateDir,
+        mode: "persistent",
+        warmHandleIdleMs: 60_000,
+        paperclipMcp: { enabled: true },
+      };
+      const runOnce = (runId: string, sessionParams?: Record<string, unknown>) => execute({
+        runId,
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: sessionParams ? { sessionParams } : {},
+        config,
+        context: {},
+        authToken: "run-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      const first = await runOnce("warm-1");
+      const second = await runOnce("warm-2", first.sessionParams ?? undefined);
+      return { created, ensured };
+    };
+    expect(await runWarm()).toEqual({ created: 2, ensured: 2 });
+  });
+
+  it("starts a fresh runtime with the server on every resumed run", async () => {
+    const { resolvePaperclipMcpEntrypoint } = await makeMcpEntrypoint();
+    const first = await runExecutor(
+      { agent: "codex", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint, authToken: "token-run-one" },
+    );
+    const resumed = await runExecutor(
+      { agent: "codex", paperclipMcp: { enabled: true } },
+      { resolvePaperclipMcpEntrypoint, authToken: "token-run-two", runtime: { sessionParams: first.result.sessionParams } },
+    );
+    expect(first.runtimeOptions).toHaveLength(1);
+    expect(resumed.runtimeOptions).toHaveLength(1);
+    expect(codexConfigOf(resumed.meta)).toEqual(codexConfigOf(first.meta));
+    expect((resumed.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.PAPERCLIP_API_KEY).toBe("token-run-two");
+  });
 });

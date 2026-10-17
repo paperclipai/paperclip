@@ -26,6 +26,23 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `graceSec` | number | No | Grace period before force-kill |
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+| `paperclipMcp` | object | No | `{ enabled, tools? }`. Gives ACP-engine Codex sessions Paperclip's MCP server. See [Paperclip MCP tools](#paperclip-mcp-tools-acp-engine). Off by default |
+
+## Paperclip MCP tools (ACP engine)
+
+The Codex ACP engine starts `codex-acp` with a workspace-write sandbox and no network access. Shell commands that call the Paperclip API on loopback (`curl $PAPERCLIP_API_URL/...`) fail inside that sandbox, so agents retry them with an escalation, and each escalation is reviewed by Codex's automatic approvals reviewer. Setting `paperclipMcp` removes that round trip without relaxing the sandbox.
+
+```json
+{ "paperclipMcp": { "enabled": true } }
+```
+
+With `enabled: true`, Paperclip adds an `mcp_servers.paperclip-api` entry to the `CODEX_CONFIG` it passes to `codex-acp`. The entry launches the `@paperclipai/mcp-server` bundled with Paperclip on the host with `node`, so it runs outside the command sandbox and reaches the API with the run's own credentials. Existing `CODEX_CONFIG` content, including other `mcp_servers`, is preserved.
+
+- **Tools.** `tools` is an allowlist enforced by Codex (`enabled_tools`). It defaults to `paperclipGetIssue`, `paperclipGetHeartbeatContext`, `paperclipListComments`, `paperclipCheckoutIssue`, `paperclipUpdateIssue` and `paperclipAddComment`. Broad tools such as `paperclipApiRequest` and `paperclipCreateIssue` are available only if you list them. Names that are not tool identifiers are ignored and logged.
+- **Credentials.** The server config names the environment variables to forward (`PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_RUN_ID`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`) and carries no values. Each run starts a fresh `codex-acp` process, so the server receives that run's short-lived token and run id, including when a stored Codex session is resumed.
+- **Sandbox and approvals.** `paperclipMcp` does not change the Codex sandbox, network access, approval policy or reviewer. Other escalations are reviewed as before.
+- **Tool names.** Codex exposes the tools as `mcp__paperclip_api__<toolName>`. Name them in your agent instructions: a model that has to search for them first reads the full tool descriptions into its context.
+- **Scope.** The entry is added only for local ACP runs. Remote (SSH or sandbox) runs and the CLI engine are unchanged. If the bundled server cannot be found, the run continues without it and logs a warning.
 
 ## Session Persistence
 
