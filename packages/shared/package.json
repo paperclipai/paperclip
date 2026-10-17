@@ -40,7 +40,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && mkdir -p dist/cliplab && cp src/cliplab/LICENSE src/cliplab/PROVENANCE.md dist/cliplab/",
+    "build": "tsc && node -e \"const fs=require('fs');fs.mkdirSync('dist/cliplab',{recursive:true});fs.copyFileSync('src/cliplab/LICENSE','dist/cliplab/LICENSE');fs.copyFileSync('src/cliplab/PROVENANCE.md','dist/cliplab/PROVENANCE.md');\"",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },
