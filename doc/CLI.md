@@ -381,6 +381,36 @@ npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 
+### Runtime credential files
+
+POSIX service deployments can set `PAPERCLIP_API_KEY_FILE` to an absolute path
+instead of exporting the token value. For example, point it at a credential
+provided by the service manager. The CLI reads the file for authentication and
+does not copy its contents into the environment or context file.
+
+Credential precedence is `--api-key`, then `PAPERCLIP_API_KEY_FILE`, then
+`PAPERCLIP_API_KEY`, the selected profile's key environment variable, and stored
+board authentication. A present but empty file variable is an error. Any file
+error stops the command instead of selecting another identity or starting an
+interactive board login. A nonempty explicit `--api-key` still takes precedence.
+
+The resolved file must be a regular file owned by root or the effective user.
+Use mode `0400` or `0600`, or `0440`/`0640` for a trusted credential group. Group
+write/execute, other access, and owner execute permissions are rejected. The file
+must contain one nonempty visible-ASCII token, optionally followed by LF or CRLF,
+and must not exceed 64 KiB including that terminator. Internal whitespace and
+extra lines are rejected. Symlinks used for secret activation are supported;
+resolved `/nix/store` paths are rejected.
+
+Keep the file and its parent directories on a trusted local filesystem managed
+by the operator. The reader checks the opened inode, bounds the read, rejects
+observed metadata changes, and refuses FIFOs without waiting for a writer.
+Rotate by replacing the file atomically. A concurrent rotation can fail the
+current command; retry after rotation completes. These checks do not isolate
+secrets from root or the same Unix identity and do not impose a deadline on
+unresponsive filesystem I/O. Windows credential files are not supported; the
+existing explicit, environment, and stored-board methods remain available.
+
 ## Organization Commands
 
 ```sh
