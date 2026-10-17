@@ -87,6 +87,18 @@ export function resolveDefaultBackupDir(input: {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
 }
 
+/**
+ * Directory for adapter model-catalog override files (e.g. `claude.json`).
+ * Lives under the instance root so editing/replacing a file here updates the
+ * model picker without rebuilding or redeploying the app.
+ */
+export function resolveDefaultModelCatalogDir(input: {
+  homeDir?: string;
+  instanceId?: string;
+} = {}): string {
+  return path.resolve(resolvePaperclipInstanceRoot(input), "config", "model-catalogs");
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

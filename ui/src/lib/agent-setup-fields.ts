@@ -26,10 +26,24 @@ export function setupProviderKeys(adapter: string) {
   return adapter === "hermes_local" ? HERMES_PROVIDER_KEYS : PROVIDER_ENV_KEYS;
 }
 
-export function setupEfforts(adapter: string, model = ""): string[] {
+/**
+ * `catalogModels` is the server-fetched adapter model list, when available in
+ * the caller's scope; a matching entry's `efforts` (resolved server-side from
+ * the on-disk catalog override) takes precedence over the client-bundled
+ * lookup, so an operator-granted effort level reaches the picker without an
+ * app rebuild. Omitting it keeps the bundled-only lookup.
+ */
+export function setupEfforts(
+  adapter: string,
+  model = "",
+  catalogModels: readonly { id: string; efforts?: readonly string[] }[] = [],
+): string[] {
   switch (adapter) {
-    case "claude_local":
-      return [...claudeLocalReasoningEffortsForModel(model || DEFAULT_CLAUDE_LOCAL_MODEL)];
+    case "claude_local": {
+      const effectiveModel = model || DEFAULT_CLAUDE_LOCAL_MODEL;
+      const overrideEfforts = catalogModels.find((item) => item.id === effectiveModel)?.efforts;
+      return [...(overrideEfforts ?? claudeLocalReasoningEffortsForModel(effectiveModel))];
+    }
     case "codex_local":
       return codexReasoningEffortOptions(model || DEFAULT_CODEX_LOCAL_MODEL)
         .map((option) => option.value)

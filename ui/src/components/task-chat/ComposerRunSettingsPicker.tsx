@@ -127,7 +127,7 @@ export function ComposerRunSettingsPicker({
   const configuredModel = composerDefaultModel(agent);
   const model = selected.model ?? configuredModel;
   const modelName = models.find((item) => item.id === model)?.label ?? model ?? "";
-  const choices = composerEfforts(agent, model, models.map((item) => item.id));
+  const choices = composerEfforts(agent, model, models);
   const effort = selected.effort && choices.includes(selected.effort) ? selected.effort : null;
   const effortIndex = effort ? choices.indexOf(effort) + 1 : 0;
   const effortLabel = effort ? EFFORT_LABELS[effort] ?? effort : "Default";
@@ -176,7 +176,7 @@ export function ComposerRunSettingsPicker({
     setAssigneeSearch("");
   };
   const chooseModel = (value: string | null) => {
-    const nextChoices = composerEfforts(agent, value ?? configuredModel, models.map((item) => item.id));
+    const nextChoices = composerEfforts(agent, value ?? configuredModel, models);
     const preferred = selected.effort ?? getLastComposerEffort(companyId);
     onSettingsChange({ model: value, effort: preferred && nextChoices.includes(preferred) ? preferred : null, fast: false });
     setView("settings");

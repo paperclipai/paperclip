@@ -24,20 +24,26 @@ describe("composer run settings", () => {
     expect(composerDefaultModel(undefined)).toBe("");
   });
   it("shows only effort levels known for the selected harness and model", () => {
+    const withId = (id: string) => [{ id }];
     expect(composerEfforts(agent("codex_local"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "codex"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "opencode"), "gpt-6-astra", [])).toEqual([]);
     expect(composerEfforts(agent("codex_local"), "custom-private-model", [])).toEqual([]);
-    expect(composerEfforts(agent("opencode_local"), "openrouter/x/y", ["openrouter/x/y"])).toEqual([]);
-    expect(composerEfforts(agent("claude_local"), "claude-sonnet-5", ["claude-sonnet-5"])).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(composerEfforts(agent("claude_local"), "claude-haiku-4-5", ["claude-haiku-4-5"])).toEqual([]);
-    expect(composerEfforts(agent("grok_local"), "grok-4.7", ["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(composerEfforts(agent("opencode_local"), "openrouter/x/y", withId("openrouter/x/y"))).toEqual([]);
+    expect(composerEfforts(agent("claude_local"), "claude-sonnet-5", withId("claude-sonnet-5"))).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(composerEfforts(agent("claude_local"), "claude-haiku-4-5", withId("claude-haiku-4-5"))).toEqual([]);
+    expect(composerEfforts(agent("grok_local"), "grok-4.7", withId("grok-4.7"))).toEqual(["low", "medium", "high", "xhigh"]);
     expect(composerEfforts(agent("grok_local"), "grok-4.7", [])).toEqual([]);
-    expect(composerEfforts(agent("grok_local"), "", ["grok-build"])).toEqual(["low", "medium", "high"]);
-    expect(composerEfforts(agent("kimi_local"), "kimi-code/k3", ["kimi-code/k3"])).toEqual([]);
-    expect(composerEfforts({ ...agent("kimi_local"), adapterConfig: { engine: "cli" } }, "kimi-code/k3", ["kimi-code/k3"])).toEqual(["low", "high", "max"]);
-    expect(composerEfforts({ ...agent("kimi_local"), adapterConfig: { engine: " CLI " } }, "", ["kimi-code/kimi-for-coding"])).toEqual(["low", "high", "max"]);
-    expect(composerEfforts(agent("kimi_local"), "kimi-code/kimi-for-coding-highspeed", ["kimi-code/kimi-for-coding-highspeed"])).toEqual([]);
+    expect(composerEfforts(agent("grok_local"), "", withId("grok-build"))).toEqual(["low", "medium", "high"]);
+    expect(composerEfforts(agent("kimi_local"), "kimi-code/k3", withId("kimi-code/k3"))).toEqual([]);
+    expect(composerEfforts({ ...agent("kimi_local"), adapterConfig: { engine: "cli" } }, "kimi-code/k3", withId("kimi-code/k3"))).toEqual(["low", "high", "max"]);
+    expect(composerEfforts({ ...agent("kimi_local"), adapterConfig: { engine: " CLI " } }, "", withId("kimi-code/kimi-for-coding"))).toEqual(["low", "high", "max"]);
+    expect(composerEfforts(agent("kimi_local"), "kimi-code/kimi-for-coding-highspeed", withId("kimi-code/kimi-for-coding-highspeed"))).toEqual([]);
+    // A server-resolved `efforts` entry (sourced from an operator's on-disk catalog
+    // override) takes precedence over the client-bundled lookup, which would
+    // otherwise return [] for haiku-4-5.
+    expect(composerEfforts(agent("claude_local"), "claude-haiku-4-5", [{ id: "claude-haiku-4-5", efforts: ["low", "medium", "high", "xhigh"] }]))
+      .toEqual(["low", "medium", "high", "xhigh"]);
     expect(composerFastAvailable(agent("codex_local"), "gpt-6-astra")).toBe(true);
     expect(composerFastAvailable(agent("codex_local"), "custom-private-model")).toBe(false);
     expect(supportsComposerModel(agent("process"))).toBe(false);

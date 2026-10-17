@@ -50,6 +50,8 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** Reasoning-effort levels this model supports, when the server resolves per-model effort data. */
+  efforts?: readonly string[];
 }
 
 export interface DetectedAdapterModel {

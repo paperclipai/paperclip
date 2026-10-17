@@ -3,7 +3,8 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
 import { aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
-import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
+import { models as claudeModels } from "@paperclipai/adapter-claude-local";
+import { resolveClaudeReasoningEfforts } from "@paperclipai/adapter-claude-local/server";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { aiConnectionService } from "./ai-connections.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -53,7 +54,7 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
   }
   const model = String(config.model);
   const efforts = provider === "openai" ? codexLocalReasoningEffortsForModel(model)
-    : provider === "anthropic" ? claudeLocalReasoningEffortsForModel(model)
+    : provider === "anthropic" ? resolveClaudeReasoningEfforts(model)
     : provider === "xai" ? grokLocalReasoningEffortsForModel(model) : [];
   // ACPX currently has no qualified effort override; keep that host limitation explicit.
   const effortKey = adapterType === "paperclip_runner" ? profile.provider === "codex" ? "modelReasoningEffort" : null

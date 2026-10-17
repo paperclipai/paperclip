@@ -985,6 +985,8 @@ Every local install keeps runtime state directly under the selected instance roo
   data/
     storage/                                     # local_disk uploads
     backups/                                     # automatic DB backups
+  config/
+    model-catalogs/claude.json                   # optional claude_local model-catalog override
   logs/
   runtime-services/                             # managed local-service registry
   runtime-service-logs/                         # append-only managed-service stdout/stderr
@@ -996,6 +998,29 @@ Every local install keeps runtime state directly under the selected instance roo
 ```
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
+
+`config/model-catalogs/claude.json` is an optional override for the `claude_local`
+adapter's model picker, read by `listClaudeModels()`
+(`packages/adapters/claude-local/src/server/models.ts`). It is not created by
+default; when absent, the server falls back to the bundled catalog in
+`packages/adapters/claude-local/src/model-catalog.default.ts`. Drop a file
+there (shaped like `{ "version": 1, "direct": [{ "id": "...", "label": "...",
+"efforts"?: [...] }], "bedrock": [...] }`) to add, relabel, or change the
+reasoning-effort support of a model without rebuilding or redeploying the
+app — the server re-reads it (by file mtime) the next time the model list is
+fetched, and an invalid file is ignored with a warning rather than failing
+the request. `PAPERCLIP_CLAUDE_MODEL_CATALOG_FILE` points at a different path
+if you don't want to use the default location. Live Anthropic `/v1/models`
+discovery (when `ANTHROPIC_API_KEY` is set) still takes precedence over the
+catalog for any model id it returns, but a matching catalog entry's `efforts`
+is preserved through that merge. A model's `efforts` list flows end to end:
+the adapter models endpoint (`GET
+/companies/:companyId/adapters/claude_local/models`) returns it per entry,
+the UI's effort picker (`setupEfforts`/`composerEfforts`) prefers it over the
+app-bundled defaults, and server-side effort validation (the AI connection
+router's pool routing and the public MCP agent-config surface, via
+`resolveClaudeReasoningEfforts`) enforces the same list — so granting a model
+a new reasoning-effort level is a one-file edit, not a rebuild.
 
 Config updates preserve unrecognized top-level and nested keys so provider or
 plugin extensions survive `configure` and worktree port repair. Likely

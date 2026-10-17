@@ -1,5 +1,6 @@
 import { codexLocalReasoningEffortsForModel, DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
-import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
+import { resolveClaudeReasoningEfforts } from "@paperclipai/adapter-claude-local/server";
 import { unprocessable } from "../../errors.js";
 
 function effortSettings(adapterType: string, config: Record<string, unknown>) {
@@ -7,7 +8,7 @@ function effortSettings(adapterType: string, config: Record<string, unknown>) {
     return { field: "modelReasoningEffort", supported: codexLocalReasoningEffortsForModel(typeof config.model === "string" ? config.model : DEFAULT_CODEX_LOCAL_MODEL) };
   }
   if (adapterType === "claude_local") {
-    return { field: "effort", supported: claudeLocalReasoningEffortsForModel(typeof config.model === "string" ? config.model : DEFAULT_CLAUDE_LOCAL_MODEL) };
+    return { field: "effort", supported: resolveClaudeReasoningEfforts(typeof config.model === "string" ? config.model : DEFAULT_CLAUDE_LOCAL_MODEL) };
   }
   return { field: null, supported: [] as readonly string[] };
 }

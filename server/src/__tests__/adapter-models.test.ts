@@ -72,8 +72,8 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
-    expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
-    expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" });
+    expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"] });
+    expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh", "max"] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -156,7 +156,10 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("claude_local");
 
-    expect(models.filter((model) => model.id === id)).toEqual([{ id, label: displayName }]);
+    // The live-discovered label wins, but the catalog's effort data for the same id survives the merge.
+    expect(models.filter((model) => model.id === id)).toEqual([
+      { id, label: displayName, efforts: ["low", "medium", "high", "xhigh", "max"] },
+    ]);
     // Curated fallbacks discovery did not return are still merged in.
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);

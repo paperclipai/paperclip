@@ -59,7 +59,11 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
     ? "openrouter" : undefined;
 }
 
-export function composerEfforts(agent: Agent | undefined, model: string, catalogIds: readonly string[]): readonly string[] {
+export function composerEfforts(
+  agent: Agent | undefined,
+  model: string,
+  catalogModels: readonly { id: string; efforts?: readonly string[] }[],
+): readonly string[] {
   if (!agent) return [];
   const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
     : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
@@ -69,8 +73,11 @@ export function composerEfforts(agent: Agent | undefined, model: string, catalog
   if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
     return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];
   }
-  if (!catalogIds.includes(effectiveModel)) return [];
-  if (agent.adapterType === "claude_local") return claudeLocalReasoningEffortsForModel(effectiveModel);
+  const catalogEntry = catalogModels.find((item) => item.id === effectiveModel);
+  if (!catalogEntry) return [];
+  // The server resolves `efforts` from the on-disk catalog override when claude_local
+  // has one; fall back to the client-bundled lookup only when the server didn't supply it.
+  if (agent.adapterType === "claude_local") return catalogEntry.efforts ?? claudeLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
   if (agent.adapterType === "kimi_local" && typeof agent.adapterConfig.engine === "string"

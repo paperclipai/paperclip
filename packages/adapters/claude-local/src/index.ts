@@ -1,3 +1,7 @@
+import { DEFAULT_CLAUDE_REASONING_EFFORTS } from "@paperclipai/shared/claude-model-catalog";
+import { parseClaudeModelId, sameClaudeModelRelease } from "./model-id.js";
+import { DEFAULT_CLAUDE_MODEL_CATALOG } from "./model-catalog.default.js";
+
 export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5";
 
 /** Resolve Paperclip's default without replacing an explicit provider model. */
@@ -23,14 +27,25 @@ export function resolveClaudeModel(
 
 export const type = "claude_local";
 
+/**
+ * Reasoning-effort support per model, read from the bundled default catalog
+ * (`model-catalog.default.ts`). This runs in the browser bundle (the UI's
+ * effort picker calls it directly as a fallback), so it only ever sees the
+ * catalog that ships with the app, not a server instance's on-disk override.
+ * When the server has already resolved a model's `efforts` from the
+ * override-aware catalog (see `server/models.ts`'s `listClaudeModels()`),
+ * callers should prefer that value and use this only when it's absent.
+ */
 export function claudeLocalReasoningEffortsForModel(model: string): readonly string[] {
-  const id = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, "");
-  if (/^claude-haiku-/.test(id)) return [];
-  if (/^claude-(?:opus-5(?:-5)?|opus-4-[78]|sonnet-5(?:-5)?|fable-5(?:-1)?)$/.test(id)) {
-    return ["low", "medium", "high", "xhigh", "max"];
+  const key = parseClaudeModelId(model);
+  if (!key) return DEFAULT_CLAUDE_REASONING_EFFORTS;
+  for (const entry of DEFAULT_CLAUDE_MODEL_CATALOG.direct) {
+    const entryKey = parseClaudeModelId(entry.id);
+    if (entryKey && sameClaudeModelRelease(key, entryKey)) {
+      return entry.efforts ?? DEFAULT_CLAUDE_REASONING_EFFORTS;
+    }
   }
-  if (/^claude-(?:opus|sonnet)-4-6(?:-v1)?$/.test(id)) return ["low", "medium", "high", "max"];
-  return ["low", "medium", "high"];
+  return DEFAULT_CLAUDE_REASONING_EFFORTS;
 }
 export const label = "Claude Code";
 
@@ -38,22 +53,11 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code
 
 // Ordered the way the Claude app orders models (#14877): the newest release of each family
 // first, by decreasing capability, then older releases grouped by family. The server applies the
-// same order to discovered models (server/model-order.ts); the picker keeps it.
-export const models = [
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
-  { id: "claude-mythos-5", label: "Claude Mythos 5" },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
-  { id: "claude-fable-5", label: "Claude Fable 5" },
-  { id: "claude-opus-5", label: "Claude Opus 5" },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
-];
+// same order to discovered models (server/model-order.ts); the picker keeps it. Derived from the
+// bundled default catalog (see model-catalog.default.ts) so this and the server's fallback list
+// never drift apart.
+export const models = DEFAULT_CLAUDE_MODEL_CATALOG.direct.map(({ id, label, efforts }) =>
+  (efforts ? { id, label, efforts } : { id, label }));
 
 export const agentConfigurationDoc = `# claude_local agent configuration
 
@@ -94,6 +98,7 @@ Operational fields:
 Notes:
 - Claude Opus 5.5 uses model ID \`claude-opus-5-5\` and requires Claude Code v2.1.280 or later.
 - Claude Sonnet 5.5 uses model ID \`claude-sonnet-5-5\` and requires Claude Code v2.1.284 or later.
+- The server's model picker reads an operator-editable on-disk catalog override before falling back to the bundled model list; see "Local Instance Layout" in doc/DEVELOPING.md and PAPERCLIP_CLAUDE_MODEL_CATALOG_FILE.
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Claude permission flags. Both require Bubblewrap on the host and explicit engine="cli"; default or explicit ACP is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - The Claude ACP lane requires Node >=24.11.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.

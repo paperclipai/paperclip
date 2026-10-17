@@ -296,6 +296,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** Reasoning-effort levels this model supports, when the adapter resolves per-model effort data. */
+  efforts?: readonly string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";

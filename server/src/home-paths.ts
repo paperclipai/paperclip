@@ -8,6 +8,7 @@ import {
   resolveDefaultLogsDir as resolveSharedDefaultLogsDir,
   resolveDefaultSecretsKeyFilePath as resolveSharedDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir as resolveSharedDefaultStorageDir,
+  resolveDefaultModelCatalogDir as resolveSharedDefaultModelCatalogDir,
   resolveHomeAwarePath,
   resolvePaperclipConfigPathForInstance,
   resolvePaperclipHomeDir,
@@ -41,6 +42,10 @@ export function resolveDefaultSecretsKeyFilePath(): string {
 
 export function resolveDefaultStorageDir(): string {
   return resolveSharedDefaultStorageDir();
+}
+
+export function resolveDefaultModelCatalogDir(): string {
+  return resolveSharedDefaultModelCatalogDir();
 }
 
 export function resolveDefaultBackupDir(): string {
