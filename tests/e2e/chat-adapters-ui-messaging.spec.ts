@@ -208,6 +208,25 @@ test.describe("chat destination partial updates", () => {
 });
 
 test.describe("Board send delivery refresh", () => {
+  test.beforeEach(async ({ page }) => {
+    // Announcements can appear after navigation and cover the task composer.
+    // Dismiss them through the same UI path as a Board user.
+    await page.addLocatorHandler(
+      page
+        .getByRole("complementary", {
+          name: "Paperclip announcements",
+          exact: true,
+        })
+        .getByRole("button", {
+          name: "Dismiss announcement",
+          exact: true,
+        }),
+      async (dismiss) => {
+        await dismiss.click();
+      },
+    );
+  });
+
   for (const classic of [false, true]) {
     for (const entry of [
       "uuid",

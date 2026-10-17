@@ -182,6 +182,8 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   const recommendedAction = firstNonEmptyString(payload.recommendedAction);
   const nextActionOnApproval = firstNonEmptyString(payload.nextActionOnApproval);
   const proposedComment = firstNonEmptyString(payload.proposedComment);
+  const argumentsSummaryJson = firstNonEmptyString(payload.argumentsSummaryJson);
+  const argumentsHash = firstNonEmptyString(payload.argumentsHash);
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
@@ -232,6 +234,21 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
             {proposedComment}
           </pre>
+        </div>
+      )}
+      {argumentsSummaryJson && (
+        <div className="space-y-1.5">
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+            Arguments reviewed
+          </p>
+          <pre className="max-h-64 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+            {argumentsSummaryJson}
+          </pre>
+          {argumentsHash && (
+            <p className="text-xs text-muted-foreground">
+              Integrity hash: <code className="font-mono">{argumentsHash}</code>
+            </p>
+          )}
         </div>
       )}
     </div>

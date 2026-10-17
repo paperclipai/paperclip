@@ -16,7 +16,10 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import {
+  pendingConnectionIntentInteraction,
+  pendingToolActionWriteInteraction,
+} from "@/fixtures/issueThreadInteractionFixtures";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -3027,6 +3030,77 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     root = createRoot(container);
     show("user-board", "issue-2");
     expect(takeover()).not.toBeNull();
+  });
+});
+
+describe("TaskChatThread tool-action review", () => {
+  it("scrolls the approval takeover into view when Review request is clicked", async () => {
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const takeover = () =>
+      container.querySelector<HTMLElement>(
+        '[data-testid="task-chat-composer-takeover"]',
+      );
+
+    try {
+      render(
+        <TaskChatThread
+          issueId="issue-1"
+          comments={[]}
+          interactions={[pendingToolActionWriteInteraction]}
+          onAdd={async () => {}}
+          onAcceptInteraction={async () => {}}
+          onRejectInteraction={async () => {}}
+        />,
+      );
+
+      expect(takeover()).not.toBeNull();
+      await act(async () => {
+        takeover()!
+          .querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!
+          .click();
+      });
+      expect(takeover()).toBeNull();
+
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="task-chat-tool-review"] button',
+          )!
+          .click();
+      });
+      await act(async () => {
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => resolve());
+          });
+        });
+      });
+
+      expect(takeover()?.textContent).toContain("Approve & run");
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          originalScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
   });
 });
 

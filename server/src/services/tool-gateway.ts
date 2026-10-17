@@ -2525,6 +2525,7 @@ export function createToolGatewayService(
             actionRequestId: actionRequest.id,
             tool: input.tool.name,
             risk: input.tool.risk,
+            argumentsSummaryJson: input.argumentsSummary.summary,
             argumentsHash: canonicalArgumentsHash,
           },
         })

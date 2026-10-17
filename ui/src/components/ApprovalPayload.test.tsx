@@ -65,6 +65,36 @@ describe("ApprovalPayloadRenderer", () => {
     });
   });
 
+  it("renders redacted reviewed tool arguments and their integrity hash", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Approve high-risk tool action: composio-multi-execute-tool",
+              summary: "The tool requires formal board approval.",
+              argumentsSummaryJson: '{"action":"PRINTIFY_LIST_SHOPS","apiKey":"***REDACTED***"}',
+              argumentsHash: "sha256:reviewed-arguments",
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Arguments reviewed");
+    expect(container.textContent).toContain("PRINTIFY_LIST_SHOPS");
+    expect(container.textContent).toContain("***REDACTED***");
+    expect(container.textContent).toContain("sha256:reviewed-arguments");
+    expect(container.textContent).not.toContain("signedArguments");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders markdown in board approval prose fields", () => {
     const root = createRoot(container);
 

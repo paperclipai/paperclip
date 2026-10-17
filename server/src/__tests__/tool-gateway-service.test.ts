@@ -1084,7 +1084,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
       await gateway.executeTool({
         sessionToken: session.token,
         tool: "fixture:delete_everything",
-        parameters: { target: "repo" },
+        parameters: {
+          target: "repo",
+          innerAction: "PRINTIFY_LIST_SHOPS",
+          apiKey: "secret-value",
+        },
       });
     } catch (err) {
       approvalRequired = err as ToolGatewayHttpError;
@@ -1099,6 +1103,14 @@ describeEmbeddedPostgres("tool gateway service", () => {
       status: "pending",
       requestedByAgentId: agent.id,
     });
+    const approvalPayload = approval.payload as Record<string, unknown>;
+    expect(approvalPayload.argumentsSummaryJson).toEqual(
+      expect.stringContaining('"innerAction":"PRINTIFY_LIST_SHOPS"'),
+    );
+    expect(approvalPayload.argumentsSummaryJson).toContain("***REDACTED***");
+    expect(approvalPayload.argumentsSummaryJson).not.toContain("secret-value");
+    expect(approvalPayload.argumentsHash).toBe(actionRequest.canonicalArgumentsHash);
+    expect(approvalPayload).not.toHaveProperty("signedArguments");
     const [link] = await db.select().from(issueApprovals).where(and(
       eq(issueApprovals.issueId, session.issueId!),
       eq(issueApprovals.approvalId, approval.id),
