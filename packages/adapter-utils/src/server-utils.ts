@@ -3540,6 +3540,25 @@ function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
 
+/**
+ * Files to probe for `command` in one PATH directory; on Windows, one per PATHEXT entry,
+ * then the bare name when `includeBareName` is set.
+ */
+export function commandPathCandidates(
+  dir: string,
+  command: string,
+  options: { env?: NodeJS.ProcessEnv; includeBareName?: boolean } = {},
+): string[] {
+  const bare = path.join(dir, command);
+  if (process.platform !== "win32" || path.extname(command).length > 0) {
+    return [bare];
+  }
+  const withExts = windowsPathExts(options.env ?? process.env).map((ext) =>
+    path.join(dir, `${command}${ext}`),
+  );
+  return options.includeBareName ? [...withExts, bare] : withExts;
+}
+
 async function pathExists(candidate: string) {
   try {
     await fs.access(
@@ -3568,18 +3587,9 @@ async function resolveCommandPath(
   const pathValue = env.PATH ?? env.Path ?? "";
   const delimiter = process.platform === "win32" ? ";" : ":";
   const dirs = pathValue.split(delimiter).filter(Boolean);
-  const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
-  const hasExtension =
-    process.platform === "win32" && path.extname(command).length > 0;
 
   for (const dir of dirs) {
-    const candidates =
-      process.platform === "win32"
-        ? hasExtension
-          ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
-        : [path.join(dir, command)];
-    for (const candidate of candidates) {
+    for (const candidate of commandPathCandidates(dir, command, { env })) {
       if (await pathExists(candidate)) return candidate;
     }
   }
