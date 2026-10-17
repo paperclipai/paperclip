@@ -1,7 +1,8 @@
+import i18next from "i18next";
 import { describe, expect, it } from "vitest";
 import { t } from ".";
 import en from "./locales/en.json";
-import { localeMessages } from "./locales";
+import { DEFAULT_LOCALE, localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
@@ -18,23 +19,86 @@ describe("locale validation", () => {
     }
   });
 
-  it("rejects missing and extra nested keys", () => {
+  it("accepts a partial locale file", () => {
     expect(
       validateLocaleMessages({
         app: {
           noCompanies: {
             title: en.app.noCompanies.title,
-            description: en.app.noCompanies.description,
+          },
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("accepts an empty locale file", () => {
+    expect(validateLocaleMessages({})).toEqual([]);
+  });
+
+  it("rejects an extra nested key in a partial locale file", () => {
+    expect(
+      validateLocaleMessages({
+        app: {
+          noCompanies: {
+            title: en.app.noCompanies.title,
             unexpected: "Unexpected",
           },
         },
       }),
-    ).toEqual(
-      expect.arrayContaining([
-        "app.noCompanies.newCompany is missing",
-        "app.noCompanies.unexpected is not defined in English",
-      ]),
-    );
+    ).toEqual(["app.noCompanies.unexpected is not defined in English"]);
+  });
+
+  it("keeps every safety check active on a partial locale file", () => {
+    const reference = {
+      placeholder: "Invite {{name}}",
+      html: "Create company",
+      url: "Create company",
+      length: "Short",
+    };
+
+    expect(
+      validateLocaleMessages(
+        {
+          placeholder: "Invita {{nome}}",
+          html: "<strong>Crea azienda</strong>",
+          url: "https://example.test",
+          length: "x".repeat(200),
+        },
+        reference,
+      ),
+    ).toEqual([
+      "html contains disallowed raw HTML tag",
+      "length is too long: 200 characters exceeds 133",
+      'placeholder interpolation placeholders must match English exactly: expected ["name"], received ["nome"]',
+      "url contains disallowed unexpected URL",
+    ]);
+  });
+
+  it("falls back to English for a key that a partial locale omits", async () => {
+    const partialItalian = {
+      app: {
+        noCompanies: {
+          title: "Crea la tua prima azienda",
+        },
+      },
+    };
+    expect(validateLocaleMessages(partialItalian)).toEqual([]);
+
+    const instance = i18next.createInstance();
+    await instance.init({
+      resources: {
+        [DEFAULT_LOCALE]: { translation: en },
+        it: { translation: partialItalian },
+      },
+      lng: "it",
+      fallbackLng: DEFAULT_LOCALE,
+      defaultNS: "translation",
+      initAsync: false,
+    });
+
+    expect(instance.t("app.noCompanies.title")).toBe(partialItalian.app.noCompanies.title);
+    expect(instance.t("app.noCompanies.newCompany")).toBe(en.app.noCompanies.newCompany);
+    expect(instance.t("app.noCompanies.description")).toBe(en.app.noCompanies.description);
   });
 
   it("rejects non-string leaves", () => {
