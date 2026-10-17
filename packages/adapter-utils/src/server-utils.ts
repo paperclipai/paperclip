@@ -825,6 +825,13 @@ type PaperclipWakePayload = {
   fallbackFetchNeeded: boolean;
 };
 
+// Match markdown image links while allowing balanced parentheses in URLs.
+// Unrolled-loop form: [^()]* then (\( ... \) [^()]*)* — each iteration must
+// start with a literal "(", so the engine never has two ways to consume the
+// same character. The naive (?:[^()]+|\([^()]*\))* form backtracks
+// exponentially on an unclosed link (ReDoS on untrusted comment bodies).
+const MARKDOWN_IMAGE_LINK_RE = /!\[[^\]]*?\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
+
 function normalizePaperclipWakeRecovery(
   value: unknown,
 ): PaperclipWakeRecovery | null {
@@ -915,11 +922,12 @@ function normalizePaperclipWakeComment(
   const comment = parseObject(value);
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
-  if (!body.trim()) return null;
+  const sanitizedBody = body.replace(MARKDOWN_IMAGE_LINK_RE, "[image attachment omitted: $1]");
+  if (!sanitizedBody.trim()) return null;
   return {
     id: asString(comment.id, "").trim() || null,
     issueId: asString(comment.issueId, "").trim() || null,
-    body,
+    body: sanitizedBody,
     bodyTruncated: asBoolean(comment.bodyTruncated, false),
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
