@@ -6,6 +6,49 @@ import {
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 
+/**
+ * Best-effort repair for connection strings whose password contains
+ * characters (`#`, `?`, `/`, etc.) that are URL delimiters when left
+ * un-encoded. Users frequently paste a raw password into this field without
+ * realizing it needs percent-encoding, which then fails to parse downstream
+ * (the `postgres` driver parses this string as a URL). Leaves already-valid
+ * connection strings untouched, and gives up (returns the input unchanged)
+ * if the string doesn't look like `postgres://user:pass@host...`.
+ */
+export function normalizeConnectionStringCredentials(raw: string): string {
+  try {
+    new URL(raw);
+    return raw;
+  } catch {
+    // Fall through and attempt a repair below.
+  }
+
+  const schemeMatch = raw.match(/^(postgres(?:ql)?:\/\/)/);
+  if (!schemeMatch) return raw;
+
+  const scheme = schemeMatch[1];
+  const afterScheme = raw.slice(scheme.length);
+  const atIndex = afterScheme.lastIndexOf("@");
+  if (atIndex === -1) return raw;
+
+  const userinfo = afterScheme.slice(0, atIndex);
+  const hostAndRest = afterScheme.slice(atIndex + 1);
+  const colonIndex = userinfo.indexOf(":");
+  const user = colonIndex === -1 ? userinfo : userinfo.slice(0, colonIndex);
+  const password = colonIndex === -1 ? undefined : userinfo.slice(colonIndex + 1);
+
+  const encodedUserinfo =
+    password === undefined ? encodeURIComponent(user) : `${encodeURIComponent(user)}:${encodeURIComponent(password)}`;
+  const encoded = `${scheme}${encodedUserinfo}@${hostAndRest}`;
+
+  try {
+    new URL(encoded);
+    return encoded;
+  } catch {
+    return raw;
+  }
+}
+
 export async function promptDatabase(current?: DatabaseConfig): Promise<DatabaseConfig> {
   const instanceId = resolvePaperclipInstanceId();
   const defaultEmbeddedDir = resolveDefaultEmbeddedPostgresDir(instanceId);
@@ -62,7 +105,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
       process.exit(0);
     }
 
-    connectionString = value;
+    connectionString = normalizeConnectionStringCredentials(value || connectionStringDefault);
   } else {
     const dataDir = await p.text({
       message: "Embedded PostgreSQL data directory",
