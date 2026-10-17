@@ -83,6 +83,20 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.lstat(candidate).then(() => true).catch(() => false);
 }
 
+/**
+ * The workspace scope mounts an empty tmpfs on /tmp, so the host run scratch dir
+ * (TMPDIR and friends point at it) would not exist inside the sandbox. Bind just
+ * that one directory, never /tmp itself.
+ */
+export async function resolveRunScratchManagedPath(
+  env: Record<string, string | undefined>,
+): Promise<LocalProcessSandboxPath | null> {
+  const scratchDir = env.PAPERCLIP_RUN_SCRATCH_DIR?.trim();
+  if (!scratchDir || !path.isAbsolute(scratchDir)) return null;
+  const normalized = path.resolve(scratchDir);
+  return (await pathExists(normalized)) ? { path: normalized, access: "rw" } : null;
+}
+
 function parentDirectories(candidate: string): string[] {
   const directories: string[] = [];
   let current = path.dirname(candidate);
