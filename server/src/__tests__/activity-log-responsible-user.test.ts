@@ -243,4 +243,97 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
   });
+
+  it("persists null run attribution when the supplied runId is unknown", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const unknownRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId: unknownRunId,
+    }), [])).resolves.toBeDefined();
+
+    const row = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBeNull();
+  });
+
+  it("preserves run attribution when the supplied runId is known", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId,
+    }), []);
+
+    const row = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBe(runId);
+  });
 });
