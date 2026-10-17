@@ -83,12 +83,21 @@ async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string):
 
 export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec | null) {
   if (!spec) return null;
+  // Key the identity on the environment's workspace path, not on `remoteCwd`:
+  // on ssh targets `remoteCwd` is the per-run directory
+  // `<remoteWorkspacePath>/.paperclip-runtime/runs/<runId>/workspace`, so an
+  // identity that includes it never matches the next run of the same task and
+  // the saved session is never resumed. Claude CLI resumes a session id from
+  // any cwd and Codex sessions are stored globally, so the per-run directory
+  // layout itself does not need to change.
+  const remoteWorkspacePath =
+    typeof spec.remoteWorkspacePath === "string" ? spec.remoteWorkspacePath.trim() : "";
   return {
     transport: "ssh",
     host: spec.host,
     port: spec.port,
     username: spec.username,
-    remoteCwd: spec.remoteCwd,
+    remoteCwd: remoteWorkspacePath.length > 0 ? remoteWorkspacePath : spec.remoteCwd,
   } as const;
 }
 
