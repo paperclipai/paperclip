@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
 import { createToolDefinitions } from "./tools.js";
+export { createRunTaskTools } from "./run-task-tools.js";
 
 export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfigFromEnv()) {
   const server = new McpServer({

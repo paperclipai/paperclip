@@ -30,6 +30,15 @@ pnpm --filter @paperclipai/mcp-server build
 node packages/mcp-server/dist/stdio.js
 ```
 
+## Tools supplied by Paperclip runs
+
+Task-bound runs receive a bounded set from this package through Paperclip's
+authenticated HTTP MCP endpoint. It includes agent and issue discovery, issue
+and comment reads, and (in standard mode) issue creation, updates and comments.
+The ordinary issue API enforces company, run and resource permissions. The
+standalone server below has a wider surface; Paperclip does not add its generic
+API tool, administration or secret tools to the run endpoint.
+
 ## Tool Surface
 
 Run-scoped connection tools:

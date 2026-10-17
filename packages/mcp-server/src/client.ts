@@ -49,7 +49,7 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 export class PaperclipApiClient {
-  constructor(private readonly config: PaperclipMcpConfig) {}
+  constructor(private readonly config: PaperclipMcpConfig, private readonly requestTimeoutMs?: number) {}
 
   get defaults() {
     return {
@@ -96,6 +96,7 @@ export class PaperclipApiClient {
       method,
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: this.requestTimeoutMs ? AbortSignal.timeout(this.requestTimeoutMs) : undefined,
     });
     const parsedBody = await parseResponseBody(response);
 

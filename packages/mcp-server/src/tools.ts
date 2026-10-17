@@ -24,6 +24,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   schema: z.ZodObject;
+  executeRaw: (input: Record<string, unknown>) => Promise<unknown>;
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
@@ -39,6 +40,7 @@ function makeTool<TSchema extends z.ZodRawShape>(
     name,
     description,
     schema,
+    executeRaw: async (input) => execute(schema.parse(input)),
     execute: async (input) => {
       try {
         const parsed = schema.parse(input);
