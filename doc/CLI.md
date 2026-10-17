@@ -594,7 +594,7 @@ npx paperclipai token agent list --company-id <company-id> --agent <agent-id-or-
 npx paperclipai token agent revoke --company-id <company-id> --agent <agent-id-or-name> <key-id>
 ```
 
-Named board API keys use the board authorization model, support revocation and expiration metadata, and are audited server-side.
+Named board API keys use the board authorization model, support revocation and expiration metadata, and are audited server-side. `token board create` accepts at most one expiration mode: `--expires-at <iso8601>`, `--ttl-days <days>`, or `--never-expires`. With no expiration flag the server applies its default expiration (30 days). Combining expiration flags, or passing an empty `--expires-at`/`--ttl-days` value, is rejected with an error before any request is made.
 
 ```sh
 npx paperclipai token board create --company-id <company-id> --name external-admin
