@@ -10,7 +10,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { and, eq, inArray, or } from "drizzle-orm";
-import { isGitHubDotCom } from "./github-fetch.js";
+import { createHash } from "node:crypto";
+import { gitHubApiBase, isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
 
@@ -112,9 +113,137 @@ export function scrubGitCredentialText(text: string): string {
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
 }
 
+/** An identity GitHub has confirmed for a specific token. */
+export type VerifiedGitHubIdentity = { userId: string; login: string; verifiedAt: number };
+
+/**
+ * How long a `/user` answer is trusted. GitHub account ids and logins are immutable, so the
+ * only thing that can change is which token is being asked about — and the cache is keyed on
+ * the token, not the connection. A short window keeps the per-git-operation cost to one request
+ * per token per window while bounding how long an unverified tenant record could ride along.
+ */
+const GITHUB_IDENTITY_CACHE_TTL_MS = 10 * 60_000;
+const githubIdentityCache = new Map<string, VerifiedGitHubIdentity>();
+
+export function resetGitHubIdentityCache(): void {
+  githubIdentityCache.clear();
+}
+
+/**
+ * Ask GitHub who a token is. This is the only source of truth for a commit ident: the stored
+ * tenant record says which account the connection *was* established as, which can be stale,
+ * hand-edited, or a placeholder, and publishing it as an ident would attribute commits to
+ * whoever owns that id. Returns null rather than throwing — an unverified identity is a normal
+ * outcome (no network, rate limit, a token GitHub rejects) and the caller's response is to
+ * refuse the push, not to fall back to a guess.
+ */
+export async function resolveVerifiedGitHubIdentity(
+  token: string,
+  options: { now?: number; fetchImpl?: typeof fetch } = {},
+): Promise<VerifiedGitHubIdentity | null> {
+  if (!token) return null;
+  const now = options.now ?? Date.now();
+  // Keyed on the token so one connection's cached answer can never be served for another's.
+  // A raw token is a bearer secret, so only a non-reversible digest is used as a map key.
+  const key = createHash("sha256").update(token).digest("hex");
+  const cached = githubIdentityCache.get(key);
+  if (cached && now - cached.verifiedAt < GITHUB_IDENTITY_CACHE_TTL_MS) return cached;
+  let payload: { id?: unknown; login?: unknown };
+  try {
+    const doFetch = options.fetchImpl ?? fetch;
+    const response = await doFetch(`${gitHubApiBase("github.com")}/user`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "paperclip-git-credential",
+      },
+    });
+    if (!response.ok) return null;
+    payload = await response.json() as { id?: unknown; login?: unknown };
+  } catch {
+    return null;
+  }
+  const userId = typeof payload?.id === "number" && Number.isSafeInteger(payload.id) && payload.id > 0
+    ? String(payload.id)
+    : typeof payload?.id === "string" && /^[1-9][0-9]{0,19}$/.test(payload.id) ? payload.id : null;
+  const login = typeof payload?.login === "string" ? payload.login.trim() : null;
+  // Run the answer through the same gate the ident builder uses, so a `/user` payload that is
+  // structurally unusable is rejected here rather than producing a malformed ident later.
+  if (!userId || !login || !verifiedNoreplyEmail({ userId, login })) return null;
+  const identity: VerifiedGitHubIdentity = { userId, login, verifiedAt: now };
+  for (const [cachedKey, entry] of githubIdentityCache) {
+    if (now - entry.verifiedAt >= GITHUB_IDENTITY_CACHE_TTL_MS) githubIdentityCache.delete(cachedKey);
+  }
+  githubIdentityCache.set(key, identity);
+  return identity;
+}
+
+/**
+ * Reconcile a stored tenant identity against what the token actually is.
+ *
+ * Returns the identity to publish, or an error string explaining why none may be published.
+ * The stored record is treated as a *claim*, not as authority: a claim that GitHub contradicts
+ * is worse than no claim, because it would put commits in another account's name. A token with
+ * no resolvable identity fails closed — the caller surfaces the error instead of pushing under
+ * a fabricated address.
+ */
+export function reconcileGitHubIdentity(input: {
+  claimed?: { userId?: string | null; login?: string | null } | null;
+  verified: VerifiedGitHubIdentity | null;
+}): { identity?: { userId: string; login: string }; error?: string } {
+  if (!input.verified) {
+    return { error: "The GitHub credential could not be verified against GitHub, so no commit identity can be established" };
+  }
+  const claimedId = input.claimed?.userId?.trim() || null;
+  const claimedLogin = input.claimed?.login?.trim() || null;
+  if (claimedId && claimedId !== input.verified.userId) {
+    // Named in the error because the operator has to go fix a connection record, and the two
+    // ids are the whole diagnosis. No token material appears here.
+    return {
+      error: `The managed GitHub identity is recorded as account ${claimedId} but the credential authenticates as ${input.verified.userId} (${input.verified.login}); refusing to commit under a mismatched identity`,
+    };
+  }
+  if (claimedLogin && claimedLogin.toLowerCase() !== input.verified.login.toLowerCase()) {
+    return {
+      error: `The managed GitHub identity is recorded as "${claimedLogin}" but the credential authenticates as "${input.verified.login}"; refusing to commit under a mismatched identity`,
+    };
+  }
+  return { identity: { userId: input.verified.userId, login: input.verified.login } };
+}
+
+/**
+ * Build GitHub's stable noreply address for an account, or null when the identity is not one
+ * this module is willing to publish.
+ *
+ * GitHub resolves the *numeric* half of `<id>+<login>@users.noreply.github.com` and ignores the
+ * login entirely, so the id is the part that decides whose name a commit carries. An id that
+ * was typed by a human — copied from a sample, seeded into a tenant record, or assumed to be a
+ * namespace — silently attributes work to whichever account happens to own it. Only an id and
+ * login that GitHub itself answered with may reach an ident; anything else yields no ident at
+ * all, so the caller fails or falls back to ambient identity rather than forging one.
+ *
+ * The login is validated too: it appears verbatim in `user.name` and in the address, so a
+ * value that is not a syntactically valid GitHub login (spaces, `@`, newlines, an invented
+ * placeholder) is rejected instead of being written into git config.
+ */
+export function verifiedNoreplyEmail(identity: GitCredential["githubIdentity"]): string | null {
+  if (!identity) return null;
+  const userId = identity.userId?.trim();
+  const login = identity.login?.trim();
+  if (!userId || !login) return null;
+  // GitHub account ids are positive integers. Reject anything else outright: a non-numeric id
+  // is either a mistake or a placeholder, and neither may be published as an ident.
+  if (!/^[1-9][0-9]{0,19}$/.test(userId)) return null;
+  // GitHub logins are 1–39 chars of alphanumerics and single hyphens, never leading/trailing
+  // hyphen, never consecutive hyphens.
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(login)) return null;
+  return `${userId}+${login}@users.noreply.github.com`;
+}
+
 export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {
   const identity = credential.githubIdentity;
-  const noreplyEmail = identity ? `${identity.userId}+${identity.login}@users.noreply.github.com` : null;
+  const noreplyEmail = verifiedNoreplyEmail(identity);
   const configEntries = [
     ["credential.helper", ""],
     ["credential.https://github.com.helper", GIT_CREDENTIAL_HELPER],
@@ -123,9 +252,12 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
     ["url.https://github.com/.insteadOf", "ssh://git@github.com/"],
     ["url.https://github.com/.insteadOf", "git@www.github.com:"],
     ["url.https://github.com/.insteadOf", "ssh://git@www.github.com/"],
-    ...(identity ? [
+    // The ident is published only as a pair. Emitting `user.name` with a withheld email would
+    // leave git free to pair the fabricated name with whatever address the host happens to
+    // have, which is the same misattribution by a different route.
+    ...(identity && noreplyEmail ? [
       ["user.name", identity.login],
-      ["user.email", noreplyEmail!],
+      ["user.email", noreplyEmail],
     ] : []),
   ];
   return {
@@ -144,11 +276,11 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
       GH_TOKEN: credential.token,
       GITHUB_TOKEN: credential.token,
       GIT_TERMINAL_PROMPT: "0",
-      ...(identity ? {
+      ...(identity && noreplyEmail ? {
         GIT_AUTHOR_NAME: identity.login,
-        GIT_AUTHOR_EMAIL: noreplyEmail!,
+        GIT_AUTHOR_EMAIL: noreplyEmail,
         GIT_COMMITTER_NAME: identity.login,
-        GIT_COMMITTER_EMAIL: noreplyEmail!,
+        GIT_COMMITTER_EMAIL: noreplyEmail,
       } : {}),
       GIT_CONFIG_COUNT: String(configEntries.length),
       ...Object.fromEntries(configEntries.flatMap(([key, value], index) => [
@@ -544,13 +676,25 @@ export async function resolveManagedGitHubCredential(
     } else {
       token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
     }
+    // The tenant record is a claim about which account the connection was established as; the
+    // commit ident is published only from what GitHub says the token *is*. A record that
+    // contradicts the token — a stale rename, a hand-edited row, a seeded placeholder such as
+    // the stand-in `100000001` — would otherwise put every agent commit in an unrelated
+    // account's name, so a mismatch fails the whole acquisition instead of degrading silently.
+    const reconciliation = reconcileGitHubIdentity({
+      claimed: { userId: github.userId, login: github.login },
+      verified: await resolveVerifiedGitHubIdentity(token),
+    });
+    if (!reconciliation.identity) {
+      return { configured: true, identitySource: selection.identitySource, error: reconciliation.error };
+    }
     return {
       configured: true, identitySource: selection.identitySource,
       credential: {
         token,
         source: "managed_connection" as const,
         secretName: null,
-        githubIdentity: { userId: github.userId, login: github.login },
+        githubIdentity: reconciliation.identity,
         identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
         connectionId: grant.connectionId,
         grantId: grant.id,

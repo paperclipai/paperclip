@@ -11,7 +11,11 @@ import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
+  reconcileGitHubIdentity,
+  resetGitHubIdentityCache,
+  resolveVerifiedGitHubIdentity,
   scrubGitCredentialText,
+  verifiedNoreplyEmail,
 } from "../services/git-credentials.ts";
 
 const fakeDb = null as unknown as Db;
@@ -221,6 +225,174 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.env.GIT_COMMITTER_NAME).toBe("octocat");
     expect(invocation.env.GIT_COMMITTER_EMAIL).toBe("12345+octocat@users.noreply.github.com");
     expect(Object.values(invocation.env).filter((value) => value.includes("super-secret-token"))).toHaveLength(3);
+  });
+
+  it("withholds the commit identity entirely when the id is not a numeric account id", () => {
+    // The regression this guards: a stand-in tenant row carried `100000001`, a real but
+    // unrelated account, and the broker published it as the agent's own ident. A non-numeric or
+    // zero/negative id is therefore never published, even when the login looks plausible.
+    for (const userId of ["", "  ", "etqan-bot", "0", "-1", "12.5", "1e9", "1000000010000000000000x"]) {
+      const invocation = buildGitAuthInvocation({
+        token: "super-secret-token",
+        source: "managed_connection",
+        secretName: null,
+        githubIdentity: { userId, login: "octocat" },
+      });
+      expect(invocation.env.GIT_AUTHOR_EMAIL).toBeUndefined();
+      expect(invocation.env.GIT_COMMITTER_EMAIL).toBeUndefined();
+      expect(invocation.env.GIT_AUTHOR_NAME).toBeUndefined();
+      expect(Object.values(invocation.env)).not.toContain("user.email");
+    }
+  });
+
+  it("withholds the commit identity when the login is not a valid GitHub login", () => {
+    // `user.name` and the address both carry the login verbatim, so an invented or malformed
+    // value must not reach git config even when the numeric id is well-formed.
+    for (const login of ["", "  ", "etqan bot", "octo@cat", "octo\ncat", "-octocat", "octocat-", "a--b", "x".repeat(40)]) {
+      const invocation = buildGitAuthInvocation({
+        token: "super-secret-token",
+        source: "managed_connection",
+        secretName: null,
+        githubIdentity: { userId: "12345", login },
+      });
+      expect(invocation.env.GIT_AUTHOR_EMAIL).toBeUndefined();
+      expect(invocation.env.GIT_AUTHOR_NAME).toBeUndefined();
+      expect(Object.values(invocation.env)).not.toContain("user.name");
+    }
+  });
+
+  it("keeps publishing the identity for a well-formed account, including hyphenated logins", () => {
+    const invocation = buildGitAuthInvocation({
+      token: "super-secret-token",
+      source: "managed_connection",
+      secretName: null,
+      githubIdentity: { userId: "5732579", login: "al-bisher" },
+    });
+    expect(invocation.env.GIT_AUTHOR_EMAIL).toBe("5732579+al-bisher@users.noreply.github.com");
+    expect(invocation.env.GIT_COMMITTER_EMAIL).toBe("5732579+al-bisher@users.noreply.github.com");
+  });
+});
+
+describe("verifiedNoreplyEmail", () => {
+  it("builds the address only from a well-formed verified identity", () => {
+    expect(verifiedNoreplyEmail({ userId: "5732579", login: "albisher" }))
+      .toBe("5732579+albisher@users.noreply.github.com");
+    expect(verifiedNoreplyEmail(undefined)).toBeNull();
+    expect(verifiedNoreplyEmail({ userId: "5732579", login: "" })).toBeNull();
+  });
+});
+
+describe("resolveVerifiedGitHubIdentity", () => {
+  function jsonResponse(body: unknown, ok = true) {
+    return { ok, json: async () => body } as unknown as Response;
+  }
+
+  it("returns the id and login GitHub reports for the token", async () => {
+    resetGitHubIdentityCache();
+    const fetchImpl = vi.fn(async () => jsonResponse({ id: 5732579, login: "albisher" }));
+    const identity = await resolveVerifiedGitHubIdentity("tok-a", { now: 1_000, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(identity).toMatchObject({ userId: "5732579", login: "albisher" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.github.com/user");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-a");
+  });
+
+  it("serves a cached answer for the same token and re-verifies after the TTL", async () => {
+    resetGitHubIdentityCache();
+    const fetchImpl = vi.fn(async () => jsonResponse({ id: 5732579, login: "albisher" }));
+    const cast = fetchImpl as unknown as typeof fetch;
+    await resolveVerifiedGitHubIdentity("tok-b", { now: 1_000, fetchImpl: cast });
+    await resolveVerifiedGitHubIdentity("tok-b", { now: 2_000, fetchImpl: cast });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await resolveVerifiedGitHubIdentity("tok-b", { now: 1_000 + 11 * 60_000, fetchImpl: cast });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    resetGitHubIdentityCache();
+  });
+
+  it("never serves one token's cached identity for another", async () => {
+    resetGitHubIdentityCache();
+    const first = vi.fn(async () => jsonResponse({ id: 5732579, login: "albisher" }));
+    const second = vi.fn(async () => jsonResponse({ id: 100000001, login: "stranger" }));
+    await resolveVerifiedGitHubIdentity("tok-c", { now: 1_000, fetchImpl: first as unknown as typeof fetch });
+    const identity = await resolveVerifiedGitHubIdentity("tok-d", { now: 1_000, fetchImpl: second as unknown as typeof fetch });
+    expect(identity).toMatchObject({ userId: "100000001", login: "stranger" });
+    expect(first).toHaveBeenCalledTimes(1);
+    resetGitHubIdentityCache();
+  });
+
+  it("returns null instead of guessing when GitHub cannot answer", async () => {
+    resetGitHubIdentityCache();
+    for (const [label, fetchImpl] of [
+      ["401", async () => jsonResponse({ message: "Bad credentials" }, false)],
+      ["network error", async () => { throw new Error("ECONNREFUSED"); }],
+      ["non-integer id", async () => jsonResponse({ id: "not-a-number", login: "albisher" })],
+      ["zero id", async () => jsonResponse({ id: 0, login: "albisher" })],
+      ["missing login", async () => jsonResponse({ id: 5732579 })],
+      ["invalid login", async () => jsonResponse({ id: 5732579, login: "not a login" })],
+      ["empty token", async () => { throw new Error("must not be called"); }],
+    ] as const) {
+      const identity = await resolveVerifiedGitHubIdentity(
+        label === "empty token" ? "" : `tok-${label}`,
+        { now: 1_000, fetchImpl: fetchImpl as unknown as typeof fetch },
+      );
+      expect(identity, label).toBeNull();
+    }
+    resetGitHubIdentityCache();
+  });
+});
+
+describe("reconcileGitHubIdentity", () => {
+  it("publishes the token's own identity when the tenant record agrees", () => {
+    expect(reconcileGitHubIdentity({
+      claimed: { userId: "5732579", login: "albisher" },
+      verified: { userId: "5732579", login: "albisher", verifiedAt: 0 },
+    })).toEqual({ identity: { userId: "5732579", login: "albisher" } });
+  });
+
+  it("fails closed when the token cannot be verified at all", () => {
+    const result = reconcileGitHubIdentity({
+      claimed: { userId: "100000001", login: "etqan-bot" },
+      verified: null,
+    });
+    expect(result.identity).toBeUndefined();
+    expect(result.error).toMatch(/could not be verified/i);
+  });
+
+  it("refuses a tenant record whose id belongs to a different account", () => {
+    // The exact shape of the standing defect: the record says 100000001, the token is somebody
+    // else. Publishing the record would put the commit in the stranger's name.
+    const result = reconcileGitHubIdentity({
+      claimed: { userId: "100000001", login: "etqan-bot" },
+      verified: { userId: "5732579", login: "albisher", verifiedAt: 0 },
+    });
+    expect(result.identity).toBeUndefined();
+    expect(result.error).toContain("100000001");
+    expect(result.error).toContain("5732579");
+  });
+
+  it("refuses a tenant record whose login was renamed on GitHub", () => {
+    const result = reconcileGitHubIdentity({
+      claimed: { userId: "5732579", login: "old-login" },
+      verified: { userId: "5732579", login: "new-login", verifiedAt: 0 },
+    });
+    expect(result.identity).toBeUndefined();
+    expect(result.error).toContain("old-login");
+  });
+
+  it("accepts a record with no id or login, since the verified identity is authoritative", () => {
+    expect(reconcileGitHubIdentity({
+      claimed: null,
+      verified: { userId: "5732579", login: "albisher", verifiedAt: 0 },
+    })).toEqual({ identity: { userId: "5732579", login: "albisher" } });
+  });
+
+  it("never puts token material in the error it returns", () => {
+    const result = reconcileGitHubIdentity({
+      claimed: { userId: "100000001", login: "etqan-bot" },
+      verified: { userId: "5732579", login: "albisher", verifiedAt: 0 },
+    });
+    expect(result.error).not.toMatch(/gho_|ghp_|github_pat_/);
   });
 });
 
