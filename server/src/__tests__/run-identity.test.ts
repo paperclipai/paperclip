@@ -106,6 +106,53 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
+  async function seedCardAnswerInterrupt() {
+    const input = await seedInterrupt();
+    // #13539 queues card answers during an active run; the receipt names the interaction, not comments.
+    const contextSnapshot = { issueId: input.issueId };
+    await db.update(agentWakeupRequests).set({
+      payload: { issueId: input.issueId, mutation: "interaction", interactionId: randomUUID(),
+        interactionKind: "connection_intent", interactionStatus: "accepted",
+        queuedCommentInterrupt: { actorId: "operator", requestedAt: new Date().toISOString() } },
+    }).where(eq(agentWakeupRequests.id, input.queueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, input.runId));
+    return { ...input, messageIds: [] as string[], contextSnapshot };
+  }
+
+  it("starts a card-answer interrupt as an ordinary wake without delegated operator identity", async () => {
+    const input = await seedCardAnswerInterrupt();
+    const identity = await initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause: "dispatch" });
+    expect(identity).toMatchObject({ responsibleUserId: "A", cause: "dispatch" });
+    const history = await listRunIdentityContexts(db, input.companyId, input.runId);
+    expect(history.map(row => row.responsibleUserId)).toEqual(["A"]);
+  });
+
+  it.each(["other-actor", "other-task", "missing", "system-request", "agent-request", "no-marker", "comment-receipt-without-ids"])(
+    "still rejects a card-answer interrupt with %s", async (fault) => {
+      const input = await seedCardAnswerInterrupt();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId));
+      const payload = receipt.payload as Record<string, unknown>;
+      if (fault === "other-actor") {
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "someone-else" }).where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else if (fault === "system-request" || fault === "agent-request") {
+        await db.update(agentWakeupRequests).set({ requestedByActorType: fault === "system-request" ? "system" : "agent" })
+          .where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else if (fault === "missing") {
+        await db.update(agentWakeupRequests).set({ idempotencyKey: `queued-comment-interrupt:${randomUUID()}` })
+          .where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else {
+        const { queuedCommentInterrupt: _marker, mutation: _mutation, interactionId: _interaction, ...rest } = payload;
+        await db.update(agentWakeupRequests).set({ payload:
+          fault === "other-task" ? { ...payload, issueId: randomUUID() } :
+          fault === "no-marker" ? { ...rest, mutation: "interaction", interactionId: payload.interactionId } :
+          { ...rest, queuedCommentInterrupt: payload.queuedCommentInterrupt },
+        }).where(eq(agentWakeupRequests.id, input.queueId));
+      }
+      await expect(initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause: "dispatch" })).rejects.toThrow("interrupt authority");
+      expect(await listRunIdentityContexts(db, input.companyId, input.runId)).toHaveLength(0);
+    },
+  );
+
   it("holds acquisition during uncertain steering, preserves snapshots, and never rewinds on replay", async () => {
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [input.messageIds[0]], responsibleUserId: "A", cause: "instruction" });
