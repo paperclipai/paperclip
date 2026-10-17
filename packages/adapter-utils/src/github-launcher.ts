@@ -10,11 +10,29 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+// Windows resolves a bare 'git' through PATHEXT, so probing the extensionless name alone
+// finds nothing: only git.exe is on disk. PATHEXT is unset on POSIX, where the list below
+// reduces to the single extensionless candidate it has always probed. Candidate order
+// follows PATH order, then PATHEXT order inside each directory, as Windows resolves it.
+const extensions = (process.env.PATHEXT || '').split(';').map(e => e.trim()).filter(Boolean);
+const candidates = originalPath.flatMap(p => [
+  ...extensions.map(extension => path.join(p, program + extension)),
+  path.join(p, program),
+]);
+const executable = candidates.find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
+  process.exit(127);
+}
+// Windows only. spawn() below runs without a shell, and on Windows Node cannot start a .cmd
+// or .bat that way. Report the wrapper that PATH actually selects, rather than reaching past
+// it for an executable in a later directory: that would run a different tool than the PATH
+// order asks for and skip whatever setup the wrapper does. On POSIX such a file is an
+// ordinary executable, spawn runs it, and this guard must not fire.
+if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
+  process.stderr.write('Paperclip: ' + program + ' resolves to the batch wrapper ' + executable + ', which the managed launcher cannot start.\n');
   process.exit(127);
 }
 async function main() {
