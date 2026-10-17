@@ -16,6 +16,7 @@ import {
   issueRoutes,
 } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { ISSUE_LIST_MAX_LIMIT } from "../services/index.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
 
@@ -782,6 +783,65 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body).toMatchObject({
       error: "assigneeAgentId must be a UUID or 'null'",
     });
+  });
+
+  it("rejects a limit above the maximum instead of silently clamping it", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Board issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId);
+    for (const limit of [String(ISSUE_LIST_MAX_LIMIT + 1), "100000"]) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ limit });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body).toMatchObject({
+        error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}`,
+      });
+      // The old behavior answered 200 with a silently truncated page.
+      expect(Array.isArray(res.body)).toBe(false);
+    }
+  });
+
+  it("still serves a limit at the maximum, which is what the board UI asks for", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ limit: String(ISSUE_LIST_MAX_LIMIT) });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([issueId]);
   });
 
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {
