@@ -2150,49 +2150,68 @@ export function createToolGatewayService(
     tool?: ToolGatewayDescriptor | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
-    await db.insert(toolCallEvents).values({
-      companyId: input.session.companyId,
-      invocationId: input.invocationId ?? null,
-      actionRequestId: input.actionRequestId ?? null,
-      eventType: input.eventType,
-      outcome: input.outcome,
-      actorType:
-        input.session.actorType ?? (input.session.agentId ? "agent" : "system"),
-      actorId:
-        input.session.actorId ??
-        input.session.agentId ??
-        input.session.gatewayTokenId ??
-        input.session.companyId,
-      agentId: input.session.agentId,
-      issueId: input.session.issueId,
-      runId: input.session.runId,
-      applicationId: input.tool?.applicationId ?? null,
-      connectionId: input.tool?.connectionId ?? null,
-      catalogEntryId: input.tool?.catalogEntryId ?? null,
-      toolName: input.toolName,
-      decision: input.policyDecision ?? null,
-      reasonCode: input.reasonCode ?? null,
-      matchedPolicyIds: [],
-      requestHash: input.argumentsSummary?.sha256 ?? null,
-      requestSummary: input.argumentsSummary ?? null,
-      resultHash: input.resultSummary?.sha256 ?? null,
-      resultSummary: input.resultSummary ?? null,
-      resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
-      metadata:
-        Object.keys(metadata).length > 0 ||
-        input.metadata ||
-        input.session.projectId ||
-        input.session.identityContextId
-          ? {
-              ...metadata,
-              identityContextId: input.session.identityContextId ?? null,
-              gatewayId: input.session.gatewayId ?? null,
-              gatewayName: input.session.gatewayName ?? null,
-              projectId: input.session.projectId ?? null,
-              ...(input.metadata ?? {}),
-            }
-          : null,
-    });
+    try {
+      await db.insert(toolCallEvents).values({
+        companyId: input.session.companyId,
+        invocationId: input.invocationId ?? null,
+        actionRequestId: input.actionRequestId ?? null,
+        eventType: input.eventType,
+        outcome: input.outcome,
+        actorType:
+          input.session.actorType ?? (input.session.agentId ? "agent" : "system"),
+        actorId:
+          input.session.actorId ??
+          input.session.agentId ??
+          input.session.gatewayTokenId ??
+          input.session.companyId,
+        agentId: input.session.agentId,
+        issueId: input.session.issueId,
+        runId: input.session.runId,
+        applicationId: input.tool?.applicationId ?? null,
+        connectionId: input.tool?.connectionId ?? null,
+        catalogEntryId: input.tool?.catalogEntryId ?? null,
+        toolName: input.toolName,
+        decision: input.policyDecision ?? null,
+        reasonCode: input.reasonCode ?? null,
+        matchedPolicyIds: [],
+        requestHash: input.argumentsSummary?.sha256 ?? null,
+        requestSummary: input.argumentsSummary ?? null,
+        resultHash: input.resultSummary?.sha256 ?? null,
+        resultSummary: input.resultSummary ?? null,
+        resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
+        metadata:
+          Object.keys(metadata).length > 0 ||
+          input.metadata ||
+          input.session.projectId ||
+          input.session.identityContextId
+            ? {
+                ...metadata,
+                identityContextId: input.session.identityContextId ?? null,
+                gatewayId: input.session.gatewayId ?? null,
+                gatewayName: input.session.gatewayName ?? null,
+                projectId: input.session.projectId ?? null,
+                ...(input.metadata ?? {}),
+              }
+            : null,
+      });
+    } catch (error) {
+      // The tool_call_events row is audit data. A failed audit write is an
+      // observability gap, not a tool failure. Never let it mask the tool
+      // result or downgrade a succeeded invocation to failed.
+      logger.warn(
+        {
+          err: error,
+          companyId: input.session.companyId,
+          invocationId: input.invocationId ?? null,
+          actionRequestId: input.actionRequestId ?? null,
+          eventType: input.eventType,
+          outcome: input.outcome,
+          toolName: input.toolName,
+        },
+        "[tool-gateway] tool_call_events audit write failed",
+      );
+      await recordToolRuntimeAuditWriteFailure(db, input.session.companyId);
+    }
   }
 
   async function reflectToolActionInteractionLifecycle(input: {
@@ -9979,6 +9998,15 @@ export function createToolGatewayService(
       await assertGatewayTokenAction(session, "tools/call");
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
+      // tool_call_events.action_request_id is a UUID column. A caller can send an
+      // empty approvedActionRequestId, which the route keeps as a string and the
+      // audit insert would bind as "", failing the insert. Treat a blank value as
+      // absent so the audit row is written with a null id instead of erroring.
+      const approvedActionRequestId =
+        typeof input.approvedActionRequestId === "string" &&
+        input.approvedActionRequestId.trim() !== ""
+          ? input.approvedActionRequestId
+          : null;
 
       // A retry carries the signed originating operation, even if steering has
       // since accepted instructions from someone else in this same run.
@@ -10822,7 +10850,7 @@ export function createToolGatewayService(
         }
         await writeToolCallEvent({
           invocationId,
-          actionRequestId: input.approvedActionRequestId ?? null,
+          actionRequestId: approvedActionRequestId,
           session,
           eventType: "call_completed",
           outcome: "success",
@@ -10955,7 +10983,7 @@ export function createToolGatewayService(
         }
         await writeToolCallEvent({
           invocationId,
-          actionRequestId: input.approvedActionRequestId ?? null,
+          actionRequestId: approvedActionRequestId,
           session,
           eventType: status === 504 ? "call_failed" : "call_failed",
           outcome: status === 504 ? "timeout" : "failure",

@@ -592,7 +592,10 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         parameters: body.parameters ?? {},
         timeoutMs: body.timeoutMs,
         approvedActionRequestId:
-          typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
+          typeof body.approvedActionRequestId === "string" &&
+          body.approvedActionRequestId.trim() !== ""
+            ? body.approvedActionRequestId
+            : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
         callerHeaders: callerHeaders(req),
       });
