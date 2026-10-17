@@ -1455,6 +1455,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   assets?: AdapterManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
+  /** SSH targets: keep runtime assets in a per-key directory that survives across runs (see prepareRemoteManagedRuntime). */
+  assetStateKey?: string;
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
@@ -1493,6 +1495,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
       runId: input.runId,
+      assetStateKey: input.assetStateKey,
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,

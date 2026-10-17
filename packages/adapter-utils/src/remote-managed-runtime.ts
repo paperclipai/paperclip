@@ -38,6 +38,8 @@ export interface RemoteManagedRuntimeAsset {
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  /** See SandboxManagedRuntimeAsset.replaceEntries; applied when `assetStateKey` retains the asset directory. */
+  replaceEntries?: readonly string[];
   restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
@@ -118,6 +120,13 @@ export async function prepareRemoteManagedRuntime(input: {
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
+  /**
+   * Keep runtime assets (for example the Codex home with its session rollouts)
+   * in `<workspace>/.paperclip-runtime/state/<assetStateKey>/<adapterKey>` instead
+   * of the per-run directory, so a later run of the same task can resume the
+   * agent CLI's session. The runtime root itself stays per run.
+   */
+  assetStateKey?: string;
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
@@ -134,6 +143,10 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const assetStateKey = input.assetStateKey?.trim();
+  const assetRootDir = assetStateKey
+    ? path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "state", assetStateKey, input.adapterKey)
+    : runtimeRootDir;
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -170,8 +183,20 @@ export async function prepareRemoteManagedRuntime(input: {
   const assetDirs: Record<string, string> = {};
   try {
     for (const asset of input.assets ?? []) {
-      const remoteDir = path.posix.join(runtimeRootDir, asset.key);
+      const remoteDir = path.posix.join(assetRootDir, asset.key);
       assetDirs[asset.key] = remoteDir;
+      const replaceEntries = (asset.replaceEntries ?? []).filter(
+        (entry) => entry.length > 0 && entry !== "." && entry !== ".." && !entry.includes("/"),
+      );
+      if (assetStateKey && replaceEntries.length > 0) {
+        // The retained directory outlives the run: drop the host-owned entries
+        // first so a credential or config removed on the host is not reused.
+        await runSshCommand(
+          input.spec,
+          `mkdir -p ${shellQuote(remoteDir)} && cd ${shellQuote(remoteDir)} && rm -rf -- ${replaceEntries.map(shellQuote).join(" ")}`,
+          { timeoutMs: 30_000 },
+        );
+      }
       await syncDirectoryToSsh({
         spec: input.spec,
         localDir: asset.localDir,
@@ -265,7 +290,7 @@ export async function prepareRemoteManagedRuntime(input: {
       for (const asset of input.assets ?? []) {
         if (!asset.restore) continue;
         await asset.restore({
-          assetDir: path.posix.join(runtimeRootDir, asset.key),
+          assetDir: path.posix.join(assetRootDir, asset.key),
           readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
         });
       }
