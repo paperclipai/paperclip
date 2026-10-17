@@ -147,6 +147,22 @@ describe("adapter routes", () => {
     }
   });
 
+  it("GET /api/adapters reports declaredModels for adapters listed in PAPERCLIP_ADAPTER_MODELS", async () => {
+    vi.stubEnv("PAPERCLIP_ADAPTER_MODELS", JSON.stringify({ pi_local: [{ id: "gateway/llama-3.3-70b" }] }));
+    try {
+      const res = await request(createApp()).get("/api/adapters");
+      expect(res.status).toBe(200);
+      const declared = Object.fromEntries(
+        res.body.map((adapter: { type: string; declaredModels: boolean }) => [adapter.type, adapter.declaredModels]),
+      );
+      expect(declared.pi_local).toBe(true);
+      expect(declared.opencode_local).toBe(false);
+      expect(declared.codex_local).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);

@@ -1081,6 +1081,10 @@ function declaredModelsForAdapter(type: string): { id: string; label: string }[]
     : null;
 }
 
+export function hasDeclaredAdapterModels(type: string): boolean {
+  return declaredModelsForAdapter(type) !== null;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;

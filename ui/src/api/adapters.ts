@@ -44,6 +44,8 @@ export interface AdapterInfo {
   disabled: boolean;
   capabilities: AdapterCapabilities;
   acp?: AcpTargetDescriptor;
+  /** True when PAPERCLIP_ADAPTER_MODELS declares this adapter's models on the server. */
+  declaredModels?: boolean;
   /** Installed version (for external npm adapters) */
   version?: string;
   /** Package name (for external adapters) */

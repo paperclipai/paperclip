@@ -30,6 +30,7 @@ import {
   isOverridePaused,
   setOverridePaused,
   waitForExternalAdapters,
+  hasDeclaredAdapterModels,
 } from "../adapters/registry.js";
 import {
   listAdapterPlugins,
@@ -135,6 +136,8 @@ interface AdapterInfo extends AgentRunnerAvailability {
   disabled: boolean;
   capabilities: AdapterCapabilities;
   acp?: ServerAdapterModule["acp"];
+  /** True when PAPERCLIP_ADAPTER_MODELS declares this adapter's models. */
+  declaredModels: boolean;
   /** True when an external plugin has replaced a built-in adapter of the same type. */
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
@@ -208,6 +211,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     capabilities: buildAdapterCapabilities(adapter),
     ...agentRunnerAvailability(adapter.type, target),
     ...(adapter.acp ? { acp: adapter.acp } : {}),
+    declaredModels: hasDeclaredAdapterModels(adapter.type),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.

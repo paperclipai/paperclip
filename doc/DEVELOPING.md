@@ -286,6 +286,10 @@ fixtures and never start an agent.
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
+When `PAPERCLIP_ADAPTER_MODELS` declares `pi_local` models of a provider that is
+not in the API key provider list, **New agent** sets Pi to **Configured by
+server**. It saves the declared model without an API key, because
+`PAPERCLIP_PI_PROVIDERS` supplies the provider on the server.
 The Paperclip Runner Codex profile shows the same known model effort levels.
 Its selected effort is saved with the run and sent to Codex for each turn.
 When Codex reports that a selected model is not supported with a ChatGPT account,
