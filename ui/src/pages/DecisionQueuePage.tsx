@@ -161,7 +161,7 @@ export function DecisionQueuePage() {
   const groups = useMemo<AttentionGroup[]>(() => {
     const filtered = filterAttentionItems(listItems, filters);
     if (groupBy === "none") {
-      return buildDeskShelves(filtered, now);
+      return buildDeskShelves(filtered, now, sortOrder);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
