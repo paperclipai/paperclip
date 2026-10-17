@@ -107,18 +107,21 @@ export type ScheduledRetryFacts = {
   pendingResponse?: "interaction" | "approval" | null;
 };
 
-export type QueuedRunStalenessErrorCode =
-  | "issue_waiting_for_response"
-  | "execution_reconciliation_required"
-  | "issue_dependencies_blocked"
-  | "issue_not_found"
-  | "issue_assignee_changed"
-  | "issue_terminal_status"
-  | "issue_not_in_progress"
-  | "issue_execution_lock_changed"
-  | "issue_blocked"
-  | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+export const QUEUED_RUN_STALENESS_ERROR_CODES = [
+  "issue_waiting_for_response",
+  "execution_reconciliation_required",
+  "issue_dependencies_blocked",
+  "issue_not_found",
+  "issue_assignee_changed",
+  "issue_terminal_status",
+  "issue_not_in_progress",
+  "issue_execution_lock_changed",
+  "issue_blocked",
+  "issue_review_participant_changed",
+  "issue_continuation_waiting_on_review",
+] as const;
+
+export type QueuedRunStalenessErrorCode = (typeof QUEUED_RUN_STALENESS_ERROR_CODES)[number];
 
 export type StalenessDecision =
   | { stale: false }

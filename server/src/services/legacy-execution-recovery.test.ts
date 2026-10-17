@@ -1,4 +1,5 @@
-import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { QUEUED_RUN_STALENESS_ERROR_CODES } from "../modules/run-dispatch/domain/policy.js";
+import { isPreDispatchCancel, isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { expect, it } from "vitest";
 import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
 
@@ -106,4 +107,59 @@ it("recognizes only an unclaimed pre-dispatch review wait receipt", () => {
     { resultJson: { ...run.resultJson, stopReason: "cancelled" } },
     { resultJson: { ...run.resultJson, workspaceRestoreFailure: "restore_unsafe_archive" } },
   ]) expect(isPreDispatchReviewWait({ ...run, ...patch })).toBe(false);
+});
+
+it.each(["issue_assignee_changed", "issue_dependencies_blocked"])("treats a dispatcher %s cancel with no start evidence as a pre-dispatch cancel only", (errorCode) => {
+  const run = { runtimeMode: "legacy", status: "cancelled", errorCode,
+    startedAt: null, runtimeModeResolvedAt: null, processPid: null, processGroupId: null,
+    processStartedAt: null, nativeIssueId: null, nativeSessionId: null, sessionIdAfter: null,
+    controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null,
+    resultJson: { stopReason: errorCode, timeoutSource: "stale_queued_run_gate" } };
+  expect(isPreDispatchCancel(run)).toBe(true);
+  expect(isPreDispatchReviewWait(run)).toBe(false);
+  // The synchronous classifier stays conservative; the evidence-backed wrapper grants the exemption.
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(true);
+  for (const patch of [
+    { startedAt: new Date() }, { processPid: 123 }, { processGroupId: 123 }, { sessionIdAfter: "provider-session" },
+    { errorCode: "execution_reconciliation_required", resultJson: { ...run.resultJson, stopReason: "execution_reconciliation_required" } },
+    { errorCode: "operator_interrupted", resultJson: { ...run.resultJson, stopReason: "operator_interrupted" } },
+    { resultJson: {} },
+  ]) expect(isPreDispatchCancel({ ...run, ...patch })).toBe(false);
+});
+
+it.each(QUEUED_RUN_STALENESS_ERROR_CODES)("classifies staleness code %s deliberately", (errorCode) => {
+  const run = { runtimeMode: "legacy", status: "cancelled", errorCode,
+    startedAt: null, runtimeModeResolvedAt: null, processPid: null, processGroupId: null,
+    processStartedAt: null, nativeIssueId: null, nativeSessionId: null, sessionIdAfter: null,
+    controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null,
+    resultJson: { stopReason: errorCode, timeoutSource: "stale_queued_run_gate" } };
+  // A code reporting an already-recorded hold is not a pre-dispatch cancel. A
+  // response wait needs its connection-intent snapshot, so the code alone fails.
+  expect(isPreDispatchCancel(run)).toBe(
+    errorCode !== "execution_reconciliation_required" && errorCode !== "issue_waiting_for_response");
+});
+
+it("accepts a response wait only with its resolved connection-intent snapshot", () => {
+  const contextSnapshot = { connectionIntentResolution: "existing_connection", source: "connection_intent.resolved",
+    interactionKind: "connection_intent", interactionStatus: "expired", mutation: "interaction", interactionId: "i-1" };
+  const run = { runtimeMode: "legacy", status: "cancelled", errorCode: "issue_waiting_for_response",
+    startedAt: null, runtimeModeResolvedAt: null, processPid: null, processGroupId: null,
+    processStartedAt: null, nativeIssueId: null, nativeSessionId: null, sessionIdAfter: null,
+    controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null, contextSnapshot,
+    resultJson: { stopReason: "issue_waiting_for_response", timeoutSource: "stale_queued_run_gate" } };
+  expect(isPreDispatchCancel(run)).toBe(true);
+  expect(isPreDispatchReviewWait(run)).toBe(true);
+  expect(isPreDispatchCancel({ ...run, contextSnapshot: { ...contextSnapshot, interactionStatus: "pending" } })).toBe(false);
+  expect(isPreDispatchCancel({ ...run, resultJson: { ...run.resultJson, timeoutSource: "dependency_gate" } })).toBe(false);
+});
+
+it("accepts the claim-time dependency gate source only for its own code", () => {
+  const run = { runtimeMode: "legacy", status: "cancelled", errorCode: "issue_dependencies_blocked",
+    startedAt: null, runtimeModeResolvedAt: null, processPid: null, processGroupId: null,
+    processStartedAt: null, nativeIssueId: null, nativeSessionId: null, sessionIdAfter: null,
+    controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null,
+    resultJson: { stopReason: "issue_dependencies_blocked", timeoutSource: "dependency_gate" } };
+  expect(isPreDispatchCancel(run)).toBe(true);
+  expect(isPreDispatchCancel({ ...run, errorCode: "issue_assignee_changed",
+    resultJson: { stopReason: "issue_assignee_changed", timeoutSource: "dependency_gate" } })).toBe(false);
 });

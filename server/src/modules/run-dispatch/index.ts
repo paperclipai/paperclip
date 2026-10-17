@@ -24,6 +24,7 @@ export {
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
 } from "./domain/wake-context.js";
+export { QUEUED_RUN_STALENESS_ERROR_CODES } from "./domain/policy.js";
 export type {
   RetryReasonKind,
   BudgetBlockFacts,

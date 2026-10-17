@@ -32,6 +32,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { legacyExecutionNeedsReconciliationWithEvidence } from "../services/legacy-execution-recovery.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -1197,7 +1198,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedRun?.status).toBe("cancelled");
     expect(blockedRun?.errorCode).toBe("issue_dependencies_blocked");
     expect(blockedRun?.finishedAt).toBeTruthy();
-    expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked" });
+    expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked", timeoutSource: "dependency_gate" });
+    // The claim-time cancel never started the run, so it must not leave a reconciliation hold.
+    const [fullBlockedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, blockedRunId));
+    expect(fullBlockedRun).toMatchObject({ runtimeMode: "legacy", startedAt: null, processPid: null, sessionIdAfter: null });
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, fullBlockedRun!)).toBe(false);
     expect(blockedWakeup?.status).toBe("skipped");
     expect(blockedWakeup?.error).toContain("dependencies are still blocked");
     expect(blockedIssue).toMatchObject({

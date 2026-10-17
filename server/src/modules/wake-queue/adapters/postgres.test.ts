@@ -26,6 +26,8 @@ import {
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
+import { createPostgresRunDispatchAdapter } from "../../run-dispatch/adapters/postgres.js";
+import { legacyExecutionNeedsReconciliation, legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
 import type { TransactionScope } from "../application/ports.js";
 
@@ -138,6 +140,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     contextSnapshot?: Record<string, unknown>;
     errorCode?: string | null;
     runtimeMode?: string;
+    scheduledRetryAttempt?: number;
+    scheduledRetryReason?: string;
   }): Promise<string> {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -148,6 +152,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       status: input.status ?? "failed",
       contextSnapshot: input.contextSnapshot ?? {},
       errorCode: input.errorCode ?? null,
+      scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
+      scheduledRetryReason: input.scheduledRetryReason ?? null,
     });
     return runId;
   }
@@ -500,6 +506,82 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: [comment.id] });
     await release({ companyId, runId, now: new Date() });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+  });
+
+  describe("dispatcher-cancelled run that never started", () => {
+    const seedCancelled = async (errorCode: string, started: boolean) => {
+      const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId }, errorCode });
+      await db.update(heartbeatRuns).set({
+        finishedAt: new Date(Date.now() - 1000),
+        ...(started ? { startedAt: new Date(Date.now() - 5000), processPid: 4321, sessionIdAfter: "provider-session" } : {}),
+        resultJson: { stopReason: errorCode, timeoutSource: "stale_queued_run_gate" },
+      }).where(eq(heartbeatRuns.id, runId));
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user",
+        authorUserId: "responsible-user", body: "Continue with this new message." }).returning();
+      const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+        payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } } });
+      const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } });
+      const result = await release({ companyId, runId, now: new Date() });
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+      return { companyId, result, wake };
+    };
+
+    it.each(["issue_assignee_changed", "issue_dependencies_blocked"])("promotes saved input after a %s cancel before start", async errorCode => {
+      const { companyId, result, wake } = await seedCancelled(errorCode, false);
+      expect(result.outcome.kind).toBe("promoted");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+      expect(wake.runId).not.toBeNull();
+    });
+
+    it("promotes saved input after the dispatcher gate itself cancels a queued run", async () => {
+      const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+      // A max-turn continuation requires an in_progress issue; a todo issue makes the gate cancel it.
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "todo" });
+      const runId = await seedRun({ companyId, agentId, status: "queued", contextSnapshot: { issueId, retryReason: "max_turns_continuation" },
+        scheduledRetryReason: "max_turns_continuation", scheduledRetryAttempt: 1 });
+      const cancelled = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date() });
+      expect(cancelled).toMatchObject({ outcome: "cancelled", errorCode: "issue_not_in_progress" });
+      const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(row).toMatchObject({ status: "cancelled", startedAt: null, processPid: null, sessionIdAfter: null });
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, row)).toBe(false);
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user",
+        authorUserId: "responsible-user", body: "Continue with this new message." }).returning();
+      const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+        payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } } });
+      const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } });
+      expect((await release({ companyId, runId, now: new Date() })).outcome.kind).toBe("promoted");
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+      expect(wake.runId).not.toBeNull();
+    });
+
+    it("drops the hold for an exhausted failure-lane retry the gate cancelled before it started", async () => {
+      const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+      const newOwnerId = await seedAgent({ companyId, name: "NewOwner" });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: newOwnerId });
+      const runId = await seedRun({ companyId, agentId, status: "queued", contextSnapshot: { issueId },
+        scheduledRetryReason: "process_lost", scheduledRetryAttempt: 2 });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+      const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      // The retry budget is spent (the sync classifier holds), but this attempt never ran.
+      expect(legacyExecutionNeedsReconciliation(row)).toBe(true);
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, row)).toBe(false);
+      // The same exhausted run, had it started and failed, still needs reconciliation.
+      const failed = { ...row, status: "failed", errorCode: "process_lost", startedAt: new Date(), resultJson: {} };
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, failed)).toBe(true);
+    });
+
+    it("keeps the hold when the cancelled run had started", async () => {
+      const { companyId, result, wake } = await seedCancelled("issue_assignee_changed", true);
+      expect(result.outcome.kind).toBe("released");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+      expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    });
   });
 
   it("leaves deferred work untouched until the effective execution hold clears", async () => {
