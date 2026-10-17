@@ -50,6 +50,7 @@ export function AiConnectionField({
   environmentId,
   legacy = false,
   readOnly = false,
+  allowNone = false,
   preferAdvanced = false,
   routerAdapterType,
 }: {
@@ -59,10 +60,11 @@ export function AiConnectionField({
   adapterType: string;
   model?: string;
   value?: AiRuntimeConnectionBinding;
-  onChange: (binding: AiRuntimeConnectionBinding) => void;
+  onChange: (binding: AiRuntimeConnectionBinding | undefined) => void;
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
+  allowNone?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
 }) {
@@ -76,8 +78,8 @@ export function AiConnectionField({
   const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
   const [allAgents, setAllAgents] = useState(true);
   const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
-  const changeBinding = (next: AiRuntimeConnectionBinding) => {
-    if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
+  const changeBinding = (next: AiRuntimeConnectionBinding | undefined) => {
+    if (legacy && !value && next) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
   };
   const client = useQueryClient();
@@ -150,10 +152,11 @@ export function AiConnectionField({
         agentId={agentId ?? ""}
         agentName={agentName}
         readOnly={readOnly}
+        allowNone={allowNone}
         loading={accounts.isPending}
         error={accounts.error?.message}
         onChange={(binding) =>
-          changeBinding(aiConnectionBindingSchema.parse(binding))
+          changeBinding(binding ? aiConnectionBindingSchema.parse(binding) : undefined)
         }
         onConnect={() => openConnection()}
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}

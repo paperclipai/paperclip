@@ -243,6 +243,8 @@ function AgentConnectionReview({
             readOnly={readOnly}
             onRetry={() => setConnectionError(undefined)}
             onChange={(next) => {
+              // No allowNone here, so the picker always passes a binding.
+              if (!next) return;
               setBinding(next);
               setTested(false);
               setSaved(false);

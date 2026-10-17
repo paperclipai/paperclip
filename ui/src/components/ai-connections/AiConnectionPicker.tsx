@@ -24,7 +24,8 @@ export interface AiConnectionPickerProps {
   loading?: boolean;
   error?: string;
   readOnly?: boolean;
-  onChange: (binding: AiConnectionBinding) => void;
+  allowNone?: boolean;
+  onChange: (binding: AiConnectionBinding | undefined) => void;
   onConnect: () => void;
   onReconnect?: () => void;
   onRetry?: () => void;
@@ -39,6 +40,7 @@ export function AiConnectionPicker({
   loading,
   error,
   readOnly,
+  allowNone,
   onChange,
   onConnect,
   onReconnect,
@@ -107,8 +109,13 @@ export function AiConnectionPicker({
         <>
           <ConnectionChoiceList
             disabled={readOnly}
-            selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
+            selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId ?? (allowNone ? "none" : undefined)}
             choices={[
+              ...(allowNone ? [{
+                id: "none",
+                name: "Host authentication / No managed connection",
+                description: <>Use credentials configured on the environment host (e.g. CLI login or environment variables).</>,
+              }] : []),
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
                 <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
@@ -120,8 +127,14 @@ export function AiConnectionPicker({
               })),
             ]}
             onSelect={(id) => {
-              if (id === "responsible_user") onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription"), mode: "responsible_user"});
-              else { const connection = compatible.find((item) => item.id === id)!; select("shared", connection); }
+              if (id === "none") {
+                onChange(undefined);
+              } else if (id === "responsible_user") {
+                onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription"), mode: "responsible_user"});
+              } else {
+                const connection = compatible.find((item) => item.id === id)!;
+                select("shared", connection);
+              }
             }}
           />
           {problem && (

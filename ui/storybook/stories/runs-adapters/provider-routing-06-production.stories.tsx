@@ -156,7 +156,7 @@ function AgentConnectionModes() {
     <AgentProviderConnection companyId={companyId} adapterType="codex_local" environmentId={null}
       canLogin={false} onBack={() => {}} testConnection={async () => true} onConnected={setConnected}
       advancedConnection={{ value, content: <AiConnectionField companyId={companyId} agentName="Nova"
-        adapterType="codex_local" value={value} onChange={binding => { if (binding.mode !== "router") setValue(binding); }} preferAdvanced /> }} />
+        adapterType="codex_local" value={value} onChange={binding => { if (binding && binding.mode !== "router") setValue(binding); }} preferAdvanced /> }} />
     {connected && <p role="status">Continue to Configure with {connected.aiConnection?.provider}.</p>}
   </QueryClientProvider>;
 }

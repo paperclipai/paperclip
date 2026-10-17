@@ -47,7 +47,7 @@ export function AiConnectionDesignExamples() {
         currentUserId="example-user"
         agentId="example-agent"
         agentName="Nova"
-        onChange={setBinding}
+        onChange={(next) => next && setBinding(next)}
         readOnly
         onConnect={() => {}}
       />
