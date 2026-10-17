@@ -124,6 +124,8 @@ export const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 
 export const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
+/** Idempotency-key prefix of a lease-blocked handoff re-admission; the receipt id follows. */
+export const LEASE_HANDOFF_READMIT_KEY_PREFIX = "lease-handoff-readmit:";
 
 export const PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY =
   "paperclipExternalChatExecutionBound";
@@ -826,6 +828,12 @@ export interface WakeupOptions {
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /**
+   * Server-owned re-admission of a lease-blocked handoff receipt; never accepted
+   * from API payloads. Admission stamps that receipt in its issue-locked
+   * transaction and adds nothing once it is stamped.
+   */
+  leaseHandoffReceiptId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;

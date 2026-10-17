@@ -3,6 +3,7 @@ import { normalizeAgentNameKey } from "./retries.js";
 import { publishActiveDotComment } from "../dot-assignment-follow-up.js";
 import {
   type WakeupOptions,
+  LEASE_HANDOFF_READMIT_KEY_PREFIX,
   mergeCoalescedContextSnapshot,
   enrichWakeContextSnapshot,
   hasInteractionContinuationWakeContext,
@@ -2655,6 +2656,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
     }
 
+    // A handoff re-admission is only ever admitted under its issue's lock.
+    if (opts.leaseHandoffReceiptId !== undefined && !issueId) return null;
+
     if (issueId) {
       // Mention-triggered wakes can request input from another agent, but they must
       // still respect the issue execution lock so a second agent cannot start on the
@@ -2668,6 +2672,34 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          if (opts.leaseHandoffReceiptId !== undefined) {
+            // Re-admission of a lease-blocked handoff receipt. Every attempt (the
+            // cleanup hook's, a retry's, or one delayed past both) takes this lock.
+            // The receipt is stamped here, so the stamp and the new wake commit or
+            // roll back together, and an attempt that finds it stamped, or finds a
+            // wake already admitted under its key, adds nothing.
+            const receiptId = opts.leaseHandoffReceiptId;
+            if (opts.idempotencyKey !== `${LEASE_HANDOFF_READMIT_KEY_PREFIX}${receiptId}`) {
+              return { kind: "skipped" as const };
+            }
+            const [admitted] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              ne(agentWakeupRequests.status, "skipped"),
+            )).limit(1);
+            const [stamped] = await tx.update(agentWakeupRequests).set({
+              updatedAt: new Date(),
+              payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{executionWait,readmittedAt}', to_jsonb(${new Date().toISOString()}::text))`,
+            }).where(and(
+              eq(agentWakeupRequests.id, receiptId), eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "skipped"),
+              eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+              sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+            )).returning({ id: agentWakeupRequests.id });
+            if (!stamped || admitted) return { kind: "deferred" as const };
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(

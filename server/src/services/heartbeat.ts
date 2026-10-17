@@ -115,6 +115,7 @@ import {
   ConfigurationIncompleteFailure,
   deriveTaskKey,
   type WakeupOptions,
+  LEASE_HANDOFF_READMIT_KEY_PREFIX,
   mergeCoalescedContextSnapshot,
   PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY,
   PAPERCLIP_HARNESS_CHECKOUT_KEY,
@@ -296,10 +297,14 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import {
   and,
+  desc,
   eq,
   exists,
+  gte,
   inArray,
+  isNotNull,
   isNull,
+  ne,
   notInArray,
   or,
   sql,
@@ -309,6 +314,7 @@ import {
   CHAT_PROVIDERS,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   isEnvironmentDriverSupportedForAdapter,
+  isUuidLike,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -504,6 +510,20 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain } from "./task-admission.js";
 
+/** Open statuses admission accepts for a handoff re-admitted after lease cleanup. */
+const LEASE_HANDOFF_READMIT_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
+/** Attempts at re-admitting one lease-blocked handoff receipt, across the cleanup hook and retries. */
+const LEASE_HANDOFF_READMIT_MAX_ATTEMPTS = 3;
+/** Only receipts this recent are retried; older ones predate the retry pass or were already seen. */
+const LEASE_HANDOFF_READMIT_WINDOW_MS = 15 * 60 * 1000;
+/** The interrupted run must have finished; a live run's own cleanup re-admits its handoff. */
+const LEASE_HANDOFF_READMIT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+/** Receipts read per retry pass. Each pass continues after the last one, so a refused receipt cannot hide a newer one. */
+const LEASE_HANDOFF_READMIT_PAGE_SIZE = 100;
+/** A well-formed uuid, checked in SQL before a payload id is cast to one. */
+const UUID_SQL_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+/** Where the last retry pass stopped: the last receipt it read. */
+type LeaseHandoffRetryCursor = { requestedAt: string; id: string };
 const execFile = promisify(execFileCallback);
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "failed",
@@ -1492,6 +1512,205 @@ export function heartbeatService(
   }
 
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
+
+  /**
+   * Re-admit the handoff wake that this run's own teardown blocked.
+   *
+   * A reassignment cancels the outgoing run and wakes the new assignee at once.
+   * Cancellation returns when the adapter has stopped, but the run's environment
+   * lease is released later, in this executor's cleanup. A wake admitted in that
+   * window meets `execution_owner_active` and, having no comment or durable
+   * request, is stored as a terminal `skipped` execution wait. Nothing retries
+   * it, so the new assignee never starts. This runs after the lease release,
+   * finds the receipt that names this run as its `interruptedRunId`, and sends
+   * it through ordinary admission. Every admission gate still applies.
+   *
+   * Admission stamps the receipt inside its own issue-locked transaction, so
+   * the stamp and the new wake commit or roll back together. A failed attempt
+   * leaves the receipt unstamped for `retryLeaseHandoffReadmits`, and a second
+   * or delayed attempt finds the stamp and adds nothing.
+   */
+  async function readmitLeaseBlockedHandoffs(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId">,
+    issueId: string,
+  ) {
+    if (!isUuidLike(issueId) || (await getSchedulingSuppression()).suppressed) return;
+    const claims = await db.transaction(async (tx) => {
+      // Admission holds this lock while it reads the gate and writes its
+      // receipt, so a receipt from a wake that raced the release is visible here,
+      // and any later wake reads the released lease and is admitted normally.
+      const [issue] = await tx.select({
+        status: issues.status, statusVersion: issues.statusVersion,
+        assigneeAgentId: issues.assigneeAgentId, executionRunId: issues.executionRunId,
+        executionState: issues.executionState,
+      }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))).for("update");
+      if (!issue?.assigneeAgentId || issue.executionRunId ||
+          !(LEASE_HANDOFF_READMIT_STATUSES as readonly string[]).includes(issue.status)) return [];
+      // A Stop never promotes the stopped agent's own work; only the current owner.
+      const ownerId = issue.assigneeAgentId;
+      if (ownerId === run.agentId) return [];
+      const receipts = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, ownerId),
+        eq(agentWakeupRequests.status, "skipped"),
+        eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        sql`${agentWakeupRequests.payload}->>'interruptedRunId' = ${run.id}`,
+        // A recovery-action hold is a genuine block with its own resolution path.
+        sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+      )).orderBy(desc(agentWakeupRequests.requestedAt)).limit(1);
+      const receipt = receipts[0];
+      if (!receipt) return [];
+      // A re-admission that met a new block is a different wait, not this one.
+      if (receipt.idempotencyKey?.startsWith(LEASE_HANDOFF_READMIT_KEY_PREFIX)) return [];
+      const executionWait = parseObject(parseObject(receipt.payload).executionWait);
+      const attempts = Number(executionWait.readmitAttempts ?? 0);
+      if (!Number.isFinite(attempts) || attempts >= LEASE_HANDOFF_READMIT_MAX_ATTEMPTS) return [];
+      const context = parseObject(parseObject(receipt.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+      if (!readNonEmptyString(context.wakeReason)) return [];
+      // A stage handoff must still wait on the same stage, for the same owner.
+      const stage = parseObject(parseObject(receipt.payload).executionStage);
+      if (readNonEmptyString(stage.stageId)) {
+        const state = parseObject(issue.executionState);
+        if (state.currentStageId !== stage.stageId) return [];
+        if (stage.wakeRole === "executor") {
+          // A changes-requested return goes back to the stage's return assignee;
+          // the reviewer stays the current participant.
+          if (state.status !== "changes_requested" ||
+              parseObject(state.returnAssignee).agentId !== ownerId) return [];
+        } else if (state.status !== "pending" ||
+                   parseObject(state.currentParticipant).agentId !== ownerId) return [];
+      }
+      // Anything the owner has received since supersedes this receipt.
+      const [later] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, ownerId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        gte(heartbeatRuns.createdAt, receipt.requestedAt),
+      )).limit(1);
+      if (later) return [];
+      const [pendingWake] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, ownerId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        ne(agentWakeupRequests.id, receipt.id),
+        or(inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+          and(isNotNull(agentWakeupRequests.runId), gte(agentWakeupRequests.requestedAt, receipt.requestedAt))),
+      )).limit(1);
+      if (pendingWake) return [];
+      if (await getExecutionBlocker(tx as unknown as Db, run.companyId, issueId)) return [];
+      // Count the attempt. The receipt is stamped by admission itself, below.
+      await tx.update(agentWakeupRequests).set({
+        updatedAt: new Date(),
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{executionWait,readmitAttempts}', to_jsonb(${attempts + 1}::int))`,
+      }).where(and(eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.companyId, run.companyId)));
+      return [{ receipt, context, ownerId, statusVersion: issue.statusVersion, attempt: attempts + 1 }];
+    });
+    for (const { receipt, context, ownerId, statusVersion, attempt } of claims) {
+      const { executionWait: _receipt, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } =
+        parseObject(receipt.payload);
+      try {
+        await enqueueWakeup(ownerId, {
+          source: receipt.source as WakeupOptions["source"],
+          triggerDetail: (receipt.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+          reason: readNonEmptyString(context.wakeReason) ?? undefined,
+          payload,
+          contextSnapshot: context,
+          requestedByActorType: (receipt.requestedByActorType ?? undefined) as WakeupOptions["requestedByActorType"],
+          requestedByActorId: receipt.requestedByActorId,
+          // The task was read under the lock above. Admission refuses it if the
+          // owner, status or status version changed before the wake is queued.
+          issueStateGuard: { assigneeAgentId: ownerId, statuses: [...LEASE_HANDOFF_READMIT_STATUSES], statusVersion },
+          idempotencyKey: `${LEASE_HANDOFF_READMIT_KEY_PREFIX}${receipt.id}`,
+          leaseHandoffReceiptId: receipt.id,
+        });
+      } catch (err) {
+        logger.warn({ err, wakeId: receipt.id, runId: run.id, attempt,
+          finalAttempt: attempt >= LEASE_HANDOFF_READMIT_MAX_ATTEMPTS },
+        attempt >= LEASE_HANDOFF_READMIT_MAX_ATTEMPTS
+          ? "giving up re-admitting a handoff blocked by lease cleanup"
+          : "failed to re-admit a handoff blocked by lease cleanup; it will be retried");
+      }
+    }
+  }
+
+  // In memory only. A new instance or a restart starts from the oldest receipt,
+  // which is safe: every gate applies again on each attempt.
+  let leaseHandoffRetryCursor: LeaseHandoffRetryCursor | null = null;
+
+  /**
+   * Retry lease-blocked handoffs that the cleanup hook could not deliver.
+   *
+   * The cleanup hook is the first trigger. This pass covers an admission that
+   * failed, a cleanup that ran while scheduling was suppressed, and a restart
+   * between the cancel and the cleanup. It considers only recent receipts whose
+   * interrupted run has finished, and sends each through the same locked
+   * selection and admission as the hook, so every gate applies again.
+   *
+   * Work per pass is bounded by the page size. The finished-run filter runs in
+   * the query, before the limit, so receipts of runs that are still live never
+   * take a place on the page. Receipts that a later gate refuses (issue moved,
+   * stage changed, lease still held, a later run) are left exactly as they are;
+   * the next pass continues after the last one it read, so they cannot hide a
+   * newer receipt. A short page starts the next pass from the oldest again.
+   */
+  async function retryLeaseHandoffReadmits(now = new Date()) {
+    if (shutdownInProgress || (await getSchedulingSuppression()).suppressed) return { attempted: 0 };
+    const since = new Date(now.getTime() - LEASE_HANDOFF_READMIT_WINDOW_MS);
+    const interruptedRunId = sql`case when ${agentWakeupRequests.payload}->>'interruptedRunId' ~* ${UUID_SQL_PATTERN}
+      then (${agentWakeupRequests.payload}->>'interruptedRunId')::uuid end`;
+    const page = (after: LeaseHandoffRetryCursor | null) => db.select({
+      id: agentWakeupRequests.id,
+      // Text keeps the full microsecond value, so the cursor is exact.
+      requestedAt: sql<string>`${agentWakeupRequests.requestedAt}::text`,
+      companyId: agentWakeupRequests.companyId,
+      issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'`,
+      runId: heartbeatRuns.id,
+      runCompanyId: heartbeatRuns.companyId,
+      runAgentId: heartbeatRuns.agentId,
+    }).from(agentWakeupRequests).innerJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.id, interruptedRunId),
+      eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+      inArray(heartbeatRuns.status, [...LEASE_HANDOFF_READMIT_RUN_TERMINAL_STATUSES]),
+    )).where(and(
+      eq(agentWakeupRequests.status, "skipped"),
+      eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+      gte(agentWakeupRequests.requestedAt, since),
+      sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+      sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+      sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+      sql`coalesce((${agentWakeupRequests.payload}->'executionWait'->>'readmitAttempts')::int, 0) < ${LEASE_HANDOFF_READMIT_MAX_ATTEMPTS}`,
+      sql`${agentWakeupRequests.payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'wakeReason' is not null`,
+      or(isNull(agentWakeupRequests.idempotencyKey),
+        sql`${agentWakeupRequests.idempotencyKey} not like ${`${LEASE_HANDOFF_READMIT_KEY_PREFIX}%`}`),
+      after
+        ? sql`(${agentWakeupRequests.requestedAt}, ${agentWakeupRequests.id}) > (${after.requestedAt}::timestamptz, ${after.id}::uuid)`
+        : undefined,
+    )).orderBy(agentWakeupRequests.requestedAt, agentWakeupRequests.id).limit(LEASE_HANDOFF_READMIT_PAGE_SIZE);
+    const resumed = leaseHandoffRetryCursor;
+    let receipts = await page(resumed);
+    // The end of the list was reached last time: start again from the oldest.
+    if (receipts.length === 0 && resumed) receipts = await page(null);
+    const last = receipts[receipts.length - 1];
+    leaseHandoffRetryCursor = receipts.length === LEASE_HANDOFF_READMIT_PAGE_SIZE && last
+      ? { requestedAt: last.requestedAt, id: last.id }
+      : null;
+    const seen = new Set<string>();
+    let attempted = 0;
+    for (const receipt of receipts) {
+      if (shutdownInProgress) break;
+      if (receipt.runCompanyId !== receipt.companyId || !receipt.issueId || !isUuidLike(receipt.issueId)) continue;
+      const key = `${receipt.runId}:${receipt.issueId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      attempted += 1;
+      const run = { id: receipt.runId, companyId: receipt.runCompanyId, agentId: receipt.runAgentId };
+      await readmitLeaseBlockedHandoffs(run, receipt.issueId).catch(err => {
+        logger.error({ err, runId: run.id }, "failed to retry a handoff blocked by lease cleanup");
+      });
+    }
+    return { attempted };
+  }
   async function getAgentInvokability(
     agent: typeof agents.$inferSelect | null | undefined,
   ) {
@@ -1621,6 +1840,11 @@ export function heartbeatService(
   }
 
   async function reconcileStrandedAssignedIssues() {
+    // A lease-blocked handoff whose re-admission did not land is retried
+    // here, on startup and on each scheduler tick.
+    await retryLeaseHandoffReadmits().catch(err => {
+      logger.error({ err }, "failed to retry handoffs blocked by lease cleanup");
+    });
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -3919,6 +4143,13 @@ export function heartbeatService(
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
           logger.error({ err, runId: run.id }, "failed to promote legacy comment queue after cleanup");
         });
+        // The lease is released now. A handoff wake that met it is re-admitted.
+        const handoffIssueId = readNonEmptyString(parseObject(latestRun.contextSnapshot).issueId);
+        if (handoffIssueId && !shutdownInProgress) {
+          await readmitLeaseBlockedHandoffs(latestRun, handoffIssueId).catch(err => {
+            logger.error({ err, runId: run.id }, "failed to re-admit a handoff blocked by lease cleanup");
+          });
+        }
       }
       if (
         !nativeSessionResumeScheduled &&
@@ -4105,6 +4336,8 @@ export function heartbeatService(
     resumeRemoteStopComments,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
+    readmitLeaseBlockedHandoffs,
+    retryLeaseHandoffReadmits,
 
     sweepStaleIssueLocks,
 
