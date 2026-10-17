@@ -10751,7 +10751,7 @@ export function createToolGatewayService(
         const result = connectedMcpExecution
           ? connectedMcpExecution.result
           : tool.providerType === "paperclip_plugin"
-            ? await runWithTimeout(
+            ? (await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
                   tool.name,
                   effectiveParameters,
@@ -10763,7 +10763,7 @@ export function createToolGatewayService(
                   },
                 ),
                 executionTimeoutMs,
-              )
+              )).result
             : await runWithTimeout(
                 executeBuiltinTool(session, tool, effectiveParameters, invocationId),
                 executionTimeoutMs,
