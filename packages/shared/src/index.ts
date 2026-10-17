@@ -1979,6 +1979,8 @@ export {
   COMPANY_SEARCH_MAX_TOKENS,
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
+  ISSUE_TITLE_MAX_LENGTH,
+  issueTitleSchema,
   createIssueSchema,
   setIssueTitleSchema,
   type SetIssueTitle,

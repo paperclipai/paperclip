@@ -706,6 +706,12 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
   }, schema);
 }
 
+export const ISSUE_TITLE_MAX_LENGTH = 240;
+export const issueTitleSchema = z.string().trim().min(1).max(ISSUE_TITLE_MAX_LENGTH);
+// Create accepts prompt-only tasks, so a blank title is allowed here and the
+// title-or-description refinement decides; an explicit title is still bounded.
+const optionalCreateIssueTitleSchema = z.string().trim().max(ISSUE_TITLE_MAX_LENGTH).optional();
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -726,7 +732,7 @@ const createIssueBaseSchema = z.object({
     .optional()
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
-  title: z.string().min(1),
+  title: issueTitleSchema,
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
@@ -808,7 +814,7 @@ const onboardingFirstTaskMarkerSchema = {
 };
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
-  title: z.string().optional(),
+  title: optionalCreateIssueTitleSchema,
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
@@ -825,7 +831,7 @@ function requireTitleOrDescription(
 
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend({
-    title: z.string().optional(),
+    title: optionalCreateIssueTitleSchema,
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
   }),
@@ -858,7 +864,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(
       watchdogDiscovery: true,
     })
     .extend({
-      title: z.string().optional(),
+      title: optionalCreateIssueTitleSchema,
       acceptanceCriteria: z
         .array(z.string().trim().min(1).max(500))
         .max(20)
