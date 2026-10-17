@@ -173,12 +173,17 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
           eq(principalPermissionGrants.principalId, member.principalId),
         ),
       );
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
-    });
+    // The custom grant survives the role change, and the new role's default
+    // grants are materialized alongside it (the behavior #15842 restores:
+    // role defaults must not silently go missing around grant writes).
+    expect(grants.length).toBeGreaterThan(1);
+    expect(grants).toContainEqual(
+      expect.objectContaining({
+        permissionKey: "tasks:assign_scope",
+        scope: customScope,
+        grantedByUserId: owner.principalId,
+      }),
+    );
   });
 
   it("sweeps personal connection access when the member route suspends a user", async () => {

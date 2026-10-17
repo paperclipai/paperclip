@@ -475,6 +475,18 @@ export function accessService(db: Db) {
           })),
         );
       }
+      // The replace above must not strip the permissions the member's
+      // role implies: authorization resolves grant rows, never the role.
+      // Merge the role defaults back in; explicit grants win on a key
+      // collision. Agent principals have no role defaults. See #15842.
+      if (member.principalType === "user") {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: member.principalId,
+          membershipRole: member.membershipRole,
+          grantedByUserId,
+        });
+      }
     });
 
     return member;
@@ -573,6 +585,17 @@ export function accessService(db: Db) {
             updatedAt: now,
           })),
         );
+      }
+      // Same rule as setMemberPermissions: the replacement set is merged
+      // over the (possibly new) role's defaults, never below them. See
+      // #15842.
+      if (existing.principalType === "user") {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: existing.principalId,
+          membershipRole: nextMembershipRole,
+          grantedByUserId,
+        });
       }
 
       return updated;
@@ -1112,7 +1135,7 @@ export function accessService(db: Db) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
       }
 
-      return tx
+      const updated = await tx
         .update(companyMemberships)
         .set({
           membershipRole: nextMembershipRole,
@@ -1122,6 +1145,24 @@ export function accessService(db: Db) {
         .where(eq(companyMemberships.id, existing.id))
         .returning()
         .then((rows) => rows[0] ?? existing);
+
+      // A role change must confer the new role's permissions: this writer
+      // previously never touched grant rows, so a promotion left the
+      // member with whatever grants the old role (or an earlier edit)
+      // had left behind. See #15842.
+      if (
+        existing.principalType === "user" &&
+        nextMembershipRole !== existing.membershipRole
+      ) {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: existing.principalId,
+          membershipRole: nextMembershipRole,
+          grantedByUserId: null,
+        });
+      }
+
+      return updated;
     });
   }
 

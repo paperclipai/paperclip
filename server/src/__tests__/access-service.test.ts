@@ -1199,4 +1199,117 @@ describeEmbeddedPostgres("access service", () => {
     expect(grants[0]?.scope).toEqual(scopedGrant);
     expect(grants[0]?.grantedByUserId).toBe("custom-grant-author");
   });
+
+  async function createMemberWithRoleDefaults(
+    companyId: string,
+    role: "owner" | "admin" | "operator" | "viewer",
+  ) {
+    const member = await db
+      .insert(companyMemberships)
+      .values({
+        companyId,
+        principalType: "user",
+        principalId: `member-${randomUUID()}`,
+        status: "active",
+        membershipRole: role,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await accessService(db).ensureRoleDefaultGrants(companyId, member.principalId, role, null);
+    return member;
+  }
+
+  async function grantKeysOf(companyId: string, principalId: string) {
+    const grants = await accessService(db).listPrincipalGrants(companyId, "user", principalId);
+    return grants.map((grant) => grant.permissionKey).sort();
+  }
+
+  it("setMemberPermissions with an empty set keeps the member's role defaults (#15842)", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const member = await createMemberWithRoleDefaults(company.id, "operator");
+    const access = accessService(db);
+
+    await access.setMemberPermissions(company.id, member.id, [], "admin-user");
+
+    expect(await grantKeysOf(company.id, member.principalId)).toEqual(
+      grantsForHumanRole("operator").map((grant) => grant.permissionKey).sort(),
+    );
+  });
+
+  it("setMemberPermissions lets an explicit grant win over the role default for the same key (#15842)", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const member = await createMemberWithRoleDefaults(company.id, "operator");
+    const access = accessService(db);
+    const scoped = { projectId: "project-1" };
+
+    await access.setMemberPermissions(
+      company.id,
+      member.id,
+      [{ permissionKey: "tools:use", scope: scoped }],
+      "admin-user",
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "user", member.principalId);
+    expect(grants.map((grant) => grant.permissionKey).sort()).toEqual(
+      grantsForHumanRole("operator").map((grant) => grant.permissionKey).sort(),
+    );
+    expect(grants.find((grant) => grant.permissionKey === "tools:use")?.scope).toEqual(scoped);
+  });
+
+  it("updateMemberAndPermissions re-applies the new role's defaults over an empty set (#15842)", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const member = await createMemberWithRoleDefaults(company.id, "operator");
+    const access = accessService(db);
+
+    await access.updateMemberAndPermissions(
+      company.id,
+      member.id,
+      { membershipRole: "admin", grants: [] },
+      "admin-user",
+    );
+
+    const keys = await grantKeysOf(company.id, member.principalId);
+    for (const grant of grantsForHumanRole("admin")) {
+      expect(keys).toContain(grant.permissionKey);
+    }
+  });
+
+  it("updateMember confers the new role's defaults on a role change (#15842)", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const member = await createMemberWithRoleDefaults(company.id, "viewer");
+    const access = accessService(db);
+    expect(await grantKeysOf(company.id, member.principalId)).toEqual([]);
+
+    await access.updateMember(company.id, member.id, { membershipRole: "admin" });
+
+    expect(await grantKeysOf(company.id, member.principalId)).toEqual(
+      grantsForHumanRole("admin").map((grant) => grant.permissionKey).sort(),
+    );
+  });
+
+  it("setMemberPermissions does not invent role defaults for agent principals (#15842)", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const agentMember = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: `agent-${randomUUID()}`,
+        status: "active",
+        membershipRole: "member",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const access = accessService(db);
+
+    await access.setMemberPermissions(
+      company.id,
+      agentMember.id,
+      [{ permissionKey: "tools:use", scope: null }],
+      "admin-user",
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "agent", agentMember.principalId);
+    expect(grants.map((grant) => grant.permissionKey)).toEqual(["tools:use"]);
+  });
 });
