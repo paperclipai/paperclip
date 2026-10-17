@@ -149,9 +149,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
 
       try {
-        fs.writeFileSync(janNewest, "jan-newest");
-        fs.writeFileSync(janOlder, "jan-older");
-        fs.writeFileSync(decOld, "dec-old");
+        // Real gzip content: retention only treats plausible gzip backups
+        // as tier representatives (see #15351).
+        fs.writeFileSync(janNewest, gzipSync("jan-newest"));
+        fs.writeFileSync(janOlder, gzipSync("jan-older"));
+        fs.writeFileSync(decOld, gzipSync("dec-old"));
 
         fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
         fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
@@ -168,6 +170,48 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(fs.existsSync(janNewest)).toBe(true);
         expect(fs.existsSync(janOlder)).toBe(false);
         expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "does not let an unverified orphan claim a monthly tier bucket over a real backup",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-orphan-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const realBackup = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
+      const tinyGzipOrphan = path.join(backupDir, "paperclip-test-2026-01-20T12-00-00.sql.gz");
+      const bareSqlOrphan = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql");
+
+      try {
+        fs.writeFileSync(realBackup, gzipSync("-- real dump content --\n".repeat(50)));
+        // A gzip stream of empty input (20 bytes): a stream created for a
+        // backup that crashed before any dump data was written.
+        fs.writeFileSync(tinyGzipOrphan, gzipSync(""));
+        // The writer's pre-compression intermediate, never compressed.
+        fs.writeFileSync(bareSqlOrphan, "-- orphan dump that was never compressed --\n".repeat(50));
+
+        fs.utimesSync(realBackup, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
+        fs.utimesSync(tinyGzipOrphan, new Date("2026-01-20T12:00:00Z"), new Date("2026-01-20T12:00:00Z"));
+        fs.utimesSync(bareSqlOrphan, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(2);
+        expect(fs.existsSync(realBackup)).toBe(true);
+        expect(fs.existsSync(tinyGzipOrphan)).toBe(false);
+        expect(fs.existsSync(bareSqlOrphan)).toBe(false);
       } finally {
         Date.now = realDateNow;
       }
