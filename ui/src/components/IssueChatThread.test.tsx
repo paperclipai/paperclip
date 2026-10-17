@@ -223,6 +223,27 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
   usePaperclipIssueRuntime: () => ({}),
 }));
 
+vi.mock("@/plugins/slots", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/plugins/slots")>();
+  const { createElement } = await import("react");
+  return {
+    ...original,
+    PluginSlotOutlet: (props: {
+      slotTypes: string[];
+      context: Record<string, unknown>;
+    }) =>
+      createElement("div", {
+        "data-testid": "plugin-slot-outlet",
+        "data-slot-types": props.slotTypes.join(","),
+        "data-entity-id": props.context.entityId ?? "",
+        "data-parent-entity-id": props.context.parentEntityId ?? "",
+        "data-company-id": props.context.companyId ?? "",
+        "data-company-prefix": props.context.companyPrefix ?? "",
+        "data-project-id": props.context.projectId ?? "",
+      }),
+  };
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -442,6 +463,71 @@ describe("IssueChatThread", () => {
     restoreComposerViewportSnapshotMock.mockClear();
     shouldPreserveComposerViewportMock.mockClear();
     markdownBodyRenderMock.mockClear();
+  });
+
+  it("mounts commentAnnotation and commentContextMenuItem plugin slots for each comment", () => {
+    const root = createRoot(container);
+    const baseComment = {
+      companyId: "company-1",
+      issueId: "issue-1",
+      presentation: null,
+      metadata: null,
+      createdAt: new Date("2026-07-07T21:13:07.902Z"),
+      updatedAt: new Date("2026-07-07T21:13:07.902Z"),
+    };
+    act(() => {
+      renderIssueThread(root, {
+        showComposer: false,
+        companyId: "company-1",
+        companyPrefix: "PAP",
+        projectId: "project-1",
+        issueId: "issue-1",
+        agentMap: new Map([
+          ["agent-1", { id: "agent-1", name: "Agent One" } as Agent],
+        ]),
+        comments: [
+          {
+            ...baseComment,
+            id: "comment-user-1",
+            authorAgentId: null,
+            authorUserId: "user-1",
+            authorType: "user",
+            body: "Human note on the issue.",
+          },
+          {
+            ...baseComment,
+            id: "comment-agent-1",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            authorType: "agent",
+            body: "Agent reply on the issue.",
+          },
+        ],
+      });
+    });
+
+    const outlets = [...container.querySelectorAll('[data-testid="plugin-slot-outlet"]')];
+    const annotations = outlets.filter(
+      (el) => el.getAttribute("data-slot-types") === "commentAnnotation",
+    );
+    const menuItems = outlets.filter(
+      (el) => el.getAttribute("data-slot-types") === "commentContextMenuItem",
+    );
+    expect(annotations.map((el) => el.getAttribute("data-entity-id")).sort()).toEqual([
+      "comment-agent-1",
+      "comment-user-1",
+    ]);
+    expect(menuItems.map((el) => el.getAttribute("data-entity-id")).sort()).toEqual([
+      "comment-agent-1",
+      "comment-user-1",
+    ]);
+    for (const el of outlets) {
+      expect(el.getAttribute("data-parent-entity-id")).toBe("issue-1");
+      expect(el.getAttribute("data-company-id")).toBe("company-1");
+      expect(el.getAttribute("data-company-prefix")).toBe("PAP");
+      expect(el.getAttribute("data-project-id")).toBe("project-1");
+    }
+    act(() => root.unmount());
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -4355,3 +4441,4 @@ describe("IssueAssigneePausedNotice", () => {
     act(() => root.unmount());
   });
 });
+
