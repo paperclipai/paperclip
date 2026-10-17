@@ -32,6 +32,9 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/authorization.js", async (importActual) => ({
@@ -45,6 +48,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -74,19 +80,21 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
   return app;
 }
 
-function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "run-1", agentId = "agent-1") {
-  const runRows = [{
-    id: runId,
-    companyId: "company-1",
-    agentId,
-    contextSnapshot,
-  }];
+function createRouteDb(options: {
+  contextSnapshot?: Record<string, unknown>;
+  runId?: string;
+  agentId?: string;
+  checkedOutIssueId?: string | null;
+} = {}) {
+  const { contextSnapshot = {}, runId = "run-1", agentId = "agent-1", checkedOutIssueId = null } = options;
+  const runRows = [{ id: runId, companyId: "company-1", agentId, contextSnapshot }];
+  const issueRows = checkedOutIssueId ? [{ id: checkedOutIssueId }] : [];
   return {
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           then: async (resolve: (rows: unknown[]) => unknown) => resolve(
-            Object.keys(selection).includes("contextSnapshot") ? runRows : [],
+            Object.keys(selection).includes("contextSnapshot") ? runRows : issueRows,
           ),
         })),
       })),
@@ -94,7 +102,11 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   } as any;
 }
 
-async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
+async function createAgentApp(options: {
+  runId?: string;
+  contextSnapshot?: Record<string, unknown>;
+  checkedOutIssueId?: string | null;
+} = {}) {
   const { errorHandler, approvalRoutes } = routeModules.value;
   const app = express();
   app.use(express.json());
@@ -109,7 +121,11 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
     };
     next();
   });
-  app.use("/api", approvalRoutes(createRouteDb(options.contextSnapshot, options.runId ?? "run-1")));
+  app.use("/api", approvalRoutes(createRouteDb({
+    contextSnapshot: options.contextSnapshot,
+    runId: options.runId ?? "run-1",
+    checkedOutIssueId: options.checkedOutIssueId,
+  })));
   app.use(errorHandler);
   return app;
 }
@@ -132,6 +148,7 @@ describe("approval routes idempotent retries", () => {
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
+    mockIssueService.listReviewAttention.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "company_scope:read",
@@ -140,6 +157,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -441,5 +459,142 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("infers issueId from run contextSnapshot when agent omits issueIds", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve a thing" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-10-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-10-03T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp({
+      contextSnapshot: { issueId: "00000000-0000-0000-0000-000000000099" },
+    }))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Approve a thing" },
+        // no issueIds provided
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-9",
+      ["00000000-0000-0000-0000-000000000099"],
+      { agentId: "agent-1", userId: null },
+    );
+  });
+
+  it("infers issueId from checkoutRunId when run contextSnapshot has no issueId", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve something" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-10-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-10-03T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp({
+      contextSnapshot: {}, // no issueId in context
+      checkedOutIssueId: "00000000-0000-0000-0000-0000000000aa",
+    }))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Approve something" },
+        // no issueIds provided
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-10",
+      ["00000000-0000-0000-0000-0000000000aa"],
+      { agentId: "agent-1", userId: null },
+    );
+  });
+
+  it("wakes requestedByAgentId directly when a card with linked issues is rejected", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-11",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-99",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-11",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-99",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "00000000-0000-0000-0000-000000000011", assigneeAgentId: "agent-99" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-11/reject")
+      .send({ decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-99",
+      expect.objectContaining({ reason: "approval_rejected" }),
+    );
+  });
+
+  it("wakes requestedByAgentId on rejection even when the card has no linked issues (null issueIds guard)", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-12",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-77",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-12",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-77",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]); // no linked issues
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-12/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-77",
+      expect.objectContaining({ reason: "approval_rejected" }),
+    );
   });
 });
