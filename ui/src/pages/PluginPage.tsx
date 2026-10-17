@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { Link, Navigate, useParams } from "@/lib/router";
+import { Link, Navigate, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -31,6 +31,7 @@ export function PluginPage() {
   }>();
   const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = params;
   const pluginRouteSplat = params["*"];
+  const location = useLocation();
   const { companies, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const routeCompany = useMemo(() => {
@@ -95,6 +96,20 @@ export function PluginPage() {
     }),
     [resolvedCompanyId, companyPrefix],
   );
+
+  // Plugins encode sub-screens in the query string or the route splat (e.g.
+  // a detail view at `/PREFIX/myplugin?kind=request&id=123`). From such a
+  // deep link, Back must return to the plugin page's own root; jumping to
+  // the dashboard would skip every screen the plugin manages. Only from the
+  // plugin root itself does Back leave the plugin toward the dashboard.
+  const backTo = useMemo(() => {
+    const dashboardPath = companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard";
+    const hasPluginSubScreen = Boolean(location.search) || Boolean(pluginRouteSplat);
+    if (!hasPluginSubScreen) return dashboardPath;
+    if (companyPrefix && pluginRoutePath) return `/${companyPrefix}/${pluginRoutePath}`;
+    if (companyPrefix && pluginId) return `/${companyPrefix}/plugins/${pluginId}`;
+    return dashboardPath;
+  }, [companyPrefix, location.search, pluginId, pluginRoutePath, pluginRouteSplat]);
 
   // When the active route has a routeSidebar slot, the sidebar provides the
   // back affordance, but the top bar still needs a route-specific title.
@@ -168,7 +183,7 @@ export function PluginPage() {
       {!routeSidebarActive && (
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" asChild>
-            <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
+            <Link to={backTo}>
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back
             </Link>
