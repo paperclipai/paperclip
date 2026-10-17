@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
+import { HttpError } from "../errors.ts";
 import { parseStatusFilter } from "../services/issues.ts";
 
 /**
@@ -79,5 +81,67 @@ describe("parseStatusFilter", () => {
       "done",
     ]);
     expect(out).toEqual(["todo", "done"]);
+  });
+});
+
+// https://github.com/paperclipai/paperclip/issues/16266 — an unknown status
+// must be a client error, not a silent empty result.
+describe("parseStatusFilter – unknown statuses", () => {
+  function expectBadRequest(input: string | readonly string[]) {
+    let caught: unknown;
+    try {
+      parseStatusFilter(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).status).toBe(400);
+  }
+
+  it("accepts every known status", () => {
+    expect(
+      parseStatusFilter("backlog,todo,in_progress,in_review,blocked,done,cancelled"),
+    ).toHaveLength(7);
+  });
+
+  it("throws HttpError(400) for a single unknown status", () => {
+    expectBadRequest("not_a_status");
+  });
+
+  it("is case-sensitive", () => {
+    expectBadRequest("TODO");
+  });
+
+  it("throws HttpError(400) for an unknown status inside an array", () => {
+    expectBadRequest(["todo", "xyzzy"]);
+  });
+
+  it("throws HttpError(400) for an unknown status inside a CSV string", () => {
+    expectBadRequest("done,not_real");
+  });
+
+  it("throws HttpError(400) for an unknown status inside a CSV array entry", () => {
+    expectBadRequest(["todo", "done,not_real"]);
+  });
+});
+
+describe("parseStatusFilter (services barrel export)", () => {
+  it("is re-exported from the services barrel", async () => {
+    const mod = await import("../services/index.ts");
+    expect(mod.parseStatusFilter).toBe(parseStatusFilter);
+  });
+});
+
+describe("parseStatusFilter – error details", () => {
+  it("names only the unknown values and lists the allowed ones", () => {
+    let caught: unknown;
+    try {
+      parseStatusFilter(["todo", "done,bogus", "nope"]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).message).toBe("Unknown issue status: bogus, nope");
+    expect((caught as HttpError).details).toEqual({ allowed: ISSUE_STATUSES });
   });
 });

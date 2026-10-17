@@ -35,7 +35,7 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { InvitesSection } from "@/components/access/InvitesSection";
 
-const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
+const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked";
 type EditableMemberStatus = "pending" | "active" | "suspended";
 
 export function CompanyAccess() {
