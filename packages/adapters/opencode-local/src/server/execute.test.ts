@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -45,6 +46,38 @@ describe("OpenCode local skill injection", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await fs.rm(configHome, { recursive: true, force: true });
+  });
+
+  it("delivers discovered image input to the process without changing its configured model", async () => {
+    const server = createServer((_req, res) => res.writeHead(200).end(JSON.stringify({
+      data: [{ id: "alias", capabilities: { vision: true } }],
+    })));
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No fixture address");
+    const commandPath = path.join(configHome, "fake-opencode-image");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout: JSON.stringify({ type: "text", part: { text: "done" } }) }));
+    const baseURL = `http://127.0.0.1:${address.port}/v1`;
+    try {
+      await execute({
+        runId: "image-input-run",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: configHome, model: "paperclip/alias", managedAiConnection: true, paperclipSkillMode: "disabled",
+          env: { PAPERCLIP_AI_PROVIDER_URL: baseURL, PAPERCLIP_AI_PROVIDER_KEY: "fixture-key",
+            OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { paperclip: {
+              options: { baseURL, apiKey: "fixture-key" }, models: { alias: { name: "alias" } },
+            } } }),
+          } },
+        context: {}, onLog: async () => {},
+      });
+      const call = runProcessMock.mock.calls.find(([, , , args]) => args[0] === "run");
+      expect(call).toBeDefined();
+      expect(call![3]).toContain("paperclip/alias");
+      expect(JSON.parse(call![4].env.OPENCODE_CONFIG_CONTENT).provider.paperclip.models.alias.modalities.input).toContain("image");
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {

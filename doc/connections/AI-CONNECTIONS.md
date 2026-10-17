@@ -607,7 +607,26 @@ OpenClaw Gateway, Hermes Gateway, Claude Managed, AWS AgentCore, Process, HTTP,
 and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Pi/Copilot custom routing,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
-catalog discovery for custom gateways are not part of this implementation.
+model-picker catalog discovery for custom gateways are not part of this implementation.
+
+Managed OpenCode custom Chat Completions routes can read the selected endpoint's
+`/models` metadata when the runtime starts. An exact, unambiguous model entry
+with boolean `capabilities.vision` or a nonempty `input_modalities` array supplies
+the image-input capability. This does not change the chosen model or route.
+Unknown or unavailable metadata leaves OpenCode's existing metadata unchanged;
+explicit legacy model modalities take precedence. The catalog is not an input
+capability standard, and gateways that do not expose these fields remain unknown.
+
+Discovery runs at the execution site: locally for the local adapter, through the
+selected SSH/sandbox transport for remote legacy execution, and inside the native
+runner for native execution. The control plane does not query a runtime-local
+`localhost` endpoint. The selected credential is sent only to that endpoint;
+redirects are not followed. Discovery has a three-second network timeout and a
+2 MiB catalog limit. Remote legacy discovery uses `curl` if available, sends its
+configuration over stdin, and never installs a new dependency. Missing `curl` or
+invalid metadata does not block a text task. Native discovery uses the same
+runtime proxy and TLS agent as inference. This adds one optional metadata request
+per runtime start, not a provider or model fallback.
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),

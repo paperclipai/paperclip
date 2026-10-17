@@ -646,7 +646,15 @@ describe("OpenCodeServerDriver", () => {
 
   it.each(["gateway-key", ""])("forwards selected-model streams without exposing the reusable key and revokes the proxy on close (%s)", async key => {
     const received: Array<{ path: string; authorization?: string; body: unknown }> = [];
+    const catalogRequests: Array<{ path?: string; authorization?: string }> = [];
     const upstream = createHttpServer((request, response) => {
+      if (request.method === "GET") {
+        catalogRequests.push({ path: request.url, authorization: request.headers.authorization });
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+          data: [{ id: "team/model-alias", capabilities: { vision: Boolean(key) } }],
+        }));
+        return;
+      }
       void (async () => {
         const chunks = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -670,6 +678,10 @@ describe("OpenCodeServerDriver", () => {
       });
       session = await driver.openSession({ runId: "proxy", normalizedSessionId: "proxy", workingDirectory: root });
       const config = JSON.parse(await readFile(join(root, "proxy", "config", "opencode", "opencode.json"), "utf8"));
+      expect(config.provider.paperclip.models["team/model-alias"].modalities).toEqual({
+        input: key ? ["text", "image"] : ["text"], output: ["text"],
+      });
+      expect(catalogRequests).toEqual([{ path: "/custom/v1/models", authorization: key ? `Bearer ${key}` : undefined }]);
       const { baseURL, apiKey } = config.provider.paperclip.options;
       expect(apiKey).not.toBe(key);
       const url = `${baseURL}/chat/completions`;
@@ -728,13 +740,13 @@ describe("OpenCodeServerDriver", () => {
         const response = await fetch(proxied.url, { method: "POST", headers: proxied.headers, body: JSON.stringify({ model: "team/model-alias", messages: [] }) });
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ choices: [] });
-        expect(requests).toEqual(["http://gateway.invalid/v1/chat/completions"]);
+        expect(requests).toEqual(["http://gateway.invalid/v1/models", "http://gateway.invalid/v1/chat/completions"]);
       } finally { await proxied.session.close({ reason: "test" }); }
       const bypassed = await headersAndUrl("bypassed", "gateway.invalid");
       try {
         const response = await fetch(bypassed.url, { method: "POST", headers: bypassed.headers, body: JSON.stringify({ model: "team/model-alias", messages: [] }) });
         expect(response.status).toBe(502);
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
       } finally { await bypassed.session.close({ reason: "test" }); }
     } finally {
       await new Promise<void>(resolve => { outgoingProxy.close(() => resolve()); outgoingProxy.closeAllConnections(); });

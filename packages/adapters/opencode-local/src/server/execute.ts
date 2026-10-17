@@ -64,6 +64,7 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { prepareManagedModelImageInput } from "./model-input.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -330,7 +331,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env, config, targetIsRemote: executionTargetIsRemote,
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -367,6 +370,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
     if (!executionTargetIsRemote) {
+      await prepareManagedModelImageInput({
+        runId, target: executionTarget, cwd, env: preparedRuntimeConfig.env,
+        model, managed: Boolean(config.managedAiConnection), localEnvironment: runtimeEnv,
+      });
+      Object.assign(runtimeEnv, preparedRuntimeConfig.env);
       await ensureOpenCodeModelConfiguredAndAvailable({
         model,
         command,
@@ -466,6 +474,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
         );
       }
+      await prepareManagedModelImageInput({
+        runId, target: overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd),
+        cwd, env: preparedRuntimeConfig.env, model, managed: Boolean(config.managedAiConnection),
+      });
       await ensureRemoteOpenCodeModelConfiguredAndAvailable({
         runId,
         executionTarget,

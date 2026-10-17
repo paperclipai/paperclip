@@ -102,6 +102,29 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+/** Carry effective explicit settings into the inline layer before catalog discovery. */
+function preserveExplicitModelModalities(
+  env: Record<string, string>, providers: unknown, model: unknown,
+): Record<string, string> {
+  const ref = parseConfiguredModelRef(model);
+  if (!ref || !isPlainObject(providers)) return env;
+  const provider = providers[ref.provider];
+  if (!isPlainObject(provider) || !isPlainObject(provider.models)) return env;
+  const definition = provider.models[ref.model];
+  if (!isPlainObject(definition) || definition.modalities === undefined) return env;
+  try {
+    const inline = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+    const entry = inline?.provider?.[ref.provider]?.models?.[ref.model];
+    // Inline settings have higher priority. Only fill the omitted field on an
+    // existing entry, so discovery cannot shadow explicit disk/provider input.
+    if (!isPlainObject(entry) || entry.modalities !== undefined) return env;
+    entry.modalities = definition.modalities;
+    return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify(inline) };
+  } catch {
+    return env;
+  }
+}
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
@@ -109,8 +132,11 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
+    const existingConfig = input.targetIsRemote ? {} : await readJsonObject(
+      path.join(resolveXdgConfigHome(input.env), "opencode", "opencode.json"),
+    );
     return {
-      env: input.env,
+      env: preserveExplicitModelModalities(input.env, existingConfig.provider, input.config.model),
       notes: [],
       cleanup: async () => {},
     };
@@ -225,7 +251,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   return {
     env: {
-      ...input.env,
+      ...preserveExplicitModelModalities(input.env, nextProvider, input.config.model),
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
     notes,
