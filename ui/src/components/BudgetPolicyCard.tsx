@@ -34,6 +34,9 @@ export function BudgetPolicyCard({
   onSave,
   onUnpricedUsagePolicyChange,
   onReservationChange,
+  onHardStopEnabledChange,
+  onWarnPercentChange,
+  onNotifyEnabledChange,
   isSaving,
   compact = false,
   variant = "card",
@@ -42,6 +45,9 @@ export function BudgetPolicyCard({
   onSave?: (amountCents: number) => void;
   onReservationChange?: (cents: string) => void;
   onUnpricedUsagePolicyChange?: (policy: "block" | "allow") => void;
+  onHardStopEnabledChange?: (hardStopEnabled: boolean) => void;
+  onWarnPercentChange?: (warnPercent: number) => void;
+  onNotifyEnabledChange?: (notifyEnabled: boolean) => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
@@ -51,6 +57,11 @@ export function BudgetPolicyCard({
   useEffect(() => {
     setDraftBudget(centsInputValue(summary.amount));
   }, [summary.amount]);
+
+  const [warnDraft, setWarnDraft] = useState(String(summary.warnPercent ?? 80));
+  useEffect(() => {
+    setWarnDraft(String(summary.warnPercent ?? 80));
+  }, [summary.warnPercent]);
 
   const [reservation, setReservation] = useState(centsToUsd(summary.reservationCents ?? 0));
   const reservationErrorId = useId();
@@ -68,21 +79,94 @@ export function BudgetPolicyCard({
       onClick={() => { if (reservationCents !== null) onReservationChange(reservationCents); }}>Update reservation</Button>
   </div> : null;
 
-  const advancedSettings = onReservationChange || onUnpricedUsagePolicyChange ? (
-    <details className="space-y-3">
-      <summary className="cursor-pointer text-sm font-medium">Advanced settings</summary>
-      <div className="space-y-4">
-        {onUnpricedUsagePolicyChange && (
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={summary.unpricedUsagePolicy !== "allow"} disabled={isSaving}
-              onChange={(event) => onUnpricedUsagePolicyChange(event.target.checked ? "block" : "allow")} />
-            Block new work when usage has no reliable price
-          </label>
-        )}
-        {reservationSection}
-      </div>
-    </details>
+  const warnNumber = Number(warnDraft);
+  const isValidWarn = Number.isInteger(warnNumber) && warnNumber >= 1 && warnNumber <= 99;
+
+  const hardStopControl = onHardStopEnabledChange ? (
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        aria-label="Hard stop when limit is reached"
+        checked={summary.hardStopEnabled}
+        disabled={isSaving}
+        onChange={(event) => onHardStopEnabledChange(event.target.checked)}
+      />
+      Hard stop when budget limit is reached
+    </label>
   ) : null;
+
+  const notifyControl = onNotifyEnabledChange ? (
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        aria-label="Send notifications on budget alerts"
+        checked={summary.notifyEnabled}
+        disabled={isSaving}
+        onChange={(event) => onNotifyEnabledChange(event.target.checked)}
+      />
+      Send notifications on budget alerts
+    </label>
+  ) : null;
+
+  const warnPercentControl = onWarnPercentChange ? (
+    <div className="space-y-2">
+      <label className="text-sm">
+        Warning alert threshold (%)
+        <Input
+          aria-label="Warning alert threshold (%)"
+          value={warnDraft}
+          onChange={(event) => setWarnDraft(event.target.value)}
+          inputMode="numeric"
+          className="mt-1 w-28"
+          disabled={isSaving}
+        />
+      </label>
+      {!isValidWarn && (
+        <p role="alert" className="text-xs text-destructive">
+          Enter a whole percentage between 1 and 99.
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        A soft alert is triggered when spending reaches this percentage of the budget limit.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={isSaving || !isValidWarn || warnNumber === summary.warnPercent}
+        onClick={() => onWarnPercentChange(warnNumber)}
+      >
+        Update alert threshold
+      </Button>
+    </div>
+  ) : null;
+
+  const advancedSettings =
+    onReservationChange ||
+    onUnpricedUsagePolicyChange ||
+    onHardStopEnabledChange ||
+    onWarnPercentChange ||
+    onNotifyEnabledChange ? (
+      <details className="space-y-3">
+        <summary className="cursor-pointer text-sm font-medium">Advanced settings</summary>
+        <div className="space-y-4">
+          {onUnpricedUsagePolicyChange && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={summary.unpricedUsagePolicy !== "allow"}
+                disabled={isSaving}
+                onChange={(event) => onUnpricedUsagePolicyChange(event.target.checked ? "block" : "allow")}
+              />
+              Block new work when usage has no reliable price
+            </label>
+          )}
+          {hardStopControl}
+          {notifyControl}
+          {warnPercentControl}
+          {reservationSection}
+        </div>
+      </details>
+    ) : null;
 
   const parsedDraft = parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
