@@ -233,7 +233,7 @@ jobs:
           persist-credentials: false
 
       - name: Download resolved target lockfile
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
@@ -383,7 +383,7 @@ jobs:
 
       - name: Download resolved target lockfile
         if: needs.catalog.outputs.needs_daytona == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
@@ -525,7 +525,7 @@ jobs:
           persist-credentials: false
 
       - name: Download resolved target lockfile
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
@@ -653,7 +653,7 @@ jobs:
 
       - name: Download resolved target lockfile
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
@@ -702,7 +702,7 @@ jobs:
 
       - name: Download immutable shared campaign outputs
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
           path: runner-e2e-build
@@ -821,7 +821,7 @@ jobs:
           persist-credentials: false
 
       - name: Download resolved target lockfile
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
@@ -896,14 +896,14 @@ jobs:
 
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
           path: runner-e2e-build
 
       - name: Download immutable remote provider pack
         if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ needs.build_remote_provider_pack.outputs.provider_pack_artifact_name }}
           path: runner-e2e-provider-pack
@@ -1139,7 +1139,7 @@ jobs:
       - name: Download cell evidence
         id: download_evidence
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-e2e-${{ github.run_id }}-*-*
           path: downloaded-runner-e2e
@@ -1147,7 +1147,7 @@ jobs:
 
       - name: Retry cell evidence download after transport failure
         if: steps.download_evidence.outcome == 'failure'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-e2e-${{ github.run_id }}-*-*
           path: downloaded-runner-e2e
@@ -1268,7 +1268,7 @@ jobs:
         run: pnpm exec playwright install --with-deps --only-shell chromium
 
       - name: Download access-controlled normalized campaign
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-e2e-merged-report
