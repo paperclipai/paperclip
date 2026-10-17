@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
+import { projectRepositoryIdentity } from "./managed-project-checkout-name.js";
 import { inspectManagedGitWorktreeBranch, WorkspaceRuntimeValidationFailure } from "./workspace-runtime.js";
 import type { ManagedGitInspectionDiagnostic, PersistedWorkspaceSourceReasonCode } from "./workspace-validation-diagnostics.js";
 
@@ -48,6 +49,11 @@ async function readOrigin(cwd: string): Promise<string | null> {
     // Ambiguous origins are not proof that this is the recorded repository.
     return urls.length === 1 ? urls[0]!.trim() || null : null;
   }).catch(() => null);
+}
+
+async function originMatches(cwd: string, repoUrl: string): Promise<boolean> {
+  const origin = await readOrigin(cwd);
+  return origin !== null && projectRepositoryIdentity(origin) === projectRepositoryIdentity(repoUrl);
 }
 
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
@@ -163,7 +169,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !await originMatches(owner, workspace.repoUrl)) {
         repositoryMismatch = true;
         continue;
       }
@@ -181,7 +187,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl && !await originMatches(candidate, workspace.repoUrl)) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
@@ -194,7 +200,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner) && await originMatches(owner, workspace.repoUrl)) return owner;
   }
   fail(workspace, "source_repository_unavailable");
 }
