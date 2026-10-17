@@ -20,6 +20,10 @@ const mockPluginLoader = vi.hoisted(() => ({
   getUiParserSource: vi.fn(),
   getOrExtractUiParserSource: vi.fn(),
   reloadExternalAdapter: vi.fn(),
+  pruneReloadDirsForType: vi.fn(),
+  withAdapterLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  withAdapterLocks: vi.fn(async (_keys: string[], fn: () => Promise<unknown>) => fn()),
+  lockKeysForType: vi.fn((type: string) => [`type:${type}`]),
 }));
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
