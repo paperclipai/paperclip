@@ -1,3 +1,5 @@
+import { HttpError } from "../errors.js";
+
 export type ChatPublicationErrorDisposition =
   | {
       kind: "retry";
@@ -315,6 +317,15 @@ export function classifyChatPublicationError(
     )
   ) {
     return { kind: "resource_unavailable", reason };
+  }
+
+  if (
+    error instanceof HttpError &&
+    (error.status === 401 || error.status === 403) &&
+    typeof (error.details as { providerStatus?: unknown } | undefined)
+      ?.providerStatus !== "number"
+  ) {
+    return { kind: "failed", reason };
   }
 
   if (

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
 
 function providerError(
@@ -149,6 +150,27 @@ describe("chat publication error classification", () => {
           name: "HttpError",
           status: 403,
           response: { headers: { "x-ratelimit-remaining": "4999" } },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "endpoint_attention" });
+  });
+
+  it("keeps Paperclip's own authorization failures scoped to the publication", () => {
+    expect(
+      classifyChatPublicationError(
+        forbidden("GitHub failure has no request binding"),
+        1,
+      ),
+    ).toMatchObject({ kind: "failed" });
+    expect(classifyChatPublicationError(unauthorized(), 1)).toMatchObject({
+      kind: "failed",
+    });
+    expect(
+      classifyChatPublicationError(
+        new HttpError(403, "GitHub rejected this operation", {
+          code: "github_bot_operation_failed",
+          providerStatus: 403,
         }),
         1,
       ),
