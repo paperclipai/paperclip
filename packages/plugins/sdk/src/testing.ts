@@ -142,7 +142,13 @@ export interface TestHarness {
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
   /** Read raw in-memory state for assertions. */
   getState(input: ScopeKey): unknown;
-  /** Simulate a streaming event arriving for an active session. */
+  /**
+   * Simulate a streaming event arriving for an active session. As in the
+   * real worker, the event goes only to the `onEvent` of the `sendMessage`
+   * call that returned its `runId`. It is dropped when no send returned that
+   * run id, after that run's `done` or `error` event, or after the session
+   * is closed. Pass the `runId` that `sendMessage` returned.
+   */
   simulateSessionEvent(sessionId: string, event: Omit<AgentSessionEvent, "sessionId">): void;
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
@@ -582,7 +588,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const localFolderFiles = new Map<string, string>();
 
   const sessions = new Map<string, AgentSession>();
-  const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
+  // Each send's own callback, keyed by the run id the send returned. Routing
+  // and release match the worker RPC host.
+  const sessionRunCallbacks = new Map<string, { sessionId: string; onEvent: (event: AgentSessionEvent) => void }>();
 
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
@@ -2287,10 +2295,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const session = sessions.get(sessionId);
           if (!session || session.status !== "active") throw new Error(`Session not found or closed: ${sessionId}`);
           if (session.companyId !== companyId) throw new Error(`Session not found: ${sessionId}`);
-          if (opts.onEvent) {
-            sessionEventCallbacks.set(sessionId, opts.onEvent);
+          if (opts.actorUserId) {
+            requireCapability(manifest, capabilitySet, "agent.sessions.send_human_attributed");
+            assertActiveHumanMemberCanWrite(companyId, opts.actorUserId);
           }
-          return { runId: randomUUID() };
+          if (opts.projectId && !isInCompany(projects.get(opts.projectId), companyId)) {
+            throw new Error("Project not found");
+          }
+          const runId = randomUUID();
+          if (opts.onEvent) {
+            sessionRunCallbacks.set(runId, { sessionId, onEvent: opts.onEvent });
+          }
+          return { runId };
         },
         async close(sessionId, companyId) {
           requireCapability(manifest, capabilitySet, "agent.sessions.close");
@@ -2298,7 +2314,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           if (!session) throw new Error(`Session not found: ${sessionId}`);
           if (session.companyId !== companyId) throw new Error(`Session not found: ${sessionId}`);
           session.status = "closed";
-          sessionEventCallbacks.delete(sessionId);
+          for (const [runId, owner] of sessionRunCallbacks) {
+            if (owner.sessionId === sessionId) sessionRunCallbacks.delete(runId);
+          }
         },
       },
     },
@@ -2691,9 +2709,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       return state.get(stateMapKey(input));
     },
     simulateSessionEvent(sessionId, event) {
-      const cb = sessionEventCallbacks.get(sessionId);
-      if (!cb) throw new Error(`No active session event callback for session: ${sessionId}`);
-      cb({ ...event, sessionId });
+      // Like the worker: an event reaches only the callback of the send that
+      // returned its run id, and is dropped once that run ended or its
+      // session closed.
+      const owner = sessionRunCallbacks.get(event.runId);
+      if (!owner || owner.sessionId !== sessionId) return;
+      if (event.eventType === "done" || event.eventType === "error") {
+        sessionRunCallbacks.delete(event.runId);
+      }
+      owner.onEvent({ ...event, sessionId });
     },
     logs,
     activity,

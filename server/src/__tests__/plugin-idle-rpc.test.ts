@@ -99,9 +99,9 @@ describe("plugin idle RPC", () => {
       await f.initialize();
       const subscription = subscribe();
       const request = f.messages.find((message) => message.method === "agents.sessions.sendMessage");
-      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\n");
+      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { runId: "fixture-run" } }) + "\n");
       await subscription;
-      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "agents.sessions.event", params: { sessionId: "fixture-session" } }) + "\n");
+      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "agents.sessions.event", params: { sessionId: "fixture-session", runId: "fixture-run" } }) + "\n");
       await expect.poll(() => f.messages.find((message) => message.method === "log" &&
         message.params.level === "error" && message.params.message.includes("fixture callback failure"))).toBeDefined();
     } finally { f.close(); }
