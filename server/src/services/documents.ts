@@ -499,6 +499,14 @@ export function documentService(db: Db) {
           };
           });
         } catch (error) {
+          if (input.baseRevisionId && isUniqueViolation(error, "document_revisions_document_revision_uq")) {
+            const [current] = await db
+              .select({ currentRevisionId: documents.latestRevisionId })
+              .from(issueDocuments)
+              .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+              .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)));
+            throw conflict("Document was updated by someone else", { currentRevisionId: current?.currentRevisionId ?? null });
+          }
           if (isUniqueViolation(error, "issue_documents_company_issue_key_uq")) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
               continue;

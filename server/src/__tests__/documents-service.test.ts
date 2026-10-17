@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -146,6 +147,56 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: saved.document.body,
       latestRevisionId: saved.document.latestRevisionId,
     });
+  });
+
+  it("returns a revision conflict when concurrent writers use the same base revision", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const current = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+    let release!: () => void;
+    let locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    // Hold inserts so both writers can read the same revision before either commits.
+    const blocker = db.transaction(async tx => {
+      await tx.execute(sql`LOCK TABLE document_revisions IN SHARE MODE`);
+      locked();
+      await released;
+    });
+    await ready;
+    const writes = Promise.allSettled(["# First writer", "# Second writer"].map(body =>
+      svc.upsertIssueDocument({
+        issueId, key: "plan", format: "markdown", body, baseRevisionId: current.latestRevisionId,
+      }),
+    ));
+    try {
+      await expect.poll(async () => {
+        const rows = await db.execute(sql`
+          SELECT count(*)::int AS blocked FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+        `);
+        return rows[0]?.blocked;
+      }, { timeout: 5_000 }).toBe(2);
+    } finally {
+      release();
+      await blocker;
+    }
+    const results = await writes;
+    const saved = results.find(result => result.status === "fulfilled");
+    const rejected = results.find(result => result.status === "rejected");
+    expect(saved?.status).toBe("fulfilled");
+    expect(rejected?.status).toBe("rejected");
+    if (saved?.status !== "fulfilled" || rejected?.status !== "rejected") return;
+    expect(rejected.reason).toMatchObject({
+      status: 409,
+      message: "Document was updated by someone else",
+      details: { currentRevisionId: saved.value.document.latestRevisionId },
+    });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: saved.value.document.body,
+      latestRevisionNumber: current.latestRevisionNumber + 1,
+      latestRevisionId: saved.value.document.latestRevisionId,
+    });
+    expect(await svc.listIssueDocumentRevisions(issueId, "plan")).toHaveLength(2);
   });
 
   it("locks and unlocks issue documents", async () => {
