@@ -1,0 +1,332 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package openshell.sandbox.v1;
+
+// Sandbox-supervisor configuration and policy messages.
+//
+// Conventions:
+// - This file owns messages exchanged between the gateway and the sandbox
+//   supervisor/runtime.
+// - Public sandbox resource types live in `openshell.proto`.
+// - Internal compute-driver sandbox observation types live in `compute_driver.proto`.
+
+// Sandbox security policy configuration.
+message SandboxPolicy {
+  // Policy version.
+  uint32 version = 1;
+  // Filesystem access policy.
+  FilesystemPolicy filesystem = 2;
+  // Landlock configuration.
+  LandlockPolicy landlock = 3;
+  // Process execution policy.
+  ProcessPolicy process = 4;
+  // Network access policies keyed by name (e.g. "claude_code", "gitlab").
+  map<string, NetworkPolicyRule> network_policies = 5;
+}
+
+// Filesystem access policy.
+message FilesystemPolicy {
+  // Automatically include the workdir as read-write.
+  bool include_workdir = 1;
+  // Read-only directory allow list.
+  repeated string read_only = 2;
+  // Read-write directory allow list.
+  repeated string read_write = 3;
+}
+
+// Landlock policy configuration.
+message LandlockPolicy {
+  // Compatibility mode (e.g. "best_effort", "hard_requirement").
+  string compatibility = 1;
+}
+
+// Process execution policy.
+message ProcessPolicy {
+  // User name to run the sandboxed process as.
+  string run_as_user = 1;
+  // Group name to run the sandboxed process as.
+  string run_as_group = 2;
+}
+
+// A named network access policy rule.
+message NetworkPolicyRule {
+  // Human-readable name for this policy rule.
+  string name = 1;
+  // Allowed endpoint (host:port) pairs.
+  repeated NetworkEndpoint endpoints = 2;
+  // Allowed binary identities.
+  repeated NetworkBinary binaries = 3;
+}
+
+// A network endpoint (host + port) with optional L7 inspection config.
+message NetworkEndpoint {
+  // Hostname or host glob pattern. Exact match is case-insensitive.
+  // Glob patterns use "." as delimiter: "*.example.com" matches a single
+  // subdomain label, "**.example.com" matches across labels.
+  string host = 1;
+  // Single port (backwards compat). Use `ports` for multiple ports.
+  // Mutually exclusive with `ports` — if both are set, `ports` takes precedence.
+  uint32 port = 2;
+  // Application protocol for L7 inspection: "rest", "websocket", "graphql", "sql", or "" (L4-only).
+  string protocol = 3;
+  // TLS handling: "terminate" or "passthrough" (default).
+  string tls = 4;
+  // Enforcement mode: "enforce" or "audit" (default).
+  string enforcement = 5;
+  // Access preset shorthand: "read-only", "read-write", "full".
+  // Mutually exclusive with rules.
+  string access = 6;
+  // Explicit L7 rules (mutually exclusive with access).
+  repeated L7Rule rules = 7;
+  // Allowed resolved IP addresses or CIDR ranges for this endpoint.
+  // When non-empty, the SSRF internal-IP check is replaced by an allowlist check:
+  //   - If host is also set: domain must resolve to an IP in this list.
+  //   - If host is empty: any domain is allowed as long as it resolves to an IP in this list.
+  // Supports exact IPs ("10.0.5.20") and CIDR notation ("10.0.5.0/24").
+  // Loopback (127.0.0.0/8) and link-local (169.254.0.0/16) are always blocked
+  // regardless of this field.
+  repeated string allowed_ips = 8;
+  // Multiple ports. When non-empty, this endpoint covers all listed ports.
+  // If `port` is set and `ports` is empty, `port` is normalized to `ports: [port]`.
+  // If both are set, `ports` takes precedence.
+  repeated uint32 ports = 9;
+  // Explicit L7 deny rules. When present, requests matching any deny rule
+  // are blocked even if they match an allow rule or access preset.
+  // Deny rules take precedence over allow rules.
+  repeated L7DenyRule deny_rules = 10;
+  // When true, percent-encoded '/' (%2F) is preserved in path segments
+  // rather than rejected by the L7 path canonicalizer. Required for
+  // upstreams like GitLab that embed %2F in namespaced resource paths.
+  // Defaults to false (strict).
+  bool allow_encoded_slash = 11;
+  // GraphQL persisted-query behavior for hash-only/saved-query requests:
+  // "deny" (default) or "allow_registered".
+  string persisted_queries = 12;
+  // Trusted GraphQL persisted-query registry keyed by hash or service-specific ID.
+  // Only used when persisted_queries is "allow_registered".
+  map<string, GraphqlOperation> graphql_persisted_queries = 13;
+  // Maximum GraphQL request body bytes to buffer for inspection.
+  // Defaults to 65536 when unset.
+  uint32 graphql_max_body_bytes = 14;
+  // Optional HTTP path glob that scopes this L7 endpoint on shared host:port APIs.
+  // Example: use path "/graphql" for protocol "graphql" and "/repos/**" for
+  // protocol "rest" when both surfaces live under api.example.com:443.
+  // Empty means all paths.
+  string path = 15;
+  // When true on a "rest" endpoint, OpenShell rewrites credential placeholders
+  // inside client-to-server WebSocket text messages after an allowed HTTP 101
+  // upgrade. Defaults to false.
+  bool websocket_credential_rewrite = 16;
+  // When true on a "rest" endpoint, OpenShell rewrites credential placeholders
+  // inside supported textual HTTP request bodies before forwarding upstream.
+  // Defaults to false.
+  bool request_body_credential_rewrite = 17;
+  // Internal provenance marker for policy-advisor generated endpoints.
+  // Advisor-proposed endpoints must not satisfy exact-host SSRF trust unless
+  // they are converted through an explicit user-authored policy path.
+  bool advisor_proposed = 18;
+  // Proxy-side credential signing mode: "sigv4" for AWS SigV4 re-signing.
+  // When set, the proxy strips the client's Authorization header and computes
+  // a fresh SigV4 signature using real credentials from the provider.
+  string credential_signing = 19;
+  // AWS signing service name override. Required when credential_signing is
+  // "sigv4" — e.g. "bedrock" for bedrock-runtime endpoints.
+  string signing_service = 20;
+  // AWS region override for SigV4 signing. When set, takes precedence over
+  // hostname-based region extraction. Required for non-standard endpoints.
+  string signing_region = 21;
+  // Maximum JSON-RPC-over-HTTP request body bytes to buffer for inspection.
+  // Defaults to 65536 when unset.
+  uint32 json_rpc_max_body_bytes = 22;
+  // MCP-only policy and inspection options. Only used when protocol is "mcp".
+  McpOptions mcp = 23;
+}
+
+// MCP options are grouped so MCP-specific policy can grow without adding more
+// top-level NetworkEndpoint fields. Current enforcement targets the active
+// 2025-11-25 Streamable HTTP/tools behavior, while preserving space for
+// version-profile policy if OpenShell adopts 2026-07-28 draft behavior later.
+//
+// Planned policy extensions should use OpenShell-owned static definitions for
+// MCP method/version profiles rather than treating dependency enums as the
+// policy contract. Candidate profile checks include request metadata/header
+// validation, response/SSE introspection, trusted annotation handling,
+// resultType/cache metadata validation, x-mcp-header tool-definition checks,
+// and subscriptions/listen handling.
+//
+// Sources:
+// - https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+// - https://modelcontextprotocol.io/specification/draft/changelog
+// - https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http
+// - https://modelcontextprotocol.io/specification/draft/server/tools
+message McpOptions {
+  // Hardening boundary for tools/call params.name. When unset or true, the
+  // supervisor enforces the MCP recommended tool-name syntax
+  // ^[A-Za-z0-9_.-]{1,128}$ before policy evaluation. Set false only for
+  // compatibility with servers that intentionally use non-recommended names.
+  //
+  // Source:
+  // - https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names
+  optional bool strict_tool_names = 1;
+  // Method-layer default for MCP endpoints. When true, OpenShell allows parsed
+  // MCP-family methods at the method layer unless a tool-name policy narrows
+  // tools/call. When unset or false, explicit method rules are required.
+  optional bool allow_all_known_mcp_methods = 2;
+}
+
+// Trusted GraphQL operation classification.
+message GraphqlOperation {
+  // Operation type: "query", "mutation", or "subscription".
+  string operation_type = 1;
+  // Operation name, if known.
+  string operation_name = 2;
+  // Root field names selected by the operation.
+  repeated string fields = 3;
+}
+
+// An L7 deny rule that blocks specific requests.
+// Mirrors L7Allow — same fields, same matching semantics, inverted effect.
+// Deny rules are evaluated after allow rules and take precedence.
+message L7DenyRule {
+  // Protocol method: HTTP method (REST/WebSocket), JSON-RPC method name, or
+  // "*" for any when supported by the protocol.
+  string method = 1;
+  // URL path glob pattern (REST): "/repos/*/pulls/*/reviews", "**" for any.
+  string path = 2;
+  // SQL command (SQL): SELECT, INSERT, etc. or "*" for any.
+  string command = 3;
+  // Query parameter matcher map (REST).
+  // Same semantics as L7Allow.query.
+  map<string, L7QueryMatcher> query = 4;
+  // GraphQL operation type: "query", "mutation", "subscription", or "*" for any.
+  string operation_type = 5;
+  // GraphQL operation name glob. "*" matches any operation name.
+  string operation_name = 6;
+  // GraphQL root field globs. Deny rules match when any selected root field
+  // matches any configured glob.
+  repeated string fields = 7;
+  reserved 8;
+  // MCP params matcher map. Currently only params.name is supported for
+  // tools/call filtering. Generic protocol "json-rpc" rejects params matchers.
+  map<string, L7QueryMatcher> params = 9;
+}
+
+// An L7 policy rule (allow-only).
+message L7Rule {
+  L7Allow allow = 1;
+}
+
+// Allowed action definition for L7 rules.
+message L7Allow {
+  // Protocol method: HTTP method (REST/WebSocket), JSON-RPC method name, or
+  // "*" for any when supported by the protocol.
+  string method = 1;
+  // URL path glob pattern (REST): "/repos/**", "**" for any.
+  string path = 2;
+  // SQL command (SQL): SELECT, INSERT, etc. or "*" for any.
+  string command = 3;
+  // Query parameter matcher map (REST).
+  // Key is the decoded query parameter name (case-sensitive).
+  // Value supports either a single glob (`glob`) or a list (`any`).
+  map<string, L7QueryMatcher> query = 4;
+  // GraphQL operation type: "query", "mutation", "subscription", or "*" for any.
+  string operation_type = 5;
+  // GraphQL operation name glob. "*" matches any operation name.
+  string operation_name = 6;
+  // GraphQL root field globs. Allow rules match only when every selected root
+  // field matches one of the configured globs. Omit to match all fields.
+  repeated string fields = 7;
+  reserved 8;
+  // MCP params matcher map. Currently only params.name is supported for
+  // tools/call filtering. Generic protocol "json-rpc" rejects params matchers.
+  map<string, L7QueryMatcher> params = 9;
+}
+
+// Query value matcher for one query parameter key.
+message L7QueryMatcher {
+  // Single glob pattern.
+  string glob = 1;
+  // Any-of glob patterns.
+  repeated string any = 2;
+}
+
+// A binary identity for network policy matching.
+message NetworkBinary {
+  string path = 1;
+  // Deprecated: the harness concept has been removed. This field is ignored.
+  bool harness = 2 [deprecated = true];
+}
+
+// Request to get sandbox settings by sandbox ID.
+message GetSandboxConfigRequest {
+  // The sandbox ID.
+  string sandbox_id = 1;
+}
+
+// Request to get gateway-global settings.
+message GetGatewayConfigRequest {}
+
+// Response containing gateway-global settings.
+message GetGatewayConfigResponse {
+  // Gateway-global settings map excluding the reserved policy key.
+  // Registered keys without a configured value are returned with an empty SettingValue.
+  map<string, SettingValue> settings = 1;
+  // Monotonically increasing revision for gateway-global settings.
+  uint64 settings_revision = 2;
+}
+
+// Scope that currently controls a setting.
+enum SettingScope {
+  SETTING_SCOPE_UNSPECIFIED = 0;
+  SETTING_SCOPE_SANDBOX = 1;
+  SETTING_SCOPE_GLOBAL = 2;
+}
+
+// Type-aware setting value for sandbox/gateway settings.
+message SettingValue {
+  oneof value {
+    string string_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    bytes bytes_value = 4;
+  }
+}
+
+// Effective setting value and the scope it was resolved from.
+message EffectiveSetting {
+  SettingValue value = 1;
+  SettingScope scope = 2;
+}
+
+// Source used for the policy payload in GetSandboxConfigResponse.
+enum PolicySource {
+  POLICY_SOURCE_UNSPECIFIED = 0;
+  POLICY_SOURCE_SANDBOX = 1;
+  POLICY_SOURCE_GLOBAL = 2;
+}
+
+// Response containing effective sandbox settings and policy.
+message GetSandboxConfigResponse {
+  // The sandbox policy configuration.
+  SandboxPolicy policy = 1;
+  // Current policy version (monotonically increasing per sandbox).
+  uint32 version = 2;
+  // SHA-256 hash of the serialized policy payload.
+  string policy_hash = 3;
+  // Effective settings resolved for this sandbox, excluding the reserved policy key.
+  // Registered keys without a configured value are returned with an empty EffectiveSetting.value.
+  map<string, EffectiveSetting> settings = 4;
+  // Fingerprint for effective config (policy + settings). Changes when any effective input changes.
+  uint64 config_revision = 5;
+  // Source of the policy payload for this response.
+  PolicySource policy_source = 6;
+  // When policy_source is GLOBAL, the version of the global policy revision.
+  // Zero when no global policy is active or when policy_source is SANDBOX.
+  uint32 global_policy_version = 7;
+  // Fingerprint for provider credential inputs attached to this sandbox.
+  // Changes when attached provider names or attached provider records change.
+  uint64 provider_env_revision = 8;
+}
