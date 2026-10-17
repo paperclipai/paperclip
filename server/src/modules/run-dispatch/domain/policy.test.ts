@@ -30,6 +30,10 @@ function baseGateFacts(): ScheduledRetryFacts {
     agentInvokabilityDetails: {},
     agentInvokabilityInvalidOrgChain: false,
     heartbeatWakeOnDemandEnabled: true,
+    isInteractionWake: false,
+    resumeIntent: false,
+    wakeCommentIdPresent: false,
+    isCompletedOnboardingHandoffWake: false,
     issueFound: true,
     issueStatus: "in_progress",
     issueAssigneeAgentId: "agent-1",
@@ -246,6 +250,60 @@ describe("decideScheduledRetryGate", () => {
       isNonAssigneeWorkspaceBusyRetry: true,
     };
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+  });
+
+  it("preserves queued comment admission while a provider quota hold waits", () => {
+    const heldComment: ScheduledRetryFacts = {
+      ...baseGateFacts(),
+      retryReasonKind: "provider_quota_hold",
+      issueStatus: "done",
+      issueAssigneeAgentId: "agent-2",
+      isInteractionWake: true,
+      wakeCommentIdPresent: true,
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-2",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-2" },
+      },
+    };
+
+    expect(decideScheduledRetryGate(heldComment, NOW)).toEqual({ allowed: true });
+  });
+
+  it("still rejects changed ownership without preserved quota-hold wake evidence", () => {
+    expect(
+      decideScheduledRetryGate(
+        {
+          ...baseGateFacts(),
+          retryReasonKind: "provider_quota_hold",
+          issueAssigneeAgentId: "agent-2",
+        },
+        NOW,
+      ),
+    ).toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+  });
+
+  it("does not let a quota hold bypass unrelated terminal or pause changes", () => {
+    const heldRun = {
+      ...baseGateFacts(),
+      retryReasonKind: "provider_quota_hold" as const,
+    };
+    expect(
+      decideScheduledRetryGate({ ...heldRun, issueStatus: "done" }, NOW),
+    ).toMatchObject({ allowed: false, errorCode: "issue_terminal_status" });
+    expect(
+      decideScheduledRetryGate(
+        {
+          ...heldRun,
+          wakeCommentIdPresent: true,
+          activePauseHold: { holdId: "hold-1", rootIssueId: "issue-root" },
+        },
+        NOW,
+      ),
+    ).toMatchObject({ allowed: false, errorCode: "issue_paused" });
   });
 
   it("keeps the legacy missing-issue exception's precondition: issue_not_found is reported the same way for a non-max-turn retry as for a max-turn retry", () => {

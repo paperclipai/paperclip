@@ -37,6 +37,11 @@ import {
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import {
+  PROVIDER_QUOTA_HOLD_RETRY_REASON,
+  providerQuotaHoldPreviousRetryReason,
+  providerQuotaHoldRestoredContextSnapshot,
+} from "../../../services/provider-quota-dispatch-hold.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 import type {
   QueuedRunFacts,
@@ -134,6 +139,7 @@ function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
   if (retryReason === "native_safe_replacement" || retryReason === "native_provider_overloaded") return "native_safe_replacement";
+  if (retryReason === "provider_quota_hold") return "provider_quota_hold";
   return "other";
 }
 
@@ -279,6 +285,8 @@ export function createPostgresRunDispatchAdapter(
       null;
     const issueId = readNonEmptyString(input.contextSnapshot.issueId);
     const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const wakeCommentIdPresent = Boolean(deriveCommentId(input.contextSnapshot));
+    const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason);
 
     // Facts fill in through the same rule order `decideScheduledRetryGate`
     // evaluates. A field still awaiting its own read keeps a value that
@@ -303,6 +311,15 @@ export function createPostgresRunDispatchAdapter(
       agentInvokabilityDetails: {},
       agentInvokabilityInvalidOrgChain: false,
       heartbeatWakeOnDemandEnabled: true,
+      isInteractionWake: allowsIssueInteractionWake(
+        input.contextSnapshot,
+        ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+      ),
+      resumeIntent:
+        input.contextSnapshot.resumeIntent === true ||
+        input.contextSnapshot.followUpRequested === true,
+      wakeCommentIdPresent,
+      isCompletedOnboardingHandoffWake: false,
       issueFound: false,
       issueStatus: null,
       issueAssigneeAgentId: null,
@@ -331,7 +348,11 @@ export function createPostgresRunDispatchAdapter(
       : agentInvokability.invalidOrgChain;
     if (!facts.agentInvokable) return { agentFound: true, facts };
 
-    facts.heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
+    const timerQuotaHold =
+      retryReason === "provider_quota_hold" &&
+      readNonEmptyString(input.contextSnapshot.wakeSource) === "timer";
+    facts.heartbeatWakeOnDemandEnabled =
+      timerQuotaHold || isHeartbeatWakeOnDemandEnabled(agent);
     if (!facts.heartbeatWakeOnDemandEnabled) return { agentFound: true, facts };
 
     if (!issueId) return { agentFound: true, facts };
@@ -378,6 +399,19 @@ export function createPostgresRunDispatchAdapter(
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
     });
+    if (
+      retryReasonKind === "provider_quota_hold" &&
+      wakeReason === "issue_children_completed"
+    ) {
+      facts.isCompletedOnboardingHandoffWake =
+        await isCompletedOnboardingHandoffWake(dbOrTx, {
+          companyId: input.companyId,
+          issueId,
+          agentId: input.agentId,
+          reason: wakeReason,
+          contextSnapshot: input.contextSnapshot,
+        });
+    }
 
     // The gate checks a disposition repair's own supersession before it
     // checks ownership or status, so this read must land before the next
@@ -636,7 +670,10 @@ export function createPostgresRunDispatchAdapter(
 
   async function promoteDueRetryInTx(
     tx: Db,
-    input: PromoteOrCancelDueRetryInput,
+    input: PromoteOrCancelDueRetryInput & {
+      restoreScheduledRetryReason?: string | null;
+      restoreContextSnapshot?: Record<string, unknown>;
+    },
   ): Promise<
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
@@ -645,6 +682,12 @@ export function createPostgresRunDispatchAdapter(
       .update(heartbeatRuns)
       .set({
         status: "queued",
+        ...(input.restoreScheduledRetryReason !== undefined
+          ? { scheduledRetryReason: input.restoreScheduledRetryReason }
+          : {}),
+        ...(input.restoreContextSnapshot !== undefined
+          ? { contextSnapshot: input.restoreContextSnapshot }
+          : {}),
         updatedAt: input.now,
         resultJson: sql`case when ${heartbeatRuns.resultJson}->'executionWait'->>'cause' = 'execution_owner_active'
           then ${heartbeatRuns.resultJson} - 'executionWait' else ${heartbeatRuns.resultJson} end`,
@@ -773,7 +816,11 @@ export function createPostgresRunDispatchAdapter(
           responsibleUserId: run.responsibleUserId,
           contextSnapshot: parseObject(run.contextSnapshot),
           scheduledRetryReason: run.scheduledRetryReason,
-          retryReasonOverride: run.scheduledRetryReason,
+          retryReasonOverride:
+            run.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON
+              ? providerQuotaHoldPreviousRetryReason(run.contextSnapshot) ??
+                run.scheduledRetryReason
+              : run.scheduledRetryReason,
           wakeupRequestId: run.wakeupRequestId,
         },
         now,
@@ -847,6 +894,14 @@ export function createPostgresRunDispatchAdapter(
         runId: input.runId,
         companyId: input.companyId,
         now,
+        restoreScheduledRetryReason:
+          run.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON
+            ? providerQuotaHoldPreviousRetryReason(run.contextSnapshot)
+            : undefined,
+        restoreContextSnapshot:
+          run.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON
+            ? providerQuotaHoldRestoredContextSnapshot(run.contextSnapshot)
+            : undefined,
       });
       return promoted.applied
         ? {

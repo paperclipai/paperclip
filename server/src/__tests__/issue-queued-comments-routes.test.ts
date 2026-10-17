@@ -1098,6 +1098,45 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     });
   });
 
+  it("keeps a quota-held queue discoverable, editable, and discardable", async () => {
+    const seeded = await seedQueue();
+    const queueRunId = await promoteQueue(seeded);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryReason: "provider_quota_hold",
+        scheduledRetryAt: new Date("2026-08-29T15:05:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, queueRunId));
+
+    const held = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`)
+      .expect(200);
+    expect(held.body).toMatchObject({
+      queueId: seeded.wakeId,
+      state: "queued",
+      entries: [
+        { comment: { id: seeded.commentIds[0] }, canEdit: true, canDiscard: true },
+        { comment: { id: seeded.commentIds[1] }, canEdit: true, canDiscard: true },
+      ],
+    });
+
+    const edited = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: held.body.revision, body: "edited while quota-held" })
+      .expect(200);
+    expect(edited.body.entries[0].comment.body).toBe("edited while quota-held");
+
+    const discarded = await request(app(seeded.companyId))
+      .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[1]}`)
+      .send({ queueId: seeded.wakeId, revision: edited.body.revision })
+      .expect(200);
+    expect(discarded.body.entries.map((entry: any) => entry.comment.id)).toEqual([
+      seeded.commentIds[0],
+    ]);
+  });
+
   it("keeps a mutation response's steering disposition in step with a fresh GET after promotion", async () => {
     const seeded = await seedQueue();
     await promoteQueue(seeded);

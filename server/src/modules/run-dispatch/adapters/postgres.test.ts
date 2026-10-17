@@ -814,6 +814,8 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       agentId: string;
       issueId: string;
       now: Date;
+      scheduledRetryReason?: string;
+      contextSnapshot?: Record<string, unknown>;
     }) {
       await db.insert(heartbeatRuns).values({
         id: input.runId,
@@ -823,8 +825,8 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         status: "scheduled_retry",
         scheduledRetryAttempt: 1,
         scheduledRetryAt: input.now,
-        scheduledRetryReason: "max_turns_continuation",
-        contextSnapshot: { issueId: input.issueId },
+        scheduledRetryReason: input.scheduledRetryReason ?? "max_turns_continuation",
+        contextSnapshot: input.contextSnapshot ?? { issueId: input.issueId },
         updatedAt: input.now,
         createdAt: input.now,
       });
@@ -848,6 +850,274 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
 
       expect(outcome.outcome).toBe("promoted");
       const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("queued");
+    });
+
+    it("promotes a timer quota hold even when on-demand wakes are disabled", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await db
+        .update(agents)
+        .set({ runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: false } } })
+        .where(eq(agents.id, agentId));
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: { issueId, wakeSource: "timer" },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("queued");
+    });
+
+    it("applies the original native replacement gate after a quota hold", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          providerQuotaHoldPreviousRetryReason: "native_safe_replacement",
+          providerQuotaHoldUntil: new Date(now.getTime() + 60_000).toISOString(),
+          failureRetriesBeforeProviderQuotaHold: 0,
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome).toMatchObject({
+        outcome: "gate_suppressed",
+        errorCode: "issue_blocked",
+      });
+      const [row] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("cancelled");
+    });
+
+    it("restores the original retry reason when a quota hold is promoted", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          providerQuotaHoldPreviousRetryReason: "native_safe_replacement",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db
+        .select({
+          status: heartbeatRuns.status,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row).toMatchObject({
+        status: "queued",
+        scheduledRetryReason: "native_safe_replacement",
+        contextSnapshot: { issueId },
+      });
+    });
+
+    it("gates a quota-held interaction wake by its original retry reason", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_comment_mentioned",
+          wakeCommentId: randomUUID(),
+          providerQuotaHoldPreviousRetryReason: "native_safe_replacement",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome).toMatchObject({
+        outcome: "gate_suppressed",
+        errorCode: "issue_terminal_status",
+      });
+    });
+
+    it("preserves a non-assignee resource wait across a quota hold", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const replacementAgentId = randomUUID();
+      await seedAgent({ id: replacementAgentId, companyId, name: "ReplacementCoder" });
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_progress",
+        assigneeAgentId: replacementAgentId,
+      });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          aiConnectionBusyDeferredWhileAssignee: false,
+          providerQuotaHoldPreviousRetryReason: "ai_connection_busy",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db
+        .select({
+          status: heartbeatRuns.status,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row).toMatchObject({
+        status: "queued",
+        scheduledRetryReason: "ai_connection_busy",
+      });
+    });
+
+    it("promotes a quota-held comment wake after the issue completes", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_commented",
+          wakeCommentId: randomUUID(),
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("queued");
+    });
+
+    it("promotes a quota-held interaction wake after reassignment", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const replacementAgentId = randomUUID();
+      await seedAgent({ id: replacementAgentId, companyId, name: "ReplacementCoder" });
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_progress",
+        assigneeAgentId: replacementAgentId,
+      });
+      await seedScheduledRetryRun({
+        runId,
+        companyId,
+        agentId,
+        issueId,
+        now,
+        scheduledRetryReason: "provider_quota_hold",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_comment_mentioned",
+          wakeCommentId: randomUUID(),
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
       expect(row?.status).toBe("queued");
     });
 

@@ -135,6 +135,31 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     return id;
   }
 
+  async function seedProviderQuotaHeldQueue(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    commentIds: string[];
+  }): Promise<{ wakeId: string; runId: string }> {
+    const wakeId = await seedDeferredWake(input);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      wakeupRequestId: wakeId,
+      status: "scheduled_retry",
+      scheduledRetryAt: new Date(Date.now() + 60_000),
+      scheduledRetryReason: "provider_quota_hold",
+      contextSnapshot: { issueId: input.issueId, wakeCommentIds: input.commentIds },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "queued", runId })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    return { wakeId, runId };
+  }
+
   it("scopes the wake lookup to its own company: a foreign-company issue context resolves not_pending and deletes nothing", async () => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();
@@ -164,6 +189,40 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     expect(commentRow?.deletedAt ?? null).toBeNull();
     const wakeRow = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0];
     expect(wakeRow?.status).toBe("deferred_issue_execution");
+  });
+
+  it("keeps an unstarted provider quota hold editable as queued work", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const { wakeId, runId } = await seedProviderQuotaHeldQueue({
+      companyId,
+      agentId,
+      issueId,
+      commentIds: [commentId],
+    });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: runId },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) => {
+        expect(locked.state).toBe("queued");
+        expect(locked.queueRun?.status).toBe("scheduled_retry");
+        await expect(
+          transaction.updateQueueRunCommentIds({
+            queueRunId: runId,
+            contextSnapshot: locked.queueRun!.contextSnapshot,
+            ids: [commentId],
+            updatedAt: new Date(),
+          }),
+        ).resolves.not.toBeNull();
+      },
+    );
   });
 
   it("rolls back a discard when the comment id given belongs to a different issue than the one this transaction locked", async () => {

@@ -246,6 +246,11 @@ export function projectExecution(
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
     return set("retry_scheduled", "Waiting for workspace");
   }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "provider_quota_hold") {
+    projection.nextAction =
+      "Waiting for the provider's captured quota reset; dispatch resumes automatically after the scheduled check.";
+    return set("retry_scheduled", "Waiting for provider quota reset");
+  }
   // Cleanup can fail before a finalization coordinator exists. The missing
   // row must not turn a quarantined native session into an ordinary Retry.
   const cleanupQuarantined = run.runtimeMode === "native" &&

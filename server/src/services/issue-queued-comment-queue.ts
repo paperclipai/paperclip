@@ -1,8 +1,40 @@
 import { createHash } from "node:crypto";
+import { and, eq, isNull, or } from "drizzle-orm";
+import { heartbeatRuns } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";
+export const PROVIDER_QUOTA_HOLD_RETRY_REASON = "provider_quota_hold";
+
+type QueuedRunRow = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "status" | "scheduledRetryReason" | "startedAt"
+>;
+
+export function mutableQueuedRunWhere(queueRunId: string, companyId: string) {
+  return and(
+    eq(heartbeatRuns.id, queueRunId),
+    eq(heartbeatRuns.companyId, companyId),
+    or(
+      eq(heartbeatRuns.status, "queued"),
+      and(
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        eq(heartbeatRuns.scheduledRetryReason, PROVIDER_QUOTA_HOLD_RETRY_REASON),
+        isNull(heartbeatRuns.startedAt),
+      ),
+    ),
+  );
+}
+
+export function isMutableQueuedRun(row: QueuedRunRow) {
+  return (
+    row.status === "queued" ||
+    (row.status === "scheduled_retry" &&
+      row.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON &&
+      row.startedAt === null)
+  );
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
