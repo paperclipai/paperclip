@@ -173,6 +173,30 @@ describe("agent cryptographic identity", () => {
     }
   }, 60_000);
 
+  it("redacts the run's own API key from the run log, even when its output is split", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "identity-test-jwt-secret");
+    const agent = await oldAgent();
+    await db.update(agents).set({ adapterType: "process", adapterConfig: {
+      command: process.execPath, cwd: directory,
+      args: ["-e", "const k=process.env.PAPERCLIP_API_KEY??''; console.log('KEY_LENGTH:'+k.length); process.stdout.write('PAPERCLIP_API_KEY='+k.slice(0,100)); setTimeout(()=>process.stdout.write(k.slice(100)+'\\n'),30);"],
+    } }).where(eq(agents.id, agent.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agent.id, "on_demand", {}, "manual");
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const finished = await heartbeat.getRun(run!.id);
+      expect(finished?.status, JSON.stringify(finished)).toBe("succeeded");
+      expect(Number(/KEY_LENGTH:(\d+)/.exec(finished!.stdoutExcerpt ?? "")?.[1])).toBeGreaterThan(100);
+      const log = JSON.stringify(await heartbeat.readLog(run!.id));
+      expect(log).toContain("PAPERCLIP_API_KEY=");
+      expect(log).not.toMatch(/eyJ[A-Za-z0-9_-]{20,}/);
+      expect(JSON.stringify(finished)).not.toMatch(/eyJ[A-Za-z0-9_-]{20,}/);
+    } finally {
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "");
+    }
+  }, 60_000);
+
   it("persists ordinary stdout and stderr endings after settling the identity buffer", async () => {
     const agent = await oldAgent();
     await db.update(agents).set({ adapterType: "process", adapterConfig: {
@@ -239,6 +263,27 @@ describe("identity output redaction", () => {
     redactor.delta("run:turn:other", { text: pem.slice(0, 42) }, "other");
     expect(redactor.settleDeltas("run:turn:", {}, true)).toMatchObject({ outputTails: [{ payload: { text: "***REDACTED***" } }] });
     expect(redactor.delta("run:turn:other", { text: "hello" }).text).toBe("hello");
+  });
+
+  it("redacts a registered run key at every split boundary, with or without identity material", () => {
+    const runKey = `eyJhbGciOiJIUzI1NiJ9.${randomBytes(48).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
+    for (const material of [undefined, pem]) {
+      for (let split = 1; split < runKey.length; split++) {
+        const redactor = createAgentIdentityRedactor(material);
+        redactor.register(runKey);
+        let output = redactor.chunk("stdout", `PAPERCLIP_API_KEY=${runKey.slice(0, split)}`);
+        output += redactor.chunk("stdout", `${runKey.slice(split)}\n`);
+        output += redactor.finish("stdout");
+        expect(output).toBe("PAPERCLIP_API_KEY=***REDACTED***\n");
+      }
+      const redactor = createAgentIdentityRedactor(material);
+      redactor.register(runKey);
+      expect(redactor.redact({ env: `Bearer ${runKey}`, json: JSON.stringify({ key: runKey }) })).toEqual({
+        env: "Bearer ***REDACTED***",
+        json: JSON.stringify({ key: "***REDACTED***" }),
+      });
+      expect(redactor.chunk("stdout", "ordinary output\n")).toBe("ordinary output\n");
+    }
   });
 
   it("redacts every split boundary and interleaved streams, including interrupted prefixes", () => {

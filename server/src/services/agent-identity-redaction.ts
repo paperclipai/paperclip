@@ -15,6 +15,13 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
   }>();
   const redactor = {
     values,
+    register(value: string) {
+      if (!value) return;
+      for (const exact of [value, JSON.stringify(value).slice(1, -1)]) {
+        if (!values.includes(exact)) values.push(exact);
+      }
+      values.sort((a, b) => b.length - a.length);
+    },
     redact<T>(value: T): T { return redactRegisteredSecretValues(value, values); },
     // Hold only a suffix that could begin a secret. Separate buffers prevent
     // interleaved stdout/stderr from defeating matching across output chunks.
