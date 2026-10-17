@@ -1205,9 +1205,13 @@ export function createPluginWorkerHandle(
 
   function clearInvocation(invocation: PluginInvocationContext | null): void {
     if (!invocation) return;
-    const entry = activeInvocations.get(invocation.id);
+    clearInvocationById(invocation.id);
+  }
+
+  function clearInvocationById(invocationId: string): void {
+    const entry = activeInvocations.get(invocationId);
     if (entry?.timer) clearTimeout(entry.timer);
-    activeInvocations.delete(invocation.id);
+    activeInvocations.delete(invocationId);
   }
 
   // Store the host-owned execute route for one active execute call. The host
@@ -2804,6 +2808,18 @@ export function createPluginWorkerHandle(
    * level) so that every log entry is queryable per the spec (§26.1).
    */
   function handleWorkerNotification(notification: JsonRpcNotification): void {
+    // The worker reports that the handlers for a notification (an event
+    // delivery) have settled. Retire the invocation scope issued for that
+    // delivery immediately instead of leaving it to the TTL: while any scope
+    // lingers, unscoped worker-to-host calls are denied.
+    if (notification.method === "paperclip.invocationSettled") {
+      const invocationId = readNonEmptyString(
+        (notification.params as { invocationId?: unknown } | null)?.invocationId,
+      );
+      if (invocationId) clearInvocationById(invocationId);
+      return;
+    }
+
     if (notification.method === "log") {
       const params = notification.params as {
         level?: string;
@@ -3585,9 +3601,12 @@ export function createPluginWorkerHandle(
       if (status !== "running") return;
       if (idleSleepHeld()) throw new Error("Plugin is held for idle sleep");
       const invocationScope = deriveInvocationScope(method, params);
-      // Notifications have no response to settle on, so the invocation scope
-      // is GC'd by TTL. Call-path invocations are registered without a TTL and
-      // cleared on settlement, so they survive arbitrarily long call timeouts.
+      // Notifications have no response to settle on. The worker reports
+      // settlement with a paperclip.invocationSettled notification once its
+      // handlers finish, and the scope is cleared then; the TTL remains as a
+      // backstop for workers that never report. Call-path invocations are
+      // registered without a TTL and cleared on settlement, so they survive
+      // arbitrarily long call timeouts.
       const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
         sendMessage({

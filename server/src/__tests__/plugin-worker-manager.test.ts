@@ -511,6 +511,69 @@ describe("plugin-worker-manager stderr failure context", () => {
       await handle.stop().catch(() => undefined);
     }
   });
+
+  it("clears the event invocation scope once the worker reports its handlers settled", async () => {
+    const companiesList = vi.fn(async () => [{ id: "company-a" }]);
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          list: companiesList,
+          get: vi.fn(async (params: { companyId: string }) => ({ id: params.companyId })),
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    const unscopedListCall = () => handle.call("getData", {
+      key: "probe",
+      params: {
+        mode: "none",
+        hostMethod: "companies.list",
+      },
+    } as HostToWorkerMethods["getData"][0]);
+
+    try {
+      await handle.start();
+
+      // Unscoped calls work before any event is delivered.
+      await expect(unscopedListCall()).resolves.toEqual([{ id: "company-a" }]);
+
+      // Deliver an event carrying a companyId. The fixture worker settles
+      // its handler immediately and reports settlement, like the SDK does.
+      handle.notify("onEvent", {
+        event: { eventType: "agent.run.started", companyId: "company-a" },
+      });
+
+      // The event's invocation scope must be retired on settlement, so the
+      // same unscoped call keeps working instead of being denied until the
+      // scope's TTL expires.
+      let settled = false;
+      for (let attempt = 0; attempt < 60 && !settled; attempt++) {
+        try {
+          await unscopedListCall();
+          settled = true;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      expect(settled).toBe(true);
+      expect(companiesList.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
 });
 
 

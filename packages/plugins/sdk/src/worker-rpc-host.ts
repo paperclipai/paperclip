@@ -2341,7 +2341,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         const done = idleDrain.begin();
         try {
           await (notif.paperclipInvocation ? invocationContextStorage.run(notif.paperclipInvocation, fn) : fn());
-        } finally { done(); }
+        } finally {
+          done();
+          // The handlers for this notification have settled, so the host can
+          // retire the invocation scope it issued for the delivery. Without
+          // this signal the scope lingers until its TTL and the host denies
+          // unrelated unscoped worker calls in the meantime.
+          if (notif.paperclipInvocation) {
+            notifyHost("paperclip.invocationSettled", {
+              invocationId: notif.paperclipInvocation.id,
+            });
+          }
+        }
       };
       if (notif.method === "releaseIdleSleep" && notif.params) {
         idleDrain.release((notif.params as { ownerId: string }).ownerId);
