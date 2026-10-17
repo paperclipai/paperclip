@@ -4343,13 +4343,28 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+/**
+ * Default skill linker. On Windows an account without the symlink privilege (no Developer Mode, not elevated) gets
+ * EPERM from fs.symlink and every native-adapter run then fails before it starts. A directory junction needs no
+ * privilege and is read the same way (lstat reports it as a link, readlink returns the target), so fall back to it.
+ */
+export async function linkSkillDirectory(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
+      await fs.symlink(source, target, "junction");
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (
-    linkSource,
-    linkTarget,
-  ) => fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = linkSkillDirectory,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
