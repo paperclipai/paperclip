@@ -1,0 +1,1899 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package openshell.v1;
+
+import "datamodel.proto";
+import "google/protobuf/struct.proto";
+import "sandbox.proto";
+
+// OpenShell service provides sandbox, provider, and runtime management capabilities.
+//
+// Conventions:
+// - This file owns the public API resource model exposed to OpenShell clients.
+// - `Sandbox`, `SandboxSpec`, `SandboxStatus`, and `SandboxPhase` are gateway-owned
+//   public types. Internal compute drivers must not import or return them directly.
+// - The gateway translates internal compute-driver observations into these public
+//   resource messages before persisting or returning them to clients.
+service OpenShell {
+  // Check the health of the service.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Create a new sandbox.
+  rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
+
+  // Fetch a sandbox by name.
+  rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
+
+  // List sandboxes.
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+
+  // List provider records attached to a sandbox.
+  rpc ListSandboxProviders(ListSandboxProvidersRequest)
+      returns (ListSandboxProvidersResponse);
+
+  // Attach a provider record to an existing sandbox.
+  rpc AttachSandboxProvider(AttachSandboxProviderRequest)
+      returns (AttachSandboxProviderResponse);
+
+  // Detach a provider record from an existing sandbox.
+  rpc DetachSandboxProvider(DetachSandboxProviderRequest)
+      returns (DetachSandboxProviderResponse);
+
+  // Delete a sandbox by name.
+  rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+
+  // Create a short-lived SSH session for a sandbox.
+  rpc CreateSshSession(CreateSshSessionRequest) returns (CreateSshSessionResponse);
+
+  // Create or update a sandbox HTTP service endpoint for local routing.
+  rpc ExposeService(ExposeServiceRequest) returns (ServiceEndpointResponse);
+
+  // Fetch one sandbox HTTP service endpoint.
+  rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
+
+  // List sandbox HTTP service endpoints.
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+
+  // Delete one sandbox HTTP service endpoint.
+  rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
+
+  // Revoke a previously issued SSH session.
+  rpc RevokeSshSession(RevokeSshSessionRequest) returns (RevokeSshSessionResponse);
+
+  // Execute a command in a ready sandbox and stream output.
+  rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
+
+  // Forward one CLI-side TCP connection to a loopback TCP target in a sandbox.
+  rpc ForwardTcp(stream TcpForwardFrame) returns (stream TcpForwardFrame);
+
+  // Execute an interactive command with bidirectional stdin/stdout streaming.
+  // The first client message MUST carry an ExecSandboxInput with the start
+  // variant. Subsequent messages carry stdin bytes or window resize events.
+  rpc ExecSandboxInteractive(stream ExecSandboxInput) returns (stream ExecSandboxEvent);
+
+  // Create a provider.
+  rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
+
+  // Fetch a provider by name.
+  rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
+
+  // List providers.
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+
+  // List available provider type profiles.
+  rpc ListProviderProfiles(ListProviderProfilesRequest)
+      returns (ListProviderProfilesResponse);
+
+  // Fetch one provider type profile by id.
+  rpc GetProviderProfile(GetProviderProfileRequest)
+      returns (ProviderProfileResponse);
+
+  // Import custom provider type profiles.
+  rpc ImportProviderProfiles(ImportProviderProfilesRequest)
+      returns (ImportProviderProfilesResponse);
+
+  // Update an existing custom provider type profile.
+  rpc UpdateProviderProfiles(UpdateProviderProfilesRequest)
+      returns (UpdateProviderProfilesResponse);
+
+  // Validate provider type profiles without registering them.
+  rpc LintProviderProfiles(LintProviderProfilesRequest)
+      returns (LintProviderProfilesResponse);
+
+  // Update an existing provider by name.
+  rpc UpdateProvider(UpdateProviderRequest) returns (ProviderResponse);
+
+  // Fetch refresh status for one provider or provider credential.
+  rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest)
+      returns (GetProviderRefreshStatusResponse);
+
+  // Configure gateway-owned refresh material for one provider credential.
+  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest)
+      returns (ConfigureProviderRefreshResponse);
+
+  // Record a gateway-owned refresh request for one provider credential.
+  rpc RotateProviderCredential(RotateProviderCredentialRequest)
+      returns (RotateProviderCredentialResponse);
+
+  // Delete gateway-owned refresh configuration for one provider credential.
+  rpc DeleteProviderRefresh(DeleteProviderRefreshRequest)
+      returns (DeleteProviderRefreshResponse);
+
+  // Delete a provider by name.
+  rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
+
+  // Delete a custom provider type profile by id.
+  rpc DeleteProviderProfile(DeleteProviderProfileRequest)
+      returns (DeleteProviderProfileResponse);
+
+  // Get sandbox settings by id (called by sandbox entrypoint and poll loop).
+  rpc GetSandboxConfig(openshell.sandbox.v1.GetSandboxConfigRequest)
+      returns (openshell.sandbox.v1.GetSandboxConfigResponse);
+
+  // Get gateway-global settings.
+  rpc GetGatewayConfig(openshell.sandbox.v1.GetGatewayConfigRequest)
+      returns (openshell.sandbox.v1.GetGatewayConfigResponse);
+
+  // Update settings or policy at sandbox or global scope.
+  rpc UpdateConfig(UpdateConfigRequest)
+      returns (UpdateConfigResponse);
+
+  // Get the load status of a specific policy version.
+  rpc GetSandboxPolicyStatus(GetSandboxPolicyStatusRequest)
+      returns (GetSandboxPolicyStatusResponse);
+
+  // List policy history for a sandbox.
+  rpc ListSandboxPolicies(ListSandboxPoliciesRequest)
+      returns (ListSandboxPoliciesResponse);
+
+  // Report policy load result (called by sandbox after reload attempt).
+  rpc ReportPolicyStatus(ReportPolicyStatusRequest)
+      returns (ReportPolicyStatusResponse);
+
+  // Get provider environment for a sandbox (called by sandbox supervisor at startup).
+  rpc GetSandboxProviderEnvironment(GetSandboxProviderEnvironmentRequest)
+      returns (GetSandboxProviderEnvironmentResponse);
+
+  // Fetch recent sandbox logs (one-shot).
+  rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
+
+  // Push sandbox supervisor logs to the server (client-streaming).
+  rpc PushSandboxLogs(stream PushSandboxLogsRequest) returns (PushSandboxLogsResponse);
+
+  // Persistent supervisor-to-gateway session (bidirectional streaming).
+  //
+  // The supervisor opens this stream at startup and keeps it alive for the
+  // sandbox lifetime. The gateway uses it to coordinate relay channels for
+  // SSH connect, ExecSandbox, and targetable sandbox services. Raw service
+  // bytes flow over RelayStream calls (separate HTTP/2 streams on the same
+  // connection), not over this stream.
+  rpc ConnectSupervisor(stream SupervisorMessage) returns (stream GatewayMessage);
+
+  // Raw byte relay between supervisor and gateway.
+  //
+  // The supervisor initiates this call after receiving a RelayOpen message
+  // on its ConnectSupervisor stream. The first RelayFrame carries a
+  // RelayInit with the channel_id to associate the new HTTP/2 stream with
+  // the pending relay slot on the gateway. Subsequent frames carry raw bytes in either
+  // direction between the gateway-side waiter (ForwardTcp / exec handler)
+  // and the supervisor-side target bridge.
+  //
+  // This rides the same TCP+TLS+HTTP/2 connection as ConnectSupervisor —
+  // no new TLS handshake, no reverse HTTP CONNECT.
+  rpc RelayStream(stream RelayFrame) returns (stream RelayFrame);
+
+  // Watch a sandbox and stream updates.
+  //
+  // This stream can include:
+  // - Sandbox status snapshots (phase/status)
+  // - OpenShell server process logs correlated by sandbox_id
+  // - Platform events correlated to the sandbox
+  rpc WatchSandbox(WatchSandboxRequest) returns (stream SandboxStreamEvent);
+
+  // ---------------------------------------------------------------------------
+  // Draft policy recommendation RPCs
+  // ---------------------------------------------------------------------------
+
+  // Submit denial analysis results from sandbox (summaries + proposed chunks).
+  rpc SubmitPolicyAnalysis(SubmitPolicyAnalysisRequest)
+      returns (SubmitPolicyAnalysisResponse);
+
+  // Get draft policy recommendations for a sandbox.
+  rpc GetDraftPolicy(GetDraftPolicyRequest) returns (GetDraftPolicyResponse);
+
+  // Approve a single draft policy chunk (merges into active policy).
+  rpc ApproveDraftChunk(ApproveDraftChunkRequest)
+      returns (ApproveDraftChunkResponse);
+
+  // Reject a single draft policy chunk.
+  rpc RejectDraftChunk(RejectDraftChunkRequest)
+      returns (RejectDraftChunkResponse);
+
+  // Approve all pending draft chunks (skips security-flagged unless forced).
+  rpc ApproveAllDraftChunks(ApproveAllDraftChunksRequest)
+      returns (ApproveAllDraftChunksResponse);
+
+  // Edit a pending draft chunk in-place (e.g. narrow allowed_ips).
+  rpc EditDraftChunk(EditDraftChunkRequest) returns (EditDraftChunkResponse);
+
+  // Reverse an approval (remove merged rule from active policy).
+  rpc UndoDraftChunk(UndoDraftChunkRequest) returns (UndoDraftChunkResponse);
+
+  // Clear all pending draft chunks for a sandbox.
+  rpc ClearDraftChunks(ClearDraftChunksRequest)
+      returns (ClearDraftChunksResponse);
+
+  // Get decision history for a sandbox's draft policy.
+  rpc GetDraftHistory(GetDraftHistoryRequest) returns (GetDraftHistoryResponse);
+
+  // Exchange a sandbox-bootstrap credential (e.g. a Kubernetes projected
+  // ServiceAccount token) for a gateway-minted JWT bound to the calling
+  // sandbox's UUID. Used by the Kubernetes driver path; singleplayer
+  // drivers receive the gateway JWT directly from the create-sandbox flow
+  // and never call this RPC.
+  rpc IssueSandboxToken(IssueSandboxTokenRequest) returns (IssueSandboxTokenResponse);
+
+  // Renew the calling sandbox's gateway JWT. Older tokens remain valid
+  // until their own expiry; deployments should keep token TTLs short to
+  // bound replay exposure. The supervisor calls this from a background
+  // task at ~80% of the token's lifetime; the new token is cached in
+  // memory only — the on-disk bootstrap file is intentionally not
+  // rewritten.
+  rpc RefreshSandboxToken(RefreshSandboxTokenRequest)
+      returns (RefreshSandboxTokenResponse);
+}
+
+// IssueSandboxToken request. Empty body; identity is established by the
+// authentication credentials carried in the request headers (a projected
+// Kubernetes ServiceAccount JWT in the K8s driver path).
+message IssueSandboxTokenRequest {}
+
+// IssueSandboxToken response. The supervisor caches the returned token in
+// memory and presents it as `Authorization: Bearer` on every subsequent
+// gateway RPC.
+message IssueSandboxTokenResponse {
+  // Gateway-minted JWT bound to the calling sandbox's UUID.
+  string token = 1;
+  // Absolute expiry of the issued token, milliseconds since the epoch. 0 means
+  // the token is non-expiring.
+  int64 expires_at_ms = 2;
+}
+
+// RefreshSandboxToken request. Empty body; the calling principal must
+// already be a sandbox principal (i.e. the request carries a still-valid
+// gateway-minted JWT in its Authorization header).
+message RefreshSandboxTokenRequest {}
+
+// RefreshSandboxToken response. The new token replaces the supervisor's
+// in-memory bearer credential.
+message RefreshSandboxTokenResponse {
+  // Fresh gateway-minted JWT bound to the same sandbox UUID.
+  string token = 1;
+  // Absolute expiry of the new token, milliseconds since the epoch. 0 means
+  // the token is non-expiring.
+  int64 expires_at_ms = 2;
+}
+
+// Health check request.
+message HealthRequest {}
+
+// Health check response.
+message HealthResponse {
+  // Service status.
+  ServiceStatus status = 1;
+
+  // Service version.
+  string version = 2;
+}
+
+// Public sandbox resource exposed by the OpenShell API.
+//
+// This is the canonical gateway-owned view of a sandbox. It merges user intent
+// (`spec`) with gateway-managed metadata and status derived from internal
+// compute-driver observations.
+//
+// Note: The `namespace` field has been removed from the public API. It remains
+// in the internal `DriverSandbox` message as a compute-driver implementation detail.
+message Sandbox {
+  // Kubernetes-style metadata (id, name, labels, timestamps, resource version).
+  openshell.datamodel.v1.ObjectMeta metadata = 1;
+  // Desired sandbox configuration submitted through the API.
+  SandboxSpec spec = 2;
+  // Latest user-facing observed status derived by the gateway.
+  SandboxStatus status = 3;
+
+  reserved 4, 5;
+  reserved "phase", "current_policy_version";
+}
+
+// Desired sandbox configuration provided through the public API.
+message SandboxSpec {
+  // Log level exposed to processes running inside the sandbox.
+  string log_level = 1;
+  // Environment variables injected into the sandbox runtime.
+  map<string, string> environment = 5;
+  // Container or VM template used to provision the sandbox.
+  SandboxTemplate template = 6;
+  // Required sandbox policy configuration.
+  openshell.sandbox.v1.SandboxPolicy policy = 7;
+  // Provider names to attach to this sandbox.
+  repeated string providers = 8;
+  // Portable resource requirements used by the gateway for driver selection
+  // and by drivers for provisioning.
+  ResourceRequirements resource_requirements = 9;
+  reserved 10;
+  reserved "gpu_device";
+  // Field 11 was `proposal_approval_mode`. The approval mode is now a
+  // runtime setting (gateway or sandbox scope) read via UpdateConfig /
+  // GetSandboxConfig, so it can be flipped on a running sandbox and
+  // managed fleet-wide.
+  reserved 11;
+  reserved "proposal_approval_mode";
+}
+
+message ResourceRequirements {
+  // GPU requirements for the sandbox. Presence indicates a GPU request.
+  GpuResourceRequirements gpu = 1;
+}
+
+// Public GPU resource requirements.
+message GpuResourceRequirements {
+  // Optional number of GPUs requested. When omitted, the request is for one
+  // GPU using the selected driver's default assignment behavior.
+  optional uint32 count = 1;
+}
+
+// Public sandbox template mapped onto compute-driver template inputs.
+message SandboxTemplate {
+  // Fully-qualified OCI image reference used to boot the sandbox.
+  string image = 1;
+  // Optional runtime class name requested from the compute platform.
+  string runtime_class_name = 2;
+  // Optional agent socket path exposed to the workload.
+  string agent_socket = 3;
+  // Labels applied to compute-platform resources for this sandbox.
+  map<string, string> labels = 4;
+  // Annotations applied to compute-platform resources for this sandbox.
+  map<string, string> annotations = 5;
+  // Additional environment variables injected by the template.
+  map<string, string> environment = 6;
+  // Platform-specific compute resource requirements and limits.
+  google.protobuf.Struct resources = 7;
+  reserved 9;
+  reserved "volume_claim_templates";
+  // Enable Kubernetes user namespace isolation (hostUsers: false).
+  // When true, container UID 0 maps to a non-root host UID and capabilities
+  // become namespaced. Requires Kubernetes 1.33+ with user namespace support
+  // available (beta through 1.35, GA in 1.36+) and a supporting runtime.
+  // When unset, the cluster-wide default is used.
+  optional bool user_namespaces = 10;
+  // Driver-keyed opaque config envelope supplied by the caller.
+  // The gateway selects the block matching the active compute driver and
+  // forwards only that inner Struct to DriverSandboxTemplate.driver_config.
+  // The selected driver owns nested schema validation.
+  google.protobuf.Struct driver_config = 11;
+}
+
+// User-facing sandbox status derived by the gateway from compute-driver observations.
+//
+// Public status does not embed driver-only flags such as `deleting`.
+message SandboxStatus {
+  // Compute-platform sandbox object name.
+  string sandbox_name = 1;
+  // Name of the agent pod or equivalent runtime instance.
+  string agent_pod = 2;
+  // File descriptor or endpoint for reaching the agent service, when available.
+  string agent_fd = 3;
+  // File descriptor or endpoint for reaching the sandbox service, when available.
+  string sandbox_fd = 4;
+  // Latest user-facing readiness and lifecycle conditions.
+  repeated SandboxCondition conditions = 5;
+  // Gateway-derived lifecycle summary.
+  SandboxPhase phase = 6;
+  // Currently active policy version (updated when sandbox reports loaded).
+  uint32 current_policy_version = 7;
+}
+
+// User-facing sandbox condition derived from driver-native conditions.
+message SandboxCondition {
+  // Condition class, typically mirroring the underlying platform condition type.
+  string type = 1;
+  // Condition status value such as `True`, `False`, or `Unknown`.
+  string status = 2;
+  // Short machine-readable reason associated with the condition.
+  string reason = 3;
+  // Human-readable condition message.
+  string message = 4;
+  // Timestamp reported by the underlying platform for the last transition.
+  string last_transition_time = 5;
+}
+
+// High-level sandbox lifecycle phase derived by the gateway.
+//
+// Clients should rely on this normalized lifecycle summary for readiness and
+// deletion decisions instead of interpreting raw conditions.
+enum SandboxPhase {
+  SANDBOX_PHASE_UNSPECIFIED = 0;
+  SANDBOX_PHASE_PROVISIONING = 1;
+  SANDBOX_PHASE_READY = 2;
+  SANDBOX_PHASE_ERROR = 3;
+  SANDBOX_PHASE_DELETING = 4;
+  SANDBOX_PHASE_UNKNOWN = 5;
+}
+
+// Public platform event exposed on the sandbox watch stream.
+message PlatformEvent {
+  // Event timestamp in milliseconds since epoch.
+  int64 timestamp_ms = 1;
+  // Event source (e.g. "kubernetes", "docker", "process").
+  string source = 2;
+  // Event type/severity (e.g. "Normal", "Warning").
+  string type = 3;
+  // Short reason code (e.g. "Started", "Pulled", "Failed").
+  string reason = 4;
+  // Human-readable event message.
+  string message = 5;
+  // Optional metadata as key-value pairs.
+  map<string, string> metadata = 6;
+}
+
+// Create sandbox request.
+message CreateSandboxRequest {
+  SandboxSpec spec = 1;
+  // Optional user-supplied sandbox name. When empty the server generates one.
+  string name = 2;
+  // Optional labels for the sandbox (key-value metadata).
+  map<string, string> labels = 3;
+}
+
+// Get sandbox request.
+message GetSandboxRequest {
+  // Sandbox name (canonical lookup key).
+  string name = 1;
+}
+
+// List sandboxes request.
+message ListSandboxesRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  // Optional label selector for filtering (format: "key1=value1,key2=value2").
+  string label_selector = 3;
+}
+
+// List providers attached to a sandbox request.
+message ListSandboxProvidersRequest {
+  // Sandbox name (canonical lookup key).
+  string sandbox_name = 1;
+}
+
+// Attach provider to sandbox request.
+message AttachSandboxProviderRequest {
+  // Sandbox name (canonical lookup key).
+  string sandbox_name = 1;
+  // Provider name to attach.
+  string provider_name = 2;
+  // Expected resource version for optimistic concurrency control.
+  // If 0, the server uses the current version (backward compatibility).
+  // If non-zero, the server validates that the sandbox's current resource_version
+  // matches this value before applying the mutation, returning ABORTED on mismatch.
+  uint64 expected_resource_version = 3;
+}
+
+// Detach provider from sandbox request.
+message DetachSandboxProviderRequest {
+  // Sandbox name (canonical lookup key).
+  string sandbox_name = 1;
+  // Provider name to detach.
+  string provider_name = 2;
+  // Expected resource version for optimistic concurrency control.
+  // If 0, the server uses the current version (backward compatibility).
+  // If non-zero, the server validates that the sandbox's current resource_version
+  // matches this value before applying the mutation, returning ABORTED on mismatch.
+  uint64 expected_resource_version = 3;
+}
+
+// Delete sandbox request.
+message DeleteSandboxRequest {
+  // Sandbox name (canonical lookup key).
+  string name = 1;
+}
+
+// Sandbox response.
+message SandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+// List sandboxes response.
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+}
+
+// List providers attached to a sandbox response.
+message ListSandboxProvidersResponse {
+  repeated openshell.datamodel.v1.Provider providers = 1;
+}
+
+// Attach provider to sandbox response.
+message AttachSandboxProviderResponse {
+  Sandbox sandbox = 1;
+  // True when the provider was newly attached. False means it was already attached.
+  bool attached = 2;
+}
+
+// Detach provider from sandbox response.
+message DetachSandboxProviderResponse {
+  Sandbox sandbox = 1;
+  // True when the provider was removed. False means it was not attached.
+  bool detached = 2;
+}
+
+// Delete sandbox response.
+message DeleteSandboxResponse {
+  bool deleted = 1;
+}
+
+// Create SSH session request.
+message CreateSshSessionRequest {
+  // Sandbox id.
+  string sandbox_id = 1;
+}
+
+// Create SSH session response.
+//
+// Fields are interpolated into an SSH `ProxyCommand` string that OpenSSH
+// executes through `/bin/sh -c` on the caller's workstation. Servers MUST
+// uphold the charset contract below; clients MUST reject responses that
+// violate it. The client's own escaping provides defense-in-depth, but
+// narrow charsets close injection vectors at the trust boundary.
+message CreateSshSessionResponse {
+  // Sandbox id. [A-Za-z0-9._-]{1,128}.
+  string sandbox_id = 1;
+
+  // Session token for the gateway tunnel. URL-safe ASCII
+  // ([A-Za-z0-9._~+/=-]) up to 4096 bytes. No shell metacharacters or
+  // whitespace.
+  string token = 2;
+
+  // Gateway host for SSH proxy connection. IPv4 address, bracketed IPv6
+  // address, or DNS hostname (Punycode-encoded for IDN). Alphanumeric plus
+  // `.-:[]` only, up to 253 bytes.
+  string gateway_host = 3;
+
+  // Gateway port for SSH proxy connection. Must be in range 1..=65535.
+  uint32 gateway_port = 4;
+
+  // Gateway scheme. Must be exactly "http" or "https".
+  string gateway_scheme = 5;
+
+  // Optional host key fingerprint. If non-empty, [A-Za-z0-9:+/=-] only.
+  string host_key_fingerprint = 7;
+
+  // Expiry timestamp in milliseconds since epoch. 0 means no expiry.
+  int64 expires_at_ms = 8;
+}
+
+// Request to expose an HTTP service running inside a sandbox.
+message ExposeServiceRequest {
+  // Sandbox name.
+  string sandbox = 1;
+  // Service name within the sandbox.
+  string service = 2;
+  // Loopback TCP port inside the sandbox.
+  uint32 target_port = 3;
+  // Whether to print/use the browser-facing service URL.
+  bool domain = 4;
+}
+
+// Request to fetch an exposed sandbox service endpoint.
+message GetServiceRequest {
+  // Sandbox name.
+  string sandbox = 1;
+  // Service name within the sandbox. Empty selects the unnamed endpoint.
+  string service = 2;
+}
+
+// Request to list exposed sandbox service endpoints.
+message ListServicesRequest {
+  // Optional sandbox name. Empty lists endpoints for all sandboxes.
+  string sandbox = 1;
+  // Page size. Zero uses the server default.
+  uint32 limit = 2;
+  // Page offset.
+  uint32 offset = 3;
+}
+
+// Response containing exposed sandbox service endpoints.
+message ListServicesResponse {
+  repeated ServiceEndpointResponse services = 1;
+}
+
+// Request to delete an exposed sandbox service endpoint.
+message DeleteServiceRequest {
+  // Sandbox name.
+  string sandbox = 1;
+  // Service name within the sandbox. Empty selects the unnamed endpoint.
+  string service = 2;
+}
+
+// Response for deleting an exposed sandbox service endpoint.
+message DeleteServiceResponse {
+  // True when an endpoint existed and was deleted.
+  bool deleted = 1;
+}
+
+// Persisted sandbox service endpoint.
+message ServiceEndpoint {
+  // Kubernetes-style metadata.
+  openshell.datamodel.v1.ObjectMeta metadata = 1;
+  // Sandbox object ID.
+  string sandbox_id = 2;
+  // Sandbox name.
+  string sandbox_name = 3;
+  // Service name within the sandbox.
+  string service_name = 4;
+  // Loopback TCP port inside the sandbox.
+  uint32 target_port = 5;
+  // Whether browser-facing service routing is enabled for this endpoint.
+  bool domain = 6;
+}
+
+// Response containing a service endpoint and, when available, its local URL.
+message ServiceEndpointResponse {
+  ServiceEndpoint endpoint = 1;
+  string url = 2;
+}
+
+// Revoke SSH session request.
+message RevokeSshSessionRequest {
+  // Session token to revoke.
+  string token = 1;
+}
+
+// Revoke SSH session response.
+message RevokeSshSessionResponse {
+  // True when a session was revoked.
+  bool revoked = 1;
+}
+
+// Execute command request.
+message ExecSandboxRequest {
+  // Sandbox id.
+  string sandbox_id = 1;
+
+  // Command and arguments.
+  repeated string command = 2;
+
+  // Optional working directory.
+  string workdir = 3;
+
+  // Optional environment overrides.
+  map<string, string> environment = 4;
+
+  // Optional timeout in seconds. 0 means no timeout.
+  uint32 timeout_seconds = 5;
+
+  // Optional stdin payload passed to the command.
+  bytes stdin = 6;
+
+  // Request a pseudo-terminal for the remote command.
+  bool tty = 7;
+
+  // Initial terminal columns (used when tty=true, 0 = use default).
+  uint32 cols = 8;
+
+  // Initial terminal rows (used when tty=true, 0 = use default).
+  uint32 rows = 9;
+}
+
+// One stdout chunk from a sandbox exec.
+message ExecSandboxStdout {
+  bytes data = 1;
+}
+
+// One stderr chunk from a sandbox exec.
+message ExecSandboxStderr {
+  bytes data = 1;
+}
+
+// Final exit status for a sandbox exec.
+message ExecSandboxExit {
+  int32 exit_code = 1;
+}
+
+// One event in a sandbox exec stream.
+message ExecSandboxEvent {
+  oneof payload {
+    ExecSandboxStdout stdout = 1;
+    ExecSandboxStderr stderr = 2;
+    ExecSandboxExit exit = 3;
+  }
+}
+
+// Initial frame for one TCP forward stream.
+message TcpForwardInit {
+  // Sandbox id.
+  string sandbox_id = 1;
+  // Optional service identifier for audit/correlation.
+  string service_id = 4;
+  // Target the gateway should request from the supervisor.
+  oneof target {
+    SshRelayTarget ssh = 5;
+    TcpRelayTarget tcp = 6;
+  }
+  // Optional target-specific authorization token. SSH targets use this as the
+  // short-lived SSH session token issued by CreateSshSession.
+  string authorization_token = 7;
+}
+
+// A single frame on the CLI-to-gateway TCP forward stream.
+message TcpForwardFrame {
+  oneof payload {
+    TcpForwardInit init = 1;
+    bytes data = 2;
+  }
+}
+
+// Client-to-server message for interactive exec.
+message ExecSandboxInput {
+  oneof payload {
+    // First message: exec request metadata.
+    ExecSandboxRequest start = 1;
+    // Subsequent messages: raw stdin bytes.
+    bytes stdin = 2;
+    // Terminal window size change.
+    ExecSandboxWindowResize resize = 3;
+  }
+}
+
+// Terminal window resize event for interactive exec.
+message ExecSandboxWindowResize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+
+// SSH session record stored in persistence.
+message SshSession {
+  // Kubernetes-style metadata (id, name, labels, timestamps, resource version).
+  openshell.datamodel.v1.ObjectMeta metadata = 1;
+
+  // Sandbox id.
+  string sandbox_id = 2;
+
+  // Session token.
+  string token = 3;
+
+  // Expiry timestamp in milliseconds since epoch. 0 means no expiry
+  // (backward-compatible default for sessions created before this field existed).
+  int64 expires_at_ms = 4;
+
+  // Revoked flag.
+  bool revoked = 5;
+}
+
+// Watch sandbox request.
+message WatchSandboxRequest {
+  // Sandbox id.
+  string id = 1;
+
+  // Stream sandbox status snapshots.
+  bool follow_status = 2;
+
+  // Stream openshell-server process logs correlated to this sandbox.
+  bool follow_logs = 3;
+
+  // Stream platform events correlated to this sandbox.
+  bool follow_events = 4;
+
+  // Replay the last N log lines (best-effort) before following.
+  uint32 log_tail_lines = 5;
+
+  // Replay the last N platform events (best-effort) before following.
+  uint32 event_tail = 6;
+
+  // Stop streaming once the sandbox reaches a terminal phase (READY or ERROR).
+  bool stop_on_terminal = 7;
+
+  // Only include log lines with timestamp >= this value (milliseconds since epoch).
+  // 0 means no time filter. Applies to both tail replay and live streaming.
+  int64 log_since_ms = 8;
+
+  // Filter by log source (e.g. "gateway", "sandbox"). Empty means all sources.
+  repeated string log_sources = 9;
+
+  // Minimum log level to include (e.g. "INFO", "WARN", "ERROR"). Empty means all levels.
+  string log_min_level = 10;
+}
+
+// One event in a sandbox watch stream.
+message SandboxStreamEvent {
+  oneof payload {
+    // Latest sandbox snapshot.
+    Sandbox sandbox = 1;
+    // One server log line/event.
+    SandboxLogLine log = 2;
+    // One platform event.
+    PlatformEvent event = 3;
+    // Warning from the server (e.g. missed messages due to lag).
+    SandboxStreamWarning warning = 4;
+    // Draft policy update notification.
+    DraftPolicyUpdate draft_policy_update = 5;
+  }
+}
+
+// Log line correlated to a sandbox.
+message SandboxLogLine {
+  string sandbox_id = 1;
+  int64 timestamp_ms = 2;
+  string level = 3;
+  string target = 4;
+  string message = 5;
+  // Log source: "gateway" (server-side) or "sandbox" (supervisor).
+  // Empty is treated as "gateway" for backward compatibility.
+  string source = 6;
+  // Structured key-value fields from the tracing event (e.g. dst_host, action).
+  map<string, string> fields = 7;
+}
+
+message SandboxStreamWarning {
+  string message = 1;
+}
+
+// Create provider request.
+message CreateProviderRequest {
+  openshell.datamodel.v1.Provider provider = 1;
+}
+
+// Get provider request.
+message GetProviderRequest {
+  string name = 1;
+}
+
+// List providers request.
+message ListProvidersRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+// Update provider request.
+message UpdateProviderRequest {
+  openshell.datamodel.v1.Provider provider = 1;
+  // Optional per-credential expiry timestamps to merge into the provider.
+  // A zero value removes the expiry for that credential.
+  map<string, int64> credential_expires_at_ms = 2;
+}
+
+// Delete provider request.
+message DeleteProviderRequest {
+  string name = 1;
+}
+
+// Provider response.
+message ProviderResponse {
+  openshell.datamodel.v1.Provider provider = 1;
+}
+
+// List providers response.
+message ListProvidersResponse {
+  repeated openshell.datamodel.v1.Provider providers = 1;
+}
+
+// List provider type profiles request.
+message ListProviderProfilesRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+// Fetch provider type profile request.
+message GetProviderProfileRequest {
+  string id = 1;
+}
+
+// Provider profile payload with optional source metadata for diagnostics.
+message ProviderProfileImportItem {
+  ProviderProfile profile = 1;
+  string source = 2;
+}
+
+// Provider profile validation diagnostic.
+message ProviderProfileDiagnostic {
+  string source = 1;
+  string profile_id = 2;
+  string field = 3;
+  string message = 4;
+  string severity = 5;
+}
+
+// Endpoint selector for token grant audience overrides.
+message ProviderCredentialTokenGrantAudienceOverride {
+  // Optional: endpoint host selector. If omitted, inherits the profile endpoint host.
+  string host = 1;
+
+  // Optional: endpoint port selector. If omitted, matches the expanded profile endpoint port.
+  uint32 port = 2;
+
+  // Optional: endpoint path selector. If omitted, inherits the profile endpoint path.
+  string path = 3;
+
+  // Resource audience to request for matching endpoints.
+  string audience = 4;
+
+  // Optional: OAuth2 scopes to request. If omitted, inherits the token grant scopes.
+  repeated string scopes = 5;
+}
+
+// Provider credential token grant configuration.
+// When present, the credential is obtained dynamically via OAuth2 grant when needed.
+message ProviderCredentialTokenGrant {
+  // OAuth2 token endpoint URL (e.g., https://keycloak.example.com/realms/my-realm/protocol/openid-connect/token)
+  string token_endpoint = 1;
+
+  // Optional: default resource audience to request from the token service
+  string audience = 2;
+
+  // Optional: audience to request when fetching the JWT-SVID from SPIRE.
+  // If omitted, the sandbox derives this from token_endpoint.
+  string jwt_svid_audience = 6;
+
+  // Optional: OAuth2 scopes to request
+  repeated string scopes = 3;
+
+  // Optional: override token cache TTL (seconds)
+  // If 0 or omitted, use expires_in from token response
+  int64 cache_ttl_seconds = 4;
+
+  // Optional: endpoint-specific resource audience overrides.
+  repeated ProviderCredentialTokenGrantAudienceOverride audience_overrides = 5;
+
+  // Optional: OAuth2 client_assertion_type value. If omitted, OpenShell uses
+  // urn:ietf:params:oauth:client-assertion-type:jwt-bearer.
+  string client_assertion_type = 7;
+}
+
+// Provider credential declaration.
+message ProviderProfileCredential {
+  string name = 1;
+  string description = 2;
+  repeated string env_vars = 3;
+  bool required = 4;
+  string auth_style = 5;
+  string header_name = 6;
+  string query_param = 7;
+  ProviderCredentialRefresh refresh = 8;
+  string path_template = 9;
+  ProviderCredentialTokenGrant token_grant = 10;
+}
+
+enum ProviderCredentialRefreshStrategy {
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_STATIC = 1;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_EXTERNAL = 2;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN = 3;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS = 4;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT = 5;
+}
+
+message ProviderCredentialRefreshMaterial {
+  string name = 1;
+  string description = 2;
+  bool required = 3;
+  bool secret = 4;
+}
+
+message ProviderCredentialRefresh {
+  ProviderCredentialRefreshStrategy strategy = 1;
+  string token_url = 2;
+  repeated string scopes = 3;
+  int64 refresh_before_seconds = 4;
+  int64 max_lifetime_seconds = 5;
+  repeated ProviderCredentialRefreshMaterial material = 6;
+}
+
+message ProviderCredentialRefreshStatus {
+  string provider_name = 1;
+  string provider_id = 2;
+  string credential_key = 3;
+  ProviderCredentialRefreshStrategy strategy = 4;
+  string status = 5;
+  int64 expires_at_ms = 6;
+  int64 next_refresh_at_ms = 7;
+  int64 last_refresh_at_ms = 8;
+  string last_error = 9;
+}
+
+// Provider profile local discovery declaration.
+message ProviderProfileDiscovery {
+  // Credential names from ProviderProfile.credentials eligible for local discovery.
+  repeated string credentials = 1;
+}
+
+message StoredProviderCredentialRefreshState {
+  openshell.datamodel.v1.ObjectMeta metadata = 1;
+  string provider_id = 2;
+  string provider_name = 3;
+  string credential_key = 4;
+  ProviderCredentialRefreshStrategy strategy = 5;
+  map<string, string> material = 6;
+  repeated string secret_material_keys = 7;
+  int64 expires_at_ms = 8;
+  int64 next_refresh_at_ms = 9;
+  int64 last_refresh_at_ms = 10;
+  string status = 11;
+  string last_error = 12;
+  string token_url = 13;
+  repeated string scopes = 14;
+  int64 refresh_before_seconds = 15;
+  int64 max_lifetime_seconds = 16;
+}
+
+message GetProviderRefreshStatusRequest {
+  string provider = 1;
+  string credential_key = 2;
+}
+
+message GetProviderRefreshStatusResponse {
+  repeated ProviderCredentialRefreshStatus credentials = 1;
+}
+
+message ConfigureProviderRefreshRequest {
+  string provider = 1;
+  string credential_key = 2;
+  ProviderCredentialRefreshStrategy strategy = 3;
+  map<string, string> material = 4;
+  repeated string secret_material_keys = 5;
+  optional int64 expires_at_ms = 6;
+}
+
+message ConfigureProviderRefreshResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message RotateProviderCredentialRequest {
+  string provider = 1;
+  string credential_key = 2;
+}
+
+message RotateProviderCredentialResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message DeleteProviderRefreshRequest {
+  string provider = 1;
+  string credential_key = 2;
+}
+
+message DeleteProviderRefreshResponse {
+  bool deleted = 1;
+}
+
+// Stable provider profile categories used by clients for grouping and filtering.
+enum ProviderProfileCategory {
+  PROVIDER_PROFILE_CATEGORY_UNSPECIFIED = 0;
+  PROVIDER_PROFILE_CATEGORY_OTHER = 1;
+  PROVIDER_PROFILE_CATEGORY_INFERENCE = 2;
+  PROVIDER_PROFILE_CATEGORY_AGENT = 3;
+  PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4;
+  PROVIDER_PROFILE_CATEGORY_MESSAGING = 5;
+  PROVIDER_PROFILE_CATEGORY_DATA = 6;
+  PROVIDER_PROFILE_CATEGORY_KNOWLEDGE = 7;
+}
+
+// Provider type profile metadata exposed to clients.
+message ProviderProfile {
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+  ProviderProfileCategory category = 4;
+  repeated ProviderProfileCredential credentials = 5;
+  repeated openshell.sandbox.v1.NetworkEndpoint endpoints = 6;
+  repeated openshell.sandbox.v1.NetworkBinary binaries = 7;
+  bool inference_capable = 8;
+  ProviderProfileDiscovery discovery = 9;
+  // Storage resource version for custom profiles. Built-in profiles and new
+  // profile files use 0. Gateway responses set this for stored custom profiles.
+  // Update calls use this for optimistic concurrency.
+  uint64 resource_version = 10;
+}
+
+// Stored custom provider profile object.
+message StoredProviderProfile {
+  openshell.datamodel.v1.ObjectMeta metadata = 1;
+  ProviderProfile profile = 2;
+}
+
+// Provider profile response.
+message ProviderProfileResponse {
+  ProviderProfile profile = 1;
+}
+
+// List provider profiles response.
+message ListProviderProfilesResponse {
+  repeated ProviderProfile profiles = 1;
+}
+
+// Import custom provider profiles request.
+message ImportProviderProfilesRequest {
+  repeated ProviderProfileImportItem profiles = 1;
+}
+
+// Import custom provider profiles response.
+message ImportProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  repeated ProviderProfile profiles = 2;
+  bool imported = 3;
+}
+
+// Update one custom provider profile request.
+message UpdateProviderProfilesRequest {
+  ProviderProfileImportItem profile = 1;
+  // Expected storage resource version for optimistic concurrency control.
+  // If 0, the server uses the resource_version embedded in profile.profile.
+  // Updates without a non-zero version are rejected to prevent stale files from
+  // silently overwriting newer profile definitions.
+  uint64 expected_resource_version = 2;
+  // Existing custom provider profile ID to update. The payload ID must match.
+  string id = 3;
+}
+
+// Update one custom provider profile response.
+message UpdateProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  ProviderProfile profile = 2;
+  bool updated = 3;
+}
+
+// Lint provider profiles request.
+message LintProviderProfilesRequest {
+  repeated ProviderProfileImportItem profiles = 1;
+}
+
+// Lint provider profiles response.
+message LintProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  bool valid = 2;
+}
+
+// Delete provider response.
+message DeleteProviderResponse {
+  bool deleted = 1;
+}
+
+// Delete custom provider profile request.
+message DeleteProviderProfileRequest {
+  string id = 1;
+}
+
+// Delete custom provider profile response.
+message DeleteProviderProfileResponse {
+  bool deleted = 1;
+}
+
+// Get sandbox provider environment request.
+message GetSandboxProviderEnvironmentRequest {
+  // The sandbox ID.
+  string sandbox_id = 1;
+}
+
+// Get sandbox provider environment response.
+message GetSandboxProviderEnvironmentResponse {
+  // Provider credential environment variables.
+  map<string, string> environment = 1;
+  // Fingerprint for the provider credential inputs that produced environment.
+  uint64 provider_env_revision = 2;
+  // Expiration timestamps for returned environment variables.
+  map<string, int64> credential_expires_at_ms = 3;
+  // Dynamic credentials that require token grants or other runtime injection.
+  // Maps endpoint-bound provider metadata to credential metadata.
+  // Supervisor uses this to inject Authorization headers for token grant credentials.
+  map<string, ProviderProfileCredential> dynamic_credentials = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Policy update messages
+// ---------------------------------------------------------------------------
+
+// Update sandbox policy request.
+message UpdateConfigRequest {
+  // Sandbox name (canonical lookup key). Required for sandbox-scoped updates.
+  // Not required when `global=true`.
+  string name = 1;
+  // The new policy to apply.
+  //
+  // Sandbox scope (`global=false`):
+  // - only network_policies and inference fields may differ from create-time
+  //   policy; static fields must match version 1.
+  //
+  // Global scope (`global=true`):
+  // - applies to all sandboxes in full (no merge).
+  openshell.sandbox.v1.SandboxPolicy policy = 2;
+  // Optional single setting key to mutate.
+  string setting_key = 3;
+  // Setting value for upsert operations.
+  openshell.sandbox.v1.SettingValue setting_value = 4;
+  // Delete the setting key from scope.
+  // Sandbox-scoped deletes are rejected; only global delete is supported.
+  bool delete_setting = 5;
+  // Apply mutation at gateway-global scope.
+  bool global = 6;
+  // Batched incremental policy merge operations. Sandbox-scoped only.
+  repeated PolicyMergeOperation merge_operations = 7;
+  // Expected resource version for optimistic concurrency control (sandbox-scoped only).
+  // If 0, the server uses the current version (backward compatibility).
+  // If non-zero, the server validates that the sandbox's current resource_version
+  // matches this value before applying the mutation, returning ABORTED on mismatch.
+  // Ignored for global-scoped updates.
+  uint64 expected_resource_version = 8;
+}
+
+message PolicyMergeOperation {
+  oneof operation {
+    AddNetworkRule add_rule = 1;
+    RemoveNetworkEndpoint remove_endpoint = 2;
+    RemoveNetworkRule remove_rule = 3;
+    AddDenyRules add_deny_rules = 4;
+    AddAllowRules add_allow_rules = 5;
+    RemoveNetworkBinary remove_binary = 6;
+  }
+}
+
+message AddNetworkRule {
+  string rule_name = 1;
+  openshell.sandbox.v1.NetworkPolicyRule rule = 2;
+}
+
+message RemoveNetworkEndpoint {
+  string rule_name = 1;
+  string host = 2;
+  uint32 port = 3;
+}
+
+message RemoveNetworkRule {
+  string rule_name = 1;
+}
+
+message AddDenyRules {
+  string host = 1;
+  uint32 port = 2;
+  repeated openshell.sandbox.v1.L7DenyRule deny_rules = 3;
+}
+
+message AddAllowRules {
+  string host = 1;
+  uint32 port = 2;
+  repeated openshell.sandbox.v1.L7Rule rules = 3;
+}
+
+message RemoveNetworkBinary {
+  string rule_name = 1;
+  string binary_path = 2;
+}
+
+// Update sandbox policy response.
+message UpdateConfigResponse {
+  // Assigned policy version (monotonically increasing per sandbox).
+  uint32 version = 1;
+  // SHA-256 hash of the serialized policy payload.
+  string policy_hash = 2;
+  // Settings revision for the scope that was modified.
+  uint64 settings_revision = 3;
+  // True when a setting delete operation removed an existing key.
+  bool deleted = 4;
+}
+
+// Get sandbox policy status request.
+message GetSandboxPolicyStatusRequest {
+  // Sandbox name (canonical lookup key). Ignored when global is true.
+  string name = 1;
+  // The specific policy version to query. 0 means latest.
+  uint32 version = 2;
+  // Query global policy revisions instead of a sandbox-scoped one.
+  bool global = 3;
+}
+
+// Get sandbox policy status response.
+message GetSandboxPolicyStatusResponse {
+  // The queried policy revision.
+  SandboxPolicyRevision revision = 1;
+  // The currently active (loaded) policy version for this sandbox.
+  uint32 active_version = 2;
+}
+
+// List sandbox policies request.
+message ListSandboxPoliciesRequest {
+  // Sandbox name (canonical lookup key). Ignored when global is true.
+  string name = 1;
+  uint32 limit = 2;
+  uint32 offset = 3;
+  // List global policy revisions instead of sandbox-scoped ones.
+  bool global = 4;
+}
+
+// List sandbox policies response.
+message ListSandboxPoliciesResponse {
+  repeated SandboxPolicyRevision revisions = 1;
+}
+
+// Report policy load status (called by sandbox runtime after reload attempt).
+message ReportPolicyStatusRequest {
+  // Sandbox id.
+  string sandbox_id = 1;
+  // The policy version that was attempted.
+  uint32 version = 2;
+  // Load result status.
+  PolicyStatus status = 3;
+  // Error message if status is FAILED.
+  string load_error = 4;
+}
+
+// Report policy status response.
+message ReportPolicyStatusResponse {}
+
+// A versioned policy revision with metadata.
+message SandboxPolicyRevision {
+  // Policy version (monotonically increasing per sandbox).
+  uint32 version = 1;
+  // SHA-256 hash of the serialized policy payload.
+  string policy_hash = 2;
+  // Load status of this revision.
+  PolicyStatus status = 3;
+  // Error message if status is FAILED.
+  string load_error = 4;
+  // Milliseconds since epoch when this revision was created.
+  int64 created_at_ms = 5;
+  // Milliseconds since epoch when this revision was loaded by the sandbox.
+  int64 loaded_at_ms = 6;
+  // The full policy (only populated when explicitly requested).
+  openshell.sandbox.v1.SandboxPolicy policy = 7;
+}
+
+// Policy load status.
+enum PolicyStatus {
+  POLICY_STATUS_UNSPECIFIED = 0;
+  // Server received the update; sandbox has not yet loaded it.
+  POLICY_STATUS_PENDING = 1;
+  // Sandbox successfully applied this policy version.
+  POLICY_STATUS_LOADED = 2;
+  // Sandbox attempted to apply but failed; LKG policy remains active.
+  POLICY_STATUS_FAILED = 3;
+  // A newer version was persisted before the sandbox loaded this one.
+  POLICY_STATUS_SUPERSEDED = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox logs messages
+// ---------------------------------------------------------------------------
+
+// Get sandbox logs request (one-shot fetch).
+message GetSandboxLogsRequest {
+  // Sandbox id.
+  string sandbox_id = 1;
+  // Maximum number of log lines to return. 0 means use default (2000).
+  uint32 lines = 2;
+  // Only include logs with timestamp >= this value (ms since epoch). 0 means no filter.
+  int64 since_ms = 3;
+  // Filter by log source (e.g. "gateway", "sandbox"). Empty means all sources.
+  repeated string sources = 4;
+  // Minimum log level to include (e.g. "INFO", "WARN", "ERROR"). Empty means all levels.
+  string min_level = 5;
+}
+
+// Batch of log lines pushed from sandbox to server.
+message PushSandboxLogsRequest {
+  // The sandbox ID.
+  string sandbox_id = 1;
+  // Log lines to ingest.
+  repeated SandboxLogLine logs = 2;
+}
+
+// Push sandbox logs response.
+message PushSandboxLogsResponse {}
+
+// Get sandbox logs response.
+message GetSandboxLogsResponse {
+  // Log lines in chronological order.
+  repeated SandboxLogLine logs = 1;
+  // Total number of lines in the server's buffer for this sandbox.
+  uint32 buffer_total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor session messages
+// ---------------------------------------------------------------------------
+
+// Envelope for supervisor-to-gateway messages on the ConnectSupervisor stream.
+message SupervisorMessage {
+  oneof payload {
+    SupervisorHello hello = 1;
+    SupervisorHeartbeat heartbeat = 2;
+    RelayOpenResult relay_open_result = 3;
+    RelayClose relay_close = 4;
+  }
+}
+
+// Envelope for gateway-to-supervisor messages on the ConnectSupervisor stream.
+message GatewayMessage {
+  oneof payload {
+    SessionAccepted session_accepted = 1;
+    SessionRejected session_rejected = 2;
+    GatewayHeartbeat heartbeat = 3;
+    RelayOpen relay_open = 4;
+    RelayClose relay_close = 5;
+  }
+}
+
+// Supervisor identifies itself and the sandbox it manages.
+message SupervisorHello {
+  // Sandbox ID this supervisor manages.
+  string sandbox_id = 1;
+  // Supervisor instance ID (e.g. boot id or process epoch).
+  string instance_id = 2;
+}
+
+// Gateway accepts the supervisor session.
+message SessionAccepted {
+  // Gateway-assigned session ID for this connection.
+  string session_id = 1;
+  // Recommended heartbeat interval in seconds.
+  uint32 heartbeat_interval_secs = 2;
+}
+
+// Gateway rejects the supervisor session.
+message SessionRejected {
+  // Human-readable rejection reason.
+  string reason = 1;
+}
+
+// Supervisor heartbeat.
+message SupervisorHeartbeat {}
+
+// Gateway heartbeat.
+message GatewayHeartbeat {}
+
+// Gateway requests the supervisor to open a relay channel.
+//
+// On receiving this, the supervisor should initiate a RelayStream RPC to
+// the gateway, sending a RelayInit in the first RelayFrame to associate
+// the new HTTP/2 stream with the pending relay slot. The supervisor
+// bridges that stream to the requested local target.
+message RelayOpen {
+  // Gateway-allocated channel identifier (UUID).
+  string channel_id = 1;
+  // Target the supervisor should dial inside the sandbox.
+  // If absent, supervisors treat the relay as SSH for compatibility.
+  oneof target {
+    SshRelayTarget ssh = 2;
+    TcpRelayTarget tcp = 3;
+  }
+  // Optional service identifier for audit/correlation.
+  string service_id = 5;
+}
+
+// Built-in SSH relay target.
+message SshRelayTarget {}
+
+// TCP target dialed by the supervisor from inside the sandbox.
+message TcpRelayTarget {
+  // Phase 1 accepts loopback only: 127.0.0.1, ::1, or localhost.
+  string host = 1;
+  // Target port. Must fit in u16 and be non-zero.
+  uint32 port = 2;
+}
+
+// Initial RelayStream frame sent by the supervisor to claim a pending relay.
+message RelayInit {
+  // Gateway-allocated channel identifier (UUID).
+  string channel_id = 1;
+}
+
+// A single frame on the RelayStream RPC.
+//
+// The supervisor MUST send `init` as the first frame. All subsequent frames
+// in either direction carry raw bytes in `data`.
+message RelayFrame {
+  oneof payload {
+    RelayInit init = 1;
+    bytes data = 2;
+  }
+}
+
+// Supervisor reports the result of a relay open request.
+message RelayOpenResult {
+  // Channel identifier from the RelayOpen request.
+  string channel_id = 1;
+  // True if the relay was successfully established.
+  bool success = 2;
+  // Error message if success is false.
+  string error = 3;
+}
+
+// Either side requests closure of a relay channel.
+message RelayClose {
+  // Channel identifier to close.
+  string channel_id = 1;
+  // Optional reason for closure.
+  string reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Service status
+// ---------------------------------------------------------------------------
+
+// Service status enum.
+enum ServiceStatus {
+  SERVICE_STATUS_UNSPECIFIED = 0;
+  SERVICE_STATUS_HEALTHY = 1;
+  SERVICE_STATUS_DEGRADED = 2;
+  SERVICE_STATUS_UNHEALTHY = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Draft policy recommendation messages
+// ---------------------------------------------------------------------------
+
+// Observed HTTP method+path pattern from L7 inspection.
+message L7RequestSample {
+  // HTTP method: GET, POST, PUT, DELETE, etc.
+  string method = 1;
+  // HTTP path: /v1/models, /repos/myorg/issues
+  string path = 2;
+  // L7 decision: "audit" or "deny" (allowed requests not collected).
+  string decision = 3;
+  // Number of times this (method, path) was observed.
+  uint32 count = 4;
+}
+
+// Structured denial summary from sandbox aggregator.
+message DenialSummary {
+  // Sandbox ID that produced this summary.
+  string sandbox_id = 1;
+  // Denied destination host.
+  string host = 2;
+  // Denied destination port.
+  uint32 port = 3;
+  // Binary that attempted the connection.
+  string binary = 4;
+  // Process ancestor chain.
+  repeated string ancestors = 5;
+  // Denial reason from OPA evaluation.
+  string deny_reason = 6;
+  // First denial timestamp (ms since epoch).
+  int64 first_seen_ms = 7;
+  // Most recent denial timestamp (ms since epoch).
+  int64 last_seen_ms = 8;
+  // Number of denials in the current window.
+  uint32 count = 9;
+  // Events dropped during aggregator cooldown.
+  uint32 suppressed_count = 10;
+  // Cumulative lifetime count (never resets).
+  uint32 total_count = 11;
+  // Distinct cmdline strings observed (sanitized of credentials).
+  repeated string sample_cmdlines = 12;
+  // SHA-256 of the binary for audit trail.
+  string binary_sha256 = 13;
+  // True if emitted by stale-flush rather than threshold.
+  bool persistent = 14;
+  // Denial category: "l4_deny", "l7_deny", "l7_audit", "ssrf".
+  string denial_stage = 15;
+  // Observed HTTP request patterns (from L7 inspection).
+  repeated L7RequestSample l7_request_samples = 16;
+  // True if L7 inspection was active during observation window.
+  bool l7_inspection_active = 17;
+}
+
+// Count of denied actions grouped only by sanitized telemetry category.
+message DenialGroupCount {
+  // Sanitized denial category, e.g. "connect_policy", "l7_policy", "ssrf".
+  string deny_group = 1;
+  // Number of denied actions in this category.
+  uint32 denied_count = 2;
+}
+
+// Anonymous sandbox network activity counters. This intentionally excludes
+// hosts, paths, binaries, raw deny reasons, sandbox IDs, and user content.
+message NetworkActivitySummary {
+  // Total observed network activities in the current window.
+  uint32 network_activity_count = 1;
+  // Total denied actions in the current window.
+  uint32 denied_action_count = 2;
+  // Denied action counts grouped by sanitized category.
+  repeated DenialGroupCount denials_by_group = 3;
+}
+
+// A proposed policy rule with rationale and approval status.
+message PolicyChunk {
+  // Unique chunk identifier.
+  string id = 1;
+  // Approval status: "pending", "approved", "rejected".
+  string status = 2;
+  // Proposed network_policies map key.
+  string rule_name = 3;
+  // The proposed network policy rule.
+  openshell.sandbox.v1.NetworkPolicyRule proposed_rule = 4;
+  // Human-readable explanation of why this rule is proposed.
+  string rationale = 5;
+  // Security concerns flagged by analysis (empty if none).
+  string security_notes = 6;
+  // Analysis confidence (0.0-1.0). 0 for mechanistic mode.
+  float confidence = 7;
+  // IDs of denial summaries that led to this chunk.
+  repeated string denial_summary_ids = 8;
+  // Creation timestamp (ms since epoch).
+  int64 created_at_ms = 9;
+  // When the user approved/rejected (ms since epoch). 0 if undecided.
+  int64 decided_at_ms = 10;
+  // Recommendation stage: "initial" or "refined" (progressive L7 visibility).
+  string stage = 11;
+  // For stage="refined": the initial chunk this replaces.
+  string supersedes_chunk_id = 12;
+  // How many times this endpoint has been seen across denial flush cycles.
+  int32 hit_count = 13;
+  // First time this endpoint was proposed (ms since epoch).
+  int64 first_seen_ms = 14;
+  // Most recent time this endpoint was re-proposed (ms since epoch).
+  int64 last_seen_ms = 15;
+  // Binary path that triggered the denial (denormalized for display convenience).
+  string binary = 16;
+  // Validation verdict from gateway-side static checks (prover output).
+  // Free-form summary string for human consumption in the inbox card.
+  // Empty until the prover has run for this chunk.
+  string validation_result = 17;
+  // Operator-supplied free-form text accompanying a rejection. Populated
+  // when the reviewer rejects via `RejectDraftChunkRequest.reason`; surfaced
+  // back to the in-sandbox agent so it can revise the proposal.
+  // Empty for non-rejected chunks.
+  string rejection_reason = 18;
+}
+
+// Notification that the draft policy was updated.
+message DraftPolicyUpdate {
+  // Current draft version.
+  uint64 draft_version = 1;
+  // Number of new chunks added in this update.
+  uint32 new_chunks = 2;
+  // Total pending chunks awaiting approval.
+  uint32 total_pending = 3;
+  // Brief description of what changed.
+  string summary = 4;
+}
+
+// Submit analysis results from sandbox to gateway.
+message SubmitPolicyAnalysisRequest {
+  // Aggregated denial summaries.
+  repeated DenialSummary summaries = 1;
+  // Proposed policy chunks (validated by sandbox OPA engine).
+  repeated PolicyChunk proposed_chunks = 2;
+  // Analysis mode. `mechanistic` is the observation-driven path from the
+  // denial aggregator — chunks targeting the same host|port|binary fold
+  // into one row with hit_count incremented. `agent_authored` is an
+  // intentional proposal from an in-sandbox agent — each submission lands
+  // as its own chunk so the redraft-after-rejection loop has a stable id
+  // to watch. Other values are treated as agent-style (no dedup) so a new
+  // mode does not silently collapse proposals.
+  string analysis_mode = 3;
+  // Sandbox name.
+  string name = 4;
+  // Anonymous network activity counters.
+  repeated NetworkActivitySummary network_activity_summaries = 5;
+}
+
+message SubmitPolicyAnalysisResponse {
+  // Number of chunks accepted by the gateway.
+  uint32 accepted_chunks = 1;
+  // Number of chunks rejected by gateway validation.
+  uint32 rejected_chunks = 2;
+  // Reasons for each rejected chunk.
+  repeated string rejection_reasons = 3;
+  // Server-assigned chunk IDs for the accepted chunks, in submission order.
+  // Agents use these to watch proposal state via policy.local's
+  // GET /v1/proposals/{id} and /wait endpoints.
+  repeated string accepted_chunk_ids = 4;
+}
+
+// Get draft policy for a sandbox.
+message GetDraftPolicyRequest {
+  // Sandbox name.
+  string name = 1;
+  // Optional status filter: "pending", "approved", "rejected", or "" for all.
+  string status_filter = 2;
+}
+
+message GetDraftPolicyResponse {
+  // Draft policy chunks.
+  repeated PolicyChunk chunks = 1;
+  // LLM-generated summary of all analysis (empty in mechanistic mode).
+  string rolling_summary = 2;
+  // Current draft version.
+  uint64 draft_version = 3;
+  // When the last analysis completed (ms since epoch).
+  int64 last_analyzed_at_ms = 4;
+}
+
+// Approve a single draft chunk.
+message ApproveDraftChunkRequest {
+  // Sandbox name.
+  string name = 1;
+  // Chunk ID to approve.
+  string chunk_id = 2;
+}
+
+message ApproveDraftChunkResponse {
+  // New policy version after merge.
+  uint32 policy_version = 1;
+  // SHA-256 hash of the new policy.
+  string policy_hash = 2;
+}
+
+// Reject a single draft chunk.
+message RejectDraftChunkRequest {
+  // Sandbox name.
+  string name = 1;
+  // Chunk ID to reject.
+  string chunk_id = 2;
+  // Optional reason for rejection (fed to LLM context in future analysis).
+  string reason = 3;
+}
+
+message RejectDraftChunkResponse {}
+
+// Approve all pending chunks.
+message ApproveAllDraftChunksRequest {
+  // Sandbox name.
+  string name = 1;
+  // Include chunks with security_notes (default false: skips them).
+  bool include_security_flagged = 2;
+}
+
+message ApproveAllDraftChunksResponse {
+  // New policy version after merge.
+  uint32 policy_version = 1;
+  // SHA-256 hash of the new policy.
+  string policy_hash = 2;
+  // Number of chunks approved.
+  uint32 chunks_approved = 3;
+  // Number of chunks skipped (security-flagged).
+  uint32 chunks_skipped = 4;
+}
+
+// Edit a pending chunk in-place.
+message EditDraftChunkRequest {
+  // Sandbox name.
+  string name = 1;
+  // Chunk ID to edit.
+  string chunk_id = 2;
+  // The modified rule (replaces existing proposed_rule).
+  openshell.sandbox.v1.NetworkPolicyRule proposed_rule = 3;
+}
+
+message EditDraftChunkResponse {}
+
+// Reverse an approval (remove merged rule from active policy).
+message UndoDraftChunkRequest {
+  // Sandbox name.
+  string name = 1;
+  // Chunk ID to undo.
+  string chunk_id = 2;
+}
+
+message UndoDraftChunkResponse {
+  // New policy version after removal.
+  uint32 policy_version = 1;
+  // SHA-256 hash of the updated policy.
+  string policy_hash = 2;
+}
+
+// Clear all pending draft chunks for a sandbox.
+message ClearDraftChunksRequest {
+  // Sandbox name.
+  string name = 1;
+}
+
+message ClearDraftChunksResponse {
+  // Number of chunks cleared.
+  uint32 chunks_cleared = 1;
+}
+
+// Get decision history for a sandbox's draft policy.
+message GetDraftHistoryRequest {
+  // Sandbox name.
+  string name = 1;
+}
+
+message DraftHistoryEntry {
+  // Event timestamp (ms since epoch).
+  int64 timestamp_ms = 1;
+  // Event type: "denial_detected", "analysis_cycle", "approved",
+  // "rejected", "edited", "undone", "cleared".
+  string event_type = 2;
+  // Human-readable description.
+  string description = 3;
+  // Associated chunk ID (if applicable).
+  string chunk_id = 4;
+}
+
+message GetDraftHistoryResponse {
+  // Chronological decision history.
+  repeated DraftHistoryEntry entries = 1;
+}
+
+// Stored payload for a policy revision row in the generic objects table.
+message PolicyRevisionPayload {
+  // Serialized policy contents.
+  openshell.sandbox.v1.SandboxPolicy policy = 1;
+  // Deterministic hash of the policy payload.
+  string hash = 2;
+  // Load error reported by the sandbox, if any.
+  string load_error = 3;
+  // When the policy version was reported as loaded (ms since epoch). 0 if unset.
+  int64 loaded_at_ms = 4;
+}
+
+// Stored payload for a draft policy chunk row in the generic objects table.
+message DraftChunkPayload {
+  // Proposed network_policies map key.
+  string rule_name = 1;
+  // Proposed network policy rule.
+  openshell.sandbox.v1.NetworkPolicyRule proposed_rule = 2;
+  // Human-readable explanation of why this rule is proposed.
+  string rationale = 3;
+  // Security concerns flagged by analysis (empty if none).
+  string security_notes = 4;
+  // Analysis confidence (0.0-1.0). 0 for mechanistic mode.
+  float confidence = 5;
+  // When the user approved/rejected (ms since epoch). 0 if undecided.
+  int64 decided_at_ms = 6;
+  // Denormalized endpoint host for dedup and display.
+  string host = 7;
+  // Denormalized endpoint port for dedup and display.
+  int32 port = 8;
+  // Binary path that triggered the denial.
+  string binary = 9;
+  // Current draft version for the owning sandbox.
+  int64 draft_version = 10;
+  // Gateway prover verdict for this chunk; empty until prover runs.
+  // Mirrors PolicyChunk.validation_result.
+  string validation_result = 11;
+  // Operator-supplied free-form rejection text; empty for non-rejected
+  // chunks. Mirrors PolicyChunk.rejection_reason.
+  string rejection_reason = 12;
+}
+
+// Internal stored policy revision row materialized from the generic objects table.
+message StoredPolicyRevision {
+  string id = 1;
+  string sandbox_id = 2;
+  int64 version = 3;
+  bytes policy_payload = 4;
+  string policy_hash = 5;
+  string status = 6;
+  optional string load_error = 7;
+  int64 created_at_ms = 8;
+  optional int64 loaded_at_ms = 9;
+}
+
+// Internal stored draft chunk row materialized from the generic objects table.
+message StoredDraftChunk {
+  string id = 1;
+  string sandbox_id = 2;
+  int64 draft_version = 3;
+  string status = 4;
+  string rule_name = 5;
+  bytes proposed_rule = 6;
+  string rationale = 7;
+  string security_notes = 8;
+  double confidence = 9;
+  int64 created_at_ms = 10;
+  optional int64 decided_at_ms = 11;
+  string host = 12;
+  int32 port = 13;
+  string binary = 14;
+  int32 hit_count = 15;
+  int64 first_seen_ms = 16;
+  int64 last_seen_ms = 17;
+  // Gateway prover verdict; empty until the prover runs. See PolicyChunk.
+  string validation_result = 18;
+  // Operator-supplied free-form rejection text. See PolicyChunk.
+  string rejection_reason = 19;
+}
