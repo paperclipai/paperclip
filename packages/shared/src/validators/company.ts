@@ -13,13 +13,15 @@ const interactionResolverKindGovernanceSchema = z.object({
   cap: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
 }).strict();
 
-export const interactionResolverGovernanceSchema = z.object({
+const interactionResolverGovernanceObjectSchema = z.object({
   suggest_tasks: interactionResolverKindGovernanceSchema.optional(),
   ask_user_questions: interactionResolverKindGovernanceSchema.optional(),
   request_confirmation: interactionResolverKindGovernanceSchema.optional(),
   request_checkbox_confirmation: interactionResolverKindGovernanceSchema.optional(),
   request_item_verdicts: interactionResolverKindGovernanceSchema.optional(),
-}).strict().default({});
+}).strict();
+
+export const interactionResolverGovernanceSchema = interactionResolverGovernanceObjectSchema.default({});
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -48,12 +50,31 @@ export const updateCompanySchema = objectWithoutDefaults(
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
 
-export const updateCompanyBrandingSchema = z
+const companyBrandingFields = {
+  name: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  logoAssetId: logoAssetIdSchema,
+};
+
+export const updateCompanyAgentSettingsSchema = z
   .object({
-    name: z.string().min(1).optional(),
-    description: z.string().nullable().optional(),
-    logoAssetId: logoAssetIdSchema,
+    ...companyBrandingFields,
+    interactionResolverGovernance: interactionResolverGovernanceObjectSchema.optional(),
   })
+  .strict()
+  .refine(
+    (value) =>
+      value.name !== undefined
+      || value.description !== undefined
+      || value.logoAssetId !== undefined
+      || value.interactionResolverGovernance !== undefined,
+    "At least one agent-writable company setting must be provided",
+  );
+
+export type UpdateCompanyAgentSettings = z.infer<typeof updateCompanyAgentSettingsSchema>;
+
+export const updateCompanyBrandingSchema = z
+  .object(companyBrandingFields)
   .strict()
   .refine(
     (value) =>

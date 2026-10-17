@@ -77,9 +77,11 @@ export {
   createCompanySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
+  updateCompanyAgentSettingsSchema,
   updateCompanyBrandingSchema,
   type CreateCompany,
   type UpdateCompany,
+  type UpdateCompanyAgentSettings,
   type UpdateCompanyBranding,
 } from "./company.js";
 export {

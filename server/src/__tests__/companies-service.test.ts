@@ -107,6 +107,104 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
+  it("merges interaction resolver governance within each kind", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Governance Merge Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      interactionResolverGovernance: {
+        ask_user_questions: { defaultPolicy: "human_only" },
+        request_confirmation: { cap: "not_creator" },
+      },
+    });
+
+    const updated = await companyService(db).update(
+      companyId,
+      {
+        interactionResolverGovernance: {
+          request_confirmation: { defaultPolicy: "not_creator" },
+        },
+      },
+      { actorType: "agent", actorId: "ceo-agent" },
+    );
+
+    expect(updated?.interactionResolverGovernance).toEqual({
+      ask_user_questions: { defaultPolicy: "human_only" },
+      request_confirmation: {
+        defaultPolicy: "not_creator",
+        cap: "not_creator",
+      },
+    });
+  });
+
+  it("lets board updates replace interaction resolver governance", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Governance Reset Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      interactionResolverGovernance: {
+        ask_user_questions: { defaultPolicy: "human_only" },
+        request_confirmation: {
+          defaultPolicy: "not_creator",
+          cap: "not_creator",
+        },
+      },
+    });
+
+    const updated = await companyService(db).update(
+      companyId,
+      {
+        interactionResolverGovernance: {
+          request_confirmation: { defaultPolicy: "human_only" },
+        },
+      },
+      { actorType: "user", actorId: "board-user" },
+    );
+
+    expect(updated?.interactionResolverGovernance).toEqual({
+      request_confirmation: { defaultPolicy: "human_only" },
+    });
+  });
+
+  it("serializes concurrent interaction resolver governance patches", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Concurrent Governance Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+
+    const svc = companyService(db);
+    await Promise.all([
+      svc.update(
+        companyId,
+        {
+          interactionResolverGovernance: {
+            ask_user_questions: { defaultPolicy: "human_only" },
+          },
+        },
+        { actorType: "agent", actorId: "first-ceo-agent" },
+      ),
+      svc.update(
+        companyId,
+        {
+          interactionResolverGovernance: {
+            request_confirmation: { cap: "not_creator" },
+          },
+        },
+        { actorType: "agent", actorId: "second-ceo-agent" },
+      ),
+    ]);
+
+    const updated = await svc.getById(companyId);
+    expect(updated?.interactionResolverGovernance).toEqual({
+      ask_user_questions: { defaultPolicy: "human_only" },
+      request_confirmation: { cap: "not_creator" },
+    });
+  });
+
   it("does not auto-provision bundled built-in agents for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",

@@ -23,6 +23,7 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   hidesCompanyPage,
+  updateCompanyAgentSettingsSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -1250,7 +1251,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
-      body = updateCompanyBrandingSchema.parse(req.body);
+      body = updateCompanyAgentSettingsSchema.parse(req.body);
     } else {
       body = updateCompanySchema.parse(req.body);
     }
