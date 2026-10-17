@@ -69,7 +69,10 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await tempDb?.cleanup();
   });
 
-  it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {
+  it.each([
+    { credentialPolicy: "shared", healthStatus: "ok" },
+    { credentialPolicy: "per_agent", healthStatus: "error" },
+  ] as const)("provisions an aggregate gateway for $credentialPolicy access without blocking any runtime", async ({ credentialPolicy, healthStatus }) => {
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -96,8 +99,10 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         name: "Installed MCP",
         uid: `test/${randomUUID()}`,
         transport: "mcp_remote",
+        credentialPolicy,
         status: "active",
         enabled: true,
+        healthStatus,
         config: { url: "https://installed.example.test/mcp" },
       },
       {
@@ -137,6 +142,16 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       targetType: "agent",
       targetId: agent!.id,
     });
+    if (credentialPolicy === "per_agent") {
+      await db.insert(connectionGrants).values({
+        companyId: company!.id,
+        connectionId: installedConnection!.id,
+        kind: "agent",
+        subjectAgentId: agent!.id,
+        status: "active",
+        isDefault: false,
+      });
+    }
 
     const before = Date.now();
     const first = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
@@ -184,25 +199,27 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.update(toolConnections)
       .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
       .where(eq(toolConnections.id, installedConnection!.id));
-    await expect(
-      buildPaperclipRuntimeMcpServers({
-        db,
-        agent: agent!,
-        runId: randomUUID(),
-        expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
-      }),
-    ).resolves.toEqual([]);
-    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
-    await expect(
-      createManagedMcpRunConfig({
-        db,
-        agent: agent!,
-        runId: randomUUID(),
-        config: {},
-        projectId: null,
-        issueId: null,
-      }),
-    ).resolves.toBeNull();
+    const degradedRuntime = buildPaperclipRuntimeMcpServers({
+      db,
+      agent: agent!,
+      runId: randomUUID(),
+      expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
+    });
+    if (credentialPolicy === "per_agent") {
+      await expect(degradedRuntime).resolves.toHaveLength(1);
+    } else {
+      await expect(degradedRuntime).resolves.toEqual([]);
+    }
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(credentialPolicy === "per_agent" ? 3 : 2);
+    const degradedConfig = createManagedMcpRunConfig({
+      db,
+      agent: agent!,
+      runId: randomUUID(),
+      config: {},
+      projectId: null,
+      issueId: null,
+    });
+    await expect(degradedConfig).resolves.toBeNull();
   });
 
   async function seedAssignedAgents(count: number) {

@@ -2492,6 +2492,77 @@ rl.on("line", (line) => {
     }
   });
 
+  it("keeps errored per-agent catalogs visible while enforcing the exact agent grant", async () => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "connected" }] },
+      },
+    }));
+
+    try {
+      const first = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "same-name-dedicated-app",
+        url: fake.url,
+        toolName: "same_name",
+        riskLevel: "read",
+      });
+      const second = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "same-name-dedicated-app",
+        url: fake.url,
+        toolName: "same_name",
+        riskLevel: "read",
+      });
+      await db.update(toolConnections).set({ credentialPolicy: "per_agent", healthStatus: "error" })
+        .where(eq(toolConnections.id, first.connection.id));
+      await db.update(toolConnections).set({ credentialPolicy: "per_agent" })
+        .where(eq(toolConnections.id, second.connection.id));
+      await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connection.id));
+      await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, second.connection.id));
+      await db.insert(connectionGrants).values([
+        { companyId: company.id, connectionId: first.connection.id, kind: "agent", subjectAgentId: agentB.id, status: "active", isDefault: false },
+        { companyId: company.id, connectionId: second.connection.id, kind: "agent", subjectAgentId: agentA.id, status: "active", isDefault: false },
+      ]);
+      await allowAllToolsForAgent(db, company.id, agentA.id);
+      await allowAllToolsForAgent(db, company.id, agentB.id);
+      const gateway = createTestToolGatewayService(db);
+
+      await expect(gateway.executeTestCall({
+        companyId: company.id,
+        connectionId: first.connection.id,
+        agentId: agentA.id,
+        toolName: "same_name",
+        parameters: {},
+      })).resolves.toMatchObject({
+        decision: "allowed",
+        error: { reasonCode: "agent_authorization_required" },
+      });
+      expect(fake.requests).toHaveLength(0);
+
+      await expect(gateway.executeTestCall({
+        companyId: company.id,
+        connectionId: first.connection.id,
+        agentId: agentB.id,
+        toolName: "same_name",
+        parameters: {},
+      })).resolves.toMatchObject({ decision: "allowed", result: { data: { content: [{ text: "connected" }] } } });
+      await expect(gateway.executeTestCall({
+        companyId: company.id,
+        connectionId: second.connection.id,
+        agentId: agentA.id,
+        toolName: "same_name",
+        parameters: {},
+      })).resolves.toMatchObject({ decision: "allowed" });
+      expect(fake.requests).toHaveLength(2);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it.each(([
     "zapier", "url", "bearer", "header", "public",
   ] as const).flatMap((kind) => (kind === "public" ? ["setup"] : ["setup", "inline"])
