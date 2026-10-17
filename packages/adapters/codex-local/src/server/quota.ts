@@ -220,6 +220,27 @@ export function secondsToWindowLabel(
   return `${Math.round(hours / 24)}d`;
 }
 
+/**
+ * Label a WHAM usage window by its reported duration instead of its position.
+ * Some plans return only a weekly window as `primary_window`, so position alone
+ * would mislabel it "5h". Falls back to the positional label when the duration
+ * is missing or not a positive number.
+ */
+export function whamWindowLabel(
+  window: { limit_window_seconds?: number | null },
+  positionalLabel: string,
+): string {
+  const seconds = window.limit_window_seconds;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return positionalLabel;
+  }
+  const hours = seconds / 3600;
+  if (hours < 6) return "5h limit";
+  if (hours <= 24) return "24h limit";
+  if (hours <= 168) return "Weekly limit";
+  return `${Math.round(hours / 24)}d limit`;
+}
+
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
 export async function fetchWithTimeout(
   url: string,
@@ -306,7 +327,7 @@ export async function fetchCodexQuota(
   if (rateLimit?.primary_window != null) {
     const w = rateLimit.primary_window;
     windows.push({
-      label: "5h limit",
+      label: whamWindowLabel(w, "5h limit"),
       usedPercent: normalizeCodexUsedPercent(w.used_percent),
       resetsAt:
         typeof w.reset_at === "number"
@@ -319,7 +340,7 @@ export async function fetchCodexQuota(
   if (rateLimit?.secondary_window != null) {
     const w = rateLimit.secondary_window;
     windows.push({
-      label: "Weekly limit",
+      label: whamWindowLabel(w, "Weekly limit"),
       usedPercent: normalizeCodexUsedPercent(w.used_percent),
       resetsAt:
         typeof w.reset_at === "number"
