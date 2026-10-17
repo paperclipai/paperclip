@@ -11,9 +11,15 @@ import type { AdapterRegistryEntry } from "../../src/adapter-registry.js";
 describe("adapter-defaults (built-in)", () => {
   it("returns defaults for claude_local", () => {
     const d = getAdapterDefaults("claude_local");
-    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-claude:v1");
+    expect(d.runtimeImage).toBe(
+      "ghcr.io/paperclipai/agent-runtime-claude:git-38d8f371722b315d2fb3bbaa512518742e33ce2f",
+    );
     expect(d.envKeys).toContain("ANTHROPIC_API_KEY");
     expect(d.allowFqdns).toContain("api.anthropic.com");
+    expect(d.allowFqdns).toContain("claude.com");
+    expect(d.allowFqdns).toContain("platform.claude.com");
+    expect(d.allowFqdns).toContain("claude.ai");
+    expect(d.allowFqdns).toContain("console.anthropic.com");
     expect(d.probeCommand).toEqual(["claude", "--version"]);
   });
 
@@ -21,7 +27,34 @@ describe("adapter-defaults (built-in)", () => {
     const d = getAdapterDefaults("codex_local");
     expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-codex:v1");
     expect(d.envKeys).toContain("OPENAI_API_KEY");
+    expect(d.allowFqdns).toContain("api.openai.com");
+    expect(d.allowFqdns).toContain("auth.openai.com");
+    expect(d.allowFqdns).toContain("chatgpt.com");
+    expect(d.allowFqdns).toContain("platform.openai.com");
+    expect(d.allowFqdns).toContain("oaistatic.com");
     expect(d.probeCommand).toEqual(["codex", "--version"]);
+  });
+
+  it("returns defaults for gemini_local", () => {
+    const d = getAdapterDefaults("gemini_local");
+    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-gemini:v1");
+    expect(d.envKeys).toContain("GOOGLE_API_KEY");
+    expect(d.envKeys).toContain("GEMINI_API_KEY");
+    expect(d.allowFqdns).toContain("generativelanguage.googleapis.com");
+    expect(d.allowFqdns).toContain("oauth2.googleapis.com");
+    expect(d.allowFqdns).toContain("sts.googleapis.com");
+    expect(d.probeCommand).toEqual(["gemini", "--version"]);
+  });
+
+  it("returns defaults for cursor_local", () => {
+    const d = getAdapterDefaults("cursor_local");
+    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-cursor:v1");
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    expect(d.allowFqdns).toContain("api.anthropic.com");
+    expect(d.allowFqdns).toContain("api.openai.com");
+    expect(d.allowFqdns).toContain("cursor.com");
+    expect(d.allowFqdns).toContain("api2.cursor.sh");
+    expect(d.probeCommand).toEqual(["cursor-agent", "--version"]);
   });
 
   it("throws on unknown adapter type", () => {

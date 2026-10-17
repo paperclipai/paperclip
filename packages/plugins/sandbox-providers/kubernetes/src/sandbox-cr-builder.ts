@@ -30,6 +30,24 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  /**
+   * Provider-side hard stop for a lease with a caller-requested deadline. A
+   * crash or an outage on paperclip-server must not leave the pod running
+   * past the attested expiry, so this bounds it independently of any
+   * in-process cleanup. Omitted for leases without a requested deadline,
+   * which keep a long-lived pod.
+   */
+  hardStop?: {
+    /**
+     * Absolute Unix-seconds deadline. The entrypoint sleeps until this instant
+     * and then exits, which kills every exec'd process; after that a restart
+     * exits immediately. Unlike `activeDeadlineSeconds`, this does not drift
+     * by the pod's scheduling and image-pull delay.
+     */
+    atEpochSec: number;
+    /** Backstop `activeDeadlineSeconds` (counted from pod start). */
+    activeDeadlineSeconds: number;
+  };
 }
 
 export function buildSandboxCrManifest(
@@ -63,6 +81,9 @@ export function buildSandboxCrManifest(
           // Sandbox controller requires restartPolicy: Always so the pod
           // stays running between exec calls.
           restartPolicy: "Always",
+          ...(input.hardStop
+            ? { activeDeadlineSeconds: input.hardStop.activeDeadlineSeconds }
+            : {}),
           ...(input.runtimeClassName
             ? { runtimeClassName: input.runtimeClassName }
             : {}),
@@ -86,15 +107,17 @@ export function buildSandboxCrManifest(
               name: "agent",
               image: input.image,
               imagePullPolicy: "IfNotPresent",
-              // sleep infinity keeps the pod running; paperclip-server execs
-              // commands into it via Kubernetes exec API. Tini as PID 1 for
-              // proper signal forwarding and zombie reaping.
+              // sleep keeps the pod running; paperclip-server execs commands
+              // into it via Kubernetes exec API. Tini as PID 1 for proper
+              // signal forwarding and zombie reaping. With a hard stop, the
+              // sleep ends at the absolute deadline and PID 1 exits, which
+              // kills every exec'd process in the container's PID namespace.
               command: [
                 "/usr/bin/tini",
                 "--",
                 "/bin/sh",
                 "-c",
-                "sleep infinity",
+                input.hardStop ? hardStopEntrypoint(input.hardStop.atEpochSec) : "sleep infinity",
               ],
               // HOME must point at a writable mount; the image's default
                // HOME=/home/node is inside the readOnly root filesystem.
@@ -138,4 +161,16 @@ export function buildSandboxCrManifest(
       },
     },
   };
+}
+
+/**
+ * Sleeps until an absolute Unix-seconds deadline, then exits. A container
+ * restarted after the deadline exits immediately, so the sandbox cannot be
+ * revived past the attested lease expiry by `restartPolicy: Always`.
+ */
+function hardStopEntrypoint(atEpochSec: number): string {
+  if (!Number.isSafeInteger(atEpochSec) || atEpochSec <= 0) {
+    throw new Error(`Invalid sandbox hard-stop deadline: ${atEpochSec}`);
+  }
+  return `deadline=${atEpochSec}; now=$(date +%s); [ "$now" -lt "$deadline" ] || exit 0; exec sleep "$((deadline - now))"`;
 }

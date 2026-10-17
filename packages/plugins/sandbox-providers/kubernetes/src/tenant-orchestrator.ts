@@ -6,6 +6,7 @@ export interface EnsureTenantInput {
   namespace: string;
   companyId: string;
   paperclipServerNamespace: string;
+  paperclipServerPodSelector?: Record<string, string>;
   serviceAccountAnnotations: Record<string, string>;
   egressMode: "standard" | "cilium";
   egressAllowFqdns: string[];
@@ -210,6 +211,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
   const [denyAll, egressStd] = buildNetworkPolicyManifests({
     namespace: input.namespace,
     paperclipServerNamespace: input.paperclipServerNamespace,
+    paperclipServerPodSelector: input.paperclipServerPodSelector,
     egressAllowCidrs: input.egressAllowCidrs,
     egressAllowFqdns: input.egressAllowFqdns,
   });
@@ -220,6 +222,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
     const cnp = buildCiliumNetworkPolicyManifest({
       namespace: input.namespace,
       paperclipServerNamespace: input.paperclipServerNamespace,
+      paperclipServerPodSelector: input.paperclipServerPodSelector,
       egressAllowFqdns: input.egressAllowFqdns,
       egressAllowCidrs: input.egressAllowCidrs,
     });
