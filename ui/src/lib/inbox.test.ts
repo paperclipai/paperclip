@@ -21,6 +21,7 @@ import {
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
   getInboxWorkItemKey,
+  getLatestFailedRunsByAgent,
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
@@ -388,6 +389,55 @@ describe("inbox helpers", () => {
       mineIssues: 0,
       alerts: 0,
     });
+  });
+
+  it("drops failed runs of deleted or terminated agents once the agent list is known", () => {
+    const heartbeatRuns = [
+      makeRun("run-active", "failed", "2026-03-11T00:00:00.000Z", "agent-1"),
+      makeRun("run-deleted", "failed", "2026-03-11T00:00:00.000Z", "agent-deleted"),
+      makeRun("run-terminated", "failed", "2026-03-11T00:00:00.000Z", "agent-terminated"),
+    ];
+    const agents = [
+      { id: "agent-1", status: "idle" as const },
+      { id: "agent-terminated", status: "terminated" as const },
+    ];
+
+    expect(getLatestFailedRunsByAgent(heartbeatRuns).map((run) => run.id)).toHaveLength(3);
+    expect(getLatestFailedRunsByAgent(heartbeatRuns, agents).map((run) => run.id)).toEqual(["run-active"]);
+    expect(computeInboxBadgeData({
+      approvals: [], joinRequests: [], dashboard, heartbeatRuns, agents, mineIssues: [],
+      dismissedAlerts: new Set(), dismissedAtByKey: new Map(), currentUserId: "user-1",
+    }).failedRuns).toBe(1);
+  });
+
+  it("honors a Decisions dismissal of the same failed run but not a Decisions snooze", () => {
+    const dismissal = (itemKey: string, kind: "dismiss" | "snooze") => ({
+      id: `dismissal-${itemKey}`,
+      companyId: "company-1",
+      userId: "user-1",
+      itemKey,
+      kind,
+      dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+      snoozedUntil: kind === "snooze" ? new Date("2026-03-11T02:00:00.000Z") : null,
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+    const dismissedAtByKey = buildInboxDismissedAtByKey([
+      dismissal("attention:run:run-1", "dismiss"),
+      dismissal("attention:run:run-2", "snooze"),
+    ]);
+    const result = computeInboxBadgeData({
+      approvals: [], joinRequests: [], dashboard, mineIssues: [],
+      heartbeatRuns: [
+        makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z", "agent-1"),
+        makeRun("run-2", "failed", "2026-03-11T00:00:00.000Z", "agent-2"),
+      ],
+      dismissedAlerts: new Set(), dismissedAtByKey, currentUserId: "user-1",
+    });
+
+    expect(isInboxEntityDismissed(dismissedAtByKey, "run:run-1", "2026-03-11T00:00:00.000Z")).toBe(true);
+    expect(isInboxEntityDismissed(dismissedAtByKey, "run:run-2", "2026-03-11T00:00:00.000Z")).toBe(false);
+    expect(result.failedRuns).toBe(1);
   });
 
   it("excludes read mine issues from the inbox badge count", () => {

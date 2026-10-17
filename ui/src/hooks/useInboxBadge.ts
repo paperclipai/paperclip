@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
+import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { inboxDismissalsApi } from "../api/inboxDismissals";
 import { approvalsApi } from "../api/approvals";
@@ -258,6 +259,12 @@ export function useInboxBadge(companyId: string | null | undefined) {
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
 
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId!),
+    queryFn: () => agentsApi.list(companyId!),
+    enabled: !!companyId,
+  });
+
   return useMemo(
     () =>
       computeInboxBadgeData({
@@ -265,11 +272,12 @@ export function useInboxBadge(companyId: string | null | undefined) {
         joinRequests,
         dashboard,
         heartbeatRuns,
+        agents,
         mineIssues,
         dismissedAlerts,
         dismissedAtByKey,
         currentUserId,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
+    [approvals, joinRequests, dashboard, heartbeatRuns, agents, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
   );
 }

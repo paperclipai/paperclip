@@ -1333,10 +1333,10 @@ function StreamlinedInbox({
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
+      getLatestFailedRunsByAgent(heartbeatRuns ?? [], agents).filter(
         (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
       ),
-    [heartbeatRuns, dismissedAtByKey],
+    [heartbeatRuns, agents, dismissedAtByKey],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);

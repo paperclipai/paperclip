@@ -359,7 +359,7 @@ function resetInboxApiMocks() {
   apiMocks.issueLabels.mockResolvedValue([]);
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
-  apiMocks.agentsList.mockResolvedValue([]);
+  apiMocks.agentsList.mockResolvedValue(["agent-1", "agent-2", "agent-3"].map((id) => ({ id, name: id, status: "idle" })));
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
   apiMocks.experimentalSettings.mockResolvedValue({
@@ -387,11 +387,11 @@ describe("Inbox toolbar", () => {
   });
 
   it.each([
-    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
-    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
-    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
-    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
-    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },
+    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure", "deleted-agent-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure", "deleted-agent-failure"] },
+    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure", "deleted-agent-failure"] },
+    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure", "deleted-agent-failure"] },
+    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: ["deleted-agent-failure"] },
   ].flatMap((scenario) => [true, false].map((streamlined) => ({ ...scenario, streamlined }))))(
     "scopes failed runs on $tab for $userId (streamlined=$streamlined)",
     async ({ tab, userId, visible, hidden, streamlined }) => {
@@ -402,6 +402,7 @@ describe("Inbox toolbar", () => {
         createFailedRun({ id: "own-failure", agentId: "agent-1", responsibleUserId: "user-1" }),
         createFailedRun({ id: "other-failure", agentId: "agent-2", responsibleUserId: "user-2", status: "timed_out" }),
         createFailedRun({ id: "unowned-failure", agentId: "agent-3" }),
+        createFailedRun({ id: "deleted-agent-failure", agentId: "agent-deleted", responsibleUserId: "user-1" }),
       ]);
       const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
