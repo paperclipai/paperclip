@@ -202,7 +202,7 @@ function KanbanColumn({
         )}
         title={`${statusLabel(status)}: ${issues.length}`}
       >
-        <StatusIcon status={status} />
+        <StatusIcon status={status} animate={!isEmpty} />
         <span className={cn("mt-2 [writing-mode:vertical-rl] rotate-180 text-(length:--text-nano) font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
         </span>
@@ -216,7 +216,7 @@ function KanbanColumn({
   return (
     <div className="flex flex-col shrink-0 min-w-(--sz-260px) w-(--sz-260px)">
       <div className="flex items-center gap-2 px-3 py-2 mb-1">
-        <StatusIcon status={status} />
+        <StatusIcon status={status} animate={!isEmpty} />
         <span className={cn("text-xs font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
         </span>

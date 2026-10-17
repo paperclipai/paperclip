@@ -22,6 +22,8 @@ interface StatusIconProps {
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
+  /** Spin the `in_progress` glyph. Default `true`; kanban column headers pass `false` while empty. */
+  animate?: boolean;
 }
 
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
@@ -78,7 +80,7 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md", animate = true }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
@@ -91,6 +93,7 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
       size={size}
       className={cn(onChange && !showLabel && "cursor-pointer", className)}
       title={ariaLabel}
+      animate={animate}
     />
   );
   const glyph = glyphContainerClassName ? (
