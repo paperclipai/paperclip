@@ -939,6 +939,23 @@ export function recoveryService(
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    /**
+     * Teardown the stale-lock sweep shares with the normal terminal path. When
+     * the sweep terminalizes a run whose process is gone, it releases the run's
+     * environment leases and settles the agent status through these hooks.
+     */
+    releaseEnvironmentLeasesForRun?: (input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      status: string | null | undefined;
+      failureReason?: string | null;
+    }) => Promise<void>;
+    finalizeAgentStatus?: (
+      agentId: string,
+      outcome: "succeeded" | "cancelled" | "interrupted",
+      failureReason?: string | null,
+    ) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -5950,6 +5967,20 @@ export function recoveryService(
   // - Process-death authority: the run has no in-memory handle and its recorded
   //   process and process group are both gone. This catches a hard server crash
   //   that skipped the graceful teardown, even when the issue is not terminal.
+  async function waitForOrphanedRunCleanup(operation: () => Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("orphaned run cleanup exceeded 5000ms")), 5_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function terminalizeOrphanedRunningRun(
     run: typeof heartbeatRuns.$inferSelect,
     options?: {
@@ -5964,6 +5995,10 @@ export function recoveryService(
       // fallback below. Without it, a terminal issue named in the run context
       // snapshot would still terminalize the shared run and defeat the guard.
       runReferencedByActiveIssue?: boolean;
+      // When set, process-death teardown is queued here instead of awaited, so
+      // the sweep can clear issue locks first and then run the teardowns with
+      // bounded concurrency.
+      deferredTeardowns?: Array<() => Promise<void>>;
     },
   ): Promise<{ terminalized: boolean; status: string }> {
     // Act only on a run in "running" status. A "queued" run has no process yet,
@@ -6134,6 +6169,43 @@ export function recoveryService(
       return { terminalized: false, status: current?.status ?? run.status };
     }
 
+    // The sweep bypasses heartbeat's usual terminal path, so a crashed run would
+    // otherwise keep its environment leases and leave its agent marked running.
+    // Once process death is established, run the normal teardown. Terminal issue
+    // status alone does not prove the provider stopped, so that authority keeps
+    // leases and agent status until the owning execution settles. Failures here
+    // must not hide the committed terminal outcome or block clearing the lock.
+    // Bound each wait: a timed-out operation can still settle in the background,
+    // while the existing lease backstop remains responsible for stranded leases.
+    const runTeardown = async () => {
+      try {
+        await waitForOrphanedRunCleanup(async () => deps.releaseEnvironmentLeasesForRun?.({
+          runId: updated.id,
+          companyId: updated.companyId,
+          agentId: updated.agentId,
+          status: updated.status,
+          failureReason: updated.error ?? undefined,
+        }));
+      } catch (error) {
+        logger.error(
+          { err: error, runId: run.id },
+          "orphaned run lease cleanup failed; operator recovery required",
+        );
+      }
+      try {
+        await waitForOrphanedRunCleanup(async () => deps.finalizeAgentStatus?.(updated.agentId, terminalStatus, updated.error));
+      } catch (error) {
+        logger.error(
+          { err: error, runId: run.id },
+          "orphaned run agent finalization failed; operator recovery required",
+        );
+      }
+    };
+    if (processGone) {
+      if (options?.deferredTeardowns) options.deferredTeardowns.push(runTeardown);
+      else await runTeardown();
+    }
+
     // Telemetry is best-effort background work; it must not delay clearing
     // the stale lock below, so fire it and do not await it.
     void emitAgentTaskRun(db, updated);
@@ -6266,8 +6338,10 @@ export function recoveryService(
     // can no longer reach a terminal status on its own. This lets the sweep
     // clear the lock in the same pass instead of waiting for the run to reach a
     // terminal status by another route.
+    const deferredTeardowns: Array<() => Promise<void>> = [];
     for (const row of runRows) {
       const outcome = await terminalizeOrphanedRunningRun(row, {
+        deferredTeardowns,
         referencingIssueTerminalStatus:
           issueTerminalStatusByRunId.get(row.id) ?? null,
         runReferencedByActiveIssue: runIdsReferencedByActiveIssue.has(row.id),
@@ -6347,6 +6421,40 @@ export function recoveryService(
           referencedRunStatuses: Object.fromEntries(runStatusById),
         },
       });
+    }
+
+    // Locks are clear; now tear down crashed runs' leases and agent status with
+    // bounded concurrency so one stalled provider cannot serialize startup.
+    const TEARDOWN_CONCURRENCY = 8;
+    let nextTeardown = 0;
+    if (deferredTeardowns.length > 0) {
+      const teardowns = Promise.all(
+        Array.from({ length: Math.min(TEARDOWN_CONCURRENCY, deferredTeardowns.length) }, async () => {
+          while (nextTeardown < deferredTeardowns.length) {
+            await deferredTeardowns[nextTeardown++]!();
+          }
+        }),
+      );
+      // Per-hook timeouts alone still make startup wait grow with the number
+      // of crashed runs. Cap the whole teardown wait; workers continue in the
+      // background, and the lease backstop still covers stranded leases.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          teardowns,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              logger.warn(
+                { teardownCount: deferredTeardowns.length },
+                "stale issue lock sweep teardown exceeded 60000ms; continuing in background",
+              );
+              resolve();
+            }, 60_000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
 
     if (result.cleared > 0 || result.terminalizedRunIds.length > 0) {
