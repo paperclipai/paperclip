@@ -133,6 +133,48 @@ describe("extractIssueTimelineEvents", () => {
     ]);
   });
 
+  it("shows the requester, not the system actor, on a deferred comment reopen", () => {
+    const deferredReopen = (requestedByActorType: string | null): ActivityEvent => ({
+      id: "evt-deferred-reopen",
+      companyId: "company-1",
+      actorType: "system",
+      actorId: "heartbeat",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: "issue-1",
+      agentId: "agent-1",
+      runId: "releasing-run",
+      createdAt: new Date("2026-03-31T12:01:00.000Z"),
+      details: {
+        status: "todo",
+        reopened: true,
+        reopenedFrom: "done",
+        source: "deferred_comment_wake",
+        releasingRunId: "releasing-run",
+        wakeupRequestId: "wake-1",
+        requestedByActorType,
+        requestedByActorId: "user-1",
+        commentIds: ["comment-1"],
+      },
+    });
+
+    expect(extractIssueTimelineEvents([deferredReopen("user")])).toEqual([
+      {
+        id: "evt-deferred-reopen",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        actorType: "user",
+        actorId: "user-1",
+        runId: "releasing-run",
+        statusChange: { from: "done", to: "todo" },
+      },
+    ]);
+    // A system-requested (or legacy) entry keeps the logged system actor.
+    expect(extractIssueTimelineEvents([deferredReopen("system")])[0]).toMatchObject({
+      actorType: "system",
+      actorId: "heartbeat",
+    });
+  });
+
   it("marks explicit follow-up timeline updates", () => {
     const events = extractIssueTimelineEvents([
       {
