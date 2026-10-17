@@ -74,6 +74,20 @@ describe("routine variable helpers", () => {
     ).toBe("Review paperclip for high");
   });
 
+  it("leaves placeholders named after Object.prototype members untouched when no value is provided", () => {
+    expect(
+      interpolateRoutineTemplate("{{constructor}} {{toString}} {{valueOf}} {{hasOwnProperty}} {{repo}} {{missing}}", {
+        repo: "paperclip",
+      }),
+    ).toBe("{{constructor}} {{toString}} {{valueOf}} {{hasOwnProperty}} paperclip {{missing}}");
+  });
+
+  it("interpolates variables named after Object.prototype members when values are provided", () => {
+    expect(
+      interpolateRoutineTemplate("{{constructor}} / {{toString}}", { constructor: "a", toString: "b" }),
+    ).toBe("a / b");
+  });
+
   it("identifies built-in variable names", () => {
     expect(isBuiltinRoutineVariable("date")).toBe(true);
     expect(isBuiltinRoutineVariable("timestamp")).toBe(true);

@@ -674,6 +674,76 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(issue?.description).toBe("Review paperclip for high bugs");
   });
 
+  it("resolves variables named after Object.prototype members from run inputs only", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Report {{toString}}",
+        description: "Built by {{constructor}} ({{valueOf}})",
+        assigneeAgentId: agentId,
+        variables: [
+          { name: "toString", type: "text", required: true },
+          { name: "constructor", type: "text", required: false },
+          { name: "valueOf", type: "number", required: false },
+        ],
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const runRes = await postRoutineRun(app, createRes.body.id, {
+      source: "manual",
+      variables: { toString: "weekly" },
+    });
+
+    expect(runRes.status, JSON.stringify(runRes.body)).toBe(202);
+    expect(runRes.body.triggerPayload).toEqual({ variables: { toString: "weekly" } });
+
+    const [issue] = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue?.title).toBe("Report weekly");
+    expect(issue?.description).toBe("Built by {{constructor}} ({{valueOf}})");
+  });
+
+  it("still requires a value for a required variable named after an Object.prototype member", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Report {{toString}}",
+        assigneeAgentId: agentId,
+        variables: [{ name: "toString", type: "text", required: true }],
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const runRes = await postRoutineRun(app, createRes.body.id, { source: "manual", variables: {} });
+
+    expect(runRes.status).toBe(422);
+    expect(runRes.body.error).toBe("Missing routine variables: toString");
+  });
+
   it("defaults activity gates and rejects invalid activity gate values", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const app = await createApp({
