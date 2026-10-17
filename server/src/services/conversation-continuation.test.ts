@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker, persistedConversationProcessLiveness } from "./conversation-continuation.js";
 import { deliverExecutionStatuses } from "./execution-status-delivery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -77,5 +77,97 @@ describePostgres("execution identity query contracts", () => {
     expect(result.delivered).toBe(expected.size);
     expect(seen).toEqual(expected);
     expect(await deliverExecutionStatuses(db, { publish: () => { throw new Error("duplicate delivery"); } })).toEqual({ scanned: 0, delivered: 0 });
+  });
+});
+
+describe("persisted conversation process ownership", () => {
+  const stored = {
+    processPid: 49773,
+    processGroupId: 49773,
+    processStartedAt: new Date("2026-09-30T06:30:00.000Z"),
+  };
+
+  it("does not hold a terminal run when its PID was reused and its group is gone", async () => {
+    const isAlive = vi.fn((pid: number) => pid > 0);
+    const startedAt = vi.fn().mockResolvedValue("2026-09-30T10:00:00.000Z");
+    await expect(persistedConversationProcessLiveness(stored, { isAlive, startedAt }))
+      .resolves.toEqual({ pidAlive: false, groupAlive: false });
+    expect(isAlive).toHaveBeenCalledWith(49773);
+    expect(isAlive).toHaveBeenCalledWith(-49773);
+  });
+
+  it("treats a PID reused one second after the original start as a different process", async () => {
+    await expect(persistedConversationProcessLiveness({ ...stored, processGroupId: 60000 }, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T06:30:01.000Z",
+    })).resolves.toEqual({ pidAlive: false, groupAlive: true });
+  });
+
+  it("keeps the hold when the stored start is a later spawn-callback timestamp of the same process", async () => {
+    await expect(persistedConversationProcessLiveness({ ...stored, processStartedAt: new Date("2026-09-30T06:30:00.700Z") }, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T06:30:00.000Z",
+    })).resolves.toEqual({ pidAlive: true, groupAlive: true });
+  });
+
+  it("retains the hold when process identity cannot be read", async () => {
+    await expect(persistedConversationProcessLiveness(stored, {
+      isAlive: () => true,
+      startedAt: async () => { throw new Error("unreadable"); },
+    })).resolves.toEqual({ pidAlive: true, groupAlive: true });
+  });
+
+  it("keeps a live group after its leader PID is reused", async () => {
+    await expect(persistedConversationProcessLiveness(stored, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T10:00:00.000Z",
+      groupMembers: async () => [
+        { pid: 49773, startedAt: "2026-09-30T10:00:00.000Z" },
+        { pid: 49774, startedAt: "2026-09-30T06:30:01.000Z" },
+      ],
+    })).resolves.toEqual({ pidAlive: false, groupAlive: true });
+  });
+
+  it("releases a reused process group only when all members belong to its new leader", async () => {
+    await expect(persistedConversationProcessLiveness(stored, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T10:00:00.000Z",
+      groupMembers: async () => [
+        { pid: 49773, startedAt: "2026-09-30T10:00:00.000Z" },
+        { pid: 49775, startedAt: "2026-09-30T10:00:01.000Z" },
+      ],
+    })).resolves.toEqual({ pidAlive: false, groupAlive: false });
+  });
+
+  it("keeps a reused group whose other member started in the same second as the new leader", async () => {
+    await expect(persistedConversationProcessLiveness(stored, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T10:00:00.000Z",
+      groupMembers: async () => [
+        { pid: 49773, startedAt: "2026-09-30T10:00:00.000Z" },
+        { pid: 49776, startedAt: "2026-09-30T10:00:00.000Z" },
+      ],
+    })).resolves.toEqual({ pidAlive: false, groupAlive: true });
+  });
+
+  it("does not trust a PID that started three seconds after the recorded start", async () => {
+    // The recorded start is never earlier than the real one: it is either the
+    // ps reading or a timestamp taken after spawn. A later start is a reuse.
+    // Without membership evidence the matching group keeps its hold.
+    await expect(persistedConversationProcessLiveness(stored, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T06:30:03.000Z",
+    })).resolves.toEqual({ pidAlive: false, groupAlive: true });
+  });
+
+  it("releases a rapidly reused PID when it started after the terminal run ended", async () => {
+    await expect(persistedConversationProcessLiveness({
+      ...stored,
+      finishedAt: new Date("2026-09-30T06:30:01.000Z"),
+    }, {
+      isAlive: () => true,
+      startedAt: async () => "2026-09-30T06:30:03.000Z",
+      groupMembers: async () => [{ pid: 49773, startedAt: "2026-09-30T06:30:03.000Z" }],
+    })).resolves.toEqual({ pidAlive: false, groupAlive: false });
   });
 });
