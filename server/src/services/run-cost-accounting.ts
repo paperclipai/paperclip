@@ -7,12 +7,24 @@ import { createCostEventInTransaction } from "./costs.js";
 import { budgetService, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
+import { RECEIPT_WAIT_MS } from "./cost-data-quality.js";
 import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+
+/** A run Paperclip cancelled (for example on reassignment) has had its process
+ * stopped, so no provider shutdown receipt will follow. Once the late-receipt
+ * window has passed, its streamed partial usage is the only evidence left. */
+function isSettledCancellation(run: typeof heartbeatRuns.$inferSelect, now = Date.now()) {
+  if (run.status !== "cancelled") return false;
+  const usage = object(run.usageJson);
+  const hasUsage = amount(usage.costUsd) !== null
+    || ["inputTokens", "cachedInputTokens", "outputTokens"].some(key => (amount(usage[key]) ?? 0) > 0);
+  return hasUsage && now - (run.finishedAt ?? run.updatedAt).getTime() >= RECEIPT_WAIT_MS;
+}
 
 /** The run's persisted usage is a durable receipt. Ledger, runtime totals, and
  * acknowledgement commit together, including after a restart or failed run. */
@@ -63,7 +75,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // A stop can mark the run terminal before the provider's shutdown receipt
     // arrives. Keep the debt pending instead of acknowledging an invented zero
     // and permanently discarding that late receipt.
-    if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
+    // A cancellation past the receipt window books its partial usage as an
+    // estimate instead of leaving real spend out of the ledger indefinitely.
+    const partialCancellation = object(run.usageJson).accountingReceiptReady === false && isSettledCancellation(run);
+    if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false && !partialCancellation) return false;
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
@@ -97,7 +112,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       providerRequestId: text(usage.providerRequestId),
       pricingProvenance: object(usage.pricingProvenance),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: (costUsd === null || usage.costStatus === "unpriced") && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: (costUsd === null || usage.costStatus === "unpriced") && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" || partialCancellation ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -163,7 +178,8 @@ export async function reconcileRunCosts(db: Db, hooks: BudgetServiceHooks = {}) 
       or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
       and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
       and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
-    sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
+    sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
+      or (${heartbeatRuns.status} = 'cancelled' and coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}) <= ${new Date(Date.now() - RECEIPT_WAIT_MS).toISOString()}::timestamptz))`,
   )).orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id)).limit(100);
   let accounted = 0;
   const receiptIndex = pending.length > 0 ? await indexPendingUsageReceipts() : undefined;
