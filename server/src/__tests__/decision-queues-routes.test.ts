@@ -265,6 +265,15 @@ describeEmbeddedPostgres("decision queue routes", () => {
 
   it("materializes data-backed starter queues from plan, question, and pull-request signals", async () => {
     const { companyId, issueId, interactionId } = await seed();
+    const planId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: planId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, questions: [] } as never,
+    });
     await db.insert(issueWorkProducts).values({
       companyId,
       issueId,
@@ -324,7 +333,6 @@ describeEmbeddedPostgres("decision queue routes", () => {
       };
     }
 
-    const planId = randomUUID();
     const candidates = [
       attentionItem({ sourceKind: "review", sourceId: issueId, subjectKind: "issue", issueId }),
       attentionItem({
@@ -377,6 +385,214 @@ describeEmbeddedPostgres("decision queue routes", () => {
     })]);
     expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.queueId, questionsQueue.id)))
       .toHaveLength(1);
+  });
+
+  it("prunes seeded queue items whose source is no longer pending (NET-7500)", async () => {
+    const { companyId, issueId, interactionId } = await seed();
+    const planId = randomUUID();
+    const staleInteractionId = randomUUID();
+    const stillPendingInteractionId = randomUUID();
+    const orphanInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: planId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { version: 1, questions: [] } as never,
+      },
+      {
+        id: staleInteractionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "answered",
+        payload: { version: 1, questions: [] } as never,
+      },
+      {
+        id: stillPendingInteractionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        payload: { version: 1, questions: [] } as never,
+      },
+    ]);
+    // PR work product + a second issue for the closed-issue case
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR 42",
+      status: "open",
+    });
+    const closedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: closedIssueId,
+      companyId,
+      identifier: "DQC-2",
+      title: "Closed issue with PR",
+      status: "done",
+      assigneeAgentId: null,
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: closedIssueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR 99",
+      status: "merged",
+    });
+    const noPrIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: noPrIssueId,
+      companyId,
+      identifier: "DQC-3",
+      title: "Issue with no PR work product",
+      status: "in_progress",
+      assigneeAgentId: null,
+    });
+
+    function attentionItem(input: {
+      sourceKind: AttentionItem["sourceKind"];
+      sourceId: string;
+      subjectKind: AttentionItem["subject"]["kind"];
+      metadata?: Record<string, unknown>;
+      issueId?: string;
+    }): AttentionItem {
+      return {
+        id: `${input.sourceKind}:${input.sourceId}`,
+        companyId,
+        sourceKind: input.sourceKind,
+        subject: {
+          kind: input.subjectKind,
+          id: input.sourceId,
+          companyId,
+          title: "Seed candidate",
+          identifier: null,
+          status: "pending",
+          href: null,
+          metadata: input.metadata,
+        },
+        whyNow: "test",
+        decisionVerbs: [],
+        inlineResolvable: true,
+        entryRule: "test",
+        exitRule: "test",
+        dedupKey: `${input.sourceKind}:${input.sourceId}`,
+        dismissalKey: `${input.sourceKind}:${input.sourceId}`,
+        dismissal: null,
+        severity: "medium",
+        rank: 1,
+        activityAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        relatedIssue: input.issueId ? {
+          kind: "issue",
+          id: input.issueId,
+          companyId,
+          title: "Issue",
+          identifier: "DQC-1",
+          status: "in_review",
+          href: null,
+        } : null,
+        project: null,
+        workspace: null,
+        detail: null,
+        trainingExampleId: null,
+      };
+    }
+
+    // Seed initial candidates across all three queues.
+    const firstCandidates = [
+      attentionItem({ sourceKind: "review", sourceId: issueId, subjectKind: "issue", issueId }),
+      attentionItem({
+        sourceKind: "issue_thread_interaction",
+        sourceId: planId,
+        subjectKind: "interaction",
+        metadata: { kind: "request_confirmation", isPlanTarget: true, issueId },
+        issueId,
+      }),
+      attentionItem({
+        sourceKind: "issue_thread_interaction",
+        sourceId: interactionId,
+        subjectKind: "interaction",
+        metadata: { kind: "ask_user_questions", issueId },
+        issueId,
+      }),
+    ];
+    await decisionQueueService(db).materializeSeededQueues(companyId, firstCandidates);
+
+    // Manually inject items that simulate already-stale sources landing in queues
+    // before our reconcile runs.
+    const queues = await db.select().from(decisionQueues).where(eq(decisionQueues.companyId, companyId));
+    const plansQueue = queues.find((queue) => queue.key === "plans")!;
+    const questionsQueue = queues.find((queue) => queue.key === "questions")!;
+    const prsQueue = queues.find((queue) => queue.key === "prs")!;
+    await db.insert(decisionQueueItems).values([
+      // plans queue: interaction is already answered
+      { companyId, queueId: plansQueue.id, sourceKind: "issue_thread_interaction", sourceId: staleInteractionId, addedByType: "system" },
+      // questions queue: same — answered
+      { companyId, queueId: questionsQueue.id, sourceKind: "issue_thread_interaction", sourceId: staleInteractionId, addedByType: "system" },
+      // questions queue: source interaction does not exist (orphan)
+      { companyId, queueId: questionsQueue.id, sourceKind: "issue_thread_interaction", sourceId: orphanInteractionId, addedByType: "system" },
+      // questions queue: still pending — should NOT be pruned
+      { companyId, queueId: questionsQueue.id, sourceKind: "issue_thread_interaction", sourceId: stillPendingInteractionId, addedByType: "system" },
+      // prs queue: closed issue
+      { companyId, queueId: prsQueue.id, sourceKind: "review", sourceId: closedIssueId, addedByType: "system" },
+      // prs queue: live issue but PR work product removed
+      { companyId, queueId: prsQueue.id, sourceKind: "review", sourceId: noPrIssueId, addedByType: "system" },
+    ]);
+
+    const before = await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, companyId));
+    const plansBefore = before.filter((row) => row.queueId === plansQueue.id);
+    const questionsBefore = before.filter((row) => row.queueId === questionsQueue.id);
+    const prsBefore = before.filter((row) => row.queueId === prsQueue.id);
+    expect(plansBefore).toHaveLength(2);
+    expect(questionsBefore).toHaveLength(4);
+    expect(prsBefore).toHaveLength(5);
+
+    // Re-run materialization with the same live candidates; stale items must drop.
+    await decisionQueueService(db).materializeSeededQueues(companyId, firstCandidates);
+
+    const after = await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, companyId));
+    const plansAfter = after.filter((row) => row.queueId === plansQueue.id);
+    const questionsAfter = after.filter((row) => row.queueId === questionsQueue.id);
+    const prsAfter = after.filter((row) => row.queueId === prsQueue.id);
+    // plans: original planId item kept; answered interaction pruned
+    expect(plansAfter).toHaveLength(1);
+    expect(plansAfter.every((row) => row.sourceId === planId)).toBe(true);
+    // questions: original interactionId + stillPendingInteractionId kept; stale + orphan pruned
+    expect(questionsAfter).toHaveLength(2);
+    expect(questionsAfter.map((row) => row.sourceId).sort()).toEqual(
+      [interactionId, stillPendingInteractionId].sort(),
+    );
+    // prs: original review(issueId) + planItem + askUserQuestionsItem kept; closed issue + no-PR issue pruned
+    expect(prsAfter).toHaveLength(3);
+    expect(prsAfter.find((row) => row.sourceId === closedIssueId)).toBeUndefined();
+    expect(prsAfter.find((row) => row.sourceId === noPrIssueId)).toBeUndefined();
+
+    // Audit trail: pruning must emit queue_item.removed events and a pruned summary.
+    const removedEvents = await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId),
+      eq(decisionTriageEvents.action, "queue_item.removed"),
+      eq(decisionTriageEvents.sourceId, staleInteractionId),
+    ));
+    expect(removedEvents.length).toBeGreaterThanOrEqual(1);
+    expect(removedEvents.every((event) => event.details?.reason === "source_no_longer_pending")).toBe(true);
+    const prunedActivity = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "decision_queue_item.pruned"),
+    ));
+    expect(prunedActivity.length).toBeGreaterThanOrEqual(1);
+
+    // Idempotency: re-running with no new candidates must not emit additional prune events.
+    const eventCountBefore = (await db.select().from(decisionTriageEvents).where(eq(decisionTriageEvents.companyId, companyId))).length;
+    await decisionQueueService(db).materializeSeededQueues(companyId, firstCandidates);
+    const eventCountAfter = (await db.select().from(decisionTriageEvents).where(eq(decisionTriageEvents.companyId, companyId))).length;
+    expect(eventCountAfter).toBe(eventCountBefore);
   });
 
   it("records agent decide-by, preserves override history, and exposes the board override attribution", async () => {

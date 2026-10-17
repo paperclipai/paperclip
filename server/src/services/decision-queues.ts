@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -360,6 +360,114 @@ function itemIssueId(item: AttentionItem) {
   return typeof metadataIssueId === "string" ? metadataIssueId : null;
 }
 
+type StaleQueueItem = {
+  id: string;
+  sourceKind: string;
+  sourceId: string;
+};
+
+/**
+ * Find queue items whose underlying source is no longer in a "pending" state
+ * for the given seed queue. Used by `materializeSeededQueues` to keep seeded
+ * queues bounded — without this, items accumulate as their interactions
+ * resolve, issues close, or PRs disappear (NET-7500).
+ *
+ * Rules per seed key:
+ * - `plans` / `questions`: item source is `issue_thread_interaction`; stale
+ *   when the interaction row is missing or its status is not "pending".
+ * - `prs`: in addition to the interaction check, issue-source items
+ *   (`review` / `productivity_review` / `blocker_attention`) are stale when
+ *   the issue row is missing, hidden, done/cancelled, or no longer has a
+ *   `pull_request` work product.
+ *
+ * The returned ids are safe to delete — they are filtered against the live
+ * state of the source tables, not against a passed-in attention snapshot,
+ * so concurrent `materializeSeededQueues` calls with different attention
+ * scopes cannot race-delete a live item.
+ */
+async function findStaleSeededQueueItems(
+  txDb: Db,
+  companyId: string,
+  queueId: string,
+  seedKey: string,
+): Promise<StaleQueueItem[]> {
+  const existing = await txDb
+    .select({
+      id: decisionQueueItems.id,
+      sourceKind: decisionQueueItems.sourceKind,
+      sourceId: decisionQueueItems.sourceId,
+    })
+    .from(decisionQueueItems)
+    .where(and(
+      eq(decisionQueueItems.companyId, companyId),
+      eq(decisionQueueItems.queueId, queueId),
+    ));
+  if (existing.length === 0) return [];
+
+  const stale = new Map<string, StaleQueueItem>();
+  const markStale = (item: StaleQueueItem) => stale.set(item.id, item);
+
+  // 1. interaction sources: prune unless interaction row exists and is "pending"
+  const interactionItems = existing.filter((i) => i.sourceKind === "issue_thread_interaction");
+  if (interactionItems.length > 0) {
+    const live = await txDb
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        inArray(issueThreadInteractions.id, interactionItems.map((i) => i.sourceId)),
+        eq(issueThreadInteractions.status, "pending"),
+      ));
+    const liveSet = new Set(live.map((row) => row.id));
+    for (const item of interactionItems) {
+      if (!liveSet.has(item.sourceId)) markStale(item);
+    }
+  }
+
+  // 2. prs queue: also reconcile issue-source items against live issue + PR work product
+  if (seedKey === "prs") {
+    const issueSourceKinds = ["review", "productivity_review", "blocker_attention"] as const;
+    const issueItems = existing.filter(
+      (i) => (issueSourceKinds as readonly string[]).includes(i.sourceKind) && !stale.has(i.id),
+    );
+    if (issueItems.length > 0) {
+      const liveIssues = await txDb
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, issueItems.map((i) => i.sourceId)),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ));
+      const liveIssueSet = new Set(liveIssues.map((row) => row.id));
+      for (const item of issueItems) {
+        if (!liveIssueSet.has(item.sourceId)) {
+          markStale(item);
+          continue;
+        }
+      }
+      const stillActive = issueItems.filter((i) => liveIssueSet.has(i.sourceId));
+      if (stillActive.length > 0) {
+        const withPr = await txDb
+          .select({ issueId: issueWorkProducts.issueId })
+          .from(issueWorkProducts)
+          .where(and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.type, "pull_request"),
+            inArray(issueWorkProducts.issueId, stillActive.map((i) => i.sourceId)),
+          ));
+        const withPrSet = new Set(withPr.map((row) => row.issueId));
+        for (const item of stillActive) {
+          if (!withPrSet.has(item.sourceId)) markStale(item);
+        }
+      }
+    }
+  }
+
+  return [...stale.values()];
+}
+
 export function decisionQueueService(db: Db) {
   async function getQueue(companyId: string, key: string) {
     return db.select().from(decisionQueues)
@@ -709,7 +817,6 @@ export function decisionQueueService(db: Db) {
 
       for (const seed of DECISION_QUEUE_SEEDS) {
         const matchingItems = matches.get(seed.key) ?? [];
-        if (matchingItems.length === 0) continue;
         await db.transaction(async (tx) => {
           const txDb = tx as unknown as Db;
           const insertedQueue = await txDb.insert(decisionQueues).values({
@@ -741,7 +848,34 @@ export function decisionQueueService(db: Db) {
               details: { key: seed.key },
             });
           }
-          let insertedAnyItem = false;
+          // Reconcile: drop items whose source is no longer pending. Runs on
+          // every materialization so the queue stays bounded (NET-7500).
+          // Done even when `matchingItems` is empty so previously-seeded
+          // items get pruned as their sources resolve / close.
+          const staleItems = await findStaleSeededQueueItems(txDb, companyId, queue.id, seed.key);
+          if (staleItems.length > 0) {
+            await txDb.delete(decisionQueueItems).where(inArray(
+              decisionQueueItems.id,
+              staleItems.map((item) => item.id),
+            ));
+            await txDb.insert(decisionTriageEvents).values(staleItems.map((item) => ({
+              companyId,
+              queueId: queue.id,
+              sourceKind: item.sourceKind,
+              sourceId: item.sourceId,
+              action: "queue_item.removed",
+              ...eventActorColumns(SYSTEM_ACTOR),
+              details: { reason: "source_no_longer_pending", seedKey: seed.key },
+            })));
+            await recordActivity(txDb, SYSTEM_ACTOR, {
+              companyId,
+              action: "decision_queue_item.pruned",
+              entityType: "decision_queue",
+              entityId: queue.id,
+              details: { count: staleItems.length, seedKey: seed.key },
+            });
+          }
+          let insertedAnyItem = staleItems.length > 0;
           for (const item of matchingItems) {
             const inserted = await txDb.insert(decisionQueueItems).values({
               companyId,
