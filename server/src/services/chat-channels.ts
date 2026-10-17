@@ -2282,7 +2282,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             direction: "inbound",
           })
           .onConflictDoNothing();
-        if (taskEndpoint.provider === "slack" || taskEndpoint.provider === "speko") {
+        if (taskEndpoint.provider === "slack" || taskEndpoint.provider === "telegram" || taskEndpoint.provider === "speko") {
           await resumeExternalConversation(taskTx as unknown as Db, endpoint.companyId, conversation.issueId);
         }
         await taskTx

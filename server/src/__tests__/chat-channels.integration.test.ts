@@ -32857,6 +32857,61 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it("resumes one Telegram DM task after each published answer", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredTelegramEndpoint(fixture);
+    const chatId = "77117712";
+    const thread = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram answered conversation",
+    });
+    let issueId: string | undefined;
+    let conversationId: string | undefined;
+    for (const [index, text] of ["Are you there?", "What is your name?"].entries()) {
+      const providerMessageId = `${chatId}:${index + 1}`;
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: thread.thread,
+        message: makeMessage({
+          id: providerMessageId,
+          text,
+          userId: chatId,
+          raw: { message_id: index + 1, chat: { id: Number(chatId), type: "private" } },
+        }),
+        trigger: "direct_message",
+      });
+      const conversations = await readChatConversationsByEndpointId(endpoint.id);
+      expect(conversations).toHaveLength(1);
+      const conversation = conversations[0]!;
+      expect(conversation.state).toBe("active");
+      expect((await issueService(db).getById(conversation.issueId))?.status).toBe("todo");
+      if (issueId) expect(conversation.issueId).toBe(issueId);
+      if (conversationId) expect(conversation.id).toBe(conversationId);
+      issueId = conversation.issueId;
+      conversationId = conversation.id;
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId, status: "succeeded", runtimeMode: "legacy", finishedAt: new Date(),
+        contextSnapshot: await chatWakeContext({ endpointId: endpoint.id, issueId, provider: "telegram", providerMessageId }) });
+      await db.update(agentWakeupRequests).set({ status: "completed", runId })
+        .where(and(eq(agentWakeupRequests.companyId, fixture.companyId), eq(agentWakeupRequests.status, "queued")));
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+      await addSelectedChatFinal({ companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+        issueId, runId, body: index === 0 ? "Yes, I'm here." : "I'm Maya." });
+      await service.processPendingPublications();
+      await vi.waitFor(async () => {
+        const issue = await issueService(db).getById(issueId!);
+        expect(issue?.status).toBe("in_review");
+        expect(issue?.externalConversationState).toBe("waiting");
+      });
+    }
+    await service.shutdown();
+  });
+
   it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =

@@ -13,7 +13,7 @@ export async function settleExternalConversation(db: Db, companyId: string, issu
       .from(chatConversations)
       .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatConversations.endpointId), eq(chatEndpoints.companyId, chatConversations.companyId)))
       .where(and(eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
-        sql`(${chatEndpoints.provider} = 'slack' or (${chatEndpoints.provider} = 'speko' and exists
+        sql`(${chatEndpoints.provider} in ('slack', 'telegram') or (${chatEndpoints.provider} = 'speko' and exists
           (select 1 from issues owned where owned.id = ${chatConversations.issueId} and owned.company_id = ${chatConversations.companyId}
             and owned.origin_id = ${chatEndpoints.id}::text)))`, inArray(chatConversations.state, ["active", "waiting"]),
         inArray(chatEndpoints.status, ["active", "verifying"])))

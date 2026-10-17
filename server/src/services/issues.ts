@@ -11257,7 +11257,7 @@ export function issueService(db: Db) {
           await tx.update(chatConversations).set({ state: "active", updatedAt: new Date() })
             .where(and(eq(chatConversations.companyId, updated.companyId), eq(chatConversations.issueId, updated.id),
               eq(chatConversations.state, "waiting"), sql`exists (select 1 from chat_endpoints e
-                where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider = 'slack')`));
+                where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider in ('slack', 'telegram'))`));
         }
         if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
           const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");

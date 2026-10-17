@@ -34,7 +34,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await database?.cleanup();
   });
 
-  async function fixture(native = false) {
+  async function fixture(native = false, provider: "slack" | "telegram" = "slack") {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -52,14 +52,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(issues).values({ id: issueId, companyId, title: "you there?", status: "in_progress", assigneeAgentId: agentId, originKind: "chat_channel" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "native" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId, status: "active" });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider, publicId: endpointId, assignedAgentId: agentId, status: "active" });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: "channel", externalThreadId: runId, externalLabel: "#test" });
     await db.insert(issueComments).values({ id: wakeId, companyId, issueId, authorType: "user", authorUserId: "local-board", body: "you there?", createdAt: start });
     await db.insert(chatMessageLinks).values({ companyId, endpointId, conversationId, commentId: wakeId, providerMessageId: wakeId, direction: "inbound" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", runtimeMode: native ? "native" : "legacy", nativeIssueId: native ? issueId : null,
       resultJson: native ? { finalizationReasonCode: "external_chat_response_waiting" } : null,
       createdAt: new Date(start.getTime() + 1), startedAt: start, finishedAt: new Date(),
-      contextSnapshot: { issueId, source: "chat:slack", wakeCommentId: wakeId, wakeCommentIds: [wakeId] } });
+      contextSnapshot: { issueId, source: `chat:${provider}`, wakeCommentId: wakeId, wakeCommentIds: [wakeId] } });
     if (native) await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "committed" });
     await db.insert(issueComments).values({ id: responseId, companyId, issueId, authorType: "agent", authorAgentId: agentId, createdByRunId: runId, body: "Yes, I’m here.",
       metadata: { version: 1, authorizationReason: "allow_chat_run_presentation", sections: [] } });
@@ -88,6 +88,34 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
     expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");
     expect((await issueService(db).listReviewAttention(f.companyId, [{ id: f.issueId, companyId: f.companyId, status: "in_review" }])).get(f.issueId)?.state).toBe("none");
+  });
+
+  it("keeps two Telegram turns in the same issue after a published answer", async () => {
+    const f = await fixture(false, "telegram");
+    expect(await settle(f)).toBe(true);
+    expect(await state(f)).toEqual({ status: "in_review", externalConversationState: "waiting" });
+    await db.transaction(tx => resumeExternalConversation(tx as unknown as typeof db, f.companyId, f.issueId));
+    expect(await state(f)).toEqual({ status: "todo", externalConversationState: "active" });
+    await issueService(db).checkout(f.issueId, f.agentId, ["todo"], null);
+    const nextWakeId = randomUUID();
+    const nextRunId = randomUUID();
+    await db.insert(issueComments).values({ id: nextWakeId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "local-board", body: "And now?" });
+    await db.insert(chatMessageLinks).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, commentId: nextWakeId, providerMessageId: nextWakeId, direction: "inbound" });
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", runtimeMode: "legacy", finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId, source: "chat:telegram", wakeCommentId: nextWakeId } });
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "agent", authorAgentId: f.agentId, createdByRunId: nextRunId, body: "Still here.",
+      metadata: { version: 1, authorizationReason: "allow_chat_run_presentation", sections: [] } }).returning();
+    await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, commentId: reply.id,
+      idempotencyKey: `comment:${reply.id}:${f.endpointId}`, payload: { text: "Still here." },
+      state: "published", providerMessageId: reply.id });
+    expect(await settle(f)).toBe(true);
+    expect(await state(f)).toEqual({ status: "in_review", externalConversationState: "waiting" });
+    expect((await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversationId)))[0]?.issueId).toBe(f.issueId);
   });
 
   it("settles and resumes Speko-owned tasks without adopting existing task lifecycles", async () => {
@@ -275,7 +303,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await settleSlackConversation(db, randomUUID(), f.issueId)).toBe(false);
     await db.update(chatEndpoints).set({ status: "revoked" }).where(eq(chatEndpoints.id, f.endpointId));
     expect(await settle(f)).toBe(false);
-    await db.update(chatEndpoints).set({ status: "active", provider: "telegram" }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({ status: "active", provider: "discord" }).where(eq(chatEndpoints.id, f.endpointId));
     expect(await settle(f)).toBe(false);
   });
   it("preserves scheduled work, newer runs, queued wakes, monitors, blockers, and approvals", async () => {

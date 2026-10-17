@@ -31,7 +31,7 @@ export function externalConversationStateSql() {
       then 'waiting' else 'active' end
     from chat_conversations c join chat_endpoints e on e.id = c.endpoint_id and e.company_id = c.company_id
     where c.company_id = "issues"."company_id" and c.issue_id = "issues"."id"
-      and (e.provider = 'slack' or (e.provider = 'speko' and e.id::text = "issues"."origin_id")) and e.assigned_agent_id = "issues"."assignee_agent_id"
+      and (e.provider in ('slack', 'telegram') or (e.provider = 'speko' and e.id::text = "issues"."origin_id")) and e.assigned_agent_id = "issues"."assignee_agent_id"
       and e.status in ('active', 'verifying') and c.state in ('active', 'waiting')
     order by c.created_at desc, c.id desc limit 1
   )`;
@@ -51,7 +51,7 @@ export async function resumeExternalConversation(tx: Db, companyId: string, issu
   await tx.update(chatConversations).set({ state: "active", updatedAt: new Date() })
     .where(and(eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
       eq(chatConversations.state, "waiting"), sql`exists (select 1 from chat_endpoints e
-        where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider in ('slack', 'speko'))`));
+        where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider in ('slack', 'telegram', 'speko'))`));
 }
 
 /** Compatibility name for existing Slack callers. */

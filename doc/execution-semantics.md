@@ -137,24 +137,27 @@ and review run. The server reads these records from saved review state; it does
 not depend on the parent session remembering a separate review session. These
 records are evidence and do not grant permission to resolve another review.
 
-### Answered Slack conversations
+### Answered Slack and Telegram conversations
 
-A successful Slack turn with a published final reply and no remaining execution
+A successful Slack or Telegram turn with a published final reply and no remaining execution
 or decision path settles to `chat_conversations.state = waiting` and issue
 `in_review`. This is a server-owned passive conversation state, displayed as
 **Idle**, not a request for review. It is excluded from execution counts, work
 queues, and generic review attention, while remaining accessible through
 Conversations, search, recent history, and unread activity.
 
-An admitted Slack or board message clears waiting and returns the issue to
+An admitted Slack, Telegram, or board message clears waiting and returns the issue to
 `todo` in the message transaction; normal wake admission and checkout resume
 execution. Settlement rechecks the
 latest run, message cursor, publication receipt, and outstanding work under the
 task lock. Failed delivery, a newer message, queued work, monitors, dependencies,
 and pending decisions prevent settlement. Reconciliation applies the same rule
-to existing answered threads without another model invocation. Slack identity,
+to existing answered threads without another model invocation. Channel identity,
 permissions, and the ability to execute work in the same thread are unchanged.
-Other providers keep their existing lifecycle.
+Other providers keep their existing lifecycle. In Telegram direct messages and
+linear group chats, an explicit `/new` or `/close`, or a terminal task disposition,
+still starts a new task on the next message. A Telegram forum topic stays bound to
+one task; open a new forum topic to start a new task.
 
 ### `done`
 
