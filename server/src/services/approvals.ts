@@ -8,6 +8,7 @@ import { approvalComments, approvals } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { createInstructionApplyTask } from "./instruction-apply-hook.js";
 
 import { instanceSettingsService } from "./instance-settings.js";
 
@@ -188,9 +189,21 @@ export function approvalService(db: Db) {
     const approval = await getExistingApproval(id);
     if (approval.type === "hire_agent") {
       const result = await decideHire({ approvalId: id }, status, userId, note);
-      return { approval: result!.approval!, applied: result!.applied };
+      return { approval: result!.approval!, applied: result!.applied, applyTask: null };
     }
-    return resolveApproval(id, status, userId, note);
+    const resolved = await resolveApproval(id, status, userId, note);
+    let applyTask = null;
+    if (status === "approved" && resolved.applied && resolved.approval.type === "instruction_generation") {
+      // Non-fatal by contract: the hook logs and writes activity on failure
+      // instead of throwing, since the approval transition already committed.
+      applyTask = await createInstructionApplyTask(db, {
+        companyId: resolved.approval.companyId,
+        approvalId: id,
+        decidedByUserId: userId,
+        payload: resolved.approval.payload as Record<string, unknown>,
+      });
+    }
+    return { approval: resolved.approval, applied: resolved.applied, applyTask };
   }
   return { ...records,
     approveHire: (agentId: string, userId: string, note?: string | null) => decideHire(agentId, "approved", userId, note),
