@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -9,6 +10,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  decideSuccessfulRunHandoffEscalation,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isPluginManagedIssueLifecycle,
@@ -609,5 +611,77 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+});
+
+describe("decideSuccessfulRunHandoffEscalation", () => {
+  const correctiveRunId = "run-corrective-1";
+
+  function decideEscalation(
+    overrides: Partial<Parameters<typeof decideSuccessfulRunHandoffEscalation>[0]> = {},
+  ) {
+    return decideSuccessfulRunHandoffEscalation({
+      issueStatus: "in_progress",
+      correctiveRunId,
+      activeRecoveryCause: null,
+      escalatedCorrectiveRunId: null,
+      ...overrides,
+    });
+  }
+
+  it("escalates the first exhausted handoff", () => {
+    expect(decideEscalation()).toEqual({ kind: "escalate", previousStatus: "in_progress" });
+  });
+
+  it("escalates again when no recovery action is active", () => {
+    expect(decideEscalation({ activeRecoveryCause: null, escalatedCorrectiveRunId: correctiveRunId }))
+      .toEqual({ kind: "escalate", previousStatus: "in_progress" });
+  });
+
+  it("skips a repeat escalation of the same corrective run", () => {
+    // The reported loop: the corrective run escalates, the issue is written
+    // back to in_progress, and the next sweep sees the same finished run as
+    // latestRun. A status write creates no run, so the evidence still holds.
+    expect(
+      decideEscalation({
+        activeRecoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        escalatedCorrectiveRunId: correctiveRunId,
+      }),
+    ).toEqual({ kind: "skip", reason: SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON });
+  });
+
+  it("escalates a genuinely new corrective run while the previous action is still active", () => {
+    expect(
+      decideEscalation({
+        correctiveRunId: "run-corrective-2",
+        activeRecoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        escalatedCorrectiveRunId: correctiveRunId,
+      }),
+    ).toEqual({ kind: "escalate", previousStatus: "in_progress" });
+  });
+
+  it("escalates when the active action belongs to another cause", () => {
+    expect(
+      decideEscalation({
+        activeRecoveryCause: "provider_quota",
+        escalatedCorrectiveRunId: correctiveRunId,
+      }),
+    ).toEqual({ kind: "escalate", previousStatus: "in_progress" });
+  });
+
+  it("skips when the issue is no longer in_progress rather than assuming previousStatus", () => {
+    const decision = decideEscalation({ issueStatus: "in_review" });
+    expect(decision.kind).toBe("skip");
+    expect(decision).not.toHaveProperty("previousStatus");
+  });
+
+  it("skips a repeat escalation before checking the status guard", () => {
+    expect(
+      decideEscalation({
+        issueStatus: "in_review",
+        activeRecoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        escalatedCorrectiveRunId: correctiveRunId,
+      }),
+    ).toEqual({ kind: "skip", reason: SUCCESSFUL_RUN_HANDOFF_ALREADY_ESCALATED_REASON });
   });
 });
