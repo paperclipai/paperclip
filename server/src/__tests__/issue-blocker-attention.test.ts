@@ -333,6 +333,60 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("classifies layered blocker graphs without walking every path", async () => {
+    // Each layer is blocked by every issue of the next layer, like a plan whose
+    // milestone items wait on the previous milestone's work. The number of
+    // distinct paths is WIDTH ** DEPTH (about 36 million here, within
+    // BLOCKER_ATTENTION_MAX_DEPTH), so walking each path separately blocks the
+    // event loop for a long time.
+    const WIDTH = 12;
+    const DEPTH = 7;
+    const { companyId, agentId } = await createCompany("PBL");
+    const rootId = await insertIssue({ companyId, identifier: "PBL-1", title: "Root", status: "blocked" });
+    let previous = [rootId];
+    let counter = 2;
+    for (let layer = 0; layer < DEPTH; layer += 1) {
+      const current: string[] = [];
+      for (let i = 0; i < WIDTH; i += 1) {
+        current.push(await insertIssue({
+          companyId,
+          identifier: `PBL-${counter++}`,
+          title: `Layer ${layer} item ${i}`,
+          status: "blocked",
+        }));
+      }
+      for (const blockedIssueId of previous) {
+        for (const blockerIssueId of current) {
+          await block({ companyId, blockerIssueId, blockedIssueId });
+        }
+      }
+      previous = current;
+    }
+    const leafId = await insertIssue({
+      companyId,
+      identifier: `PBL-${counter}`,
+      title: "Running leaf",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    for (const blockedIssueId of previous) {
+      await block({ companyId, blockerIssueId: leafId, blockedIssueId });
+    }
+    await activeRun({ companyId, agentId, issueId: leafId });
+
+    const startedAt = Date.now();
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: WIDTH,
+      coveredBlockerCount: WIDTH,
+      attentionBlockerCount: 0,
+    });
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 60_000);
+
   it("does not let another company's active run cover the blocker", async () => {
     const { companyId, agentId } = await createCompany("PBS");
     const other = await createCompany("PBT");
