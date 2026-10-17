@@ -145,7 +145,7 @@ export async function testEnvironment(
       detectCommand: command,
       targetIsRemote,
       targetIsSandbox,
-      helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+      helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, 90),
     })),
   );
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -373,9 +373,11 @@ export async function testEnvironment(
       // Sandbox bridges still add lease warmup and transport overhead, but
       // the standard-2 Cloudflare tier now probes fast enough that a 90s
       // budget leaves headroom without masking real hangs.
+      // Local probes share the 90s budget: cold starts and API latency
+      // can exceed 45s on typical machines.
       const helloProbeTimeoutSec = Math.max(
         1,
-        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+        asNumber(config.helloProbeTimeoutSec, 90),
       );
 
       // A local probe uses the trusted resolved executable and the

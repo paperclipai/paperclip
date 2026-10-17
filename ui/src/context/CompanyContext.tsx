@@ -53,9 +53,11 @@ const CompanyContext: Context<CompanyContextValue | null> =
   import.meta.hot?.data?.companyContext ?? createContext<CompanyContextValue | null>(null);
 if (import.meta.hot?.data) import.meta.hot.data.companyContext = CompanyContext;
 
+type BootstrapCompany = Pick<Company, "id"> & Partial<Pick<Company, "status" | "name">>;
+
 export function resolveBootstrapCompanySelection(input: {
-  companies: Array<Pick<Company, "id">>;
-  sidebarCompanies: Array<Pick<Company, "id">>;
+  companies: BootstrapCompany[];
+  sidebarCompanies: BootstrapCompany[];
   selectedCompanyId: string | null;
   storedCompanyId: string | null;
 }) {
@@ -75,9 +77,17 @@ export function resolveBootstrapCompanySelection(input: {
   if (input.selectedCompanyId && input.companies.some((company) => company.id === input.selectedCompanyId)) {
     return input.selectedCompanyId;
   }
-  if (input.storedCompanyId && selectableCompanies.some((company) => company.id === input.storedCompanyId)) {
-    return input.storedCompanyId;
+  const stored = selectableCompanies.find((company) => company.id === input.storedCompanyId);
+  // A paused company has no working agents. Keeping it selected leaves a dark, empty dashboard.
+  if (stored && stored.status !== "paused") {
+    return stored.id;
   }
+  const shepard = selectableCompanies.find(
+    (company) => company.name === "Shepard Solutions" && company.status !== "paused",
+  );
+  if (shepard) return shepard.id;
+  const active = selectableCompanies.find((company) => company.status === "active");
+  if (active) return active.id;
   return selectableCompanies[0]?.id ?? null;
 }
 
