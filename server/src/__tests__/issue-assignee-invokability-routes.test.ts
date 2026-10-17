@@ -25,10 +25,14 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(async () => []),
   getWakeableParentAfterChildCompletion: vi.fn(async () => null),
   getCurrentScheduledRetry: vi.fn(async () => null),
-  getDependencyReadiness: vi.fn(async () => ({
+  getDependencyReadiness: vi.fn(async (issueId: string) => ({
+    issueId,
     blockerIssueIds: [],
-    isDependencyReady: false,
+    unresolvedBlockerIssueIds: [],
     unresolvedBlockerCount: 0,
+    pendingFinalizeBlockerIssueIds: [],
+    allBlockersDone: true,
+    isDependencyReady: false,
   })),
 }));
 
