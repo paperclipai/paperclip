@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const watchdog = vi.hoisted(() => ({
+  loadWatchdogServiceContext: vi.fn(),
+  assertWatchdogCommentTarget: vi.fn(),
+}));
+vi.mock("../services/watchdog-service-context.js", () => watchdog);
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
@@ -56,6 +62,11 @@ function counterDb(
 }
 
 describe("cross-issue influence limit rollout", () => {
+  beforeEach(() => {
+    watchdog.loadWatchdogServiceContext.mockReset().mockResolvedValue(null);
+    watchdog.assertWatchdogCommentTarget.mockReset().mockResolvedValue(undefined);
+  });
+
   it("logs observations without enforcement during the one-week rollout", () => {
     const decision = evaluateCrossIssueInfluenceLimit({
       priorCount: CROSS_ISSUE_INFLUENCE_LIMIT,
@@ -237,5 +248,36 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([
       expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
     ]);
+  });
+
+  it("keeps the watchdog service key limited to comments on its own signals", async () => {
+    // Unscoped ordinary runs spend the cap, but the persistent key of a pinned
+    // watchdog service must not inherit that wider write channel.
+    const service = { agentId: "33333333-3333-4333-8333-333333333333" };
+    watchdog.loadWatchdogServiceContext.mockResolvedValue(service);
+    const base = {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      authenticatedSource: "agent_jwt",
+    } as const;
+
+    const rejected = counterDb(0, { contextSnapshot: {} });
+    await expect(observeCrossIssueInfluence(rejected.db as never, { ...base, kind: "update" }))
+      .rejects.toMatchObject({ status: 403 });
+    expect(rejected.inserted).toEqual([]);
+
+    const commented = counterDb(0, { contextSnapshot: {} });
+    await expect(observeCrossIssueInfluence(commented.db as never, { ...base, kind: "comment" }))
+      .resolves.toMatchObject({ count: 1, allowed: true });
+    expect(watchdog.assertWatchdogCommentTarget)
+      .toHaveBeenCalledWith(expect.anything(), service, base.targetIssueId);
+
+    watchdog.assertWatchdogCommentTarget.mockRejectedValueOnce(Object.assign(new Error("not a signal"), { status: 403 }));
+    const foreign = counterDb(0, { contextSnapshot: {} });
+    await expect(observeCrossIssueInfluence(foreign.db as never, { ...base, kind: "comment" }))
+      .rejects.toMatchObject({ status: 403 });
+    expect(foreign.inserted).toEqual([]);
   });
 });
