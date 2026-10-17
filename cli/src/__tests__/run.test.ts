@@ -217,4 +217,51 @@ describe("run inspection commands", () => {
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/live-runs");
     expect(fetchMock.mock.calls[4]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/active-run");
   });
+  it("warns on stderr when run list returns a full server-capped page", async () => {
+    const page = Array.from({ length: 200 }, (_, i) => ({
+      id: `33333333-3333-4333-8333-${String(i).padStart(12, "0")}`,
+      companyId: COMPANY_ID,
+      agentId: AGENT_ID,
+      status: "succeeded",
+      invocationSource: "on_demand",
+    }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(page), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "run", "list",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
+    ], { from: "user" });
+
+    // No limit is sent by default, and the full 200-row page is flagged.
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `http://localhost:3100/api/companies/${COMPANY_ID}/heartbeat-runs`,
+    );
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]?.[0]).toContain("newest 200 runs");
+    expect(errSpy.mock.calls[0]?.[0]).toContain("1000 max");
+  });
+
+  it("stays quiet when run list returns a partial page", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { id: RUN_ID, companyId: COMPANY_ID, agentId: AGENT_ID, status: "running", invocationSource: "on_demand" },
+    ]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "run", "list",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
+      "--limit", "25",
+    ], { from: "user" });
+
+    expect(errSpy).not.toHaveBeenCalled();
+  });
 });
