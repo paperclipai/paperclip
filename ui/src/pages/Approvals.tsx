@@ -67,12 +67,12 @@ export function Approvals() {
 
   const filtered = (data ?? [])
     .filter(
-      (a) => statusFilter === "all" || a.status === "pending" || a.status === "revision_requested",
+      (a) => statusFilter === "all" || a.status === "pending",
     )
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const pendingCount = (data ?? []).filter(
-    (a) => a.status === "pending" || a.status === "revision_requested",
+    (a) => a.status === "pending",
   ).length;
 
   if (!selectedCompanyId) {
