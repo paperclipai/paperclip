@@ -2023,9 +2023,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const labels = [...document.body.querySelectorAll("button[aria-checked]")].map(
         (tile) => tile.textContent ?? "",
       );
-      expect(labels.length, "both recommended sources should render").toBe(2);
+      // The row also carries the local-endpoint tile, which names itself: the
+      // provider question it answers is "your own model server", not an
+      // adapter type.
+      expect(labels.length, "the recommended sources and the local tile should render").toBe(3);
       expect(labels.some((l) => l.includes("Claude"))).toBe(true);
       expect(labels.some((l) => l.includes("OpenAI"))).toBe(true);
+      expect(labels.some((l) => l.includes("Local LLM"))).toBe(true);
       // The negative half is the one that fails on the unwired version: the
       // registry label is the adapter type, and it must not reach the tile.
       expect(labels.join(" ")).not.toContain("claude_local");

@@ -19,10 +19,12 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
+  AiProviderRouting,
   ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
+import { aiProviderRoutingSchema } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
 import {
@@ -144,6 +146,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  Monitor,
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -258,6 +261,21 @@ const API_KEY_ENV_KEYS: Record<string, string> = {
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
 }
+
+/**
+ * The connect step's third source: the customer's own model server, an
+ * OpenAI-compatible endpoint on this machine or the private network it runs
+ * on. It is not an adapter type and is not restored from a draft: picking it
+ * is an answer to the step's question, exactly like picking a tile, and the
+ * card that answers it asks for the endpoint, the model, and the key.
+ *
+ * The hire it leads to runs on the OpenCode harness: the endpoint is stored
+ * as a personal AI connection of the `local` kind, and the harness the
+ * connection routes to is OpenCode (or Hermes, had the step offered it), which
+ * is the chat-completions harness the routing contract names.
+ */
+const LOCAL_LLM_SOURCE_ID = "local_llm";
+const LOCAL_LLM_HARNESS = "opencode_local";
 
 function ModelSourceMark({
   type,
@@ -685,6 +703,20 @@ function OnboardingWizardInner({
    * `localStorage`, and a provider key does not belong there.
    */
   const [apiKey, setApiKey] = useState("");
+  // The local-LLM answer to the step: the source was picked, and what the
+  // card collects for it. The key reuses the step's one field — it is the
+  // credential either way — while the endpoint and the model are this
+  // source's own.
+  const [localLlmSource, setLocalLlmSource] = useState(false);
+  const [localLlmBaseUrl, setLocalLlmBaseUrl] = useState("");
+  const [localLlmModel, setLocalLlmModel] = useState("");
+  /**
+   * The connection a picked endpoint was stored as, remembered for its
+   * company. Connect can be pressed more than once — a hire that fails leaves
+   * the customer on the step to try again — and without this each press would
+   * store another copy of the same endpoint and key.
+   */
+  const localLlmConnectionRef = useRef<{ companyId: string; connectionId: string; grantId: string } | null>(null);
   // The owner's stored Claude subscription login, read right before the hire
   // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
   // so nothing else reads this state yet.
@@ -1173,10 +1205,14 @@ function OnboardingWizardInner({
   /**
    * A source chosen from the visible row. Read off the row rather than off
    * `adapterType` alone, because a restored draft can name an adapter this step
-   * no longer offers — a selection the customer cannot see.
+   * no longer offers — a selection the customer cannot see. The local source is
+   * not an adapter at all: it is its own answer to the row, live only while the
+   * step asks for an API key, because a local endpoint is one.
    */
+  const localLlmSelected = localLlmSource && credentialMode === "api";
   const sourceSelected =
-    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+    localLlmSelected ||
+    (sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType));
 
   /**
    * Whether the connect step may advance.
@@ -1406,7 +1442,11 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady ||
+                  (credentialMode === "api" &&
+                    (localLlmSelected
+                      ? !localLlmBaseUrl.trim() || !localLlmModel.trim() || !apiKey.trim()
+                      : !apiKey.trim() && !selectedApiKey)),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1461,6 +1501,13 @@ function OnboardingWizardInner({
     // against a source with nothing to run on.
     if (connectPhase === "connecting") return;
     if (connectStepLoggingIn) return;
+    // The local endpoint has no provider to sign in with; its credential is
+    // the key in the card and its destination is the customer's own endpoint,
+    // so its hire runs the connection path, not the adapter's.
+    if (localLlmSelected) {
+      void handleLocalLlmConnect();
+      return;
+    }
     void handleGiveHeartbeat();
   }
 
@@ -1585,6 +1632,7 @@ function OnboardingWizardInner({
     setConnectPhase("idle");
     setConnectAuthUrl(null);
     setSourcePicked(false);
+    setLocalLlmSource(false);
     connectingSinceRef.current = null;
     setConnectCredentialStored(false);
   }, [step]);
@@ -2313,6 +2361,174 @@ function OnboardingWizardInner({
     }
   }
 
+  /**
+   * The local-LLM path of the connect step: the endpoint and the model are the
+   * customer's own, so there is no provider to sign in with. The card's
+   * Connect stores the endpoint as a personal AI connection of the `local`
+   * kind and hires the agent on the OpenCode harness against it — the same
+   * machinery the board's "Local endpoint" setup uses, reached without
+   * leaving the step.
+   *
+   * It skips what the adapter path does first — the model-discovery probe and
+   * the environment test — because the provider the agent would run on is
+   * created here, one call in: it cannot already exist in the environment to
+   * be discovered, and the test would probe for a binary the card does not
+   * ask about. What the probe would add (an uninstalled harness) is reported
+   * by the first run instead, where the fix is visible, and the card says it
+   * up front.
+   */
+  async function handleLocalLlmConnect() {
+    if (!createdCompanyId) return;
+    if (hiringAgentRef.current !== null) return;
+    const attempt = ++connectAttemptRef.current;
+    const isCurrent = () =>
+      connectAttemptRef.current === attempt && stillTheSameCompany(createdCompanyId);
+    hiringAgentRef.current = attempt;
+    autoConnectStartedRef.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      // The role always holds a value (see its default); this is a
+      // narrowing, not a gate — but a hire without one must not be a
+      // hire at all.
+      if (!agentRole || !isCurrent()) return;
+      const baseUrl = localLlmBaseUrl.trim();
+      const modelId = localLlmModel.trim();
+      if (!baseUrl || !modelId) {
+        setError("Enter a base URL and a model for your local LLM.");
+        return;
+      }
+      // Validate the endpoint against the same contract the server stores on
+      // the connection, so a rejection lands on the step rather than at the
+      // hire.
+      let routing: AiProviderRouting;
+      try {
+        routing = aiProviderRoutingSchema.parse({
+          kind: "local",
+          protocol: "chat",
+          baseUrl,
+          auth: "bearer",
+          models: [{ id: modelId }],
+        });
+      } catch (err) {
+        setError(
+          err instanceof Error && err.message
+            ? err.message
+            : "That base URL is not a valid local endpoint.",
+        );
+        return;
+      }
+      if (!apiKey.trim()) {
+        setError("Enter the API key for your local LLM.");
+        return;
+      }
+      // Create the connection once, then reuse it across retries of the
+      // step: a second press must not store a second copy of the same
+      // endpoint and key.
+      if (
+        !localLlmConnectionRef.current ||
+        localLlmConnectionRef.current.companyId !== createdCompanyId
+      ) {
+        const created = await aiConnectionsApi.create(createdCompanyId, {
+          provider: "openai",
+          method: "api_key",
+          name: `My local LLM (${new URL(routing.baseUrl ?? baseUrl).host})`,
+          ownership: "personal",
+          apiKey: apiKey.trim(),
+          agentIds: [],
+          allAgents: true,
+          routing,
+        });
+        if (!isCurrent()) return;
+        localLlmConnectionRef.current = {
+          companyId: createdCompanyId,
+          connectionId: created.connectionId,
+          grantId: created.grantId,
+        };
+      }
+      const { connectionId, grantId } = localLlmConnectionRef.current;
+      const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
+      // The harness names the model for the provider that injects it, and
+      // the provider is the connection — so the model is prefixed, and a
+      // value already wearing the prefix is taken as given.
+      const opencodeModel = modelId.startsWith("paperclip/") ? modelId : `paperclip/${modelId}`;
+      const adapterConfig = getUIAdapter(LOCAL_LLM_HARNESS).buildAdapterConfig({
+        ...defaultCreateValues,
+        adapterType: LOCAL_LLM_HARNESS,
+        model: opencodeModel,
+        command: "",
+        args: "",
+        url: "",
+        dangerouslySkipPermissions: true,
+        dangerouslyBypassSandbox: defaultCreateValues.dangerouslyBypassSandbox,
+      });
+      // The same adoption as the adapter path: a run that reopens the step
+      // after a hire it cannot remember must find its agent, not make a
+      // second.
+      const existingAgents = await agentsApi.list(createdCompanyId).catch(() => null);
+      if (!isCurrent()) return;
+      const existing = existingAgents?.find(
+        (agent) =>
+          agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
+          agent.adapterType === LOCAL_LLM_HARNESS,
+      );
+      if (existing) {
+        if (!isCurrent()) return;
+        setCreatedAgentId(existing.id);
+        setAgentAppearance(resolveAgentAppearance(existing.appearance, existing.id));
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(5);
+        return;
+      }
+      const hire = await agentsApi.hire(createdCompanyId, {
+        name: hireName,
+        appearance: agentAppearance,
+        role: agentRole,
+        adapterType: LOCAL_LLM_HARNESS,
+        adapterConfig,
+        onboardingFirstAgent: true,
+        // A personal selection bound to the connection created above: every
+        // run this agent takes resolves that one credential, and the
+        // runtime projects it into the harness's configuration.
+        runtimeConfig: {
+          ...buildNewAgentRuntimeConfig(),
+          aiConnection: {
+            provider: "openai",
+            method: "api_key",
+            mode: "delegated",
+            connectionId,
+            grantId,
+          },
+        },
+      });
+      if (!isCurrent()) return;
+      if (hire.approval) {
+        await approvalsApi.approve(
+          hire.approval.id,
+          "Approved during onboarding first-agent setup."
+        );
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.approvals.list(createdCompanyId)
+        });
+      }
+      const agent = hire.agent;
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(createdCompanyId)
+      });
+      if (!isCurrent()) return;
+      setCreatedAgentId(agent.id);
+      setStep(5);
+    } catch (err) {
+      if (!isCurrent()) return;
+      setError(err instanceof Error ? err.message : "Failed to connect your local LLM");
+    } finally {
+      if (hiringAgentRef.current === attempt) hiringAgentRef.current = null;
+      if (isCurrent()) setLoading(false);
+    }
+  }
+
   async function handleUnsetAnthropicApiKey() {
     if (!createdCompanyId || unsetAnthropicLoading) return;
     setUnsetAnthropicLoading(true);
@@ -2738,23 +2954,40 @@ function OnboardingWizardInner({
                         question, and answering it is what opens the card. */}
                     <ModelSourceTiles
                       label="Model source"
-                      sources={recommendedAdapters.map((opt) => ({
-                        id: opt.type,
-                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
-                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
-                      }))}
+                      sources={[
+                        ...recommendedAdapters.map((opt) => ({
+                          id: opt.type,
+                          label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                          icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                        })),
+                        {
+                          id: LOCAL_LLM_SOURCE_ID,
+                          label: "Local LLM",
+                          icon: <Monitor className="size-full" />,
+                          credentialMode: "api",
+                        },
+                      ]}
                       mode={credentialMode}
                       selectedId={
-                        sourcePicked &&
-                        recommendedAdapters.some((opt) => opt.type === adapterType)
-                          ? adapterType
-                          : null
+                        localLlmSelected
+                          ? LOCAL_LLM_SOURCE_ID
+                          : sourcePicked &&
+                            recommendedAdapters.some((opt) => opt.type === adapterType)
+                            ? adapterType
+                            : null
                       }
                       collapsed={connectCollapsed}
                       settling={connectPhase === "unwindRow"}
                       onSelect={(id) => {
                         if (connectPhase !== "idle") return;
                         autoConnectStartedRef.current = false;
+                        if (id === LOCAL_LLM_SOURCE_ID) {
+                          setLocalLlmSource(true);
+                          setCredentialMode("api");
+                          setConnectPhase("collapsing");
+                          return;
+                        }
+                        setLocalLlmSource(false);
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id !== adapterType) setRunner("auto");
@@ -2778,11 +3011,11 @@ function OnboardingWizardInner({
                         answering to a keyboard and still able to change the
                         credential mode out from under a running sign-in.
                       */
-                      inert={!connectLinkVisible}
+                      inert={!connectLinkVisible || localLlmSource}
                       initial={false}
                       animate={{
-                        opacity: connectLinkVisible ? 1 : 0,
-                        height: connectLinkSpace ? "auto" : 0,
+                        opacity: connectLinkVisible && !localLlmSource ? 1 : 0,
+                        height: connectLinkSpace && !localLlmSource ? "auto" : 0,
                       }}
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
@@ -2836,31 +3069,73 @@ function OnboardingWizardInner({
                         {connectProgress}
                       </p>
                     ) : credentialMode === "api" ? (
-                      <OnboardingLoginCard
-                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
-                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
-                        } API key to connect`}
-                      >
-                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
-                          setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
-                          setApiKey("");
-                        }} />
-                        {!selectedApiKey && <OnboardingCardField
-                          label="API key"
-                          placeholder="Enter API key here"
-                          masked
-                          // The card is the answer to the tile just pressed, so
-                          // the field is unambiguously the next thing. Carried
-                          // over from the key field this card replaced.
-                          autoFocus
-                          value={apiKey}
-                          onChange={(value) => {
-                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
-                            setApiKey(value);
-                          }}
-                          onSubmit={() => handleConnectStepPrimary()}
-                        />}
-                      </OnboardingLoginCard>
+                      localLlmSelected ? (
+                        /* The card for the third source: an endpoint the
+                           customer runs, not a provider to sign in with. The
+                           fields are the whole answer — where, which model,
+                           and the key it wants. */
+                        <div className="space-y-2">
+                          <OnboardingLoginCard
+                            instruction="Point Paperclip at your own model server — an OpenAI-compatible endpoint on this machine or your network."
+                          >
+                            <OnboardingCardField
+                              label="Base URL"
+                              placeholder="http://192.168.1.130:4000/v1"
+                              value={localLlmBaseUrl}
+                              onChange={(value) => setLocalLlmBaseUrl(value)}
+                              onSubmit={() => handleConnectStepPrimary()}
+                            />
+                            <OnboardingCardField
+                              label="Model"
+                              placeholder="qwen3.8-27b"
+                              value={localLlmModel}
+                              onChange={(value) => setLocalLlmModel(value)}
+                              onSubmit={() => handleConnectStepPrimary()}
+                            />
+                            <OnboardingCardField
+                              label="API key"
+                              placeholder="Enter API key here"
+                              masked
+                              autoFocus
+                              value={apiKey}
+                              onChange={setApiKey}
+                              onSubmit={() => handleConnectStepPrimary()}
+                            />
+                          </OnboardingLoginCard>
+                          <p className="text-xs text-muted-foreground">
+                            Runs on the OpenCode harness. If it is not installed yet:{" "}
+                            <code className="font-mono">
+                              curl -fsSL https://opencode.ai/install | bash
+                            </code>
+                          </p>
+                        </div>
+                      ) : (
+                        <OnboardingLoginCard
+                          instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
+                            CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
+                          } API key to connect`}
+                        >
+                          <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
+                            setApiKey("");
+                          }} />
+                          {!selectedApiKey && <OnboardingCardField
+                            label="API key"
+                            placeholder="Enter API key here"
+                            masked
+                            // The card is the answer to the tile just pressed, so
+                            // the field is unambiguously the next thing. Carried
+                            // over from the key field this card replaced.
+                            autoFocus
+                            value={apiKey}
+                            onChange={(value) => {
+                              setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
+                              setApiKey(value);
+                            }}
+                            onSubmit={() => handleConnectStepPrimary()}
+                          />}
+                        </OnboardingLoginCard>
+                      )
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&
                       resolvedLoginEnvironmentId ? (
