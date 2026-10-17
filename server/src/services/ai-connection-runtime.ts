@@ -176,6 +176,31 @@ done`,
   }
 }
 
+const OPENROUTER_PROVIDER_ROUTING_KEYS = new Set([
+  "order", "only", "ignore", "allow_fallbacks", "require_parameters", "data_collection", "zdr",
+  "enforce_distillable_text", "quantizations", "sort", "max_price", "preferred_min_throughput",
+  "preferred_max_latency",
+]);
+
+/**
+ * Per-model OpenRouter provider preferences from `adapterConfig.openrouterProviderRouting`
+ * (`{ "<model id>": { zdr, sort, max_price, ... } }`). Only OpenRouter's documented
+ * routing fields pass through, so this can never redirect the managed credential
+ * the way a free-form provider override could.
+ */
+export function openrouterProviderRoutingModels(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const models: Record<string, unknown> = {};
+  for (const [model, prefs] of Object.entries(value)) {
+    if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) continue;
+    const provider = Object.fromEntries(
+      Object.entries(prefs).filter(([key]) => OPENROUTER_PROVIDER_ROUTING_KEYS.has(key)),
+    );
+    if (Object.keys(provider).length) models[model] = { options: { provider } };
+  }
+  return Object.keys(models).length ? models : undefined;
+}
+
 function managedAiHomeEnvironment(home: string): Record<string, string> {
   const providerHome = path.join(home, "provider");
   return {
@@ -335,8 +360,9 @@ export async function prepareManagedAiRuntime(
       });
     }
     if (!routing && input.binding.provider === "openrouter") {
+      const models = openrouterProviderRoutingModels(input.config.openrouterProviderRouting);
       env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-        provider: { openrouter: { options: { apiKey: value } } },
+        provider: { openrouter: { options: { apiKey: value }, ...(models ? { models } : {}) } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     }
