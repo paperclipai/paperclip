@@ -160,3 +160,12 @@ The environment test checks:
 - Working directory is absolute and available (auto-created if missing and permitted)
 - Authentication signal (`OPENAI_API_KEY` presence)
 - A live hello probe (`codex exec --json -` with prompt `Respond with hello.`) to verify the CLI can actually run
+
+### Legacy host skill routes
+
+After native or ACPX skill materialization, Paperclip removes missing-skill table
+rows from an existing `skills/RESOLVER.md` whose first line is exactly
+`# Paperclip Codex host skill routes`. It preserves routes with an existing
+`SKILL.md`, other document content, user resolvers, and symlinked resolver files.
+This cleanup also runs when the native adapter selects no skills. It does not
+create a resolver or grant access to an unselected skill.

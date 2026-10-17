@@ -1738,6 +1738,12 @@ describe("shared ACPX engine runtime behavior", () => {
       paperclipSkillSync: { desiredSkills: [keep.key, remove.key] },
     });
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName, "SKILL.md"))).toBe(true);
+    const resolverPath = path.join(codexHome, "skills", "RESOLVER.md");
+    const resolverHeader = "# Paperclip Codex host skill routes\n\n| Trigger | Skill |\n|---|---|\n";
+    const keepRoute = `| Keep | \`skills/${keep.runtimeName}/SKILL.md\` |\n`;
+    await fs.writeFile(resolverPath, resolverHeader + keepRoute
+      + `| Remove | \`skills/${remove.runtimeName}/SKILL.md\` |\n`
+      + "| Never materialized | `skills/missing/SKILL.md` |\n");
 
     await runExecutor({
       ...baseConfig,
@@ -1748,6 +1754,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak.txt"))).toBe(false);
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak-dir"))).toBe(false);
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
+    expect(await fs.readFile(resolverPath, "utf8")).toBe(resolverHeader + keepRoute);
   });
 
   it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {

@@ -1,3 +1,4 @@
+import { reconcileCodexSkillResolver } from "../codex-skill-resolver.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
 import fs from "node:fs/promises";
@@ -1393,6 +1394,7 @@ async function prepareCodexSkillRuntime(input: {
     }
   }
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+  await reconcileCodexSkillResolver(skillsHome, input.onLog);
 
   input.env.CODEX_HOME = effectiveCodexHome;
 

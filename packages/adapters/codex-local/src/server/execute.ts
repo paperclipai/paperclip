@@ -1,3 +1,4 @@
+import { reconcileCodexSkillResolver } from "@paperclipai/adapter-utils/codex-skill-resolver";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
@@ -515,7 +516,6 @@ export async function ensureCodexSkillsInjected(
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
   const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.key));
-  if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
@@ -569,6 +569,7 @@ export async function ensureCodexSkillsInjected(
     skillsEntries.map((entry) => entry.runtimeName),
     onLog,
   );
+  await reconcileCodexSkillResolver(skillsHome, onLog);
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
