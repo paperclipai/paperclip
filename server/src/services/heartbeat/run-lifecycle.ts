@@ -113,6 +113,9 @@ import {
 import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
+  LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS,
+  LIVENESS_BOOKKEEPING_EVENT_TYPES,
+  LIVENESS_BOOKKEEPING_EVENT_TYPE_PREFIX,
   type RunLivenessClassificationInput,
 } from "../run-liveness.js";
 import {
@@ -226,12 +229,6 @@ export function redactSuccessfulRunHandoffEvidence(
     redactCurrentUserText(value, currentUserRedactionOptions),
   );
 }
-
-const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
-  "environment.lease_acquired",
-  "environment.lease_released",
-  "cost.reported",
-];
 
 export const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
   "low_trust_isolation_unavailable",
@@ -2881,10 +2878,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         ),
       );
 
+    // COR-3756: exclude runner telemetry (lifecycle/adapter.invoke/error and the
+    // whole `run.*` namespace) so a silent empty-end_turn no-op — which still emits
+    // run.phase.timing/run.startup.step on every run — is not counted as concrete
+    // work evidence. Keep this in lockstep with the backfill query in activity.ts;
+    // both derive their exclusions from the shared LIVENESS_BOOKKEEPING_* constants.
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_EVENT_TYPES)} and ${heartbeatRunEvents.eventType} not like ${`${LIVENESS_BOOKKEEPING_EVENT_TYPE_PREFIX}%`})::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_EVENT_TYPES)} and ${heartbeatRunEvents.eventType} not like ${`${LIVENESS_BOOKKEEPING_EVENT_TYPE_PREFIX}%`})`,
       })
       .from(heartbeatRunEvents)
       .where(

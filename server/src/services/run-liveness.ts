@@ -26,6 +26,38 @@ export interface RunLivenessEvidenceInput {
   latestEvidenceAt: Date | null;
 }
 
+// COR-3756: concrete-action evidence must count only genuine agent work. Both the
+// live run-completion path (heartbeat.ts `buildRunLivenessInput`) and the backfill
+// path (activity.ts `backfillMissingRunLivenessForIssue`) classify liveness, and
+// they previously drifted: each had its own hand-written exclusion list, so the
+// backfill fix for silent empty-end_turn no-ops did not cover the live path. These
+// shared constants are the single source of truth for what counts as per-run
+// infrastructure (not work), so the two evidence queries cannot diverge again.
+
+// activity_log actions the runner writes on every run (lease acquire/release,
+// tool-gateway discovery, inbound webhook processing) — a silent empty turn still
+// acquires/releases a lease, so counting these masked the no-op as real work.
+export const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS: string[] = [
+  "environment.lease_acquired",
+  "environment.lease_released",
+  "tool_gateway.discovery",
+  "tool_connection.webhook_processed",
+  // Folded in from upstream master during the COR-3756 rebase: automatic cost
+  // reporting is bookkeeping, not genuine agent work, so it must not mask a
+  // silent empty no-op turn either.
+  "cost.reported",
+];
+
+// heartbeat_run_events types that are runner telemetry, not agent work. The exact
+// types below plus the entire `run.*` namespace (run.phase.timing, run.startup.step,
+// run.presentation.resolved) are emitted on every run, including empty no-ops.
+export const LIVENESS_BOOKKEEPING_EVENT_TYPES: string[] = [
+  "lifecycle",
+  "adapter.invoke",
+  "error",
+];
+export const LIVENESS_BOOKKEEPING_EVENT_TYPE_PREFIX = "run.";
+
 export interface RunLivenessClassificationInput {
   runStatus: HeartbeatRunStatus | string;
   issue: RunLivenessIssueInput | null;
@@ -163,6 +195,20 @@ function actionabilityText(input: RunLivenessClassificationInput) {
 
 export function hasUsefulOutput(input: RunLivenessClassificationInput) {
   return combinedOutput(input).length > 0;
+}
+
+// COR-3756: a clean turn whose adapter reported zero assistant narrative is the
+// silent empty-end_turn signature (kimi-code/k3). `assistantOutputChars` is set by
+// the acpx engine from the real output segments, so it is not fooled by the
+// fallback `summary` (which leaks the bare stop reason, e.g. "end_turn", as if it
+// were content). The field is only present on acpx runs; when it is absent we
+// return false so non-acpx adapters and historical runs keep their prior behavior.
+export function reportedEmptyAssistantTurn(
+  resultJson: Record<string, unknown> | null | undefined,
+) {
+  if (!resultJson) return false;
+  const chars = resultJson.assistantOutputChars;
+  return typeof chars === "number" && Number.isFinite(chars) && chars <= 0;
 }
 
 export function declaredBlocker(input: RunLivenessClassificationInput) {
@@ -340,6 +386,16 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (declaredBlocker(input)) {
     return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", nextAction);
+  }
+
+  // COR-3756: an empty no-op turn — the adapter produced no assistant narrative and
+  // the run left no concrete work evidence. This must classify as empty_response even
+  // though the fallback `summary` leaks the bare stop reason into the useful-output
+  // heuristic (which would otherwise mis-label it needs_followup/advanced). Declared
+  // blockers are handled above, so reaching here with no output and no evidence is the
+  // silent-failure signature the fleet had no way to detect.
+  if (reportedEmptyAssistantTurn(input.resultJson) && !concreteEvidence) {
+    return output("empty_response", "Run succeeded with an empty turn: adapter produced no assistant output and the run left no concrete action evidence");
   }
 
   if (!usefulOutput && !concreteEvidence) {
