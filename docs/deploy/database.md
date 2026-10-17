@@ -62,7 +62,7 @@ If using connection pooling (transaction mode), disable prepared statements via 
 DATABASE_PREPARED_STATEMENTS=false
 ```
 
-Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open) and the pool reports `application_name=paperclip`. See [Connection pool settings](#connection-pool-settings).
+Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`, `DATABASE_JIT_DISABLED`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open), the pool reports `application_name=paperclip`, and the pool runs with PostgreSQL's JIT disabled (`DATABASE_JIT_DISABLED=false` re-enables it). See [Connection pool settings](#connection-pool-settings).
 
 ## Connection Pool Settings
 
@@ -76,6 +76,7 @@ The server opens one postgres.js pool for its own queries (and a second one when
 | `DATABASE_MAX_LIFETIME_SECONDS` | 30–60 min, randomized (driver) | Recycle a pooled connection once it is this old. |
 | `DATABASE_APPLICATION_NAME` | `paperclip` | Value of `application_name` in `pg_stat_activity`, so you can find Paperclip's backends: `SELECT * FROM pg_stat_activity WHERE application_name = 'paperclip';` |
 | `DATABASE_PREPARED_STATEMENTS` | `true` (driver) | Set `false` behind a transaction-mode pooler (see above). |
+| `DATABASE_JIT_DISABLED` | `true` | Run pool sessions with PostgreSQL's LLVM JIT disabled (`jit = off`). Paperclip's queries are OLTP-shaped; postgres.js replans every statement, so JIT compilation can cost seconds per execution on queries that run in milliseconds. Set `false` for analytics-shaped deployments. The `jit` parameter is not sent to transaction-mode poolers (`DATABASE_PREPARED_STATEMENTS=false`), which reject unknown startup parameters. |
 
 The server ends its pools during shutdown (SIGINT/SIGTERM) and when startup fails after the pool was opened, so a restarting server does not leave idle backends behind. Size `max_connections` on the PostgreSQL side for at least `DATABASE_POOL_MAX` per server process plus your other clients.
 

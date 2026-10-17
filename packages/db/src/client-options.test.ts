@@ -37,6 +37,7 @@ describe("databaseClientOptionsFromEnv", () => {
         DATABASE_CONNECT_TIMEOUT_SECONDS: "10",
         DATABASE_MAX_LIFETIME_SECONDS: "1800",
         DATABASE_APPLICATION_NAME: " paperclip-web ",
+        DATABASE_JIT_DISABLED: "false",
       }),
     ).toEqual({
       maxConnections: 25,
@@ -44,7 +45,14 @@ describe("databaseClientOptionsFromEnv", () => {
       connectTimeoutSeconds: 10,
       maxLifetimeSeconds: 1800,
       applicationName: "paperclip-web",
+      jitDisabled: false,
     });
+  });
+
+  it("parses the JIT toggle", () => {
+    expect(databaseClientOptionsFromEnv({ DATABASE_JIT_DISABLED: "true" })).toEqual({ jitDisabled: true });
+    expect(databaseClientOptionsFromEnv({ DATABASE_JIT_DISABLED: "0" })).toEqual({ jitDisabled: false });
+    expect(() => databaseClientOptionsFromEnv({ DATABASE_JIT_DISABLED: "maybe" })).toThrow(/DATABASE_JIT_DISABLED/);
   });
 
   it("accepts DATABASE_IDLE_TIMEOUT_SECONDS=0 as an explicit opt-out of idle reaping", () => {
@@ -83,6 +91,7 @@ describe("databaseClientOptionsFromEnv", () => {
         connectTimeoutSeconds: 10,
         maxLifetimeSeconds: 1800,
         applicationName: "paperclip-web",
+        jitDisabled: false,
       }),
     ).toEqual({
       prepare: false,
@@ -93,17 +102,35 @@ describe("databaseClientOptionsFromEnv", () => {
       connection: { application_name: "paperclip-web" },
     });
   });
+
+  it("disables JIT via the connection startup packet when the option is set", () => {
+    expect(postgresJsOptions({ applicationName: "paperclip", jitDisabled: true })).toEqual({
+      connection: { application_name: "paperclip", jit: "off" },
+    });
+    expect(postgresJsOptions({ jitDisabled: true })).toEqual({
+      connection: { jit: "off" },
+    });
+  });
+
+  it("does not send the JIT parameter to transaction-mode poolers", () => {
+    expect(postgresJsOptions({ prepare: false, applicationName: "paperclip", jitDisabled: true })).toEqual({
+      prepare: false,
+      connection: { application_name: "paperclip" },
+    });
+    expect(postgresJsOptions({ prepare: false, jitDisabled: true })).toEqual({ prepare: false });
+  });
 });
 
 describe("resolveDatabaseClientOptions", () => {
-  it("reaps idle connections and names the pool when the environment sets nothing", () => {
+  it("reaps idle connections, names the pool, and disables JIT when the environment sets nothing", () => {
     expect(resolveDatabaseClientOptions({})).toEqual({
       idleTimeoutSeconds: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
       applicationName: DEFAULT_DATABASE_APPLICATION_NAME,
+      jitDisabled: true,
     });
     expect(postgresJsOptions(resolveDatabaseClientOptions(databaseClientOptionsFromEnv({})))).toEqual({
       idle_timeout: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
-      connection: { application_name: DEFAULT_DATABASE_APPLICATION_NAME },
+      connection: { application_name: DEFAULT_DATABASE_APPLICATION_NAME, jit: "off" },
     });
   });
 
@@ -113,8 +140,9 @@ describe("resolveDatabaseClientOptions", () => {
         maxConnections: 3,
         idleTimeoutSeconds: 0,
         applicationName: "paperclip-cli",
+        jitDisabled: false,
       }),
-    ).toEqual({ maxConnections: 3, idleTimeoutSeconds: 0, applicationName: "paperclip-cli" });
+    ).toEqual({ maxConnections: 3, idleTimeoutSeconds: 0, applicationName: "paperclip-cli", jitDisabled: false });
     expect(postgresJsOptions(resolveDatabaseClientOptions({ idleTimeoutSeconds: 0 }))).toMatchObject({
       idle_timeout: 0,
     });

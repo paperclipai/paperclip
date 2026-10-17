@@ -155,6 +155,21 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Disable PostgreSQL's LLVM JIT for this pool's sessions. Paperclip's
+   * workload is OLTP-shaped: broad generated queries that the planner prices
+   * far above `jit_optimize_above_cost` but that execute in milliseconds once
+   * planned. postgres.js replans on every execution (no reused prepared
+   * plans), so JIT compilation cost — tens of seconds on those queries — is
+   * paid on every call. Defaults to `true` (JIT off); opt back in explicitly
+   * for analytics-shaped deployments.
+   *
+   * Transaction-mode poolers (PgBouncer / Supavisor) reject unknown startup
+   * parameters, so the `jit` parameter is only sent when `prepare` is not
+   * explicitly disabled for the pool. Pooler deployments keep the driver's
+   * JIT behavior.
+   */
+  jitDisabled?: boolean;
 }
 
 /**
@@ -167,6 +182,14 @@ export interface DatabaseClientOptions {
 export const DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS = 60;
 /** `application_name` reported to PostgreSQL unless `DATABASE_APPLICATION_NAME` overrides it. */
 export const DEFAULT_DATABASE_APPLICATION_NAME = "paperclip";
+/**
+ * Whether Paperclip's pool disables PostgreSQL's LLVM JIT (`jit = off`) unless
+ * `DATABASE_JIT_DISABLED` overrides it. JIT compilation is per-execution for
+ * postgres.js queries and priced by estimated plan cost, so a broad query
+ * family can pay tens of seconds per call to execute in milliseconds —
+ * observed live as 60-100s control-plane request latency.
+ */
+export const DEFAULT_DATABASE_JIT_DISABLED = true;
 
 function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   const value = env[name]?.trim().toLowerCase();
@@ -223,21 +246,25 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
   const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
   if (applicationName !== undefined) options.applicationName = applicationName;
+  const jitDisabled = envBoolean(env, "DATABASE_JIT_DISABLED");
+  if (jitDisabled !== undefined) options.jitDisabled = jitDisabled;
   return options;
 }
 
 /**
  * Fills in Paperclip's defaults for the options the caller left unset: idle
- * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, and the
- * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`. Everything
- * else stays at the driver default. An explicit value (including
- * `idleTimeoutSeconds: 0`) always wins over the default.
+ * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, the
+ * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`, and sessions
+ * run with PostgreSQL's JIT disabled (`DEFAULT_DATABASE_JIT_DISABLED`). An
+ * explicit value (including `idleTimeoutSeconds: 0`) always wins over the
+ * default.
  */
 export function resolveDatabaseClientOptions(options: DatabaseClientOptions): DatabaseClientOptions {
   return {
     ...options,
     idleTimeoutSeconds: options.idleTimeoutSeconds ?? DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
     applicationName: options.applicationName ?? DEFAULT_DATABASE_APPLICATION_NAME,
+    jitDisabled: options.jitDisabled ?? DEFAULT_DATABASE_JIT_DISABLED,
   };
 }
 
@@ -248,8 +275,17 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
   if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
+  const connection: Record<string, string> = {};
   if (options.applicationName !== undefined) {
-    driverOptions.connection = { application_name: options.applicationName };
+    connection.application_name = options.applicationName;
+  }
+  // Transaction-mode poolers reject unknown startup parameters, so only a
+  // direct connection (prepared statements available) gets the `jit` GUC.
+  if (options.jitDisabled && options.prepare !== false) {
+    connection.jit = "off";
+  }
+  if (Object.keys(connection).length > 0) {
+    driverOptions.connection = connection;
   }
   return driverOptions;
 }

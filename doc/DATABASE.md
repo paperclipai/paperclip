@@ -219,7 +219,7 @@ If your hosted database requires transaction-pooling-only connections (pgbouncer
 
 ### Client tuning (optional)
 
-All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+All of these are optional; typical self-hosted setups need none of them:
 
 ```sh
 DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
@@ -228,7 +228,19 @@ DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 6
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
+DATABASE_JIT_DISABLED=false          # re-enable PostgreSQL JIT; default: disabled (jit=off)
 ```
+
+Paperclip's pool already overrides two driver defaults: idle pooled
+connections close after 60 seconds, and the pool reports
+`application_name = paperclip`. This default adds a third: sessions run with
+PostgreSQL's LLVM JIT disabled (`jit = off`). Paperclip's workload is
+OLTP-shaped, and postgres.js replans every statement, so a broad query family
+can pay seconds of JIT compilation per execution to run in milliseconds once
+planned. Set `DATABASE_JIT_DISABLED=false` to restore JIT for
+analytics-shaped deployments. JIT stays enabled when you connect through a
+transaction-mode pooler (`DATABASE_PREPARED_STATEMENTS=false`), because
+poolers reject unknown startup parameters.
 
 ### Push the schema
 
