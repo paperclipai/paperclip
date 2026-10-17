@@ -14,6 +14,8 @@ export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
   acpx: "claude-sonnet-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
+  claude_managed: "claude-sonnet-5",
+  aws_agentcore: "anthropic.claude-sonnet-5",
 } as const;
 
 export interface PaperclipRunnerPermissionOption<
