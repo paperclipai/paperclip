@@ -306,6 +306,23 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
   });
 
+  it("does not count unfinished direct children as unresolved blockers", async () => {
+    const { companyId } = await createCompany("PBE");
+    const parentId = await insertIssue({ companyId, identifier: "PBE-1", title: "Parent", status: "blocked" });
+    await insertIssue({ companyId, identifier: "PBE-2", title: "Child one", status: "todo", parentId });
+    await insertIssue({ companyId, identifier: "PBE-3", title: "Child two", status: "todo", parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const readiness = await svc.getDependencyReadiness(parentId);
+
+    expect(readiness).toMatchObject({ unresolvedBlockerCount: 0, allBlockersDone: true });
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+      attentionBlockerCount: 2,
+    });
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
