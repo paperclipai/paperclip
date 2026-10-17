@@ -30,6 +30,10 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  podAntiAffinity?: {
+    enabled?: boolean;
+    topologyKey?: string;
+  };
 }
 
 export function buildSandboxCrManifest(
@@ -71,6 +75,31 @@ export function buildSandboxCrManifest(
                 imagePullSecrets: input.imagePullSecrets.map((name) => ({
                   name,
                 })),
+              }
+            : {}),
+          ...(input.podAntiAffinity?.enabled
+            ? {
+                affinity: {
+                  podAntiAffinity: {
+                    preferredDuringSchedulingIgnoredDuringExecution: [
+                      {
+                        weight: 100,
+                        podAffinityTerm: {
+                          labelSelector: {
+                            matchLabels: {
+                              "paperclip.io/role": "agent",
+                            },
+                          },
+                          topologyKey:
+                            input.podAntiAffinity.topologyKey &&
+                            input.podAntiAffinity.topologyKey.trim().length > 0
+                              ? input.podAntiAffinity.topologyKey.trim()
+                              : "kubernetes.io/hostname",
+                        },
+                      },
+                    ],
+                  },
+                },
               }
             : {}),
           securityContext: {

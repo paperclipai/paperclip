@@ -3,6 +3,8 @@ import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+// Kubernetes label key format: optional prefix (DNS subdomain, max 253 chars + "/") followed by name (max 63 chars, alphanum start/end)
+const k8sLabelKeyRegex = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\/)?[a-zA-Z0-9](?:[a-zA-Z0-9_.-]{0,61}[a-zA-Z0-9])?$/;
 
 export const kubernetesProviderConfigSchema = z
   .object({
@@ -29,6 +31,24 @@ export const kubernetesProviderConfigSchema = z
 
     runtimeClassName: z.string().optional(),
     serviceAccountAnnotations: z.record(z.string()).default({}),
+
+    podAntiAffinity: z
+      .object({
+        enabled: z.boolean().default(false),
+        topologyKey: z
+          .string()
+          .min(1, "topologyKey cannot be empty")
+          .regex(k8sLabelKeyRegex, "Invalid Kubernetes label key for topologyKey")
+          .refine((val) => {
+            const parts = val.split("/");
+            if (parts.length === 2) {
+              return parts[0].length <= 253 && parts[1].length <= 63;
+            }
+            return val.length <= 63;
+          }, "topologyKey name cannot exceed 63 characters and prefix cannot exceed 253 characters")
+          .optional(),
+      })
+      .optional(),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
