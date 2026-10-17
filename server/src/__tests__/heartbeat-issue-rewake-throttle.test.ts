@@ -387,6 +387,38 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(wake).not.toBeNull();
   });
 
+  it("does not count a run's routine completion comment as issue progress", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    const completionRunId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: completionRunId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      details: { source: "run_presentation_resolver" },
+    });
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+    });
+    expect(await assignmentWake(agentId, issueId)).not.toBeNull();
+  });
+
   it("does not count progress on another issue toward the current issue", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
     const otherIssueId = randomUUID();
