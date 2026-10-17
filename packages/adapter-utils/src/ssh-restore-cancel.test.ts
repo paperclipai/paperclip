@@ -1,7 +1,9 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   isWorkspaceRestoreCancelled,
@@ -35,6 +37,7 @@ describe("ssh workspace restore cancellation", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -187,5 +190,61 @@ describe("ssh workspace restore cancellation", () => {
 
     expect(await readFile(path.join(targetDir, "remote-edit.txt"), "utf8")).toBe("from remote\n");
     expect(await readFile(path.join(targetDir, "sentinel.txt"), "utf8")).toBe("untouched\n");
+  });
+
+  it("syncDirectoryFromSsh clears stale subdirectories and copies read-only trees", async () => {
+    // Hermetic live-restore pin for the local clear + copy/merge half of
+    // syncDirectoryFromSsh: a fake `ssh` on PATH streams a prebuilt tarball
+    // exactly like the remote `tar -cf - .`, so the staging download, local
+    // clear and copy run for real with no network or sshd. Pre-fix this
+    // failed two ways: the clear emptied each directory and then called
+    // fs.rm without `recursive` (ERR_FS_EISDIR after deleting contents),
+    // and the copy created each destination with the source mode first, so
+    // a read-only source directory rejected its child writes with EACCES.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping live-restore pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    await mkdir(path.join(remoteTree, "nested"), { recursive: true });
+    await writeFile(path.join(remoteTree, "nested", "inner.txt"), "from remote\n", "utf8");
+    await mkdir(path.join(remoteTree, "readonly-dir"), { recursive: true });
+    await writeFile(path.join(remoteTree, "readonly-dir", "child.txt"), "readonly child\n", "utf8");
+    await chmod(path.join(remoteTree, "readonly-dir"), 0o555);
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    await mkdir(path.join(localDir, "stale-dir"), { recursive: true });
+    await writeFile(path.join(localDir, "stale-dir", "stale.txt"), "stale\n", "utf8");
+    await writeFile(path.join(localDir, "stale.txt"), "stale\n", "utf8");
+
+    await syncDirectoryFromSsh({
+      spec: unreachableSpec(),
+      remoteDir: "/nonexistent",
+      localDir,
+      signal: null,
+    });
+
+    expect((await readdir(localDir)).sort()).toEqual(["nested", "readonly-dir"]);
+    expect(await readFile(path.join(localDir, "nested", "inner.txt"), "utf8")).toBe("from remote\n");
+    expect(await readFile(path.join(localDir, "readonly-dir", "child.txt"), "utf8")).toBe(
+      "readonly child\n",
+    );
+    // The source mode is applied once the children are copied. The tar
+    // extraction runs unprivileged, so the staged source mode already
+    // reflects the extractor umask (0555 & ~umask); the copy must preserve
+    // exactly that.
+    const expectedMode = (0o555 & ~process.umask()) & 0o777;
+    expect((await stat(path.join(localDir, "readonly-dir"))).mode & 0o777).toBe(expectedMode);
   });
 });

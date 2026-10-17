@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 
-const { runAdapterExecutionTargetProcess, executeClaudeAcp } = vi.hoisted(() => ({
+const { runAdapterExecutionTargetProcess, ensureAdapterExecutionTargetCommandResolvable, executeClaudeAcp } = vi.hoisted(() => ({
+  // The CLI command probe must not depend on a real `claude` binary in PATH:
+  // CI runners do not install one (workspaces-b, PR #16440).
+  ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
   runAdapterExecutionTargetProcess: vi.fn(async () => ({
     exitCode: 0,
     signal: null,
@@ -29,6 +32,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   );
   return {
     ...actual,
+    ensureAdapterExecutionTargetCommandResolvable,
     runAdapterExecutionTargetProcess,
   };
 });

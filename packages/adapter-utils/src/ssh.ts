@@ -591,18 +591,73 @@ async function runSshScript(
   );
 }
 
+async function removeLocalEntry(entryPath: string, signal?: AbortSignal | null): Promise<void> {
+  throwIfWorkspaceRestoreAborted(signal);
+  const stat = await fs.lstat(entryPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return;
+  if (!stat.isDirectory()) {
+    await fs.rm(entryPath, { force: true });
+    throwIfWorkspaceRestoreAborted(signal);
+    return;
+  }
+  for (const entry of await fs.readdir(entryPath)) {
+    await removeLocalEntry(path.join(entryPath, entry), signal);
+  }
+  throwIfWorkspaceRestoreAborted(signal);
+  // The directory was just emptied above: remove it as a directory. fs.rm
+  // without `recursive` rejects directories with ERR_FS_EISDIR even when
+  // empty, which would fail the restore after it already deleted contents.
+  await fs.rmdir(entryPath);
+}
+
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
+  signal?: AbortSignal | null,
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
   const preserve = new Set(preserveEntries);
   const entries = await fs.readdir(localDir);
-  await Promise.all(
-    entries
-      .filter((entry) => !preserve.has(entry))
-      .map((entry) => fs.rm(path.join(localDir, entry), { recursive: true, force: true })),
-  );
+  for (const entry of entries) {
+    throwIfWorkspaceRestoreAborted(signal);
+    if (preserve.has(entry)) continue;
+    await removeLocalEntry(path.join(localDir, entry), signal);
+  }
+  throwIfWorkspaceRestoreAborted(signal);
+}
+
+async function copyLocalEntry(
+  sourcePath: string,
+  targetPath: string,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  throwIfWorkspaceRestoreAborted(signal);
+  const stat = await fs.lstat(sourcePath);
+  if (!stat.isDirectory()) {
+    await fs.cp(sourcePath, targetPath, {
+      recursive: false,
+      force: true,
+      preserveTimestamps: true,
+    });
+    throwIfWorkspaceRestoreAborted(signal);
+    return;
+  }
+
+  // Keep the destination writable while its children are copied: creating it
+  // with the source mode first would make a read-only source directory (e.g.
+  // 0555) reject every child write with EACCES. The source mode is applied
+  // after the children below.
+  await fs.mkdir(targetPath, { recursive: true });
+  for (const entry of await fs.readdir(sourcePath)) {
+    await copyLocalEntry(path.join(sourcePath, entry), path.join(targetPath, entry), signal);
+  }
+  throwIfWorkspaceRestoreAborted(signal);
+  await fs.chmod(targetPath, stat.mode);
+  await fs.utimes(targetPath, stat.atime, stat.mtime);
+  throwIfWorkspaceRestoreAborted(signal);
 }
 
 async function copyDirectoryContents(
