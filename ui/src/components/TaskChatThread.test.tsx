@@ -15,6 +15,7 @@ import type {
   TaskBrowser,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { mergePendingIssueQueuedComments } from "@/lib/issue-queued-comment-queue";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
@@ -3749,6 +3750,42 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(interrupt).not.toBeNull();
     flushSync(() => interrupt!.click());
     expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
+  });
+
+  it.each(["run-1", null])("interrupts a mixed legacy queue without hiding the later unacknowledged message (target %s)", async (targetRunId) => {
+    const response = {
+      ...queue.entries[0],
+      canEdit: false,
+      canDiscard: false,
+      source: { kind: "interaction" as const, interactionId: "question-1", interactionKind: "ask_user_questions" },
+    };
+    const laterComment = { ...queuedComment, id: "later-comment", body: "Apply this later direction." };
+    const mixedQueue = mergePendingIssueQueuedComments({
+      issueId: queue.issueId,
+      authoritativeQueue: { ...queue, targetRunId, protocol: "legacy", steeringDisposition: "unsupported", entries: [response] },
+      pendingComments: [{ comment: laterComment, targetRunId }],
+      fallbackProtocol: "legacy",
+    })!;
+    expect(mixedQueue.queueId).toBeNull();
+    let resolveInterrupt!: () => void;
+    const interrupted = new Promise<void>((resolve) => { resolveInterrupt = resolve; });
+    const onInterruptQueued = vi.fn(() => interrupted);
+    const props = { comments: [queuedComment, laterComment], onAdd: async () => {}, onInterruptQueued };
+    render(<TaskChatThread {...props} queuedCommentQueue={mixedQueue} />);
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-later-comment"]')!;
+    expect(interrupt).not.toBeNull();
+    expect(interrupt.disabled).toBe(false);
+    await act(async () => { interrupt.click(); });
+    expect(onInterruptQueued).toHaveBeenCalledExactlyOnceWith(targetRunId);
+    expect(container.querySelector('[data-testid="task-chat-queued-message-later-comment"]')).not.toBeNull();
+    await act(async () => { resolveInterrupt(); await interrupted; });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-later-comment"]')).not.toBeNull();
+    // The older response was covered by the server wake; the later comment was not.
+    await act(async () => { render(<TaskChatThread {...props} queuedCommentQueue={{ ...mixedQueue, entries: [mixedQueue.entries[1]], revision: "after-response-delivery" }} />); });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-queued-prp-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-message-later-comment"]')).not.toBeNull();
+    expect(occurrenceCount(laterComment.body)).toBe(1);
+    expect(container.textContent).not.toContain("Queued messages will be sent");
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {

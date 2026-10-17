@@ -150,7 +150,9 @@ function SortableQueuedMessage({
         <button
           type="button"
           onClick={onInterrupt}
-          disabled={busy || !queue.queueId || !onInterrupt}
+          // Interrupt fetches a fresh authoritative queue before sending. Local
+          // pending rows intentionally clear queueId until all inputs are acknowledged.
+          disabled={busy || !onInterrupt}
           title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
@@ -316,8 +318,10 @@ export function TaskChatQueuedMessages({
     ) {
       return;
     }
+    // A merged queue without an id can contain inputs absent from the server
+    // wake being interrupted. Keep those rows until delivery receipts arrive.
     const deliveredIds = action === "interrupt"
-      ? entries.map((entry) => entry.comment.id)
+      ? queue.queueId ? entries.map((entry) => entry.comment.id) : []
       : action === "steer" ? [commentId] : [];
     for (const id of deliveredIds) optimisticDeliveryIds.current.add(id);
     if (deliveredIds.length) {
@@ -331,7 +335,7 @@ export function TaskChatQueuedMessages({
       action === "steer"
         ? "Steering queued message."
         : action === "interrupt"
-          ? "Sending queued messages."
+          ? queue.queueId ? "Sending queued messages." : "Requesting queued delivery."
           : "Discarding queued message.",
     );
     try {
@@ -347,7 +351,9 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "Message steered into the active turn."
           : action === "interrupt"
-            ? "Queued messages will be sent when the previous run has stopped."
+            ? queue.queueId
+              ? "Queued messages will be sent when the previous run has stopped."
+              : "Queued delivery requested. Remaining messages are still queued."
             : "Queued message discarded.",
       );
     } catch (error) {

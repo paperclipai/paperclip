@@ -2327,11 +2327,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
 
   const interruptQueuedComments = useCallback(
     async (runId: string | null) => {
-      const queuedComments = effectiveQueuedCommentQueue?.targetRunId === runId
-        ? effectiveQueuedCommentQueue.entries.map((entry) => entry.comment)
-        : commentsWithRunMeta.filter(
-            (comment) => comment.queueState === "queued" && comment.queueTargetRunId === runId,
-          );
+      // Mixed local rows may not belong to the fresh server wake. Await
+      // authoritative delivery receipts instead of promoting every merged row.
+      const queuedComments = effectiveQueuedCommentQueue && !effectiveQueuedCommentQueue.queueId
+        ? []
+        : effectiveQueuedCommentQueue?.targetRunId === runId
+          ? effectiveQueuedCommentQueue.entries.map((entry) => entry.comment)
+          : commentsWithRunMeta.filter(
+              (comment) => comment.queueState === "queued" && comment.queueTargetRunId === runId,
+            );
       const ids = queuedComments.map((comment) => comment.id);
       const anchorAt = new Date().toISOString();
       setClassicQueuedDeliveryError(null);

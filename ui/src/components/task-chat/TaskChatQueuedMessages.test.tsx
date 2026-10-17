@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { mergePendingIssueQueuedComments } from "../../lib/issue-queued-comment-queue";
 import {
   reorderQueuedMessageEntries,
   TaskChatQueuedMessages,
@@ -316,6 +317,72 @@ describe("TaskChatQueuedMessages", () => {
       "The queue changed in another session. Review it and try again.",
     );
     expect(container.textContent).not.toContain("Queued message discarded.");
+  });
+
+  it("keeps legacy interrupt available when a pending comment follows a queued response", async () => {
+    const response = {
+      ...queue.entries[0],
+      source: {
+        kind: "interaction" as const,
+        interactionId: "question-1",
+        interactionKind: "ask_user_questions",
+        requiresFreshSession: false,
+      },
+    };
+    const merged = mergePendingIssueQueuedComments({
+      issueId: queue.issueId,
+      authoritativeQueue: { ...queue, protocol: "legacy", entries: [response] },
+      pendingComments: [{ comment: queue.entries[1].comment, targetRunId: queue.targetRunId }],
+      fallbackProtocol: "legacy",
+    })!;
+    expect(merged.queueId).toBeNull();
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({ queue: merged, onInterrupt });
+    const interrupt = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-interrupt-comment-2"]',
+    )!;
+    expect(interrupt.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-discard-comment-2"]',
+    )?.disabled).toBe(true);
+    await act(async () => { interrupt.click(); });
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Queued messages will be sent");
+    // A newer receipt can clear the older response without clearing the later row.
+    await act(async () => { render({ queue: { ...merged, entries: [merged.entries[1]], revision: "after-response" }, onInterrupt }); });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).not.toBeNull();
+  });
+
+  it("keeps unacknowledged legacy rows visible during interrupt and retryable on failure", async () => {
+    const delivery = deferred<void>();
+    const onInterrupt = vi.fn(() => delivery.promise);
+    render({ queue: { ...queue, protocol: "legacy", queueId: null }, onInterrupt });
+    const selector = '[data-testid="task-chat-queued-interrupt-comment-1"]';
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>(selector)!;
+      button.click();
+    });
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLButtonElement>(selector)?.disabled).toBe(true);
+    expect(container.textContent).toContain("First queued message");
+    expect(container.textContent).toContain("Second queued message");
+    await act(async () => {
+      delivery.reject(new Error("The queued messages changed. Refresh and try again."));
+      await delivery.promise.catch(() => undefined);
+    });
+    expect(container.textContent).toContain("Couldn’t interrupt. Message is still queued.");
+    expect(container.textContent).toContain("First queued message");
+    expect(container.textContent).toContain("Second queued message");
+    expect(container.querySelector<HTMLButtonElement>(selector)?.disabled).toBe(false);
+  });
+
+  it("keeps interrupt disabled when no delivery handler is available", () => {
+    render({ queue: { ...queue, protocol: "legacy", queueId: null } });
+    expect(container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-interrupt-comment-1"]',
+    )?.disabled).toBe(true);
   });
 
   it("does not expose queue controls before a real queue id is acknowledged", () => {

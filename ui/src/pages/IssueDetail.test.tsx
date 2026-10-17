@@ -6023,6 +6023,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
       expect(props.queuedCommentQueue?.entries).toHaveLength(2);
+      expect(props.queuedCommentQueue?.queueId).toBe(queue.queueId);
     });
     let pending!: Promise<unknown>;
     await act(async () => { pending = props.onInterruptQueued("run-active-1").catch(error => error); });
@@ -6043,6 +6044,52 @@ describe("IssueDetail", () => {
       else expect(final.queuedCommentQueue).toBeNull();
     });
     expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it("keeps a later comment queued when an interrupt covers only the older response wake", async () => {
+    const queue = createQueuedCommentQueue({ protocol: "legacy", steeringDisposition: "unsupported" });
+    queue.entries[0] = { ...queue.entries[0], canEdit: false, canDiscard: false,
+      source: { kind: "interaction", interactionId: "question-1", interactionKind: "ask_user_questions" } };
+    const laterComment = createIssueComment({ id: "later-comment", body: "Keep this later direction queued.", createdAt: new Date("2026-04-21T00:00:05.000Z") });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "codex_local" })]);
+    mockIssuesApi.listComments.mockResolvedValue([laterComment]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "legacy", status: "running", invocationSource: "issue",
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Coder", adapterType: "codex_local", issueId: "issue-1",
+    });
+    const delivery = createDeferred<IssueQueuedCommentQueue>();
+    mockIssuesApi.interruptQueuedComments.mockReturnValue(delivery.promise);
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    type Props = { onInterruptQueued: (runId: string | null) => Promise<void>; queuedCommentQueue: IssueQueuedCommentQueue | null; comments: Array<{ id: string; queueState?: string; conversationAnchorAt?: string }> };
+    let props!: Props;
+    await waitForAssertion(() => {
+      props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(props.queuedCommentQueue?.queueId).toBeNull();
+      expect(props.queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual(["queued-comment-1", "later-comment"]);
+    });
+    let pending!: Promise<void>;
+    await act(async () => { pending = props.onInterruptQueued("run-active-1"); });
+    const whilePending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+    expect(whilePending.queuedCommentQueue?.entries.map(entry => entry.comment.id)).toContain("later-comment");
+    expect(whilePending.comments).toContainEqual(expect.objectContaining({ id: "later-comment", queueState: "queued" }));
+    expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledWith("PAP-1", {
+      queueId: queue.queueId, revision: queue.revision, targetRunId: "run-active-1",
+    });
+    await act(async () => {
+      mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({ queueId: null, targetRunId: null, entries: [] }));
+      delivery.resolve(createQueuedCommentQueue({ queueId: null, targetRunId: null, entries: [] }));
+      await pending;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.queuedComments("issue-1") });
+    });
+    await waitForAssertion(() => {
+      const final = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(final.queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual(["later-comment"]);
+      expect(final.comments).toContainEqual(expect.objectContaining({ id: "later-comment", queueState: "queued" }));
+      expect(final.comments.find(comment => comment.id === "later-comment")?.conversationAnchorAt).toBeUndefined();
+    });
   });
 
   it("restores a failed classic interrupt inline without a toast or an unhandled rejection", async () => {
