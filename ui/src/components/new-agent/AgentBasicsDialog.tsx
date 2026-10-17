@@ -2,13 +2,15 @@ import { useCompany } from "@/context/CompanyContext";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
 import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
-import { useId, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
+import { agentsApi } from "@/api/agents";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
+import { resolveNewAgentDefaultAdapterType } from "@/lib/new-agent-create-values";
 import { queryKeys } from "@/lib/queryKeys";
 import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
@@ -49,6 +51,7 @@ export function AgentBasicsDialog({
   onInvite?: () => void;
 }) {
   const id = useId();
+  const { selectedCompanyId } = useCompany();
   const cloud = Boolean(useCloudInstance());
   const experimental = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -60,6 +63,7 @@ export function AgentBasicsDialog({
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
   const [step, setStep] = useState<"name" | "adapter">("name");
+  const adapterTouchedRef = useRef(Boolean(initialAdapter));
   const {
     data: adapters,
     isPending,
@@ -69,22 +73,50 @@ export function AgentBasicsDialog({
     queryFn: () => adaptersApi.list(),
     enabled: open,
   });
-  const choices = (adapters ?? []).filter(
-    (adapter) =>
-      adapter.loaded &&
-      !adapter.disabled &&
-      adapter.type !== "paperclip_runner" &&
-      isNewAgentAdapterAllowed(adapter.type, {
-        cloud,
-        nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
-      }) &&
-      !["process", "http"].includes(adapter.type) &&
-      !getAdapterDisplay(adapter.type).comingSoon,
+  const agents = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: open && Boolean(selectedCompanyId),
+  });
+  const defaultAdapterType = resolveNewAgentDefaultAdapterType({
+    companyAgents: agents.data ?? null,
+    presetAdapterType: initialAdapter || null,
+  });
+  const nativeRunnerEnabled = experimental.data?.enableNativeRunner === true;
+  const choices = useMemo(
+    () =>
+      (adapters ?? []).filter(
+        (adapter) =>
+          adapter.loaded &&
+          !adapter.disabled &&
+          adapter.type !== "paperclip_runner" &&
+          isNewAgentAdapterAllowed(adapter.type, {
+            cloud,
+            nativeRunnerEnabled,
+          }) &&
+          !["process", "http"].includes(adapter.type) &&
+          !getAdapterDisplay(adapter.type).comingSoon,
+      ),
+    [adapters, cloud, nativeRunnerEnabled],
   );
   const experimentalRunnerAvailable = experimental.data?.enableNativeRunner === true
     && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
     || (experimentalRunnerAvailable && adapterType === "paperclip_runner");
+
+  useEffect(() => {
+    if (!open) return;
+    if (initialAdapter) {
+      adapterTouchedRef.current = true;
+      return;
+    }
+    if (adapterTouchedRef.current) return;
+    if (!agents.data) return;
+    const defaultAvailable = choices.some((adapter) => adapter.type === defaultAdapterType)
+      || (experimentalRunnerAvailable && defaultAdapterType === "paperclip_runner");
+    if (!defaultAvailable) return;
+    setAdapterType((current) => (current === defaultAdapterType ? current : defaultAdapterType));
+  }, [open, initialAdapter, agents.data, defaultAdapterType, choices, experimentalRunnerAvailable]);
   return (
     <Dialog
       open={open}
@@ -193,7 +225,10 @@ export function AgentBasicsDialog({
                           name="new-agent-adapter"
                           value={adapter.type}
                           checked={adapterType === adapter.type}
-                          onChange={() => setAdapterType(adapter.type)}
+                          onChange={() => {
+                            adapterTouchedRef.current = true;
+                            setAdapterType(adapter.type);
+                          }}
                           className="peer sr-only"
                         />
                         <span
@@ -223,7 +258,11 @@ export function AgentBasicsDialog({
                     <SelectPopover aria-label="Experimental harness"
                       value={adapterType === "paperclip_runner" ? runnerProvider : ""}
                       placeholder="Choose a native harness…"
-                      onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
+                      onValueChange={provider => {
+                        adapterTouchedRef.current = true;
+                        setRunnerProvider(provider);
+                        setAdapterType("paperclip_runner");
+                      }}
                       options={[
                         { value: "codex", label: "Codex (Paperclip Runner)" },
                         { value: "claude", label: "Claude Code (Paperclip Runner)" },
