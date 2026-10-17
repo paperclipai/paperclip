@@ -505,10 +505,15 @@ export async function resolveManagedGitHubCredential(
         heartbeatRunId: context.heartbeatRunId,
       });
     }
-    const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    // A sign-in grant carries a GitHub App user token plus the installation
+    // metadata that proves repository reach. A grant made with a personal access
+    // token carries the token itself; its repository reach is the token's own
+    // scope, which GitHub enforces on every push.
+    const oauthRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    const accessRef = oauthRef ?? grant.credentialSecretRefs.find((ref) => ref.configPath === "credentials.authorization");
     const github = grant.providerTenant?.github;
-    if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
-    if (github.installationCount < 1 || github.repositoryCount < 1) {
+    if (!accessRef || (oauthRef && !github)) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
+    if (oauthRef && github && (github.installationCount < 1 || github.repositoryCount < 1)) {
       return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity no longer has repository access" };
     }
     const accessContext = {
@@ -550,7 +555,7 @@ export async function resolveManagedGitHubCredential(
         token,
         source: "managed_connection" as const,
         secretName: null,
-        githubIdentity: { userId: github.userId, login: github.login },
+        ...(github ? { githubIdentity: { userId: github.userId, login: github.login } } : {}),
         identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
         connectionId: grant.connectionId,
         grantId: grant.id,
