@@ -731,6 +731,221 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     });
   });
 
+  it("audits permitted and installed MCP connections that a delivery filter dropped", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Runtime filtered diagnostic ${randomUUID()}`,
+      issuePrefix: `RF${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Filtered Diagnostic Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-filtered-${randomUUID().slice(0, 8)}`,
+      name: "Loc-OpenProject",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    // Installed and permitted, but disabled — the case that used to return an
+    // empty server list with no audit row anywhere.
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Loc-OpenProject",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: false,
+      config: { url: "https://openproject.example.test/mcp" },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: "Loc-OpenProject",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId });
+
+    expect(servers).toEqual([]);
+    const [activity] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "tool_gateway.runtime_mcp_delivery"));
+    expect(activity).toMatchObject({
+      companyId: company!.id,
+      agentId: agent!.id,
+      runId,
+      details: expect.objectContaining({
+        reasonCode: "permitted_connections_filtered_out",
+        deliveredServerCount: 0,
+        permittedNotInstalledCount: 0,
+        filteredOutCount: 1,
+        filteredOutConnections: [
+          {
+            id: connection!.id,
+            name: "Loc-OpenProject",
+            reasonCode: "connection_disabled",
+          },
+        ],
+      }),
+    });
+  });
+
+  it("delivers an empty list without failing when the delivery diagnostic has no run row to reference", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Runtime orphan diagnostic ${randomUUID()}`,
+      issuePrefix: `RO${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Orphan Diagnostic Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-orphan-${randomUUID().slice(0, 8)}`,
+      name: "Orphan App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Orphan MCP",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: false,
+      config: { url: "https://orphan.example.test/mcp" },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: "Orphan MCP",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+
+    // No heartbeat_runs row for this id. The audit row carries run_id under a
+    // foreign key, so writing one here would fail the constraint and take the
+    // delivery down with it.
+    await expect(
+      buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() }),
+    ).resolves.toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.runtime_mcp_delivery")),
+    ).toEqual([]);
+  });
+
+  it("swallows a failed run lookup so the delivery diagnostic cannot stop the agent", async () => {
+    const lookupError = new Error("run lookup unavailable");
+    const failingDb = {
+      select: () => {
+        throw lookupError;
+      },
+    } as never;
+
+    await expect(
+      createToolGatewayService(failingDb).recordRuntimeMcpDeliveryDiagnostic({
+        companyId: randomUUID(),
+        agentId: randomUUID(),
+        runId: randomUUID(),
+        permittedNotInstalledConnections: [],
+        filteredOutConnections: [
+          { id: randomUUID(), name: "Dropped MCP", reasonCode: "connection_disabled" },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("writes no delivery diagnostic when the agent has no permitted MCP connection", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Runtime no-permission diagnostic ${randomUUID()}`,
+      issuePrefix: `RN${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "No Permission Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId });
+
+    expect(servers).toEqual([]);
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "tool_gateway.runtime_mcp_delivery"));
+    expect(rows).toEqual([]);
+  });
+
   it("injects only managed gateways whose profile connections are installed for the agent", async () => {
     const [company] = await db.insert(companies).values({
       name: `Managed gateway installs ${randomUUID()}`,
