@@ -257,6 +257,9 @@ export function previewFirePolicies(
       case "skip_if_active":
         disposition = "skipped";
         break;
+      case "cancel_previous":
+        disposition = "queued";
+        break;
       case "coalesce_if_active":
       default:
         disposition = "coalesced";

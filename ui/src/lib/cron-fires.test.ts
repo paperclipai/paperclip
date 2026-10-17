@@ -70,7 +70,7 @@ describe("previewFirePolicies", () => {
   ];
 
   it("always queues the first fire regardless of policy", () => {
-    for (const policy of ["coalesce_if_active", "always_enqueue", "skip_if_active"]) {
+    for (const policy of ["coalesce_if_active", "always_enqueue", "skip_if_active", "cancel_previous"]) {
       expect(previewFirePolicies(fires, policy)[0]?.disposition).toBe("queued");
     }
   });
@@ -89,6 +89,11 @@ describe("previewFirePolicies", () => {
   it("queues every fire under always_enqueue", () => {
     const preview = previewFirePolicies(fires, "always_enqueue");
     expect(preview.every((e) => e.disposition === "queued")).toBe(true);
+  });
+
+  it("previews each fire as queued under cancel_previous", () => {
+    const preview = previewFirePolicies(fires, "cancel_previous");
+    expect(preview.map((entry) => entry.disposition)).toEqual(["queued", "queued", "queued"]);
   });
 
   it("defaults unknown policies to coalesce", () => {
