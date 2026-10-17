@@ -5,13 +5,14 @@ import type { AdapterUsageCheckpoint } from "./types.js";
 const fields = new Set([
   "type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID",
   "usage", "usageMetadata", "modelUsage", "message", "part", "info", "stats", "tokens", "cost", "total",
+  "response", "request_id", "session", "model_usage",
   "input", "output", "cache", "read", "write", "input_tokens", "output_tokens", "cached_input_tokens",
   "cache_read_input_tokens", "cache_creation_input_tokens", "inputTokens", "outputTokens", "cacheReadInputTokens",
   "cacheCreationInputTokens", "cachedInputTokens", "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount",
   "reasoning", "cacheRead", "cacheWrite", "prompt", "candidates", "totalTokenCount", "total_tokens", "toolUsePromptTokenCount", "messages",
   "thoughtsTokenCount", "inputTokens", "totalTokens", "cached", "thoughts", "total_cost_usd", "cost_usd", "costUSD", "costUsd",
 ]);
-const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
+const stringFields = new Set(["type", "subtype", "role", "id", "request_id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
 function project(value: unknown, depth = 0, field = ""): unknown {
   if (depth > 8) return undefined;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
@@ -21,7 +22,7 @@ function project(value: unknown, depth = 0, field = ""): unknown {
   if (Array.isArray(value)) return value.slice(0, 500).map(item => project(item, depth + 1));
   if (!value || typeof value !== "object") return undefined;
   return Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key))
-    .map(([key, entry]) => [key, key === "modelUsage" && entry && typeof entry === "object"
+    .map(([key, entry]) => [key, (key === "modelUsage" || key === "model_usage") && entry && typeof entry === "object"
       ? Object.fromEntries(Object.entries(entry).map(([model, usage]) => [model.slice(0, 250), project(usage, depth + 1)]))
       : project(entry, depth + 1, key)]));
 }
@@ -80,7 +81,11 @@ export function createUsageCheckpointLog(
     let raw: unknown;
     try { raw = JSON.parse(line); } catch { return; }
     const compact = JSON.stringify(project(raw));
-    if (!compact || !/usage|tokens|cost|"result"|"turn.started"|"turn.completed"|"turn.failed"|"error"|"agent_end"|"step_finish"|"model"|"modelID"/.test(compact)) return;
+    // Counter-free assistant events still mark work as started. Consumers
+    // need that boundary to reject accounting baselines that arrive too late.
+    const assistantWorkStarted = raw !== null && typeof raw === "object"
+      && "type" in raw && raw.type === "assistant";
+    if (!compact || (!assistantWorkStarted && !/usage|tokens|cost|"result"|"turn.started"|"turn.completed"|"turn.failed"|"error"|"agent_end"|"step_finish"|"model"|"modelID"/.test(compact))) return;
     accounting += compact + "\n";
     if (accounting.length > 8 * 1024 * 1024) throw new Error("Accounting checkpoint chunk exceeds 8 MiB");
   }
