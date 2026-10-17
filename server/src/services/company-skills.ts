@@ -113,7 +113,13 @@ import {
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import {
+  ghFetch,
+  gitHubApiBase,
+  readGitHubResponseJson,
+  readGitHubResponseText,
+  resolveRawGitHubUrl,
+} from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
@@ -757,7 +763,7 @@ async function fetchText(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return readGitHubResponseText(response, url);
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -769,7 +775,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return readGitHubResponseJson<T>(response, url);
 }
 
 
