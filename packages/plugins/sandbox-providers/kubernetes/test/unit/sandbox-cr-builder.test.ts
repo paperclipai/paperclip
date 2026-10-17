@@ -17,6 +17,24 @@ const baseInput = {
 };
 
 describe("buildSandboxCrManifest", () => {
+  it("omits nodeSelector and tolerations when none are configured", () => {
+    const spec = buildSandboxCrManifest(baseInput).spec.podTemplate.spec;
+    expect(spec.nodeSelector).toBeUndefined();
+    expect(spec.tolerations).toBeUndefined();
+  });
+
+  it("places the pod with the configured nodeSelector and tolerations", () => {
+    const spec = buildSandboxCrManifest({
+      ...baseInput,
+      nodeSelector: { workload: "agents" },
+      tolerations: [{ key: "dedicated", operator: "Equal", value: "agents", effect: "NoSchedule" }],
+    }).spec.podTemplate.spec;
+    expect(spec.nodeSelector).toEqual({ workload: "agents" });
+    expect(spec.tolerations).toEqual([
+      { key: "dedicated", operator: "Equal", value: "agents", effect: "NoSchedule" },
+    ]);
+  });
+
   it("returns a Sandbox CR with the correct apiVersion and kind", () => {
     const cr = buildSandboxCrManifest(baseInput);
     expect(cr.apiVersion).toBe("agents.x-k8s.io/v1alpha1");

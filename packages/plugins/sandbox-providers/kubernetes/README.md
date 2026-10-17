@@ -71,6 +71,8 @@ Common optional fields:
 | `egressAllowCidrs` | `[]` | Additional CIDRs to allow egress to. |
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs) or `cilium` (CiliumNetworkPolicy + FQDN allow-list). |
 | `runtimeClassName` | (none) | e.g. `kata-fc` for Firecracker-backed microVMs. Cluster must have the RuntimeClass installed. |
+| `nodeSelector` | (none) | Node labels every agent pod must match, e.g. `{ "workload": "agents" }`. Use with `tolerations` to keep agent pods on a dedicated node pool. |
+| `tolerations` | (none) | Kubernetes tolerations copied onto every agent pod, e.g. `[{ "key": "dedicated", "operator": "Equal", "value": "agents", "effect": "NoSchedule" }]`. |
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |

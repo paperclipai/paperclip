@@ -29,6 +29,8 @@ export interface BuildSandboxCrManifestInput {
     limits?: { cpu?: string; memory?: string };
   };
   runtimeClassName?: string;
+  nodeSelector?: Record<string, string>;
+  tolerations?: Record<string, unknown>[];
   imagePullSecrets?: string[];
 }
 
@@ -65,6 +67,12 @@ export function buildSandboxCrManifest(
           restartPolicy: "Always",
           ...(input.runtimeClassName
             ? { runtimeClassName: input.runtimeClassName }
+            : {}),
+          ...(input.nodeSelector && Object.keys(input.nodeSelector).length > 0
+            ? { nodeSelector: { ...input.nodeSelector } }
+            : {}),
+          ...(input.tolerations && input.tolerations.length > 0
+            ? { tolerations: input.tolerations.map((t) => ({ ...t })) }
             : {}),
           ...(input.imagePullSecrets && input.imagePullSecrets.length > 0
             ? {

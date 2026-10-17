@@ -380,6 +380,8 @@ const plugin = definePlugin({
           labels,
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
+          nodeSelector: config.nodeSelector,
+          tolerations: config.tolerations,
           imagePullSecrets: config.imagePullSecrets,
         })
       : buildJobManifest({
@@ -392,6 +394,8 @@ const plugin = definePlugin({
           labels,
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
+          nodeSelector: config.nodeSelector,
+          tolerations: config.tolerations,
           activeDeadlineSec: config.podActivityDeadlineSec,
           ttlSecondsAfterFinished: config.jobTtlSecondsAfterFinished,
           imagePullSecrets: config.imagePullSecrets,
