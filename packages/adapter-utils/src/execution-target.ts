@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { ACP_PROCESS_TERMINAL_SIGNALS, type ACP_PROCESS_TERMINAL_SOURCES } from "./acpx-engine/constants.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -372,8 +373,19 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   stop(): Promise<void>;
 }
 
+// First terminal evidence a sandbox process session observed. Every field is a
+// closed value: no message, command, path, payload, or provider error text.
+export interface AdapterExecutionTargetProcessSessionTerminalEvidence {
+  source: (typeof ACP_PROCESS_TERMINAL_SOURCES)[number];
+  outcome: "exit" | "error";
+  exitCode: number | "unknown";
+  signal: (typeof ACP_PROCESS_TERMINAL_SIGNALS)[number] | "unknown";
+}
+
 export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   agentCommand: string;
+  // Returns null until the session records terminal evidence.
+  readTerminalEvidence?(): AdapterExecutionTargetProcessSessionTerminalEvidence | null;
   stop(): Promise<void>;
 }
 
@@ -2195,22 +2207,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
   let pollTimer: NodeJS.Timeout | null = null;
-  let terminalEvidenceRecorded = false;
+  let terminalEvidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null = null;
   const recordTerminalEvidence = (
-    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    source: AdapterExecutionTargetProcessSessionTerminalEvidence["source"],
     event: { type?: string; code?: number | null; signal?: string | null },
   ) => {
-    if (terminalEvidenceRecorded) return;
-    terminalEvidenceRecorded = true;
+    if (terminalEvidence) return;
     // Remote frames are untrusted. Keep the retained diagnostic bounded and
     // independent of messages, commands, paths, payloads, and provider errors.
     const outcome = event.type === "exit" ? "exit" : "error";
     const code = typeof event.code === "number" && Number.isInteger(event.code)
       && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
-    const signal = typeof event.signal === "string" && [
-      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
-      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
-    ].includes(event.signal) ? event.signal : "unknown";
+    const signal = ACP_PROCESS_TERMINAL_SIGNALS.find((name) => name === event.signal) ?? "unknown";
+    terminalEvidence = { source, outcome, exitCode: code, signal };
     logFailureWithoutWaiting(
       `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
     );
@@ -2589,6 +2598,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   return {
     agentCommand,
+    readTerminalEvidence: () => terminalEvidence,
     stop: async () => {
       stopping = true;
       // End the `sandbox.agentProcess` span now, before the caller ends the run

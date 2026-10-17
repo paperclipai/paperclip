@@ -6,7 +6,11 @@ import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
-import { ACP_TOOL_KINDS } from "@paperclipai/adapter-utils/acpx-engine/constants";
+import {
+  ACP_PROCESS_TERMINAL_SIGNALS,
+  ACP_PROCESS_TERMINAL_SOURCES,
+  ACP_TOOL_KINDS,
+} from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
@@ -55,6 +59,22 @@ function readAcpPendingToolKinds(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.length > 200) return null;
   const kinds = value.split(",");
   return kinds.every((kind) => ACP_PENDING_TOOL_KIND_LABELS.has(kind)) ? value : null;
+}
+
+/** How the sandbox agent process session ended, as closed labels and a bounded exit code. */
+function readAcpProcessTerminal(result: unknown): Context {
+  const source = ACP_PROCESS_TERMINAL_SOURCES.find((label) => label === read(result, "acpProcessTerminalSource"));
+  if (!source) return {};
+  const fields: Context = { acpProcessTerminalSource: source };
+  const outcome = read(result, "acpProcessTerminalOutcome");
+  if (outcome === "exit" || outcome === "error") fields.acpProcessTerminalOutcome = outcome;
+  const exitCode = read(result, "acpProcessTerminalExitCode");
+  if (typeof exitCode === "number" && Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255) {
+    fields.acpProcessTerminalExitCode = exitCode;
+  }
+  const signal = ACP_PROCESS_TERMINAL_SIGNALS.find((label) => label === read(result, "acpProcessTerminalSignal"));
+  if (signal) fields.acpProcessTerminalSignal = signal;
+  return fields;
 }
 
 function read(value: unknown, key: string): unknown {
@@ -315,6 +335,7 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   }
   const closeSettlement = readNativeCloseSettlement(options.nativeCloseFailure);
   if (closeSettlement) Object.assign(execution, closeSettlement);
+  Object.assign(execution, readAcpProcessTerminal(result));
   const pendingToolKinds = readAcpPendingToolKinds(read(result, "acpPendingToolKinds"));
   if (pendingToolKinds) execution.acpPendingToolKinds = pendingToolKinds;
   const toolInventoryComplete = read(result, "acpToolInventoryComplete");
