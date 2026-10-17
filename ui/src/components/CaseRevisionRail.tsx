@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { casesApi, type CaseDocumentRevision } from "@/api/cases";
 import { queryKeys } from "@/lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "@/lib/line-diff";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -176,6 +177,7 @@ export function CaseRevisionRail({
     queryKey: queryKeys.cases.revisions(caseIdentifier, documentKey),
     queryFn: () => casesApi.listRevisions(caseIdentifier, documentKey),
   });
+  const revisionsView = useQueryView(revisionsQuery);
   const revisions = revisionsQuery.data?.revisions ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
@@ -189,11 +191,21 @@ export function CaseRevisionRail({
     }
   }, [revisions, selectedId]);
 
-  if (revisionsQuery.isLoading) {
+  if (revisionsQuery.isLoading || revisionsView.kind === "reconnecting") {
     return <p className="py-6 text-center text-sm text-muted-foreground">Loading revisions…</p>;
   }
-  if (revisionsQuery.isError) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Could not load revisions.</p>;
+  if (revisionsView.kind === "error") {
+    return (
+      <div className="flex justify-center py-6">
+        <QueryErrorState
+          size="inline"
+          error={revisionsQuery.error}
+          action="load revisions"
+          onRetry={revisionsView.retry}
+          retrying={revisionsView.isFetching}
+        />
+      </div>
+    );
   }
   if (revisions.length === 0) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No revisions yet.</p>;

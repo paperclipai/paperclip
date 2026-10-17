@@ -209,7 +209,6 @@ export function Sidebar() {
             </>
           ) : null}
           <PluginSlotOutlet
-            errorBehavior="hidden"
             slotTypes={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
@@ -217,7 +216,6 @@ export function Sidebar() {
             missingBehavior="placeholder"
           />
           <PluginLauncherOutlet
-            errorBehavior="hidden"
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
@@ -241,7 +239,6 @@ export function Sidebar() {
         </SidebarSection>
 
         <PluginSlotOutlet
-          errorBehavior="hidden"
           slotTypes={["sidebarPanel"]}
           context={pluginContext}
           className="flex flex-col gap-3"

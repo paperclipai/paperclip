@@ -360,7 +360,6 @@ export function NewIssueDialog() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: newIssueOpen,
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(() => projects ?? [], [projects]);
@@ -389,14 +388,12 @@ export function NewIssueDialog() {
       reuseEligible: true,
     }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && canChooseWorktrees,
-    retry: false,
   });
 
   const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
     queryKey: queryKeys.issues.detail(newIssueDefaults.parentId ?? ""),
     queryFn: () => issuesApi.get(newIssueDefaults.parentId!),
     enabled: newIssueOpen && Boolean(newIssueDefaults.parentId),
-    retry: false,
   });
   const parentPrivacyUnresolved = isSubIssueMode && !privacyParent;
   const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
