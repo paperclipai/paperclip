@@ -13,6 +13,34 @@ log "starting"
 PUID=${USER_UID:-1000}
 PGID=${USER_GID:-1000}
 
+# Managed embedded database stacks (Paperclip Cloud): the supervisor must start
+# as root so PostgreSQL and the tenant app run as different OS users. Any
+# problem with the contract fails closed here; the supervisor validates the rest.
+managed_db_root=""
+if [ -n "${PAPERCLIP_MANAGED_DATABASE+x}" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "docker-entrypoint.sh: PAPERCLIP_MANAGED_DATABASE requires starting as root" >&2
+        exit 1
+    fi
+    managed_db_root="$(printf '%s' "$PAPERCLIP_MANAGED_DATABASE" | jq -er '.root')" || {
+        echo "docker-entrypoint.sh: PAPERCLIP_MANAGED_DATABASE is not valid JSON with a root" >&2
+        exit 1
+    }
+    managed_db_user="${PAPERCLIP_MANAGED_DATABASE_DB_USER:-paperclip-db}"
+    # The supervisor runs as root, so it must come from the root-owned bundle
+    # (the cloud image target), never from /app, which the app user owns.
+    managed_db_supervisor=/opt/paperclip-managed-database
+    if [ ! -f "$managed_db_supervisor/main.mjs" ] || [ ! -f "$managed_db_supervisor/release.json" ]; then
+        echo "docker-entrypoint.sh: this image has no managed database supervisor; build the cloud target" >&2
+        exit 1
+    fi
+    # Symbolic links (the engine's library aliases) always report mode 0777.
+    if [ -n "$(find "$managed_db_supervisor" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit)" ]; then
+        echo "docker-entrypoint.sh: $managed_db_supervisor must be root-owned and unwritable by other users" >&2
+        exit 1
+    fi
+fi
+
 # Without root we can neither remap the node user (usermod/groupmod/chown)
 # nor switch users (gosu needs CAP_SETUID/CAP_SETGID), so exec directly.
 # This covers Kubernetes restricted PodSecurity (runAsNonRoot + runAsUser)
@@ -99,6 +127,61 @@ fi
 # marker records the verified node UID/GID, so later boots skip the full
 # walk. Delete the marker to force a full probe on the next boot.
 home_dir="${PAPERCLIP_HOME:-/paperclip}"
+if [ -n "$managed_db_root" ]; then
+    # The supervisor's directory stays owned by root and the database user;
+    # handing it to node would give the app the database files and secrets.
+    # The tiered probe below repairs with an unpruned chown -R, so managed
+    # stacks keep this pruned full walk and never record the marker.
+    #
+    # A volume written before its parents were protected (below) may hold the
+    # supervisor's directory under another name, so the walk does not trust
+    # its path alone. It also skips every directory that holds a root-owned
+    # volume.json (the supervisor's identity file, which the app cannot
+    # create) and everything the database user owns.
+    if [ -d "$home_dir" ]; then
+        find "$home_dir" \( -path "$managed_db_root" \
+                -o \( -type d -user "$managed_db_user" \) \
+                -o \( -type d -user root -exec test -f {}/volume.json \; -exec test -O {}/volume.json \; \) \
+            \) -prune \
+            -o ! -user "$managed_db_user" \( ! -user node -o ! -group node \) -exec chown -h node:node {} +
+    fi
+    # Rename permission comes from the parent directory, so the supervisor's
+    # root-only modes protect nothing while the app can write a directory
+    # above it. Every directory from its parent up to the volume mount becomes
+    # root-owned and sticky: the app (group node) still creates and replaces
+    # its own entries in its home, but cannot rename the supervisor's
+    # directory. The supervisor refuses to start without this.
+    managed_db_mount="$(printf '%s' "$PAPERCLIP_MANAGED_DATABASE" | jq -er '.volume.mountPath')" || {
+        echo "docker-entrypoint.sh: PAPERCLIP_MANAGED_DATABASE has no volume.mountPath" >&2
+        exit 1
+    }
+    # Only a normalized root strictly inside a mount other than / is walked,
+    # so the loop never reaches a directory outside the volume.
+    case "$managed_db_root" in
+        [!/]*|*//*|*/./*|*/../*|*/.|*/..) managed_db_root_inside=0 ;;
+        "$managed_db_mount"/?*) managed_db_root_inside=1 ;;
+        *) managed_db_root_inside=0 ;;
+    esac
+    if [ -z "$managed_db_mount" ] || [ "$managed_db_mount" = / ] || [ "$managed_db_root_inside" -ne 1 ]; then
+        echo "docker-entrypoint.sh: managed database root must be a normalized path inside a volume mount other than /" >&2
+        exit 1
+    fi
+    dir="$(dirname "$managed_db_root")"
+    while :; do
+        if [ -L "$dir" ]; then
+            echo "docker-entrypoint.sh: $dir is a symbolic link; refusing to protect the managed database root" >&2
+            exit 1
+        fi
+        if [ -d "$dir" ]; then
+            chown root:node "$dir"
+            chmod 1775 "$dir"
+        fi
+        [ "$dir" != "$managed_db_mount" ] || break
+        dir="$(dirname "$dir")"
+    done
+    log "starting managed database supervisor"
+    exec node "$managed_db_supervisor/main.mjs" run -- "$@"
+fi
 ownership_marker="$home_dir/.paperclip-ownership-verified"
 ownership_shallow_depth=3
 

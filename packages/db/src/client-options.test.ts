@@ -5,6 +5,7 @@ import {
   databaseClientOptionsFromEnv,
   postgresJsOptions,
   resolveDatabaseClientOptions,
+  unixSocketConnectionOptions,
 } from "./client.js";
 
 describe("databaseClientOptionsFromEnv", () => {
@@ -118,5 +119,21 @@ describe("resolveDatabaseClientOptions", () => {
     expect(postgresJsOptions(resolveDatabaseClientOptions({ idleTimeoutSeconds: 0 }))).toMatchObject({
       idle_timeout: 0,
     });
+  });
+});
+
+describe("unixSocketConnectionOptions", () => {
+  it("lifts libpq's ?host=/socket/dir out of the URL", () => {
+    expect(unixSocketConnectionOptions("postgres://owner:pw@localhost:54329/paperclip?host=%2Fvar%2Frun%2Fpg")).toEqual({
+      url: "postgres://owner:pw@localhost:54329/paperclip",
+      host: "/var/run/pg",
+    });
+  });
+
+  it("leaves TCP URLs and non-path hosts untouched", () => {
+    const url = "postgres://app:pw@127.0.0.1:5432/paperclip?sslmode=disable";
+    expect(unixSocketConnectionOptions(url)).toEqual({ url });
+    expect(unixSocketConnectionOptions("postgres://a@localhost/db?host=db.internal")).toEqual({ url: "postgres://a@localhost/db?host=db.internal" });
+    expect(unixSocketConnectionOptions("not a url")).toEqual({ url: "not a url" });
   });
 });

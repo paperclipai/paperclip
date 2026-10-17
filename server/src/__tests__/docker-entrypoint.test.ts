@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +58,7 @@ function installStubs(ids: StubOptions) {
       `else echo 0; fi`,
     ].join("\n"),
   );
-  for (const cmd of ["usermod", "groupmod", "chown"]) {
+  for (const cmd of ["usermod", "groupmod", "chown", "chmod"]) {
     writeStub(cmd, `echo "${cmd} $*" >> "${logFile}"`);
   }
   // The entrypoint's ownership probes are first-mismatch finds over the app
@@ -86,8 +86,8 @@ function installStubs(ids: StubOptions) {
   );
 }
 
-async function runEntrypoint(env: Record<string, string> = {}) {
-  const result = await execFileAsync("sh", [ENTRYPOINT, "echo", "ENTRYPOINT-CMD-RAN"], {
+async function runEntrypoint(env: Record<string, string> = {}, script = ENTRYPOINT) {
+  const result = await execFileAsync("sh", [script, "echo", "ENTRYPOINT-CMD-RAN"], {
     env: { PATH: `${stubDir}:${process.env.PATH}`, ...env },
   });
   const calls = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
@@ -351,6 +351,80 @@ describe("docker-entrypoint.sh", () => {
       expect(stdout).toMatch(new RegExp(`^${stamp}ownership repair finished in \\d+s$`, "m"));
       expect(stdout).toMatch(new RegExp(`^${stamp}starting app as node$`, "m"));
       expect(stdout.indexOf("starting app as node")).toBeLessThan(stdout.indexOf("ENTRYPOINT-CMD-RAN"));
+    });
+  });
+
+  describe("managed database stacks", () => {
+    const SUPERVISOR_LINE = "managed_db_supervisor=/opt/paperclip-managed-database\n";
+
+    /**
+     * The entrypoint with its root-owned supervisor bundle swapped for a stub
+     * that prints its arguments, and a minimal jq for the config fields.
+     */
+    function managedEntrypoint(): string {
+      const bundle = join(stubDir, "bundle");
+      mkdirSync(bundle);
+      writeFileSync(join(bundle, "main.mjs"), `console.log("SUPERVISOR " + process.argv.slice(2).join(" "));\n`);
+      writeFileSync(join(bundle, "release.json"), "{}\n");
+      writeStub("jq", `exec node -e 'let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => { const v = process.argv[1].split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), JSON.parse(s)); if (v == null) process.exit(1); console.log(v); });' "$2"`);
+      const script = readFileSync(ENTRYPOINT, "utf8");
+      expect(script).toContain(SUPERVISOR_LINE);
+      const path = join(stubDir, "docker-entrypoint.sh");
+      writeFileSync(path, script.replace(SUPERVISOR_LINE, `managed_db_supervisor=${bundle}\n`));
+      return path;
+    }
+
+    function managedEnv(volume: string, root: string) {
+      return { PAPERCLIP_HOME: volume, PAPERCLIP_MANAGED_DATABASE: JSON.stringify({ root, volume: { mountPath: volume } }) };
+    }
+
+    it("makes every directory from the managed root's parent up to the volume root-owned and sticky", async () => {
+      // Rename permission comes from the parent: on a node-owned volume root
+      // the app could move the supervisor's root-only directory aside.
+      installStubs({ uid: 0, gid: 0 });
+      const script = managedEntrypoint();
+      const volume = join(stubDir, "volume");
+      mkdirSync(join(volume, "system"), { recursive: true });
+
+      const { stdout, calls } = await runEntrypoint(managedEnv(volume, join(volume, "system", ".managed-database")), script);
+
+      expect(stdout).toContain("SUPERVISOR run -- echo ENTRYPOINT-CMD-RAN");
+      const lines = calls.trim().split("\n");
+      const protectedLines = [
+        `chown root:node ${volume}/system`,
+        `chmod 1775 ${volume}/system`,
+        `chown root:node ${volume}`,
+        `chmod 1775 ${volume}`,
+      ];
+      expect(lines.filter((line) => /^(chown root:node|chmod) /.test(line))).toEqual(protectedLines);
+      // After the walk that hands the home to node, which would undo it.
+      expect(lines.indexOf(`find-full ${volume}`)).toBeLessThan(lines.indexOf(protectedLines[0]));
+    });
+
+    it.each([
+      ["outside the mount", (volume: string) => ({ root: join(stubDir, "elsewhere", ".managed-database"), mount: volume })],
+      ["escaping the mount with ..", (volume: string) => ({ root: `${volume}/../elsewhere/.managed-database`, mount: volume })],
+      ["inside the / mount", () => ({ root: "/srv/.managed-database", mount: "/" })],
+      ["below a symbolic link", (volume: string) => {
+        symlinkSync(stubDir, join(volume, "link"));
+        return { root: join(volume, "link", ".managed-database"), mount: volume };
+      }],
+    ])("refuses to protect a managed root %s", async (_label, layout) => {
+      installStubs({ uid: 0, gid: 0 });
+      const script = managedEntrypoint();
+      const volume = join(stubDir, "volume");
+      mkdirSync(volume);
+      const { root, mount } = layout(volume);
+
+      const failure = await runEntrypoint({ PAPERCLIP_HOME: volume, PAPERCLIP_MANAGED_DATABASE: JSON.stringify({ root, volume: { mountPath: mount } }) }, script)
+        .then(() => null, (error: { code: number; stdout: string; stderr: string }) => error);
+
+      expect(failure?.code).toBe(1);
+      expect(failure?.stderr).toMatch(/managed database root|symbolic link/);
+      expect(failure?.stdout).not.toContain("SUPERVISOR");
+      const calls = readFileSync(logFile, "utf8");
+      expect(calls).not.toContain("chown root:node");
+      expect(calls).not.toContain("chmod");
     });
   });
 

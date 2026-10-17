@@ -315,6 +315,14 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+Paperclip Cloud stacks can also run a managed embedded cluster on the stack
+volume. The image supervisor selects that mode from `PAPERCLIP_MANAGED_DATABASE`,
+not from a missing `DATABASE_URL`, and gives the app a restricted local
+`DATABASE_URL`. Migrations then run only through the supervisor's maintenance
+commands, as the schema-owner role. Core migrations must therefore run as a
+database owner without superuser rights. See
+[managed-embedded-database.md](managed-embedded-database.md).
+
 ## Migration authoring checklist
 
 The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
