@@ -63,6 +63,7 @@ import type {
 } from "./define-plugin.js";
 import type {
   PluginContext,
+  PluginRuntimeClient,
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
@@ -348,7 +349,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   // distinct company's config. `null` until the first company-scoped delivery.
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
-  const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext | undefined>();
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -480,6 +481,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         if (!manifest) throw new Error("Plugin context accessed before initialization");
         return manifest;
       },
+
+      runtime: {
+        runProactively<T>(callback: () => T): T {
+          return invocationContextStorage.run(undefined, callback);
+        },
+      } satisfies PluginRuntimeClient,
 
       config: {
         async get(companyId?: string) {
