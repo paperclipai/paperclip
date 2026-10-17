@@ -254,6 +254,58 @@ describe("remote managed runtime", () => {
     expect(exclude).toContain("build");
     expect(exclude).toContain("weird\\[1].txt");
     expect(exclude).toContain("node_modules");
+    // Nested agent worktrees are excluded from referenced projects too, at the
+    // workspace root and at any depth.
+    expect(exclude).toContain(".claude/worktrees");
+    expect(exclude).toContain(".claude/worktrees/*");
+    expect(exclude).toContain("*/.claude/worktrees");
+    expect(exclude).toContain("*/.claude/worktrees/*");
+    expect(exclude).toContain(".paperclip/worktrees");
+    expect(exclude).toContain("*/.paperclip/worktrees/*");
+  });
+
+  it("drops the nested-worktree excludes for referenced projects when the directories are overridden", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-ignore-override-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const projectDir = path.join(rootDir, "referenced-project");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-ignore-override",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      // Empty: nested worktrees stage like ordinary files.
+      nestedWorktreeDirs: [],
+      additionalSources: [
+        {
+          localPath: projectDir,
+          projectId: "proj",
+          ignoreResolution: { kind: "git", ignoredPaths: ["secret.env"] },
+        },
+      ],
+    });
+
+    const call = syncDirectoryToSsh.mock.calls.find((entry) => entry[0].localDir === projectDir);
+    expect(call).toBeDefined();
+    const exclude = (call![0] as { exclude?: string[] }).exclude ?? [];
+    expect(exclude).toContain("secret.env");
+    expect(exclude).not.toContain(".claude/worktrees");
+    expect(exclude).not.toContain("*/.claude/worktrees/*");
+    expect(exclude).not.toContain(".paperclip/worktrees");
+    expect(exclude).not.toContain("*/.paperclip/worktrees/*");
   });
 
   it("skips a project whose ignore resolution failed without ever calling syncDirectoryToSsh for it", async () => {
