@@ -104,6 +104,32 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("delegates a child with a required target and one authenticated request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "child-1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipDelegateChildIssue");
+    expect(tool.schema.safeParse({
+      parentIssueId: "PAP-10",
+      title: "Investigate report",
+      idempotencyKey: "pap-10-investigation",
+    }).success).toBe(false);
+    await tool.execute({
+      parentIssueId: "PAP-10",
+      title: "Investigate report",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      idempotencyKey: "pap-10-investigation",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-10/children");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      title: "Investigate report",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      idempotencyKey: "pap-10-investigation",
+      delegateAndBlockParent: true,
+    });
+  });
   it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "issue-1", status: "todo" }),
@@ -121,13 +147,15 @@ describe("paperclip MCP tools", () => {
       "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
     );
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
     });
+    expect(body).not.toHaveProperty("status");
   });
 
   it("defaults issue document format to markdown", async () => {

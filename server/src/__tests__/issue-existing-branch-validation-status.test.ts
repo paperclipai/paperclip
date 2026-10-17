@@ -128,6 +128,22 @@ describe("existingBranch issue create/update validation status", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("rejects blocked delegation inside accepted-plan decomposition", async () => {
+    const { app, handler } = buildApp(createAcceptedPlanDecompositionSchema);
+    const res = await request(app).post("/target").send({
+      acceptedPlanRevisionId: "11111111-1111-4111-8111-111111111111",
+      children: [{
+        title: "Investigate",
+        status: "todo",
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        idempotencyKey: "investigate-once",
+        delegateAndBlockParent: true,
+      }],
+    });
+    expect(res.status).toBe(400);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("keeps 400 for validation failures unrelated to existingBranch", async () => {
     const { app, handler } = buildApp(createIssueSchema);
     const res = await request(app).post("/target").send({ title: 42, status: "todo" });

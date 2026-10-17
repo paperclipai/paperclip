@@ -863,15 +863,38 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(
         .array(z.string().trim().min(1).max(500))
         .max(20)
         .optional(),
+      idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
       blockParentUntilDone: z.boolean().optional().default(false),
+      delegateAndBlockParent: z.boolean().optional().default(false),
     }),
-).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription);
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription).superRefine((value, ctx) => {
+  if (!value.delegateAndBlockParent) return;
+  if (!value.assigneeAgentId || value.assigneeUserId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["assigneeAgentId"], message: "Delegation requires one target agent" });
+  }
+  if (!value.idempotencyKey) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["idempotencyKey"], message: "Delegation requires an idempotency key" });
+  }
+  if (value.status !== "todo") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Delegated child must start in todo" });
+  }
+});
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
 export const createAcceptedPlanDecompositionSchema = z.object({
   acceptedPlanRevisionId: z.string().guid(),
   children: z.array(createChildIssueSchema).min(1).max(25),
+}).superRefine((value, ctx) => {
+  value.children.forEach((child, index) => {
+    if (child.delegateAndBlockParent) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["children", index, "delegateAndBlockParent"],
+        message: "Delegation must use the child-issue endpoint",
+      });
+    }
+  });
 });
 
 export type CreateAcceptedPlanDecomposition = z.infer<

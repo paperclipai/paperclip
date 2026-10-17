@@ -3,12 +3,17 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
 
-import { capabilityGroups, validateInventorySchema, validateInventories } from "./lib/capability-inventory.mjs";
+import { capabilityGroups, decodeInventory, encodeInventory, validateInventorySchema, validateInventories } from "./lib/capability-inventory.mjs";
 
 const inventorySchema = JSON.parse(await readFile(
   resolve(import.meta.dirname, "../spec/capability/inventory.schema.json"),
   "utf8",
 ));
+
+test("decodes a checked-out generated inventory with Windows line endings", () => {
+  const inventory = { schemaVersion: 2, rows: [] };
+  assert.deepEqual(decodeInventory(encodeInventory(inventory).replace(/\n/g, "\r\n")), inventory);
+});
 
 function row(id, group = "hb") {
   return {
@@ -25,7 +30,7 @@ function row(id, group = "hb") {
 
 function validInventories() {
   const evaluations = Array.from({ length: 106 }, (_, index) => row(`eval-${index}`, capabilityGroups[index % capabilityGroups.length]));
-  const aliases = Array.from({ length: 42 }, (_, index) => ({
+  const aliases = Array.from({ length: 43 }, (_, index) => ({
     id: `mcp:tool-${index}`,
     name: `tool-${index}`,
     sourceAnchor: `source:${index + 1}`,

@@ -489,7 +489,8 @@
         "live"
       ],
       "legacyAliases": [
-        "mcp:paperclipCreateIssue"
+        "mcp:paperclipCreateIssue",
+        "mcp:paperclipDelegateChildIssue"
       ],
       "contractCase": "protocol-action:create_task",
       "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_task has a schema-valid canonical example and every declared projection",

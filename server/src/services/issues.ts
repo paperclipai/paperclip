@@ -1976,9 +1976,16 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
+  delegateAndBlockParent?: boolean;
   executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
+};
+type IssueChildCreateResult = {
+  issue: IssueWithLabels & IssueRelationSummaryMap;
+  parentBlockerAdded: boolean;
+  delegationReplay?: boolean;
+  delegatedParent?: IssueRow;
 };
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
@@ -9344,18 +9351,170 @@ export function issueService(db: Db) {
       };
     },
 
-    createChild: async (parentIssueId: string, data: IssueChildCreateInput) => {
-      const parent = await db
+    createChild: async (
+      parentIssueId: string,
+      data: IssueChildCreateInput,
+      dbOrTx: Db | DbTransaction = db,
+    ): Promise<IssueChildCreateResult> => {
+      if (data.delegateAndBlockParent) {
+        if (!data.assigneeAgentId || data.assigneeUserId || !data.idempotencyKey?.trim()) {
+          throw unprocessable("Delegation requires a target agent and idempotency key");
+        }
+        if (data.status != null && data.status !== "todo") {
+          throw unprocessable("Delegated child must start in todo");
+        }
+        if (dbOrTx !== db) throw new Error("Delegation owns its transaction");
+        const publications: ActivityPublication[] = [];
+        const postCommitActions: IssuePostCommitAction[] = [];
+        const result = await db.transaction(async (tx) => {
+          const parent = await tx
+            .select()
+            .from(issues)
+            .where(eq(issues.id, parentIssueId))
+            .then((rows) => rows[0] ?? null);
+          if (!parent) throw notFound("Parent issue not found");
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${parent.companyId}`}, 0))`);
+          const [lockedParent] = await tx
+            .select()
+            .from(issues)
+            .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, parent.companyId)))
+            .for("update");
+          if (!lockedParent) throw notFound("Parent issue not found");
+          const scopedKey = `delegate-child:${createHash("sha256")
+            .update(parent.id).update(":").update(data.idempotencyKey!.trim())
+            .digest("hex")}`;
+          const existingChild = await tx
+            .select({ issue: issues })
+            .from(issueCreateIdempotencyKeys)
+            .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+            .where(and(
+              eq(issueCreateIdempotencyKeys.companyId, parent.companyId),
+              eq(issueCreateIdempotencyKeys.idempotencyKey, scopedKey),
+            ))
+            .limit(1)
+            .then((rows) => rows[0]?.issue ?? null);
+          if (existingChild) {
+            const [creationActivity] = await tx
+              .select({ details: activityLog.details })
+              .from(activityLog)
+              .where(and(
+                eq(activityLog.companyId, parent.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, existingChild.id),
+                eq(activityLog.action, "issue.child_created"),
+              ))
+              .orderBy(asc(activityLog.createdAt), asc(activityLog.id))
+              .limit(1);
+            if (existingChild.parentId !== parent.id ||
+                creationActivity?.details?.assigneeAgentId !== data.assigneeAgentId) {
+              throw conflict("Delegation key already belongs to a different child or target agent");
+            }
+            const [enriched] = await withIssueLabels(tx, [existingChild]);
+            const [issue] = await withIssueRelationSummaries(parent.companyId, [enriched], tx);
+            return { issue, parentBlockerAdded: false, delegationReplay: true, delegatedParent: lockedParent };
+          }
+          if (!["todo", "in_progress", "blocked"].includes(lockedParent.status)) {
+            throw unprocessable("Delegation requires an active parent issue");
+          }
+          const childResult = await issueService(db).createChild(parentIssueId, {
+            ...data,
+            status: "todo",
+            idempotencyKey: scopedKey,
+            allowDuplicate: true,
+            blockParentUntilDone: false,
+            delegateAndBlockParent: false,
+          }, tx);
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, parent.companyId),
+              eq(issueRelations.relatedIssueId, parent.id),
+              eq(issueRelations.type, "blocks"),
+            ));
+          const blockerIds = [...new Set([
+            ...existingBlockers.map((row) => row.blockerIssueId),
+            childResult.issue.id,
+          ])];
+          const updatedParent = await issueService(db).update(parent.id, {
+            status: "blocked",
+            blockedByIssueIds: blockerIds,
+            companyGuard: parent.companyId,
+            actorAgentId: data.actorAgentId ?? null,
+            actorRunId: data.actorRunId ?? null,
+            actorUserId: data.actorUserId ?? null,
+          }, tx, publications, postCommitActions);
+          if (!updatedParent) throw notFound("Parent issue not found");
+          await issueService(db).addComment(
+            parent.id,
+            `Delegated to ${childResult.issue.identifier ?? childResult.issue.id}: ${childResult.issue.title}`,
+            {
+              agentId: data.actorAgentId ?? undefined,
+              userId: data.actorUserId ?? undefined,
+              runId: data.actorRunId ?? null,
+            },
+            undefined,
+            tx,
+          );
+          await logActivity(tx as unknown as Db, {
+            companyId: parent.companyId,
+            actorType: data.actorAgentId ? "agent" : data.actorUserId ? "user" : "system",
+            actorId: data.actorAgentId ?? data.actorUserId ?? "issue_service",
+            agentId: data.actorAgentId ?? null,
+            runId: data.actorRunId ?? null,
+            action: "issue.child_created",
+            entityType: "issue",
+            entityId: childResult.issue.id,
+            details: {
+              parentId: parent.id,
+              identifier: childResult.issue.identifier,
+              title: childResult.issue.title,
+              status: childResult.issue.status,
+              assigneeAgentId: childResult.issue.assigneeAgentId,
+              parentBlockerAdded: true,
+              source: "child_delegation",
+            },
+          }, publications);
+          await logActivity(tx as unknown as Db, {
+            companyId: parent.companyId,
+            actorType: data.actorAgentId ? "agent" : data.actorUserId ? "user" : "system",
+            actorId: data.actorAgentId ?? data.actorUserId ?? "issue_service",
+            agentId: data.actorAgentId ?? null,
+            runId: data.actorRunId ?? null,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: parent.id,
+            details: {
+              identifier: updatedParent.identifier,
+              status: "blocked",
+              blockedByIssueIds: blockerIds,
+              changes: updatedParent.changes,
+              source: "child_delegation",
+            },
+          }, publications);
+          return {
+            issue: childResult.issue,
+            parentBlockerAdded: true,
+            delegationReplay: false,
+            delegatedParent: updatedParent,
+          };
+        });
+        if (result.delegationReplay) await data.assertCanReuseIssue?.(result.issue);
+        for (const publication of publications) publishActivity(publication);
+        await executeIssuePostCommitActions(db, postCommitActions);
+        return result;
+      }
+      const parent = await dbOrTx
         .select()
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
-      await assertExecutionTaskParent(db, parent.companyId, parent.id);
+      await assertExecutionTaskParent(dbOrTx as Db, parent.companyId, parent.id);
 
       const idempotencyKey = data.idempotencyKey?.trim();
       if (idempotencyKey) {
-        const existingChild = await db
+        const existingChild = await dbOrTx
           .select({ issue: issues })
           .from(issueCreateIdempotencyKeys)
           .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
@@ -9375,11 +9534,11 @@ export function issueService(db: Db) {
           }
           await data.assertCanReuseIssue?.(existingChild);
           data.onDeduplicated?.("idempotency_key");
-          const [enriched] = await withIssueLabels(db, [existingChild]);
+          const [enriched] = await withIssueLabels(dbOrTx, [existingChild]);
           const [withRelations] = await withIssueRelationSummaries(
             parent.companyId,
             [enriched],
-            db,
+            dbOrTx,
           );
           return {
             issue: withRelations,
@@ -9388,7 +9547,7 @@ export function issueService(db: Db) {
         }
       }
 
-      const [{ childCount }] = await db
+      const [{ childCount }] = await dbOrTx
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
         .where(
@@ -9407,6 +9566,7 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
+        delegateAndBlockParent: _delegateAndBlockParent,
         executionWorkspaceInheritanceMode = "linkage",
         actorAgentId,
         actorUserId,
@@ -9464,10 +9624,10 @@ export function issueService(db: Db) {
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
-      });
+      }, dbOrTx);
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
+        const existingBlockers = await dbOrTx
           .select({ blockerIssueId: issueRelations.issueId })
           .from(issueRelations)
           .where(
@@ -9487,11 +9647,12 @@ export function issueService(db: Db) {
             ]),
           ],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+          dbOrTx,
         );
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
-          db,
+          dbOrTx,
         );
       }
 
@@ -9896,7 +10057,7 @@ export function issueService(db: Db) {
       const deduplicateByTitle = allowDuplicate === false && !titleNeedsGeneration;
       issueData.title = resolvedTitle;
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettingsService(dbOrTx as Db).getExperimental()
       ).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -9907,7 +10068,7 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
+        await assertAssignableAgent(dbOrTx as Db, companyId, data.assigneeAgentId, {
           kind: "work",
         });
       }
@@ -10112,7 +10273,7 @@ export function issueService(db: Db) {
           : { type: "agent", agentId: issueData.createdByAgentId ?? issueData.assigneeAgentId, companyId });
         let workspaceIntent: TaskWorkspaceIntent | null = null;
         if (workspaceSelection && (workspaceSelectionSource === "explicit" || !inheritedWorkspaceSelection)) {
-          const projection = await executionWorkspaceService(db).validateSelection({ companyId,
+          const projection = await executionWorkspaceService(dbOrTx as Db).validateSelection({ companyId,
             actor: workspaceActor,
             selection: workspaceSelection, parentIssueId: issueData.parentId,
             taskCreation: { parentIssueId: issueData.parentId, projectId: issueData.projectId,
@@ -10194,7 +10355,7 @@ export function issueService(db: Db) {
             companyId, projectId: issueData.projectId, policy: projectPolicy,
           });
           if (projectWorkspaceId && isolatedWorkspacesEnabled) {
-            const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
+            const sourceStrategy = await executionWorkspaceService(dbOrTx as Db).resolveSourceWorkspaceStrategy({ companyId,
               assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
               executionWorkspaceSettings, executionWorkspacePolicy: projectPolicy,
               typedSelection: false, projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
@@ -10207,7 +10368,7 @@ export function issueService(db: Db) {
             .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
-          const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
+          const sourceStrategy = await executionWorkspaceService(dbOrTx as Db).resolveSourceWorkspaceStrategy({ companyId,
             assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
             executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy,
             typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
@@ -10872,7 +11033,7 @@ export function issueService(db: Db) {
         }
       }
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettingsService(dbOrTx as Db).getExperimental()
       ).enableIsolatedWorkspaces;
       if (options.bindRuntimeSharedWorkspace) {
         const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;

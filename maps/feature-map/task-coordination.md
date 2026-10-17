@@ -37,7 +37,7 @@ creates a hold; it does not change task statuses to a paused status.
 
 ### `task-relationships`
 
-Automated: [dependency wakeups](../../server/src/__tests__/issue-dependency-wakeups-routes.test.ts) checks server behavior; visual relationship navigation remains a manual check.
+Automated: [dependency wakeups](../../server/src/__tests__/issue-dependency-wakeups-routes.test.ts) checks server behavior. [Delegation service](../../server/src/__tests__/issues-service.test.ts) checks assigned child creation, parent blocking and retries; [route tests](../../server/src/__tests__/issue-assigned-backlog-contract-routes.test.ts) check the public API. Visual relationship navigation remains a manual check.
 
 Manual: Block one task on another, finish the prerequisite, and observe the dependent task’s eligible continuation. Follow parent/child links back to the source request. Verify no duplicate run or false parent completion occurs.
 

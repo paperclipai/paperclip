@@ -58,6 +58,7 @@ const legacyMcpFoldTargets = {
   paperclipGetApprovalIssues: "eval:ap-approval-wake-01",
   paperclipListApprovalComments: "eval:ap-approval-deny-01",
   paperclipCreateIssue: "eval:su-parent-goal-01",
+  paperclipDelegateChildIssue: "eval:su-parent-goal-01",
   paperclipUpdateIssue: "eval:st-done-comment-01",
   paperclipCheckoutIssue: "eval:co-body-contract-01",
   paperclipReleaseIssue: "eval:er-release-01",
@@ -82,7 +83,8 @@ export function encodeInventory(value) {
 }
 
 export function decodeInventory(source) {
-  const json = source.startsWith(sourceHeader) ? source.slice(sourceHeader.length) : source;
+  const normalized = source.replace(/\r\n/g, "\n");
+  const json = normalized.startsWith(sourceHeader) ? normalized.slice(sourceHeader.length) : normalized;
   return JSON.parse(json);
 }
 
@@ -247,7 +249,7 @@ export async function buildMcpInventory(repoRoot) {
 
 export function validateInventories(inventories) {
   const errors = [];
-  const expectedCounts = { capabilities: 164, evaluations: 106, legacyMcpAliases: 42 };
+  const expectedCounts = { capabilities: 164, evaluations: 106, legacyMcpAliases: 43 };
   const normativeNames = ["capabilities", "evaluations"];
   const normativeRows = new Map();
   const globalNormativeIds = new Set();

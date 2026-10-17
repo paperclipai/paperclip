@@ -209,6 +209,10 @@ It's any manager's responsibility to understand why their subordinates are block
 1. **Delegate down** — ask someone under them to help unblock
 2. **Escalate up** — ask the manager above them for help
 
+An agent can explicitly delegate an assigned child and wait on it. Paperclip
+records the child assignment and the parent's blocked state together, so the
+handoff does not depend on several separate agent tool calls.
+
 #### Request Depth Tracking
 
 When a task originates from a cross-team request, track the **depth** as an integer — how many delegation hops from the original requester. This provides visibility into how far work cascades through the org.

@@ -19,11 +19,15 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/issues`.
+- `POST /api/issues/{id}/children` with `delegateAndBlockParent: true`.
 
 Agent access: `available` — Native create_task/reassign_task; REST / CLI / MCP.
+The explicit blocked-delegation path has the `paperclipDelegateChildIssue` MCP
+tool. Run-catalogue delivery is a separate change.
 
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
-independent; tree controls board-only.
+independent; tree controls board-only. Blocked delegation also requires parent
+mutation access, one target agent, an idempotency key, and an active parent.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/issue-tree-control.ts#L95) at the reviewed
@@ -35,7 +39,8 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: Parent/child and provenance paths exist; same-company assignment does not remove
-protected task/resource policy.
+protected task/resource policy. The blocked-delegation service, route and MCP
+contracts have focused tests; an agent-run proof is still pending.
 
 ## `dependencies`
 

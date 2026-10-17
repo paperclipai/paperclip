@@ -5,6 +5,14 @@ import { callProjectTool, projectToolDefinitions } from "../services/project-too
 import { assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
 
+/** MCP structuredContent must be a record; array-valued reads remain text. */
+export function formatProjectToolResult(value: unknown) {
+  const content = [{ type: "text", text: JSON.stringify(value) }];
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? { content, structuredContent: value }
+    : { content };
+}
+
 /** Mounted after actor middleware; connection-scoped tokens cannot authenticate here. */
 export function projectToolRoutes(db: Db) {
   const router = Router();
@@ -28,7 +36,7 @@ export function projectToolRoutes(db: Db) {
         companyId: context.run.companyId, issueId: context.issue.id, agentId: context.run.agentId,
         conversation: Boolean(context.issue.conversationAgentId),
       });
-      return send({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+      return send(formatProjectToolResult(result));
     } catch (error) {
       return send({ isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Project tool failed" }] });
     }

@@ -3539,12 +3539,14 @@
         "eval:su-parent-goal-01",
         "mcp:paperclipListGoals",
         "mcp:paperclipGetGoal",
-        "mcp:paperclipCreateIssue"
+        "mcp:paperclipCreateIssue",
+        "mcp:paperclipDelegateChildIssue"
       ],
       "legacyMcpAliases": [
         "mcp:paperclipListGoals",
         "mcp:paperclipGetGoal",
-        "mcp:paperclipCreateIssue"
+        "mcp:paperclipCreateIssue",
+        "mcp:paperclipDelegateChildIssue"
       ]
     },
     {

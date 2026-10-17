@@ -11,6 +11,21 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Scoped run MCP update (2026-10-15): the authenticated
+`POST /api/mcp/project-tools` endpoint now advertises
+`paperclipListAgents`, `paperclipListIssues`, `paperclipGetIssue` and
+`paperclipListComments` in both standard and Ask mode. Standard mode also
+advertises `paperclipCreateIssue`, `paperclipUpdateIssue` and
+`paperclipAddComment`; Ask mode omits those writes. These are selected from
+the existing MCP server and call the normal REST routes with the run token and
+a 60-second request deadline. The generic API tool, secrets and administration
+are excluded. The focused
+[`project-tools-pagination` test](../../server/src/__tests__/project-tools-pagination.test.ts)
+checks the catalogue, mode restriction, authenticated route, parent and
+assignee fields, and deadline. This is component evidence, not a live run;
+verify a permitted and denied cross-task operation with an actual task-bound
+run before marking the capability qualified.
+
 ## `create`
 
 Review: `baseline`.

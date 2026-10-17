@@ -24,7 +24,8 @@ export const createTaskAction = {
     "prpEvidence": "semantic-operation item event plus company-entity state diff and audit record",
     "prpBindingStatus": "bound",
     "legacyAliases": [
-      "mcp:paperclipCreateIssue"
+      "mcp:paperclipCreateIssue",
+      "mcp:paperclipDelegateChildIssue"
     ]
   },
   "documentation": {

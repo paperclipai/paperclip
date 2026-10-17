@@ -31,6 +31,7 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   taskKey?: string | null;
+  idempotencyKey?: string | null;
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
   wakeCommentId?: string | null;
@@ -55,6 +56,7 @@ export function queueIssueAssignmentWakeup(input: {
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       ...(input.durableChatRequest
         ? { durableChatRequest: input.durableChatRequest }
         : {}),

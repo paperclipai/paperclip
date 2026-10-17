@@ -24,6 +24,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   schema: z.ZodObject;
+  executeRaw: (input: Record<string, unknown>) => Promise<unknown>;
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
@@ -39,6 +40,7 @@ function makeTool<TSchema extends z.ZodRawShape>(
     name,
     description,
     schema,
+    executeRaw: async (input) => execute(schema.parse(input)),
     execute: async (input) => {
       try {
         const parsed = schema.parse(input);
@@ -131,6 +133,14 @@ const upsertDocumentToolSchema = z.object({
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createIssueInputSchema);
+
+const delegateChildIssueToolSchema = z.object({
+  parentIssueId: issueIdSchema,
+  title: z.string().trim().min(1).max(240),
+  description: z.string().max(200000).optional(),
+  assigneeAgentId: z.string().guid(),
+  idempotencyKey: z.string().trim().min(1).max(255),
+});
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
@@ -517,6 +527,15 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+    ),
+    makeTool(
+      "paperclipDelegateChildIssue",
+      "Assign a child issue to another agent and block its parent until the child finishes",
+      delegateChildIssueToolSchema,
+      async ({ parentIssueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(parentIssueId)}/children`, {
+          body: { ...body, delegateAndBlockParent: true },
+        }),
     ),
     makeTool(
       "paperclipUpdateIssue",

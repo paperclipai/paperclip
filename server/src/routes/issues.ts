@@ -39,7 +39,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import {
@@ -12687,11 +12687,12 @@ export function issueRoutes(
         "Parent issue not found",
       );
       if (!parent) return;
-      if (
+      if (req.body.delegateAndBlockParent) {
+        if (!(await assertAgentIssueMutationAllowed(req, res, parent, { allowVisibleIssueWrite: true }))) return;
+      } else if (
         !isTaskBridgeKeyActor(req) &&
         !(await assertIssueWriteInfluenceAllowed(req, res, parent))
-      )
-        return;
+      ) return;
       if (
         !(await assertTaskWatchdogCreateIssueAllowed(
           req,
@@ -12790,7 +12791,7 @@ export function issueRoutes(
         },
         actor,
       );
-      const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+      const { issue, parentBlockerAdded, delegatedParent, delegationReplay } = await svc.createChild(parent.id, {
         ...createBody,
         workspaceSelectionActor: req.actor,
         projectId: childAssignmentScope.projectId,
@@ -12815,88 +12816,113 @@ export function issueRoutes(
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
         watchdogActorRunId: actor.runId,
-        assertCanReuseIssue: (existing) => assertCanReuseCreatedIssue(req, existing),
+        assertCanReuseIssue: req.body.delegateAndBlockParent
+          ? undefined
+          : (existing) => assertCanReuseCreatedIssue(req, existing),
       });
+      if (delegationReplay && !(await assertIssueReadAllowed(req, res, issue))) return;
       await externalObjectsSvc.syncIssueSafely(issue.id);
 
-      await logActivity(db, {
-        companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.child_created",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          parentId: parent.id,
-          identifier: issue.identifier,
-          title: issue.title,
-          ...buildCreateIssueActivityStatusDetails(issue, res),
-          inheritedExecutionWorkspaceFromIssueId: parent.id,
-          ...(Array.isArray(req.body.blockedByIssueIds)
-            ? { blockedByIssueIds: req.body.blockedByIssueIds }
-            : {}),
-          ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-          ...(serializationContext
-            ? {
-                watchdogFollowUpsSerialized: true,
-                serializedBehindIssueId: currentSerializedChild?.id ?? null,
-              }
-            : {}),
-        },
-      });
-
-      if (executionPolicy?.monitor) {
-        await logActivity(db, {
+      if (!delegationReplay) {
+        if (!req.body.delegateAndBlockParent) await logActivity(db, {
           companyId: parent.companyId,
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
           agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.monitor_scheduled",
+          action: "issue.child_created",
           entityType: "issue",
           entityId: issue.id,
           details: {
-            identifier: issue.identifier,
             parentId: parent.id,
-            nextCheckAt: executionPolicy.monitor.nextCheckAt,
-            notes: executionPolicy.monitor.notes,
-            scheduledBy: executionPolicy.monitor.scheduledBy,
-            serviceName: executionPolicy.monitor.serviceName ?? null,
-            timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-            maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-            recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            identifier: issue.identifier,
+            title: issue.title,
+            ...buildCreateIssueActivityStatusDetails(issue, res),
+            inheritedExecutionWorkspaceFromIssueId: parent.id,
+            ...(Array.isArray(req.body.blockedByIssueIds)
+              ? { blockedByIssueIds: req.body.blockedByIssueIds }
+              : {}),
+            ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+            ...(serializationContext
+              ? {
+                  watchdogFollowUpsSerialized: true,
+                  serializedBehindIssueId: currentSerializedChild?.id ?? null,
+                }
+              : {}),
           },
         });
-      }
 
-      if (issue.watchdog) {
-        await logActivity(db, {
-          companyId: parent.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.watchdog_created",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            watchdogId: issue.watchdog.id,
-            watchdogAgentId: issue.watchdog.watchdogAgentId,
-            source: "issue.child_create",
-            parentId: parent.id,
-          },
-        });
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              parentId: parent.id,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+
+        if (issue.watchdog) {
+          await logActivity(db, {
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.watchdog_created",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              watchdogId: issue.watchdog.id,
+              watchdogAgentId: issue.watchdog.watchdogAgentId,
+              source: "issue.child_create",
+              parentId: parent.id,
+            },
+          });
+        }
       }
 
       await retainBacklogHumanAssignment(db, issue, actor);
-      if (!serializationContext || !currentSerializedChild) {
-        void queueIssueAssignmentWakeup({
+      const delegationWakeKey = req.body.delegateAndBlockParent
+        ? `issue-delegation:${issue.id}`
+        : null;
+      let shouldWakeChild = true;
+      if (delegationReplay) {
+        shouldWakeChild = issue.status === "todo" && issue.assigneeAgentId === createBody.assigneeAgentId;
+        if (shouldWakeChild) {
+          const [acceptedWake] = await db
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.companyId, parent.companyId),
+              eq(agentWakeupRequests.agentId, issue.assigneeAgentId!),
+              eq(agentWakeupRequests.idempotencyKey, delegationWakeKey!),
+              ne(agentWakeupRequests.status, "skipped"),
+            ))
+            .limit(1);
+          shouldWakeChild = !acceptedWake;
+        }
+      }
+      if ((!serializationContext || !currentSerializedChild) && shouldWakeChild) {
+        const wake = queueIssueAssignmentWakeup({
           heartbeat,
           issue,
           reason: "issue_assigned",
@@ -12904,7 +12930,10 @@ export function issueRoutes(
           contextSource: "issue.child_create",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          idempotencyKey: delegationWakeKey,
         });
+        if (req.body.delegateAndBlockParent) await wake;
+        else void wake;
       }
       await blockWatchdogParentOnCurrentChild({
         actor,
@@ -12913,7 +12942,9 @@ export function issueRoutes(
       });
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
-      res.status(201).json(issue);
+      res.status(delegationReplay ? 200 : 201).json(
+        req.body.delegateAndBlockParent ? { child: issue, parent: delegatedParent } : issue,
+      );
     },
   );
 

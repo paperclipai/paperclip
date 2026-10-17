@@ -40,6 +40,7 @@
     "paperclipGetApprovalIssues": ["optional_agent_tool", "get_approval_context"],
     "paperclipListApprovalComments": ["optional_agent_tool", "get_approval_context"],
     "paperclipCreateIssue": ["optional_agent_tool", "create_task"],
+    "paperclipDelegateChildIssue": ["optional_agent_tool", "create_task"],
     "paperclipUpdateIssue": ["optional_agent_tool", "semantic_task_disposition"],
     "paperclipCheckoutIssue": ["control_plane_owned", "atomic_checkout"],
     "paperclipReleaseIssue": ["control_plane_owned", "runtime_release"],

@@ -5,11 +5,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
+  issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -46,6 +49,9 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
@@ -86,6 +92,62 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     }).returning();
     return parent;
   }
+
+  it("delegates through the real child route and replays without duplicate work", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "Investigator",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const app = createApp();
+    const body = {
+      title: "Investigate fictional report",
+      assigneeAgentId: targetAgentId,
+      idempotencyKey: "fictional-report-investigation",
+      delegateAndBlockParent: true,
+    };
+
+    const first = await request(app).post(`/api/issues/${parent.id}/children`).send(body).expect(201);
+    expect(first.body.child).toMatchObject({
+      parentId: parent.id,
+      assigneeAgentId: targetAgentId,
+      status: "todo",
+    });
+    expect(first.body.parent.status).toBe("blocked");
+    const [storedParent] = await db.select().from(issues).where(eq(issues.id, parent.id));
+    expect(storedParent.status).toBe("blocked");
+    expect(await db.select().from(issueRelations)).toEqual([
+      expect.objectContaining({ issueId: first.body.child.id, relatedIssueId: parent.id, type: "blocks" }),
+    ]);
+
+    const replay = await request(app).post(`/api/issues/${parent.id}/children`).send(body).expect(200);
+    expect(replay.body.child.id).toBe(first.body.child.id);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: targetAgentId,
+      source: "assignment",
+      status: "completed",
+      payload: { issueId: first.body.child.id },
+      idempotencyKey: `issue-delegation:${first.body.child.id}`,
+    });
+    const acceptedWakesBefore = await db.select().from(agentWakeupRequests);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, parent.id));
+    const completedReplay = await request(app).post(`/api/issues/${parent.id}/children`).send(body).expect(200);
+    expect(completedReplay.body.child.id).toBe(first.body.child.id);
+    expect(completedReplay.body.parent.status).toBe("done");
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(acceptedWakesBefore.length);
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(1);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, parent.id))).toHaveLength(1);
+  });
 
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();

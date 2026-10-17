@@ -1,11 +1,15 @@
 import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { createRunTaskTools } from "@paperclipai/mcp-server";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
 
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
+const runTaskTools = (workMode: string) => createRunTaskTools({
+  apiUrl: "http://localhost/api", apiKey: "catalogue-only", companyId: null, agentId: null, runId: null,
+}, ["standard", "skill_test"].includes(workMode));
 export function projectToolDefinitions(workMode: string, includeTask = false) {
-  return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
+  const projectTools = CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
     (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && ["create_task", "set_task_title"].includes(tool.operationId))
     && tool.allowedModes.includes(workMode as "standard"),
   ).map(tool => ({ name: tool.operationId, description: tool.description,
@@ -13,6 +17,11 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
       ? z.toJSONSchema(createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }))
       : tool.inputSchema,
   }));
+  if (!includeTask) return projectTools;
+  return [...projectTools, ...runTaskTools(workMode).map((tool) => ({
+    name: tool.name, description: tool.description,
+    inputSchema: z.toJSONSchema(tool.schema, { io: "input", unrepresentable: "any" }),
+  }))];
 }
 
 /** All transports use the normal authenticated API, including its validation and audit path. */
@@ -21,6 +30,11 @@ export async function callProjectTool(input: {
   companyId: string; issueId: string; agentId: string; conversation: boolean;
 }) {
   const args = input.arguments;
+  const taskTool = createRunTaskTools({
+    apiUrl: `${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api`,
+    apiKey: input.token, companyId: input.companyId, agentId: input.agentId, runId: null,
+  }, true).find((tool) => tool.name === input.name);
+  if (taskTool) return taskTool.executeRaw(args);
   const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
   let body: unknown;
