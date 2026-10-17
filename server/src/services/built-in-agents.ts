@@ -2194,6 +2194,7 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
       continue;
     }
     seen.add(instanceKey);
+    if (row.status === "pending_approval") continue;
     try {
       await svc.reconcileDefinitionDefaults(row.companyId, marker.key);
       reconciled += 1;
