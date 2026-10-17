@@ -320,6 +320,8 @@ export function createSecretProposalsService(db: Db) {
     value: string;
     justification: string;
   }) {
+    if (typeof input.name !== "string") throw unprocessable("Secret name is required");
+    if (typeof input.justification !== "string") throw unprocessable("Justification is required");
     const name = input.name.trim();
     const justification = input.justification.trim();
     if (!SECRET_NAME_RE.test(name)) throw unprocessable("Secret name must be a slash-separated path without empty segments");
@@ -377,7 +379,9 @@ export function createSecretProposalsService(db: Db) {
     if (input.sourceConfigPath && !CONFIG_PATH_RE.test(input.sourceConfigPath)) {
       throw unprocessable("sourceConfigPath must use env.<KEY> or access.<ALIAS>");
     }
-    if (!input.justification.trim()) throw unprocessable("Justification is required");
+    if (typeof input.justification !== "string" || !input.justification.trim()) {
+      throw unprocessable("Justification is required");
+    }
     if (input.justification.trim().length > 20_000) throw unprocessable("Justification must be at most 20000 characters");
     const { run, originIssueId } = await loadRunContext(db, context);
     const targetAgentId = input.targetAgentId ?? run.agentId;
