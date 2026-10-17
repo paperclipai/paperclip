@@ -53,6 +53,7 @@ import {
 import { projectSafeChatPublication } from "../../chat-publication-projection.js";
 
 import {
+  isDiscordCommandRegistrationDeferred,
   readRegisteredDiscordCommandRegistration,
   reconcileStoredDiscordCommandRegistration,
 } from "../../chat-discord-command-registration-store.js";
@@ -95,6 +96,19 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
   ): Promise<void> {
     const initial = await endpointRecord(endpointId);
     if (!initial || initial.endpoint.provider !== "discord") return;
+    // Idle tick: skip the lease, secret resolution and locks while not due.
+    if (
+      !force &&
+      initial.endpoint.botExternalId &&
+      initial.endpoint.providerAccountId &&
+      (await isDiscordCommandRegistrationDeferred(db, {
+        companyId: initial.endpoint.companyId,
+        endpointId,
+        applicationId: initial.endpoint.botExternalId,
+        guildId: initial.endpoint.providerAccountId,
+      }))
+    )
+      return;
     const reconcile = async (lease: CredentialMutationLeaseGuard) => {
       const record = await endpointRecord(endpointId);
       if (
