@@ -825,6 +825,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issues.checkout`
 - `issues.wakeup`
 - `activity.log.write`
+- `activity.log.write_human_attributed`
 - `metrics.write`
 - `telemetry.track`
 - `assets.read`

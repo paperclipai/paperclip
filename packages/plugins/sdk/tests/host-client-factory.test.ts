@@ -255,6 +255,42 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(createComment).not.toHaveBeenCalled();
   });
 
+  it("rejects a human-attributed activity.log call when only activity.log.write is granted", async () => {
+    const log = vi.fn(async () => undefined);
+    const services = { activity: { log } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["activity.log.write"],
+      services,
+    });
+    const context = { invocationScope: { companyId: "company-a" } };
+
+    await expect(
+      handlers["activity.log"]({ companyId: "company-a", message: "relayed", actorUserId: "user-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["activity.log"]({ companyId: "company-a", message: "synced" }, context),
+    ).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith({ companyId: "company-a", message: "synced" });
+  });
+
+  it("passes actorUserId through to activity.log once activity.log.write_human_attributed is also granted", async () => {
+    const log = vi.fn(async () => undefined);
+    const services = { activity: { log } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["activity.log.write", "activity.log.write_human_attributed"],
+      services,
+    });
+
+    await handlers["activity.log"](
+      { companyId: "company-a", message: "relayed", actorUserId: "user-a" },
+      { invocationScope: { companyId: "company-a" } },
+    );
+    expect(log).toHaveBeenCalledWith({ companyId: "company-a", message: "relayed", actorUserId: "user-a" });
+  });
+
   it("allows a human-attributed createComment call once issue.comments.create_human_attributed is also granted", async () => {
     const createComment = vi.fn(async () => ({ id: "comment-1" }));
     const services = {

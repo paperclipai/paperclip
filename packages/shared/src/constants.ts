@@ -1389,6 +1389,11 @@ export const PLUGIN_CAPABILITIES = [
   "agent.sessions.send",
   "agent.sessions.close",
   "activity.log.write",
+  // Record a human company member as the initiating actor of a plugin
+  // activity entry (`ctx.activity.log` with `actorUserId`). The entry stays
+  // plugin-attributed; the host re-verifies the user is an active human
+  // member of the company before writing it.
+  "activity.log.write_human_attributed",
   "metrics.write",
   "telemetry.track",
   "database.namespace.migrate",

@@ -656,6 +656,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             entityType: entry.entityType,
             entityId: entry.entityId,
             metadata: entry.metadata,
+            actorUserId: entry.actorUserId,
           });
         },
       },
