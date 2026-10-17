@@ -346,7 +346,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     return wake as Record<string, unknown>;
   }
 
-  it("defers approval-approved wakes for a running issue so the assignee resumes after the run", async () => {
+  it.each(["approved", "rejected", "revision_requested"])("defers approval-%s wakes for a running issue so the assignee resumes after the run", async (approvalStatus) => {
+    const wakeReason = `approval_${approvalStatus}`;
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -405,18 +406,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const followupRun = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "approval_approved",
+      reason: wakeReason,
       payload: {
         issueId,
         approvalId: "approval-1",
-        approvalStatus: "approved",
+        approvalStatus,
       },
       contextSnapshot: {
         issueId,
         taskId: issueId,
         approvalId: "approval-1",
-        approvalStatus: "approved",
-        wakeReason: "approval_approved",
+        approvalStatus,
+        wakeReason,
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
@@ -431,7 +432,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(deferred?.payload).toMatchObject({
       issueId,
       approvalId: "approval-1",
-      approvalStatus: "approved",
+      approvalStatus,
     });
     expect(
       (deferred?.payload as Record<string, unknown>)._paperclipWakeContext,
@@ -439,8 +440,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       issueId,
       taskId: issueId,
       approvalId: "approval-1",
-      approvalStatus: "approved",
-      wakeReason: "approval_approved",
+      approvalStatus,
+      wakeReason,
     });
 
     const runs = await db
