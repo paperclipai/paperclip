@@ -177,7 +177,10 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local"
+    || adapterType === "codex_local"
+    || adapterType === "paperclip_runner"
+    || adapterType === "opencode_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(

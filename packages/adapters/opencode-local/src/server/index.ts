@@ -65,9 +65,19 @@ export { listOpenCodeSkills, syncOpenCodeSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   listOpenCodeModels,
+  refreshOpenCodeModels,
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
+export {
+  loadOpenCodeFreeModelData,
+  loadOpenCodeFreeModels,
+  mergeFreeModels,
+  isFreeOpenCodeModelId,
+  parseFreeModelCatalog,
+  resetOpenCodeFreeModelCacheForTests,
+  FALLBACK_OPENCODE_FREE_MODELS,
+} from "./free-models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";

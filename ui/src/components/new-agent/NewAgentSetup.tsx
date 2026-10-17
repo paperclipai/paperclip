@@ -49,7 +49,7 @@ import {
   storeOrganizationApiKey,
 } from "@/lib/provider-credential";
 import { defaultCreateValues } from "../agent-config-defaults";
-import { ModelDropdown } from "../AgentConfigForm";
+import { ModelDropdown, supportsAdapterModelRefresh } from "../AgentConfigForm";
 import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
@@ -145,6 +145,8 @@ function Setup({
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [environmentOverride, setEnvironmentOverride] = useState("");
   const [provider, setProvider] = useState("openrouter");
   const [apiKey, setApiKey] = useState("");
@@ -231,6 +233,27 @@ function Setup({
     enabled: Boolean(brandType) && showModel && !connectionModels,
     retry: false,
   });
+  async function handleRefreshModels() {
+    if (!companyId) return;
+    setRefreshingModels(true);
+    setRefreshModelsError(null);
+    try {
+      const refreshed = await agentsApi.adapterModels(companyId, brandType, {
+        refresh: true,
+        provider: aiBinding?.provider,
+      });
+      cache.setQueryData(
+        queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
+        refreshed,
+      );
+    } catch (error) {
+      setRefreshModelsError(
+        error instanceof Error ? error.message : "Failed to refresh adapter models.",
+      );
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
   const companySecrets = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
@@ -861,6 +884,7 @@ function Setup({
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
                         {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
+                        {refreshModelsError && <p role="alert" className="text-sm text-destructive">{refreshModelsError}</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
@@ -869,8 +893,14 @@ function Setup({
                                 presentation="native"
                                 models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
-                                onRefreshModels={connectionModels?.refreshModels}
-                                refreshingModels={connectionModels?.refreshing}
+                                onRefreshModels={
+                                  connectionModels
+                                    ? connectionModels.refreshModels
+                                    : supportsAdapterModelRefresh(brandType)
+                                      ? handleRefreshModels
+                                      : undefined
+                                }
+                                refreshingModels={connectionModels?.refreshing ?? refreshingModels}
                                 value={model}
                                 onChange={(value) => {
                                   setModel(connectionModels?.resolveModel(value) ?? value);

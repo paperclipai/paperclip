@@ -204,14 +204,25 @@ function ComboboxField({
 // SchemaConfigFields component
 // ---------------------------------------------------------------------------
 
-const schemaCache = new Map<string, AdapterConfigSchema | null>();
+const SCHEMA_CACHE_TTL_MS = 30_000;
+const schemaCache = new Map<string, { schema: AdapterConfigSchema | null; expiresAt: number }>();
 const schemaFetchInflight = new Map<string, Promise<AdapterConfigSchema | null>>();
-const failedSchemaTypes = new Set<string>();
+const failedSchemaTypes = new Map<string, number>();
+
+function readCachedSchema(adapterType: string): AdapterConfigSchema | null {
+  return schemaCache.get(adapterType)?.schema ?? null;
+}
+
+function hasFreshSchema(adapterType: string): boolean {
+  const cached = schemaCache.get(adapterType);
+  return Boolean(cached && cached.expiresAt > Date.now());
+}
 
 async function fetchConfigSchema(adapterType: string): Promise<AdapterConfigSchema | null> {
+  if (hasFreshSchema(adapterType)) return readCachedSchema(adapterType);
   const cached = schemaCache.get(adapterType);
-  if (cached !== undefined) return cached;
-  if (failedSchemaTypes.has(adapterType)) return null;
+  const failedUntil = failedSchemaTypes.get(adapterType);
+  if (failedUntil && failedUntil > Date.now()) return cached?.schema ?? null;
 
   const inflight = schemaFetchInflight.get(adapterType);
   if (inflight) return inflight;
@@ -220,15 +231,20 @@ async function fetchConfigSchema(adapterType: string): Promise<AdapterConfigSche
     try {
       const res = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/config-schema`);
       if (!res.ok) {
-        failedSchemaTypes.add(adapterType);
-        return null;
+        failedSchemaTypes.set(adapterType, Date.now() + SCHEMA_CACHE_TTL_MS);
+        // Keep showing the previous schema while the server is unavailable.
+        return cached?.schema ?? null;
       }
       const schema = (await res.json()) as AdapterConfigSchema;
-      schemaCache.set(adapterType, schema);
+      schemaCache.set(adapterType, {
+        schema,
+        expiresAt: Date.now() + SCHEMA_CACHE_TTL_MS,
+      });
+      failedSchemaTypes.delete(adapterType);
       return schema;
     } catch {
-      failedSchemaTypes.add(adapterType);
-      return null;
+      failedSchemaTypes.set(adapterType, Date.now() + SCHEMA_CACHE_TTL_MS);
+      return cached?.schema ?? null;
     } finally {
       schemaFetchInflight.delete(adapterType);
     }
@@ -249,7 +265,7 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 
 export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
   const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
-    () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
+    () => ({ adapterType, schema: readCachedSchema(adapterType) }),
   );
 
   useEffect(() => {
@@ -262,7 +278,7 @@ export function useConfigSchema(adapterType: string): AdapterConfigSchema | null
     };
   }, [adapterType]);
 
-  return loaded.adapterType === adapterType ? loaded.schema : schemaCache.get(adapterType) ?? null;
+  return loaded.adapterType === adapterType ? loaded.schema : readCachedSchema(adapterType);
 }
 
 // ---------------------------------------------------------------------------

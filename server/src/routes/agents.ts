@@ -148,6 +148,7 @@ import {
   findServerAdapter,
   listServerAdapters,
   listAdapterModels,
+  listOpenCodeModelsForRemoteEnvironment,
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
@@ -2999,7 +3000,7 @@ export function agentRoutes(
           : provider === "aws_agentcore" ? type : "codex_local"
       : type;
     if (modelAdapterType === "opencode_local" && environment && environment.driver !== "local") {
-      res.json(requireServerAdapter(modelAdapterType).models ?? []);
+      res.json(await listOpenCodeModelsForRemoteEnvironment());
       return;
     }
     const models = refresh

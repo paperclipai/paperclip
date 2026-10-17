@@ -2,6 +2,7 @@ export {
   getServerAdapter,
   listAdapterModels,
   refreshAdapterModels,
+  listOpenCodeModelsForRemoteEnvironment,
   listServerAdapters,
   findServerAdapter,
   findActiveServerAdapter,

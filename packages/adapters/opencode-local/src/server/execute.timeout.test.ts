@@ -132,8 +132,16 @@ describe("OpenCode timeout reporting", () => {
   it("retains real local deadline and termination behavior without claiming provider origin", async () => {
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>("@paperclipai/adapter-utils/execution-target");
     mocks.process.mockImplementation(actual.runAdapterExecutionTargetProcess);
-    const command = path.join(dir, "fixture-opencode");
-    await fs.writeFile(command, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", { mode: 0o755 });
+    // Windows cannot execute an extensionless shebang script. Use a .cmd
+    // wrapper whose own process stays alive so the deadline terminates a real
+    // child instead of relying on a grandchild signal that cmd.exe would drop.
+    const command = process.platform === "win32"
+      ? path.join(dir, "fixture-opencode.cmd")
+      : path.join(dir, "fixture-opencode");
+    const fixture = process.platform === "win32"
+      ? "@echo off\r\n:loop\r\ngoto loop\r\n"
+      : "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n";
+    await fs.writeFile(command, fixture, { mode: 0o755 });
     const ctx = context(0.1, false);
     ctx.config.command = command;
     ctx.config.graceSec = 0.1;

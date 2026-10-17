@@ -31,6 +31,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
+const mockLoadOpenCodeFreeModelData = vi.hoisted(() => vi.fn());
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -72,6 +73,7 @@ function registerModuleMocks() {
     return {
       ...actual,
       listOpenCodeModels: mockListOpenCodeModels,
+      loadOpenCodeFreeModelData: mockLoadOpenCodeFreeModelData,
     };
   });
 
@@ -176,6 +178,8 @@ describe("adapter model refresh route", () => {
     mockEnvironmentService.getById.mockResolvedValue(null);
     mockListOpenCodeModels.mockReset();
     mockListOpenCodeModels.mockResolvedValue([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
+    mockLoadOpenCodeFreeModelData.mockReset();
+    mockLoadOpenCodeFreeModelData.mockResolvedValue({ models: [], zeroCostIds: new Set() });
     await unregisterTestAdapter(refreshableAdapterType);
   });
 
@@ -228,6 +232,29 @@ describe("adapter model refresh route", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual(openCodeFallbackModels);
+    expect(mockListOpenCodeModels).not.toHaveBeenCalled();
+  });
+
+  it("adds the current free catalog to non-local environments without running local discovery", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: "env-1",
+      companyId: "company-1",
+      name: "Remote SSH",
+      driver: "ssh",
+      config: {},
+    });
+    mockLoadOpenCodeFreeModelData.mockResolvedValue({
+      models: [{ id: "opencode/new-free", label: "OpenCode Zen · new-free (free)" }],
+      zeroCostIds: new Set(),
+    });
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/opencode_local/models?environmentId=env-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.some((model: { id: string }) => model.id === "opencode/new-free")).toBe(true);
     expect(mockListOpenCodeModels).not.toHaveBeenCalled();
   });
 

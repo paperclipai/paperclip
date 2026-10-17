@@ -15,6 +15,7 @@ describe("supportsAdapterModelRefresh", () => {
 
   it("keeps the refresh action hidden for adapters without a live refresh hook", () => {
     expect(supportsAdapterModelRefresh("opencode_local")).toBe(true);
+    expect(supportsAdapterModelRefresh("opencode_gateway")).toBe(true);
     expect(supportsAdapterModelRefresh("paperclip_runner")).toBe(true);
     expect(supportsAdapterModelRefresh("process")).toBe(false);
   });
