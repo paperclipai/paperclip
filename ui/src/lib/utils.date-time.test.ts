@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime } from "./utils";
+import { formatDateTime, providerDisplayName } from "./utils";
 
 describe("formatDateTime", () => {
   // Local construction avoids assuming the test runner's timezone.
@@ -22,5 +22,27 @@ describe("formatDateTime", () => {
     expect(
       formatDateTime(timestamp.toISOString(), { includeSeconds: true }),
     ).toBe(formatDateTime(timestamp, { includeSeconds: true }));
+  });
+});
+
+describe("providerDisplayName", () => {
+  it("maps ollama and ollama-cloud to friendly display names", () => {
+    expect(providerDisplayName("ollama")).toBe("Ollama");
+    expect(providerDisplayName("ollama-cloud")).toBe("Ollama Cloud");
+    expect(providerDisplayName("ollama_cloud")).toBe("Ollama Cloud");
+  });
+
+  it("handles case insensitivity", () => {
+    expect(providerDisplayName("OLLAMA")).toBe("Ollama");
+    expect(providerDisplayName("Ollama-Cloud")).toBe("Ollama Cloud");
+  });
+
+  it("preserves existing providers", () => {
+    expect(providerDisplayName("openai")).toBe("OpenAI");
+    expect(providerDisplayName("anthropic")).toBe("Anthropic");
+  });
+
+  it("falls back to raw slug when unknown", () => {
+    expect(providerDisplayName("custom-provider")).toBe("custom-provider");
   });
 });
