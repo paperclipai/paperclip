@@ -84,6 +84,10 @@ describe("describeIssueWriteDenial", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    expect(copy.sanctionedPath).toContain("/wakeup");
+    expect(copy.sanctionedPath).toContain('"issueId"');
+    expect(copy.sanctionedPath).not.toContain("PAPERCLIP_TASK_ID");
+    expect(copy.description).toContain("Checking out an issue");
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {
