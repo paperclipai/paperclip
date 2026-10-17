@@ -12,16 +12,29 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  mockState,
 } = vi.hoisted(() => ({
+  mockState: { modelList: "opencode/gpt-5-nano\nopenai/gpt-4.1\n" },
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[], _options?: { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
     if (args.includes("models")) {
       return {
         exitCode: 0,
         signal: null as string | null,
         timedOut: false,
-        stdout: "opencode/gpt-5-nano\nopenai/gpt-4.1\n",
+        stdout: mockState.modelList,
         stderr: "",
         pid: 122,
+        startedAt: new Date().toISOString(),
+      };
+    }
+    if (args.includes("--version")) {
+      return {
+        exitCode: 0,
+        signal: null as string | null,
+        timedOut: false,
+        stdout: "2.0.26\n",
+        stderr: "",
+        pid: 121,
         startedAt: new Date().toISOString(),
       };
     }
@@ -98,6 +111,18 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+// The remote path probes the target CLI version before the run (`opencode
+// --version` through the execution target). That probe would consume the
+// per-case `runChildProcess` mock below, so answer it with the same V2 version
+// the hoisted mock reports and keep these cases focused on billing.
+vi.mock("./version.js", async () => {
+  const actual = await vi.importActual<typeof import("./version.js")>("./version.js");
+  return {
+    ...actual,
+    probeOpenCodeCliVersionOnTarget: vi.fn(async () => actual.parseOpenCodeCliVersion("2.0.26\n")),
+  };
+});
+
 import { execute } from "./execute.js";
 
 describe("opencode remote execution", () => {
@@ -113,6 +138,7 @@ describe("opencode remote execution", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockState.modelList = "opencode/gpt-5-nano\nopenai/gpt-4.1\n";
     vi.unstubAllEnvs();
     if (originalOpenCodeAllowAllModels === undefined) {
       delete process.env.OPENCODE_ALLOW_ALL_MODELS;
@@ -306,15 +332,7 @@ describe("opencode remote execution", () => {
   });
 
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
-    runChildProcess.mockImplementationOnce(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: "openai/gpt-4.1\n",
-      stderr: "",
-      pid: 456,
-      startedAt: new Date().toISOString(),
-    }));
+    mockState.modelList = "openai/gpt-4.1\n";
 
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-model-"));
     cleanupDirs.push(rootDir);
@@ -363,8 +381,11 @@ describe("opencode remote execution", () => {
       }),
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
 
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    expect((runChildProcess.mock.calls[0]?.[2] as string[] | undefined) ?? []).toEqual(["models"]);
+    expect(
+      runChildProcess.mock.calls.some(
+        (call) => ((call[2] as string[] | undefined) ?? []).includes("models"),
+      ),
+    ).toBe(true);
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 

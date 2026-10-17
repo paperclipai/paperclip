@@ -20,6 +20,13 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({ env: {}, stop: mocks.stop })),
   runAdapterExecutionTargetProcess: mocks.process,
 }));
+// The local path probes the installed CLI version. The fixture command in the
+// deadline test never answers `--version`, so mock the probe to keep the test
+// focused on the real timeout/termination behaviour instead of hanging.
+vi.mock("./version.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./version.js")>(),
+  probeOpenCodeCliVersion: vi.fn(async () => null),
+}));
 import { execute } from "./execute.js";
 
 const rawOutput = "private-output-canary";
@@ -62,8 +69,11 @@ describe("OpenCode timeout reporting", () => {
       resultJson: { adapterExecutionTimeout: { timeoutSec: resolved, source } } });
     expect(JSON.stringify(result)).not.toContain("private-");
     expect(result.errorMessage).not.toContain(String(resolved));
-    expect(mocks.process).toHaveBeenCalledTimes(1);
-    expect(mocks.process.mock.calls[0]![4]).toMatchObject({ timeoutSec: resolved, graceSec: 20 });
+    // A remote run probes the installed CLI generation (`--version`) before the
+    // real invocation, so the run call follows the probe call.
+    const runIndex = remote ? 1 : 0;
+    expect(mocks.process).toHaveBeenCalledTimes(remote ? 2 : 1);
+    expect(mocks.process.mock.calls[runIndex]![4]).toMatchObject({ timeoutSec: resolved, graceSec: 20 });
     expect(mocks.restore).toHaveBeenCalledTimes(remote ? 1 : 0);
     expect(mocks.stop).toHaveBeenCalledTimes(remote ? 1 : 0);
   });
@@ -75,7 +85,8 @@ describe("OpenCode timeout reporting", () => {
       errorMessage: exitCode === 0 ? null : "fixture failure",
       resultJson: { stdout: rawOutput, stderr: "fixture failure",
         adapterExecutionTimeout: { timeoutSec: 14400, source: "sandbox_default" } } });
-    expect(mocks.process).toHaveBeenCalledTimes(1);
+    // `context(0)` targets a remote sandbox, so it probes the CLI first.
+    expect(mocks.process).toHaveBeenCalledTimes(2);
     expect(mocks.restore).toHaveBeenCalledTimes(1);
     expect(mocks.stop).toHaveBeenCalledTimes(1);
   });
@@ -100,8 +111,12 @@ describe("OpenCode timeout reporting", () => {
     const result = await execute(ctx);
     expect(result).toMatchObject({ timedOut: false, exitCode: 0, errorMessage: null,
       resultJson: { stdout: "streamed fixture output", adapterExecutionTimeout: { timeoutSec: 14400, source: "sandbox_default" } } });
-    expect(runner.execute).toHaveBeenCalledTimes(1);
-    expect(runner.execute.mock.calls[0]![0]).toMatchObject({ command: "opencode", useSession: true, timeoutMs: 14400000, commandTimeoutMs: 14400000 });
+    // The remote path probes the installed CLI generation (`--version`) through
+    // the same runner before the real invocation, so select the session-bound
+    // run call rather than assuming it is first.
+    const runCalls = runner.execute.mock.calls.filter(([input]) => input.useSession === true);
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]![0]).toMatchObject({ command: "opencode", useSession: true, timeoutMs: 14400000, commandTimeoutMs: 14400000 });
     expect(logs).toHaveBeenCalledWith("stdout", "streamed fixture output");
     expect(mocks.restore).toHaveBeenCalledTimes(1);
     expect(mocks.stop).toHaveBeenCalledTimes(1);

@@ -44,10 +44,23 @@ export function managedProviderRouting(
     else {
       env.PAPERCLIP_AI_PROVIDER_KEY = credential;
       env.PAPERCLIP_AI_PROVIDER_URL = baseUrl;
+      // The projected `paperclip` provider is per-run and never appears in
+      // `opencode models`; skip OpenCode's availability pre-flight so the
+      // configured model is not rejected as unavailable.
+      env.OPENCODE_ALLOW_ALL_MODELS = "1";
     }
+    const projectedModel = aiRoutingModel(route, harness, model);
     const id = model.startsWith(`${provider}/`)
       ? model.slice(provider.length + 1)
       : model;
+    // `enabled_providers` restricts OpenCode to the projected provider, so the
+    // auxiliary "small"/title model has no built-in provider default to fall
+    // back to. Pin it to the projected model for the per-run `paperclip`
+    // provider; otherwise OpenCode's title-generation call fails and aborts the
+    // run with a bare exit code 1 after the main turn already produced output.
+    if (provider === "paperclip" && projectedModel) {
+      env.PAPERCLIP_OPENCODE_SMALL_MODEL = projectedModel;
+    }
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
       provider: {
         [provider]: {
@@ -59,9 +72,12 @@ export function managedProviderRouting(
         },
       },
       enabled_providers: [provider],
+      ...(provider === "paperclip" && projectedModel
+        ? { small_model: projectedModel }
+        : {}),
     });
     env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-    config.model = aiRoutingModel(route, harness, model);
+    config.model = projectedModel;
   } else if (harness === "hermes_local") {
     env.OPENAI_BASE_URL = baseUrl;
     env.OPENAI_API_KEY = credential;

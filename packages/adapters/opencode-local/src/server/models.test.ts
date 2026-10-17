@@ -182,6 +182,54 @@ describe("openCode models", () => {
     expect(spy.mock.calls[2]?.[2]).toEqual(["models"]);
   });
 
+  it("omits the models --refresh flag on OpenCode V2", async () => {
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "openrouter/example/stale-model\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "openrouter/example/stale-model\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout:
+          "openrouter/example/current-model\nopenrouter/deepseek/deepseek-v4-flash-0731\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      });
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        openCodeMajor: 2,
+      }),
+    ).resolves.toContainEqual({
+      id: "openrouter/deepseek/deepseek-v4-flash-0731",
+      label: "openrouter/deepseek/deepseek-v4-flash-0731",
+    });
+    // V2 dropped `models --refresh`; every enumeration runs bare `models`.
+    expect(spy).toHaveBeenCalledTimes(3);
+    for (const call of spy.mock.calls) {
+      expect(call[2]).toEqual(["models"]);
+    }
+  });
+
   it("still rejects when a refreshed non-empty catalog omits the configured model", async () => {
     const spy = vi
       .spyOn(serverUtils, "runChildProcess")

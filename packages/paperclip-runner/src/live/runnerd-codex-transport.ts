@@ -3395,6 +3395,7 @@ const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "WINDIR",
   "RUST_BACKTRACE",
   "OPENROUTER_API_KEY",
+  "OPENCODE_ALLOW_ALL_MODELS",
   "PAPERCLIP_NATIVE_MCP_NAME",
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
@@ -3558,17 +3559,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
   supportsTurnReasoning(): boolean {
-    if (this.options.provider !== "opencode") return false;
-    // Use the durable selected model on both fresh and recovered sessions.
-    // Older states may retain the provider only in the preparation command.
-    const state = this.#core?.store.state;
-    const template = this.#runAttachTemplate ?? state?.runAttachTemplate
-      ?? state?.commands.findLast(command =>
-        (command.type === "run.prepare" || command.type === "run.attach")
-        && record(command.payload).provider !== undefined,
-      )?.payload;
-    const model = record(record(template).provider).model;
-    return typeof model === "string" && model.startsWith("openrouter/");
+    // The runnerd OpenCode transport cannot observe the negotiated server
+    // generation: its durable provider version is the pinned V1 line while the
+    // proxy probes the actual binary, and a V2 server rejects the per-turn
+    // reasoning variant that V1 accepts. Advertising the capability from the
+    // model alone would let a caller send a reasoningMode that the session
+    // rejects before any prompt runs, so the runnerd path does not promise it.
+    return false;
   }
 
   turnControlCapabilities(): NativeTurnControlCapabilities | null {

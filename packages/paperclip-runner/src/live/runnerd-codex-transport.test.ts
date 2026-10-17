@@ -8415,9 +8415,11 @@ it.each([true, false])("preserves prepared OpenCode cleanup errors (primary fail
 });
 
 it.each([
-  { model: "openrouter/deepseek/deepseek-v4-flash-0731", supportsReasoning: true },
-  { model: "anthropic/claude-sonnet-4", supportsReasoning: false },
-])("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary ($model)", async ({ model, supportsReasoning }) => {
+  // OpenRouter keeps the driver's deterministic default variant even though the
+  // runnerd transport no longer advertises per-turn reasoning.
+  { model: "openrouter/deepseek/deepseek-v4-flash-0731", expectedVariant: "paperclip-default" },
+  { model: "anthropic/claude-sonnet-4", expectedVariant: undefined },
+])("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary ($model)", async ({ model, expectedVariant }) => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
   // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
   // fleet. Qualify an owned copy with strict permissions, never chmod the host
@@ -8491,15 +8493,16 @@ it.each([
   await withPreparedOpenCodeCleanup({
     run: async () => {
       session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
-      expect(bundle.transport.supportsTurnReasoning?.()).toBe(supportsReasoning);
+      // The runnerd OpenCode transport cannot observe the negotiated server
+      // generation, so it never advertises per-turn reasoning even for an
+      // OpenRouter model.
+      expect(bundle.transport.supportsTurnReasoning?.()).toBe(false);
       const firstTurn = { message: { role: "user" as const, text: prepared } };
-      if (!supportsReasoning) {
-        await expect(session.startTurn({ ...firstTurn, reasoningMode: "disabled" }))
-          .rejects.toThrow("Per-turn reasoning is not supported");
-        await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: prepared }], reasoningMode: "disabled" }))
-          .rejects.toThrow("requires an OpenCode/OpenRouter model");
-      }
-      await session.startTurn({ ...firstTurn, ...(supportsReasoning ? { reasoningMode: "disabled" as const } : {}) });
+      await expect(session.startTurn({ ...firstTurn, reasoningMode: "disabled" }))
+        .rejects.toThrow("Per-turn reasoning is not supported");
+      await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: prepared }], reasoningMode: "disabled" }))
+        .rejects.toThrow("requires an OpenCode/OpenRouter model");
+      await session.startTurn(firstTurn);
       const events: PrpEvent[] = [];
       for await (const event of session.events()) {
         events.push(event);
@@ -8511,7 +8514,7 @@ it.each([
       expect(sessionRoots).toHaveLength(1);
       const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
-      expect(requests[0].variant).toBe(supportsReasoning ? "paperclip-no-reasoning" : undefined);
+      expect(requests[0].variant).toBe(expectedVariant);
       const outcomes = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"));
       expect(outcomes).toHaveLength(2);
       expect(outcomes[0].result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("required document link") }] });
@@ -8519,8 +8522,7 @@ it.each([
       await session.startTurn({ message: { role: "user", text: "Reply Hi." } });
       for await (const event of session.events()) if (event.eventType === "turn.completed") break;
       const allRequests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      expect(allRequests.map(request => request.variant)).toEqual(supportsReasoning
-        ? ["paperclip-no-reasoning", "paperclip-default"] : [undefined, undefined]);
+      expect(allRequests.map(request => request.variant)).toEqual([expectedVariant, expectedVariant]);
     },
     closeSession: async () => { await session?.close(); },
     closeTransport: () => bundle.transport.close(),
