@@ -503,9 +503,57 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
+const CLAUDE_RESET_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * Weekly limits name a date as well as a time: "resets Aug 1 at 10am". The
+ * year is not stated, so it is the first such date that is not in the past.
+ */
+function datedClockTimeInTimeZone(input: {
+  now: Date;
+  month: number;
+  day: number;
+  year: number | null;
+  hour: number;
+  minute: number;
+  timeZoneHint?: string | null;
+}): Date | null {
+  const timeZone = normalizeResetTimeZone(input.timeZoneHint);
+  const build = (year: number): Date | null => {
+    if (timeZone) {
+      return dateFromTimeZoneWallClock({
+        year,
+        month: input.month,
+        day: input.day,
+        hour: input.hour,
+        minute: input.minute,
+        timeZone,
+      });
+    }
+    const local = new Date(year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+    if (local.getMonth() !== input.month - 1 || local.getDate() !== input.day) return null;
+    return local;
+  };
+
+  if (input.year !== null) return build(input.year);
+
+  const currentYear = timeZone
+    ? readTimeZoneParts(input.now, timeZone).year
+    : input.now.getFullYear();
+  for (const year of [currentYear, currentYear + 1]) {
+    const candidate = build(year);
+    if (candidate && candidate.getTime() > input.now.getTime()) return candidate;
+  }
+  return null;
+}
+
 function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
   const normalized = clockText.trim().replace(/\s+/g, " ");
-  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  const datedMatch = normalized.match(
+    /^([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?,?\s+(?:at\s+)?(.+)$/i,
+  );
+  const clockPart = datedMatch ? datedMatch[4] ?? "" : normalized;
+  const match = clockPart.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
   if (!match) return null;
 
   const hour12 = Number.parseInt(match[1] ?? "", 10);
@@ -515,6 +563,14 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
 
   let hour24 = hour12 % 12;
   if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  if (datedMatch) {
+    const month = CLAUDE_RESET_MONTHS.indexOf((datedMatch[1] ?? "").toLowerCase()) + 1;
+    const day = Number.parseInt(datedMatch[2] ?? "", 10);
+    const year = datedMatch[3] ? Number.parseInt(datedMatch[3], 10) : null;
+    if (month < 1 || !Number.isInteger(day) || day < 1 || day > 31) return null;
+    return datedClockTimeInTimeZone({ now, month, day, year, hour: hour24, minute, timeZoneHint });
+  }
 
   if (timeZoneHint) {
     const explicitRetryAt = nextClockTimeInTimeZone({

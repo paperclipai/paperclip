@@ -174,6 +174,17 @@ it.each([
   expect(logs).toContain(title);
 });
 
+it("waits for the dated reset of a typed Claude weekly limit", () => {
+  expect(classifyClaudeTerminalSessionFailure({
+    category: "limit",
+    title: "You've hit your weekly limit · resets Jul 18 at 10am (Europe/Moscow)",
+  }, now)).toEqual({
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-07-18T07:00:00.000Z",
+  });
+});
+
 it("does not infer quota from the historical generic terminal-limit error", () => {
   expect(classifyClaudeTerminalSessionFailure({
     category: "limit",

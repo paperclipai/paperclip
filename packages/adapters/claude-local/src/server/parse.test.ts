@@ -485,6 +485,45 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
   });
 
+  // Weekly limits state a date as well as a time. Without the date the reset
+  // used to be dropped, and recovery fell back to a one-hour guess.
+  it("parses a dated weekly reset in its explicit timezone", () => {
+    const now = new Date("2026-07-31T09:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Aug 1 at 10am (Europe/Moscow)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-08-01T07:00:00.000Z");
+  });
+
+  it("does not move a dated reset to the next day when the time of day has passed", () => {
+    const now = new Date("2026-07-29T12:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Aug 1, 9:30am (UTC)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-08-01T09:30:00.000Z");
+  });
+
+  it("rolls a dated reset into the next year across the year boundary", () => {
+    const now = new Date("2026-12-31T21:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Jan 2 at 10am (Europe/Moscow)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2027-01-02T07:00:00.000Z");
+  });
+
+  it("rejects a dated reset with an impossible date", () => {
+    const now = new Date("2026-02-01T00:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your weekly limit · resets Feb 30 at 10am (UTC)" },
+        now,
+      ),
+    ).toBeNull();
+  });
+
   it("returns null when no reset hint is present", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
