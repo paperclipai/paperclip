@@ -255,6 +255,20 @@ export interface PluginLifecycleManager {
     event: K,
     listener: (payload: LifecycleEventPayload<K>) => void,
   ): void;
+
+  /**
+   * Backfill the plugin loader after construction.
+   *
+   * The loader and the lifecycle manager have a circular dependency: the loader
+   * needs a reference to the lifecycle manager (to drive state transitions after
+   * install/upgrade), and the lifecycle manager needs the loader (to activate
+   * runtime services via `loadSingle`). Callers that want a single shared
+   * lifecycle instance construct it first (without a loader), build the loader
+   * with that instance, then call `setLoader` to complete the wiring. This lets
+   * one manager be shared between the HTTP routes and the tool dispatcher so
+   * lifecycle events emitted by route handlers reach the dispatcher's listeners.
+   */
+  setLoader(loader: PluginLoader): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +334,9 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  // Mutable so `setLoader` can backfill the real loader after construction,
+  // breaking the loader <-> lifecycle circular dependency (see setLoader docs).
+  let pluginLoaderInstance = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 
@@ -844,6 +860,11 @@ export function pluginLifecycleManager(
 
     once(event, listener) {
       emitter.once(event, listener);
+    },
+
+    // -- Loader backfill --------------------------------------------------
+    setLoader(loader) {
+      pluginLoaderInstance = loader;
     },
   };
 }
