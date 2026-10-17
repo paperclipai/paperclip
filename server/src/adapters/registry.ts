@@ -60,6 +60,13 @@ import {
 } from "@paperclipai/adapter-cursor-cloud/server";
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
+  execute as qoderCloudAgentsExecute,
+  getConfigSchema as getQoderCloudAgentsConfigSchema,
+  sessionCodec as qoderCloudAgentsSessionCodec,
+  testEnvironment as qoderCloudAgentsTestEnvironment,
+} from "@paperclipai/adapter-qoder-cloud-agents/server";
+import { agentConfigurationDoc as qoderCloudAgentsAgentConfigurationDoc } from "@paperclipai/adapter-qoder-cloud-agents";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -741,6 +748,22 @@ const cursorCloudAdapter: ServerAdapterModule = {
   getConfigSchema: getCursorCloudConfigSchema,
 };
 
+const qoderCloudAgentsAdapter: ServerAdapterModule = {
+  type: "qoder_cloud_agents",
+  runtimeToolDelivery: "invocation_context",
+  execute: qoderCloudAgentsExecute,
+  testEnvironment: qoderCloudAgentsTestEnvironment,
+  sessionCodec: qoderCloudAgentsSessionCodec,
+  sessionManagement: getAdapterSessionManagement("qoder_cloud_agents") ?? undefined,
+  models: [],
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: qoderCloudAgentsAgentConfigurationDoc,
+  getConfigSchema: getQoderCloudAgentsConfigSchema,
+};
+
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
   runtimeToolDelivery: "environment",
@@ -905,6 +928,7 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
+    qoderCloudAgentsAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,

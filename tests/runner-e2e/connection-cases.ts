@@ -26,6 +26,7 @@ export const connectionScopeGaps = [
   { adapter: "openclaw_gateway", status: "excluded", reason: "Remote gateway owns provider configuration." },
   { adapter: "hermes_gateway", status: "excluded", reason: "Remote gateway owns provider configuration." },
   { adapter: "cursor_cloud", status: "excluded", reason: "Remote integration owns provider configuration." },
+  { adapter: "qoder_cloud_agents", status: "excluded", reason: "Remote integration owns provider configuration." },
   { adapter: "process", status: "excluded", reason: "External process owns provider configuration." },
   { adapter: "http", status: "excluded", reason: "Remote integration owns provider configuration." },
   { adapter: "acpx_local", status: "excluded", reason: "Generic legacy integration; native Claude/Grok ACPX profiles remain covered." },

@@ -8,6 +8,7 @@ import { PROVIDER_ENV_KEYS } from "./provider-credential";
 export const SETUP_CREDENTIAL_KEYS: Record<string, string> = {
   cursor: "CURSOR_API_KEY",
   cursor_cloud: "CURSOR_API_KEY",
+  qoder_cloud_agents: "QODER_ACCESS_TOKEN",
   gemini_local: "GEMINI_API_KEY",
   kimi_local: "KIMI_MODEL_API_KEY",
   hermes_gateway: "API_SERVER_KEY",

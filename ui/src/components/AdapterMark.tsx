@@ -6,6 +6,7 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
   claude_local: { src: "/brands/claude-color.svg" },
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  qoder_cloud_agents: { src: "/brands/adapters/qoder-color.svg" },
   kimi_local: {
     src: "/brands/adapters/kimi-color-light.svg",
     dark: "/brands/adapters/kimi-color.svg",

@@ -102,6 +102,7 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/qoder-cloud-agents",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",

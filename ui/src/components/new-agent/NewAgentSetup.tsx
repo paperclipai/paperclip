@@ -143,7 +143,7 @@ function Setup({
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
     chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
-  const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
+  const showModel = !isDot && !["cursor_cloud", "qoder_cloud_agents", "hermes_gateway"].includes(adapterType);
   const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [kimiModel, setKimiModel] = useState("");
@@ -430,7 +430,7 @@ function Setup({
     )
       throw new Error("Enter a GitHub repository URL.");
     if (
-      ["cursor_cloud", "hermes_gateway"].includes(adapterType) &&
+      ["cursor_cloud", "qoder_cloud_agents", "hermes_gateway"].includes(adapterType) &&
       !apiKey.trim() &&
       !selectedBinding
     )
@@ -655,11 +655,13 @@ function Setup({
   const environmentLabel =
     adapterType === "cursor_cloud"
       ? "Cursor Cloud"
-      : adapterType === "hermes_gateway"
-        ? "Hermes Gateway"
-        : confirmationEnvironment
-          ? environmentDisplayLabel(confirmationEnvironment)
-          : "Local machine";
+      : adapterType === "qoder_cloud_agents"
+        ? "Qoder Cloud Agents"
+        : adapterType === "hermes_gateway"
+          ? "Hermes Gateway"
+          : confirmationEnvironment
+            ? environmentDisplayLabel(confirmationEnvironment)
+            : "Local machine";
   const setupError =
     adapters.error ??
     adapterInventory.error ??
@@ -1024,6 +1026,7 @@ function Setup({
                                         ? "Using saved key"
                                         : [
                                               "cursor_cloud",
+                                              "qoder_cloud_agents",
                                               "hermes_gateway",
                                             ].includes(adapterType)
                                           ? "Required"
@@ -1174,7 +1177,7 @@ function Setup({
                             onChange={value => { setRunner(value); resetTest(); }} />
                         </details>}
                       </section>
-                      {!["cursor_cloud", "hermes_gateway"].includes(
+                      {!["cursor_cloud", "qoder_cloud_agents", "hermes_gateway"].includes(
                         adapterType,
                       ) && (
                         <section className="space-y-5">

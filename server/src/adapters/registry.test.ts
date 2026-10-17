@@ -66,6 +66,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["claude_local", "native_mcp"],
     ["codex_local", "native_mcp"],
     ["cursor_cloud", "invocation_context"],
+    ["qoder_cloud_agents", "invocation_context"],
     ["cursor", "environment"],
     ["gemini_local", "environment"],
     ["grok_local", "environment"],

@@ -9,6 +9,7 @@ import type { ComponentType } from "react";
 import { agentHarnessType } from "@paperclipai/shared";
 import {
   Bot,
+  Cloud,
   Code,
   Gem,
   Moon,
@@ -146,6 +147,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
+  },
+  qoder_cloud_agents: {
+    label: "Qoder Cloud Agents",
+    description: "Managed remote Qoder agent",
+    icon: Cloud,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",

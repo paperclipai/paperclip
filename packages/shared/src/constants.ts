@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "codex_local",
   "paperclip_runner",
   "cursor_cloud",
+  "qoder_cloud_agents",
   "gemini_local",
   "grok_local",
   "hermes_gateway",

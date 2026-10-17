@@ -43,6 +43,7 @@ const DIRECT_ADAPTER_TYPES = [
   "claude_local",
   "codex_local",
   "cursor_cloud",
+  "qoder_cloud_agents",
   "cursor",
   "gemini_local",
   "grok_local",
