@@ -17,6 +17,7 @@ Agent access: [companion](../agent-access-map/companies.md).
 - `decision-models`: configure and test the company's decision model, then inspect invocation history and recorded usage.
 - `fast-responses`: configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
 - `archive`: archive and restore through the available controls without confusing archival with deletion.
+- `deletion`: permanently delete a disposable company when server configuration and board access allow it.
 - `portability`: preview a company package and inspect imported agents, projects, skills, and conflicts.
 
 ## How to get to it (user POV)
@@ -66,6 +67,19 @@ bounded Test action. Inspect success and failure receipts and their history in
 Costs. Verify disabled or revoked connections remain clear and that a user
 without connection-management permission cannot configure or test the service.
 Use an owned provider fixture for failure states; record any actual provider usage.
+
+### `company-deletion`
+
+Automated: [configuration defaults](../../server/src/__tests__/company-deletion-config.test.ts),
+[route authorization](../../server/src/__tests__/companies-route-cross-company-authz.test.ts),
+and [real app/database](../../server/src/__tests__/company-deletion.integration.test.ts)
+cover the configured DELETE path. [Company list tests](../../ui/src/pages/Companies.test.tsx)
+cover the health gate and visible rejection with mocked API responses.
+
+Manual: Use disposable companies only. With deletion disabled, open the company
+menu and confirm **Delete Organization** is absent. With deletion enabled, confirm
+the action deletes the chosen company. Return an unexpected 403 from an owned test
+fixture and verify the confirmation displays the error and retains the company.
 
 ## Gotchas
 
