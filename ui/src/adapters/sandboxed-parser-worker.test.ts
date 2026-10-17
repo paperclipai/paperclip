@@ -6,11 +6,11 @@ describe("sandboxed parser worker bootstrap", () => {
   it("disables child worker and object URL escape hatches", () => {
     const source = getWorkerBootstrapSource();
 
-    expect(source).toContain("self.Worker = _undefined");
-    expect(source).toContain("self.SharedWorker = _undefined");
-    expect(source).toContain("self.Blob = _undefined");
-    expect(source).toContain("self.RTCPeerConnection = _undefined");
-    expect(source).toContain("self.RTCDataChannel = _undefined");
+    expect(source).toContain('shadow("Worker")');
+    expect(source).toContain('shadow("SharedWorker")');
+    expect(source).toContain('shadow("Blob")');
+    expect(source).toContain('shadow("RTCPeerConnection")');
+    expect(source).toContain('shadow("RTCDataChannel")');
     expect(source).toContain('"createObjectURL"');
     expect(source).toContain('"revokeObjectURL"');
   });
@@ -21,5 +21,12 @@ describe("sandboxed parser worker bootstrap", () => {
 
   it("does not include the unused parse_batch protocol branch", () => {
     expect(getWorkerBootstrapSource()).not.toContain("parse_batch");
+  });
+
+  it("implements robust, non-deletable prototype-walking shadow mechanism", () => {
+    const source = getWorkerBootstrapSource();
+    expect(source).toContain("Object.getPrototypeOf");
+    expect(source).toContain("configurable: false");
+    expect(source).toContain("writable: false");
   });
 });
