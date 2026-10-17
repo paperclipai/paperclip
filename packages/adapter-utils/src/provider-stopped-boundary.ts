@@ -5,6 +5,7 @@ export function createProviderStoppedBoundary(onProviderStopped?: () => Promise<
   let stopped = false;
   let collected = false;
   return {
+    hasStopped: () => stopped,
     beginInvocation(): () => void {
       const current = ++invocation;
       stopped = false;

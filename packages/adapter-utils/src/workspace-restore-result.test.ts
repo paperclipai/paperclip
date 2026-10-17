@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { applyWorkspaceRestoreFailure, withWorkspaceRestore } from "./workspace-restore-result.js";
+import { describe, expect, it, vi } from "vitest";
+import { applyWorkspaceRestoreFailure, canDiscardRestoredRunWorkspace, cleanupRestoredRunWorkspace, withWorkspaceRestore } from "./workspace-restore-result.js";
 import type { AdapterExecutionResult } from "./types.js";
 import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
@@ -11,6 +11,41 @@ const completed: AdapterExecutionResult = {
 const unsafe = new Error("Daytona syncOut refusing tarball link whose target escapes the extraction dir: .claude/skills/paperclip -> /tmp/private-clone/secret-key");
 
 describe("workspace restore settlement", () => {
+  it("allows cleanup only for a successful terminal result with restored files", () => {
+    expect(canDiscardRestoredRunWorkspace(completed)).toBe(true);
+    for (const result of [
+      { ...completed, exitCode: 1 },
+      { ...completed, signal: "SIGTERM" },
+      { ...completed, timedOut: true },
+      { ...completed, errorCode: "cancelled" },
+      { ...completed, errorMessage: "Provider failed" },
+      { ...completed, resultJson: { workspaceRestoreFailure: "restore_failed" } },
+    ]) expect(canDiscardRestoredRunWorkspace(result)).toBe(false);
+    expect(canDiscardRestoredRunWorkspace(null)).toBe(false);
+  });
+
+  it("runs cleanup after stop and restore, and preserves the result when cleanup or logging fails", async () => {
+    const order: string[] = [];
+    const cleanup = vi.fn(async () => { order.push("cleanup"); throw new Error("SSH failed"); });
+    const result = await withWorkspaceRestore(async () => completed, async () => { order.push("restore"); });
+    await cleanupRestoredRunWorkspace({ cleanup, result, providerStopped: true, collectionSucceeded: true,
+      cancelled: false, onFailure: async () => { order.push("log"); throw new Error("log failed"); } });
+    expect(order).toEqual(["restore", "cleanup", "log"]);
+    expect(result).toBe(completed);
+  });
+
+  it("retains running, failed, cancelled, and restore-failed run workspaces", async () => {
+    const cleanup = vi.fn(async () => {});
+    const failedRestore = await withWorkspaceRestore(async () => completed, async () => { throw new Error("restore failed"); });
+    for (const input of [
+      { result: completed, providerStopped: false, collectionSucceeded: true, cancelled: false },
+      { result: completed, providerStopped: true, collectionSucceeded: false, cancelled: false },
+      { result: completed, providerStopped: true, collectionSucceeded: true, cancelled: true },
+      { result: { ...completed, exitCode: 1 }, providerStopped: true, collectionSucceeded: true, cancelled: false },
+      { result: failedRestore, providerStopped: true, collectionSucceeded: true, cancelled: false },
+    ]) await cleanupRestoredRunWorkspace({ ...input, cleanup, onFailure: () => {} });
+    expect(cleanup).not.toHaveBeenCalled();
+  });
   it("retains only the safe failed restore step alongside the original completed turn", async () => {
     const error = Object.assign(new Error("private-restore-path and command"), { code: 1, stderr: "private-restore-output" });
     const result = await withWorkspaceRestore(async () => completed, () => withWorkspaceRestoreDiagnostics("workspace", () =>

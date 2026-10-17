@@ -1,5 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
-import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
+import { cleanupRestoredRunWorkspace, withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -303,6 +303,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let cleanupRemoteWorkspace: (() => Promise<void>) | undefined;
+  let grokAuthCopyBackFailed = false;
   // Declared here (not inside the try) so the outer `finally` can remove it on
   // every exit path (teardown and setup failure alike), mirroring the Codex
   // adapter's `stagedCodexHomeDir` handling.
@@ -441,19 +443,21 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
                 // value read from `env.GROK_HOME`. A copy-out failure never
                 // fails the run: `copyBackGrokAuth` logs the errno code and
                 // rethrows, and this callback swallows that rejection.
-                restore: async ({ assetDir, readFile }) =>
-                  void (await copyBackGrokAuth({
+                restore: async ({ assetDir, readFile }) => {
+                  await copyBackGrokAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostHomeDir: hostGrokHome,
                     log: (line) => onLog("stdout", `${line}\n`),
                     env: process.env,
-                  }).catch(() => undefined)),
+                  }).catch(() => { grokAuthCopyBackFailed = true; });
+                },
               },
             ]
           : undefined,
       });
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      cleanupRemoteWorkspace = preparedExecutionTargetRuntime.cleanupRemoteWorkspace;
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env,
@@ -731,7 +735,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   };
 
   try {
-    return await withWorkspaceRestore(
+    const restoredResult = await withWorkspaceRestore(
       async () => {
         let result: AdapterExecutionResult;
         let collectionFailed = false;
@@ -758,6 +762,15 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       },
       async () => { await restoreRemoteWorkspace?.(); },
     );
+    await cleanupRestoredRunWorkspace({
+      cleanup: grokAuthCopyBackFailed ? undefined : cleanupRemoteWorkspace,
+      result: restoredResult,
+      providerStopped: providerStop.hasStopped(),
+      collectionSucceeded: true,
+      cancelled: Boolean(ctx.signal?.aborted),
+      onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
+    });
+    return restoredResult;
   } finally {
     // Cleanup runs after settlement on both success and failure.
     if (stagedGrokHomeDir) {

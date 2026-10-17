@@ -3,6 +3,31 @@ import type { AdapterExecutionResult } from "./types.js";
 import { classifyWorkspaceRestoreFailure } from "./workspace-restore-merge.js";
 import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnosticCapture } from "./workspace-restore-diagnostics.js";
 
+/** A terminal provider result that is safe to discard after restore succeeds. */
+export function canDiscardRestoredRunWorkspace(result: AdapterExecutionResult | null): boolean {
+  return result !== null && result.exitCode === 0 && result.signal === null && !result.timedOut
+    && !result.errorCode && !result.errorMessage && !hasWorkspaceRestoreFailure(result.resultJson);
+}
+
+/** Call only after workspace and asset restore completed without throwing. */
+export async function cleanupRestoredRunWorkspace(input: {
+  cleanup: (() => Promise<void>) | null | undefined;
+  result: AdapterExecutionResult | null;
+  providerStopped: boolean;
+  collectionSucceeded: boolean;
+  cancelled: boolean;
+  onFailure: () => Promise<void> | void;
+}): Promise<void> {
+  if (!input.cleanup || !input.providerStopped || !input.collectionSucceeded || input.cancelled ||
+      !canDiscardRestoredRunWorkspace(input.result)) return;
+  try {
+    await input.cleanup();
+  } catch {
+    // A failed delete or a failed diagnostic must never replace the run result.
+    await Promise.resolve().then(input.onFailure).catch(() => {});
+  }
+}
+
 /** A completed model turn does not imply that required workspace files arrived. */
 export function applyWorkspaceRestoreFailure(result: AdapterExecutionResult): AdapterExecutionResult {
   if (!hasWorkspaceRestoreFailure(result.resultJson) || result.errorCode === "workspace_restore_failed") return result;

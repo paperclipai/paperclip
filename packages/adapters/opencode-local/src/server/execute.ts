@@ -1,3 +1,4 @@
+import { cleanupRestoredRunWorkspace } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -381,6 +382,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return asStringArray(config.args);
     })();
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+    let cleanupRemoteWorkspace: (() => Promise<void>) | undefined;
     let localSkillsDir: string | null = null;
     let remoteRuntimeRootDir: string | null = null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
@@ -417,6 +419,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      cleanupRemoteWorkspace = preparedExecutionTargetRuntime.cleanupRemoteWorkspace;
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env: preparedRuntimeConfig.env,
@@ -794,6 +797,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    let completedResult: AdapterExecutionResult | null = null;
+    let providerCollectionSucceeded = false;
     try {
       const initial = await runAttempt(sessionId);
       const initialFailed =
@@ -808,19 +813,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true);
+        return (completedResult = toResult(retry, true));
       }
 
-      return toResult(initial);
+      return (completedResult = toResult(initial));
     } finally {
       try {
         await providerStop.collectBeforeRestore();
+        providerCollectionSucceeded = true;
       } finally {
         await Promise.all([
           paperclipBridge?.stop(),
           restoreRemoteWorkspace?.(),
           localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
         ]);
+        await cleanupRestoredRunWorkspace({
+          cleanup: cleanupRemoteWorkspace,
+          result: completedResult,
+          providerStopped: providerStop.hasStopped(),
+          collectionSucceeded: providerCollectionSucceeded,
+          cancelled: Boolean(ctx.signal?.aborted),
+          onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
+        });
       }
     }
   } finally {

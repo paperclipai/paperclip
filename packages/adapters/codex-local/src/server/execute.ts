@@ -1,3 +1,4 @@
+import { cleanupRestoredRunWorkspace } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
@@ -902,6 +903,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+    const cleanupRemoteWorkspace = preparedExecutionTargetRuntime?.cleanupRemoteWorkspace;
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
       ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
@@ -1613,6 +1615,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     let executionError: unknown = null;
+    let completedResult: AdapterExecutionResult | null = null;
+    let providerCollectionSucceeded = false;
     try {
       const initial = await runAttempt(sessionId);
       if (
@@ -1634,20 +1638,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (retryResult.errorMessage) {
           executionError = new Error(retryResult.errorMessage);
         }
-        return retryResult;
+        return (completedResult = retryResult);
       }
 
       const result = toResult(initial, false, false);
       if (result.errorMessage) {
         executionError = new Error(result.errorMessage);
       }
-      return result;
+      return (completedResult = result);
     } catch (error) {
       executionError = error;
       throw error;
     } finally {
       try {
         await providerStop.collectBeforeRestore();
+        providerCollectionSucceeded = true;
       } finally {
         if (paperclipBridge) {
           await paperclipBridge.stop();
@@ -1674,6 +1679,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             if (executionError === null) throw error;
           }
         }
+        await cleanupRestoredRunWorkspace({
+          cleanup: cleanupRemoteWorkspace,
+          result: completedResult,
+          providerStopped: providerStop.hasStopped(),
+          collectionSucceeded: providerCollectionSucceeded,
+          cancelled: Boolean(ctx.signal?.aborted),
+          onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
+        });
       }
     }
   } finally {

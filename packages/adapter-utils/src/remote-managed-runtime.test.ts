@@ -32,6 +32,42 @@ import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 describe("remote managed runtime", () => {
   const cleanupDirs: string[] = [];
 
+  it("removes only the completed run UUID beneath the SSH workspace root", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-cleanup-"));
+    cleanupDirs.push(root);
+    const spec = { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app",
+      remoteCwd: "/app", privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true };
+    const first = "11111111-1111-4111-8111-111111111111";
+    const second = "22222222-2222-4222-8222-222222222222";
+    const a = await prepareRemoteManagedRuntime({ spec, runId: first, adapterKey: "test", workspaceLocalDir: root });
+    const b = await prepareRemoteManagedRuntime({ spec, runId: second, adapterKey: "test", workspaceLocalDir: root });
+    await a.restoreWorkspace();
+    expect(runSshCommand).not.toHaveBeenCalled();
+    await a.cleanupRemoteWorkspace?.();
+    expect(runSshCommand).toHaveBeenCalledTimes(1);
+    const command = (vi.mocked(runSshCommand).mock.calls as unknown as Array<[unknown, string]>)[0]?.[1] ?? "";
+    expect(command).toContain(`cd '/app/.paperclip-runtime/runs'`);
+    expect(command).toContain('test "$(pwd -P)" =');
+    expect(command).toContain(`test ! -L '${first}'`);
+    expect(command).toContain(`rm -rf -- '${first}'`);
+    expect(command).not.toContain(second);
+    expect(b.workspaceRemoteDir).toContain(second);
+  });
+
+  it("rejects unsafe run IDs and workspace roots before issuing a delete", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-cleanup-safety-"));
+    cleanupDirs.push(root);
+    const spec = { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app",
+      remoteCwd: "/app", privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true };
+    for (const [runId, workspaceRemoteDir] of [["../outside", "/app"], ["plain", "/app"],
+      ["11111111-1111-4111-8111-111111111111", "relative/root"],
+      ["11111111-1111-4111-8111-111111111111", "/app/../outside"]]) {
+      const prepared = await prepareRemoteManagedRuntime({ spec, runId, adapterKey: "test", workspaceLocalDir: root, workspaceRemoteDir });
+      await expect(prepared.cleanupRemoteWorkspace?.()).rejects.toThrow();
+    }
+    expect(runSshCommand).not.toHaveBeenCalled();
+  });
+
   it("stages all files over SSH without Git or cache exclusions and restores the same baseline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-plain-"));
     cleanupDirs.push(root);

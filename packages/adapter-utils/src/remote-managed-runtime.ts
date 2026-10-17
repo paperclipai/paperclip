@@ -54,6 +54,8 @@ export interface PreparedRemoteManagedRuntime {
    */
   additionalSourceDirs: Record<string, string>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  /** Remove this run's staged SSH tree after a successful, final restore. */
+  cleanupRemoteWorkspace?(): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -250,6 +252,22 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
+    cleanupRemoteWorkspace: syncWorkspace
+      ? async () => {
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.runId)) {
+            throw new Error("Cannot clean an SSH workspace without a run UUID");
+          }
+          if (!path.posix.isAbsolute(baseWorkspaceRemoteDir) || baseWorkspaceRemoteDir.split("/").includes("..")) {
+            throw new Error("Cannot clean an SSH workspace outside an absolute workspace root");
+          }
+          const runtimeDir = path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime");
+          const runsDir = path.posix.join(runtimeDir, "runs");
+          await runSshCommand(
+            input.spec,
+            `test ! -L ${shellQuote(baseWorkspaceRemoteDir)} && test ! -L ${shellQuote(runtimeDir)} && test ! -L ${shellQuote(runsDir)} && cd ${shellQuote(runsDir)} && test "$(pwd -P)" = ${shellQuote(runsDir)} && test ! -L ${shellQuote(input.runId)} && rm -rf -- ${shellQuote(input.runId)}`,
+          );
+        }
+      : undefined,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       if (preparedWorkspace && baselineSnapshot) {
         await restoreWorkspaceFromSshExecution({

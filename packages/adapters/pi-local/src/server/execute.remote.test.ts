@@ -120,12 +120,13 @@ describe("pi remote execution", () => {
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const managedRemoteWorkspace = `/remote/workspace/.paperclip-runtime/runs/${runId}/workspace`;
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
     const result = await execute({
-      runId: "run-1",
+      runId,
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -225,6 +226,12 @@ describe("pi remote execution", () => {
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    const sshCalls = runSshCommand.mock.calls as unknown as Array<[unknown, string]>;
+    const cleanupIndex = sshCalls.findIndex(([, command]) => command.includes(`rm -rf -- '${runId}'`));
+    expect(cleanupIndex).toBeGreaterThanOrEqual(0);
+    expect(restoreWorkspaceFromSshExecution.mock.invocationCallOrder[0]).toBeLessThan(
+      runSshCommand.mock.invocationCallOrder[cleanupIndex]!,
+    );
   });
 
   it("ships the managed Pi agent config and repoints PI_CODING_AGENT_DIR when PAPERCLIP_PI_PROVIDERS is set", async () => {

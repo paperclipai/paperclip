@@ -827,13 +827,13 @@ describe("ssh env-lab fixture", () => {
 
     const preparedA = await prepareRemoteManagedRuntime({
       spec,
-      runId: "run-a",
+      runId: "11111111-1111-4111-8111-111111111111",
       adapterKey: "test-adapter",
       workspaceLocalDir: localRepo,
     });
     const preparedB = await prepareRemoteManagedRuntime({
       spec,
-      runId: "run-b",
+      runId: "22222222-2222-4222-8222-222222222222",
       adapterKey: "test-adapter",
       workspaceLocalDir: localRepo,
     });
@@ -858,6 +858,9 @@ describe("ssh env-lab fixture", () => {
 
     await expect(readFile(path.join(localRepo, "run-a.txt"), "utf8")).resolves.toBe("from run a\n");
     await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
+    await preparedA.cleanupRemoteWorkspace?.();
+    await runSshCommand(config, `test ! -e ${JSON.stringify(path.posix.dirname(preparedA.workspaceRemoteDir))}`);
+    await runSshCommand(config, `test -d ${JSON.stringify(path.posix.dirname(preparedB.workspaceRemoteDir))}`);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("round-trips project repositories nested in .paperclip-repositories across consecutive SSH runs", async () => {

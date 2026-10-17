@@ -255,6 +255,15 @@ launch command uses the host's absolute Node executable even when the adapter's
 launch environment is sanitized for a remote sandbox; the sandbox PATH remains
 owned by the sandbox image.
 
+### SSH run workspace cleanup
+
+An SSH run stages its files under `.paperclip-runtime/runs/<run UUID>` in the
+configured remote workspace. Paperclip removes that run directory after the
+provider stops and workspace and asset restore succeed. A failed or cancelled
+run, or a failed restore, keeps its directory for recovery. A cleanup failure
+is logged and does not replace the run result. Cleanup removes only the exact
+run UUID beneath the configured workspace root.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.

@@ -1001,7 +1001,11 @@ describe("grok_local execute", () => {
       const hostGrokHome = await seedHostGrokAuth(grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }));
       const refreshedAuth = grokAuth({ key: "refreshed-key", expiresAt: NEWER_EXPIRY });
       sandboxAuthFixture.bytes = Buffer.from(refreshedAuth, "utf8");
-      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      const cleanupRemoteWorkspace = vi.fn(async () => {});
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
       prepareRuntimeMock.mockImplementationOnce(async (input: {
         assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean; provision?: unknown; restore?: unknown }>;
       }) => {
@@ -1012,12 +1016,14 @@ describe("grok_local execute", () => {
           workspaceRemoteDir: "/remote/workspace",
           assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
           restoreWorkspace: makeRestoreWorkspace(assets),
+          cleanupRemoteWorkspace,
         };
       });
 
       await execute(await makeCtx("run-copyout-e2e", await makeTempRoot()));
 
       expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(refreshedAuth);
+      expect(cleanupRemoteWorkspace).toHaveBeenCalledOnce();
     });
 
     it("the copy-out installs to the resolver directory when env.GROK_HOME names a different directory, and the named directory stays empty", async () => {
@@ -1054,7 +1060,11 @@ describe("grok_local execute", () => {
       mocks.state.isRemote = true;
       const hostGrokHome = await seedHostGrokAuth(grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }));
       sandboxAuthFixture.error = Object.assign(new Error("sandbox read boom"), { code: "EIO" });
-      runProcessMock.mockImplementation(async () => makeSuccessfulRunResult());
+      const cleanupRemoteWorkspace = vi.fn(async () => {});
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
       prepareRuntimeMock.mockImplementationOnce(async (input: {
         assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean; provision?: unknown; restore?: unknown }>;
       }) => {
@@ -1065,12 +1075,14 @@ describe("grok_local execute", () => {
           workspaceRemoteDir: "/remote/workspace",
           assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
           restoreWorkspace: makeRestoreWorkspace(assets),
+          cleanupRemoteWorkspace,
         };
       });
 
       const result = await execute(await makeCtx("run-copyout-failure", await makeTempRoot()));
 
       expect(result.exitCode).toBe(0);
+      expect(cleanupRemoteWorkspace).not.toHaveBeenCalled();
       // The host credential is untouched by the failed copy-out.
       expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(
         grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }),
