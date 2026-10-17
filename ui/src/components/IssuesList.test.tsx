@@ -25,6 +25,7 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  count: vi.fn(),
   get: vi.fn(),
   listAll: vi.fn(),
   list: vi.fn(),
@@ -347,6 +348,8 @@ describe("IssuesList", () => {
     dialogState.openNewIssue.mockReset();
     mockKanbanBoard.mockReset();
     mockNavigate.mockReset();
+    mockIssuesApi.count.mockReset();
+    mockIssuesApi.count.mockResolvedValue({ count: 0 });
     mockIssuesApi.list.mockReset();
     mockIssuesApi.listLabels.mockReset();
     mockAuthApi.getSession.mockReset();
@@ -1497,7 +1500,40 @@ describe("IssuesList", () => {
     });
   });
 
-  it("shows a refinement hint when a board column hits its server cap", async () => {
+  it.each([true, false])("uses a server total above the card cap for the board badge (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board" }));
+    mockIssuesApi.count.mockImplementation((_company, filters) => Promise.resolve({ count: filters?.status === "done" ? 258 : 0 }));
+    const { root } = renderWithQueryClient(<IssuesList issues={[]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ columnCounts: expect.objectContaining({ done: 258 }) }));
+    });
+    act(() => root.unmount());
+  });
+
+  it.each([true, false])("does not use an unfiltered server total with local priority filters (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board", priorities: ["high"] }));
+    mockIssuesApi.count.mockResolvedValue({ count: 258 });
+    const { root } = renderWithQueryClient(<IssuesList issues={[]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => expect(mockKanbanBoard).toHaveBeenCalled());
+    expect(mockIssuesApi.count).not.toHaveBeenCalled();
+    expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ columnCounts: {} }));
+    act(() => root.unmount());
+  });
+
+  it.each([true, false])("shows a count error without presenting a capped page as the total (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board" }));
+    mockIssuesApi.count.mockRejectedValue(new Error("Count unavailable"));
+    const { root } = renderWithQueryClient(<IssuesList issues={[]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => expect(container.textContent).toContain("Totals could not be loaded"));
+    expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ columnCounts: {} }));
+    act(() => root.unmount());
+  });
+
+  it.each([true, false])("shows a refinement hint when a board column hits its server cap (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
     localStorage.setItem(
       "paperclip:test-issues:company-1",
       JSON.stringify({ viewMode: "board" }),
@@ -1530,6 +1566,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Some board columns are showing up to 200 tasks. Refine filters or search to reveal the rest.");
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ cappedStatuses: ["backlog"] }));
     });
 
     act(() => {

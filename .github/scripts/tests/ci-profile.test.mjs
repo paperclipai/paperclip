@@ -278,6 +278,7 @@ test("PR credential guard permits filenames but rejects secret expressions", () 
   assertNoPrWorkflowCredentials("if: ${{ always() }}\nrun: node --test scripts/docker-compose-secrets.test.mjs");
   assertNoPrWorkflowCredentials("if: ${{ startsWith(github.ref, 'ref') }}\nrun: 'node --test scripts/docker-compose-secrets.test.mjs'");
   for (const source of ["env: ${{ secrets.EXAMPLE }}", "env: ${{ secrets['EXAMPLE'] }}", "env: ${{ toJSON(secrets) }}", "env: ${{ format('}}', secrets.EXAMPLE) }}",
+    "${{ secrets }}", "${{secrets['API_KEY']}}", '${{ secrets["API_KEY"] }}',
     "# Expressions start with '${{'.\nTOKEN: ${{ secrets.PR_TOKEN }}",
     "name: Example # Expressions start with '${{'.\nTOKEN: ${{ secrets.PR_TOKEN }}"]) {
     assert.throws(() => assertNoPrWorkflowCredentials(source));

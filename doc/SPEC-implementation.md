@@ -245,6 +245,13 @@ See `doc/project-repositories.md` for the API and UI contract.
 
 ## 7.6 `issues` (core task entity)
 
+Board column badges show the total number of matching, readable tasks, independently
+of the card page limit. The count endpoint applies the same visibility, company,
+creation, search, and filter conditions as the list endpoint, without pagination.
+Loading or failed counts must not turn a capped page into an exact total. When
+client-only filters prevent an exact count, capped columns show a lower bound
+with a `+` suffix. Card rendering and incremental reveal remain bounded. Both supported board implementations (streamlined and legacy) use the same count and lower-bound rules.
+
 Task creation accepts an omitted or blank title when the description contains a prompt.
 The server stores the first 120 characters of its whitespace-normalized prompt as
 a provisional title and sets `title_needs_generation`. The assigned agent receives
@@ -1714,6 +1721,7 @@ is required.
 - state transition guards (agent, issue, approval)
 - budget enforcement rules
 - adapter invocation/cancel semantics
+- PR workflow secret guards reject GitHub Actions `secrets` expressions (including dot, bracket, and whole-context access) and Honeycomb key references while permitting ordinary secret-related test filenames.
 
 ## 17.2 Integration Tests
 
