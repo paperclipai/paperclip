@@ -1150,6 +1150,28 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
   return patch;
 }
 
+/** Minimum time between now and a newly scheduled monitor check (synthiq fork, 2026-10-16). */
+export const MONITOR_MIN_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Raise a newly set or changed monitor's nextCheckAt to at least MONITOR_MIN_INTERVAL_MS from now. A monitor run
+ * costs a full agent turn, and checks every few minutes spent large token budgets without new information. An
+ * unchanged monitor (same nextCheckAt as before) is left alone, so unrelated updates never move a schedule.
+ */
+export function enforceMonitorMinimumInterval<T extends { monitor?: { nextCheckAt: string } | null } | null>(
+  policy: T,
+  previous: { monitor?: { nextCheckAt: string } | null } | null,
+  now: Date = new Date(),
+): T {
+  const monitor = policy?.monitor;
+  if (!policy || !monitor?.nextCheckAt) return policy;
+  if (previous?.monitor?.nextCheckAt === monitor.nextCheckAt) return policy;
+  const earliest = now.getTime() + MONITOR_MIN_INTERVAL_MS;
+  const requested = Date.parse(monitor.nextCheckAt);
+  if (!Number.isFinite(requested) || requested >= earliest) return policy;
+  return { ...policy, monitor: { ...monitor, nextCheckAt: new Date(earliest).toISOString() } };
+}
+
 export function buildInitialIssueMonitorFields(input: {
   policy: IssueExecutionPolicy | null;
   status: string;
