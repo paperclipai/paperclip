@@ -14000,6 +14000,38 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      if (
+        req.body.executionPolicy !== undefined &&
+        req.actor.type !== "board" &&
+        previousExecutionPolicy?.stages?.some((stage) =>
+          stage.participants?.some((participant) => participant.type === "user"),
+        )
+      ) {
+        const gateFingerprint = (policy: NormalizedExecutionPolicy | null) => {
+          if (!policy) return "null";
+          const { monitor: _monitor, ...gate } = policy;
+          return JSON.stringify({
+            ...gate,
+            stages: gate.stages.map((stage) => ({
+              ...stage,
+              participants: stage.participants.map(
+                ({ id: _id, ...participant }) => participant,
+              ),
+            })),
+          });
+        };
+        if (
+          gateFingerprint(previousExecutionPolicy) !==
+          gateFingerprint(nextExecutionPolicy)
+        ) {
+          res.status(403).json({
+            error:
+              "Only the board can change or remove an execution policy that has a user participant",
+            code: "user_stage_policy_locked",
+          });
+          return;
+        }
+      }
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
       }
@@ -14390,10 +14422,17 @@ export function issueRoutes(
       } = { value: null };
       const postCommitActivityPublications: ActivityPublication[] = [];
       const postCommitIssueActions: IssuePostCommitAction[] = [];
+      const lockedExpectedExecutionPolicy =
+        expectedExecutionPolicy === undefined &&
+        req.body.executionPolicy !== undefined &&
+        req.actor.type !== "board" &&
+        interruptedRunId === null
+          ? (existing.executionPolicy ?? null)
+          : expectedExecutionPolicy;
       const issueUpdateData = {
         ...updateFields,
         workspaceSelectionActor: req.actor,
-        expectedExecutionPolicy,
+        expectedExecutionPolicy: lockedExpectedExecutionPolicy,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
