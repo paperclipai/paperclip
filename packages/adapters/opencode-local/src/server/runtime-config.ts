@@ -2,6 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME,
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE,
+} from "./windows-utf8.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -106,7 +110,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /** Platform override for tests; defaults to the running platform. */
+  platform?: NodeJS.Platform;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
+  const platform = input.platform ?? process.platform;
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
     return {
@@ -220,6 +227,26 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   if (smallModel) {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+  }
+  // Windows PowerShell 5.1, the default OpenCode shell host on Windows, writes
+  // child output in the legacy OEM code page and initializes `$OutputEncoding`
+  // to US-ASCII. Both settings corrupt non-ASCII text. Inject a plugin that
+  // forces UTF-8 on every shell command, and register it for this run. Remote
+  // targets are already excluded above.
+  if (platform === "win32") {
+    const pluginPath = path.join(runtimeConfigDir, PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME);
+    await fs.writeFile(pluginPath, PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE, "utf8");
+    // A relative reference resolves against the config file and stays valid after
+    // the config directory is copied to a remote execution target, where an
+    // absolute host path would not exist.
+    const pluginRef = `./${PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME}`;
+    const existingPlugin = Array.isArray(nextConfig.plugin)
+      ? (nextConfig.plugin as unknown[]).filter((entry) => entry !== pluginRef)
+      : [];
+    nextConfig.plugin = [...existingPlugin, pluginRef];
+    notes.push(
+      "Injected the Windows UTF-8 shell plugin so agent shell output keeps non-ASCII text.",
+    );
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 

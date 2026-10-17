@@ -1,8 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME,
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE,
+} from "./windows-utf8.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -309,15 +314,196 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
-  it("respects explicit opt-out", async () => {
+  it("respects explicit opt-out off Windows", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { dangerouslySkipPermissions: false },
+      platform: "linux",
     });
 
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("does not inject the Windows UTF-8 shell plugin for a remote target", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      platform: "win32",
+      targetIsRemote: true,
+    });
+    expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
+    expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+
+  it("injects the Windows UTF-8 shell plugin on Windows", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      platform: "win32",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const configDir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(configDir, "opencode.json"), "utf8"),
+    ) as { plugin?: unknown[] };
+    const pluginRef = `./${PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME}`;
+    expect(runtimeConfig.plugin).toEqual([pluginRef]);
+    await expect(
+      fs.readFile(path.join(configDir, PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME), "utf8"),
+    ).resolves.toBe(PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE);
+    expect(prepared.notes.some((note) => note.includes("Windows UTF-8 shell plugin"))).toBe(true);
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("does not inject the Windows UTF-8 shell plugin off Windows", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      platform: "linux",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { plugin?: unknown };
+    expect(runtimeConfig.plugin).toBeUndefined();
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("preserves an existing plugin array and appends the Windows UTF-8 plugin once", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      plugin: ["file:///existing/plugin.js"],
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      platform: "win32",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const configDir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(configDir, "opencode.json"), "utf8"),
+    ) as { plugin?: unknown[] };
+    const pluginRef = `./${PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME}`;
+    expect(runtimeConfig.plugin).toEqual(["file:///existing/plugin.js", pluginRef]);
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("ships a loadable plugin that forces UTF-8 and is idempotent", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-utf8-plugin-"));
+    cleanupPaths.add(dir);
+    const pluginFile = path.join(dir, "paperclip-windows-utf8.mjs");
+    await fs.writeFile(pluginFile, PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE, "utf8");
+
+    const mod = (await import(pathToFileURL(pluginFile).href)) as {
+      PaperclipWindowsUtf8: () => Promise<{
+        "tool.execute.before": (
+          input: { tool: string },
+          output: { args: { command: string } },
+        ) => Promise<void>;
+      }>;
+    };
+    const hooks = await mod.PaperclipWindowsUtf8();
+
+    // The plugin reads `process.platform`. Force the Windows branch so this test
+    // exercises the rewrite on every host, including Linux CI.
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      // A plain shell command gets the console and $OutputEncoding fix and keeps
+      // its original text inside the outer scriptblock.
+      const plain = { args: { command: "Write-Output 'Привет'" } };
+      await hooks["tool.execute.before"]({ tool: "bash" }, plain);
+      expect(plain.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
+      expect(plain.args.command).toContain("[Console]::OutputEncoding");
+      expect(plain.args.command).toContain("$OutputEncoding");
+      expect(plain.args.command).not.toContain("Invoke-RestMethod:ContentType");
+      expect(plain.args.command).toContain("& {Write-Output 'Привет'\n};");
+
+      // A JSON request also gets the UTF-8 request content type default.
+      const json = {
+        args: { command: "Invoke-RestMethod -Uri $u -Headers @{'Content-Type'='application/json'} -Body $b" },
+      };
+      await hooks["tool.execute.before"]({ tool: "shell" }, json);
+      expect(json.args.command).toContain("Invoke-RestMethod:ContentType");
+      expect(json.args.command).toContain("Invoke-WebRequest:ContentType");
+
+      // A non-JSON request keeps its own content type: no JSON default is added.
+      const form = { args: { command: "Invoke-RestMethod -Uri https://example.test/form -Body 'name=alice'" } };
+      await hooks["tool.execute.before"]({ tool: "bash" }, form);
+      expect(form.args.command).not.toContain("Invoke-RestMethod:ContentType");
+
+      // A comment-prefixed command still gets the fix: the comment may precede
+      // the executable statement inside the scriptblock.
+      const commentCmd = { args: { command: "# note\nWrite-Output 'Привет'" } };
+      await hooks["tool.execute.before"]({ tool: "shell" }, commentCmd);
+      expect(commentCmd.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
+      expect(commentCmd.args.command).toContain("& {# note\nWrite-Output 'Привет'\n};");
+
+      // A command whose first non-comment token is a `using` statement is left
+      // unchanged: `using` must stay first and cannot live inside a scriptblock.
+      const usingCommands = [
+        "using namespace System.Text; [Encoding]::UTF8.GetBytes('Привет')",
+        "<# note #>using namespace System.Text; Write-Output 'Привет'",
+      ];
+      for (const usingCommand of usingCommands) {
+        const usingArgs = { args: { command: usingCommand } };
+        await hooks["tool.execute.before"]({ tool: "shell" }, usingArgs);
+        expect(usingArgs.args.command).toBe(usingCommand);
+      }
+
+      // Wrappable top-level constructs (`param`, `begin`/`process`/`end` blocks)
+      // stay valid because the original text runs inside the outer scriptblock.
+      const wrappedCommands = [
+        "param([string]$text = 'Привет'); Write-Output $text",
+        "param([string]$text = ')'); Write-Output $text",
+        "begin { Write-Output 'Привет' }",
+        "process { Write-Output 'Привет' }",
+        "end { Write-Output 'Привет' }",
+      ];
+      for (const wrappedCommand of wrappedCommands) {
+        const wrappedArgs = { args: { command: wrappedCommand } };
+        await hooks["tool.execute.before"]({ tool: "shell" }, wrappedArgs);
+        expect(wrappedArgs.args.command).toContain("PAPERCLIP_WINDOWS_UTF8");
+        expect(wrappedArgs.args.command).toContain(`& {${wrappedCommand}\n};`);
+      }
+
+      // Second pass must not double-prefix.
+      const once = plain.args.command;
+      await hooks["tool.execute.before"]({ tool: "bash" }, plain);
+      expect(plain.args.command).toBe(once);
+
+      // Non-shell tools are never rewritten.
+      const readOutput = { args: { command: "cat file" } };
+      await hooks["tool.execute.before"]({ tool: "read" }, readOutput);
+      expect(readOutput.args.command).toBe("cat file");
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    }
+
+    // Off Windows the hook is a no-op.
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const linuxOutput = { args: { command: "Write-Output 'Привет'" } };
+      await hooks["tool.execute.before"]({ tool: "bash" }, linuxOutput);
+      expect(linuxOutput.args.command).toBe("Write-Output 'Привет'");
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    }
+
+    await fs.rm(dir, { recursive: true, force: true });
+    cleanupPaths.delete(dir);
   });
 });

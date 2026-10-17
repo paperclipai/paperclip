@@ -327,6 +327,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  // Keep non-ASCII text intact for tooling the agent shells out to. Python
+  // honors these directly; the Windows shell plugin covers PowerShell/cmd.
+  if (process.platform === "win32") {
+    env.PYTHONUTF8 = env.PYTHONUTF8 ?? "1";
+    env.PYTHONIOENCODING = env.PYTHONIOENCODING ?? "utf-8";
+  }
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
