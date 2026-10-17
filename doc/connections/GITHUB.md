@@ -75,6 +75,33 @@ If an unapproved enrollment link expires, return to setup and select
 live pending enrollment or replaces an expired one; this does not revoke or
 repeat an existing instance approval.
 
+## Your own GitHub App
+
+Use **Use your own GitHub App** when sign-in must not go through Paperclip
+Cloud. Paperclip then exchanges the code and refreshes tokens directly with
+GitHub. Paperclip Cloud does not receive the tokens.
+
+1. Create a GitHub App or an OAuth App. Set its callback URL to
+   `<Paperclip URL>/api/tools/oauth/callback`.
+2. For a GitHub App, keep **Expire user authorization tokens** on. Paperclip
+   refreshes the 8-hour access token before it uses the token. A GitHub App
+   ignores OAuth scopes. The App permissions and the access of the person who
+   signs in limit the token.
+3. Give Paperclip the client ID and the client secret in one of these ways:
+   - Set `PAPERCLIP_TOOL_OAUTH_GITHUB_CLIENT_ID` and
+     `PAPERCLIP_TOOL_OAUTH_GITHUB_CLIENT_SECRET` on the server. Setup then does
+     not ask for a client, and connections do not keep a copy of the secret. To
+     rotate the secret, change these values and restart the server.
+   - Enter the client ID and the client secret during setup. Paperclip keeps
+     them in the encrypted secrets of that connection.
+4. In setup, open **Advanced** and select **Use your own GitHub App**.
+
+To use the connection only to prove who a person is on GitHub, for example for
+a GitHub review bot, give the App no repository or organization permissions.
+Then select **Only agents I choose** and select no agents. A personal
+connection is used only in runs where its owner is the responsible person, and
+only by agents that it is installed for.
+
 ## Identity resolution
 
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,

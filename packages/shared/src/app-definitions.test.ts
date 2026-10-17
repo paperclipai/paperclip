@@ -310,7 +310,7 @@ describe("AppDefinition catalog", () => {
   it("separates GitHub tools from the review bot without changing the provider identity", () => {
     const github = getConnectableAppDefinition("github")!;
     const bot = getConnectableAppDefinition("github-code-review-bot")!;
-    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "own-oauth"]);
     expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
     expect(bot.name).toBe("GitHub Code Review Bot");
     expect(bot.methods).toHaveLength(1);
@@ -697,6 +697,15 @@ describe("AppDefinition catalog", () => {
       defaults: { discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2" },
       consoleLinks: { register: "https://app.asana.com/0/my-apps" },
     });
+    expect(method("github", "own-oauth")).toMatchObject({
+      auth: "oauth", ownershipModes: ["customer"], oauthClientSecretRequired: true,
+      defaults: {
+        serverUrl: "https://api.githubcopilot.com/mcp/",
+        authorizationEndpoint: "https://github.com/login/oauth/authorize",
+        tokenEndpoint: "https://github.com/login/oauth/access_token",
+      },
+    });
+    expect(method("github", "own-oauth")?.oauthStrategy).toBeUndefined();
     expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
     expect(method("sentry")).toMatchObject({
       key: "mcp-oauth",

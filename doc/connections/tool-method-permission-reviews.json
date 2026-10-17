@@ -567,6 +567,25 @@
     },
     {
       "app": "github",
+      "method": "own-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "repo",
+        "read:org",
+        "read:user"
+      ],
+      "capability": "write",
+      "supportedActions": "Repository contents, issues, pull requests and other granted toolsets. A GitHub App ignores these scopes and applies its own permissions and installed repositories; an OAuth App receives the requested scopes.",
+      "evidence": [
+        "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app",
+        "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps"
+      ],
+      "reviewedAt": "2026-10-11",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "github",
       "method": "mcp-key",
       "auth": "api_key",
       "policy": "provider-key",

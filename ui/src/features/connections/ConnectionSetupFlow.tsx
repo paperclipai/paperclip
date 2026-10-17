@@ -2122,6 +2122,7 @@ function StandardConnectionSetupFlow({
   // operator's own OAuth client, that client is the recovery path, so it sits
   // in the same Advanced panel and opens itself once sign-in has failed.
   const automaticCustomerClientMethod = automaticOAuthEntry
+    && automaticOAuthEntry.deploymentOAuthClient !== true
     && entryAutomaticOAuthMethod
     && connectionMethodAcceptsCustomerOAuthClient(entryAutomaticOAuthMethod)
     ? entryAutomaticOAuthMethod
@@ -3624,7 +3625,9 @@ function KeyStep({
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
   const acceptsCustomerOAuthClient = connectionMethodAcceptsCustomerOAuthClient(method);
+  const usesDeploymentOAuthClient = acceptsCustomerOAuthClient && entry.deploymentOAuthClient === true;
   const customerOAuthClientRequired = acceptsCustomerOAuthClient
+    && !usesDeploymentOAuthClient
     && !connectionMethodSupportsAutomaticOAuth(method);
   const oauthClientFilled = usingVercel || !customerOAuthClientRequired || (
     oauthClientId.trim().length > 0
@@ -3655,6 +3658,7 @@ function KeyStep({
   const unavailable = entry.availability?.available === false;
   const optionalCustomerOAuthClient = !usingVercel
     && acceptsCustomerOAuthClient
+    && !usesDeploymentOAuthClient
     && !customerOAuthClientRequired;
   const hasAlternateMethods = capabilityGroups.length > 1 || capabilityMethods.length > 1;
   const capabilitySelection = capabilityGroups.length > 1 ? (
@@ -3907,6 +3911,10 @@ function KeyStep({
               required
             />
           </div>
+        ) : !usingVercel && method?.auth === "oauth" && usesDeploymentOAuthClient ? (
+          <p className="text-xs text-muted-foreground">
+            Signs in with the {entry.name} OAuth app configured on this server.
+          </p>
         ) : null}
 
         {usingVercel || !method || fields.length === 0 ? null : (

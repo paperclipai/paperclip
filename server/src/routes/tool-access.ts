@@ -81,6 +81,7 @@ import {
 import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
+  appWithDeploymentOAuthClient,
   oauthClientIdMetadataDocument,
 } from "../services/tool-access.js";
 import { isLoopbackHost } from "../url-utils.js";
@@ -851,7 +852,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         },
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (enableMemoryConnectors || !isMemoryConnectorId(app.slug))).map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithDeploymentOAuthClient(appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles))
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });

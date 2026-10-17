@@ -80,6 +80,45 @@
         "organization",
         "repository"
       ]
+    },
+    {
+      "key": "own-oauth",
+      "label": "Use your own GitHub App",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "purpose": "tool",
+      "oauthClientSecretRequired": true,
+      "grantKinds": [
+        "user",
+        "agent"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Sign in through your organization's own GitHub App or OAuth App, so tokens go directly between GitHub and this Paperclip.",
+      "defaults": {
+        "serverUrl": "https://api.githubcopilot.com/mcp/",
+        "authorizationEndpoint": "https://github.com/login/oauth/authorize",
+        "tokenEndpoint": "https://github.com/login/oauth/access_token",
+        "scopesHint": [
+          "repo",
+          "read:org",
+          "read:user"
+        ]
+      },
+      "guidanceMd": "Add Paperclip's callback URL to your GitHub App, generate a client secret, and paste the client ID and secret here. A GitHub App uses its own permissions and ignores scopes; keep user token expiration on so access tokens renew every 8 hours.",
+      "consoleLinks": {
+        "register": "https://github.com/settings/apps/new",
+        "docs": "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app"
+      },
+      "riskTier": "S3",
+      "warnings": [
+        "Shell Git and gh receive this identity for the run and are not constrained by per-tool Ask-first controls."
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "repository"
+      ]
     }
   ]
 }
