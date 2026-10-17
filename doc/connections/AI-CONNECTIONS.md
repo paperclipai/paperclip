@@ -59,6 +59,16 @@ the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
+On agent update, `runtimeConfig.aiConnection` uses absent-versus-null semantics.
+An update that omits the key preserves the stored binding. An update that sends
+`null` detaches it. A harness switch drops a stored non-router binding that has
+no compatible path on the target harness instead of rejecting the whole update.
+Router pool bindings keep strict validation: switching to a harness the pool
+cannot serve is rejected until the caller detaches it explicitly by sending
+`runtimeConfig.aiConnection: null` in the same update. A save that keeps the
+current harness still rejects an incompatible binding, so the caller learns
+the binding no longer fits the model.
+
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
