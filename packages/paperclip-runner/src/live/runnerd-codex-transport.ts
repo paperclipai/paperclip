@@ -1,3 +1,4 @@
+import { PRP_COMPLETION_TOOL_NAME } from "../contracts/completion-result.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
@@ -152,15 +153,19 @@ const CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS = `## Codex-style collaboration
 - Before the first tool call in a turn, send a brief commentary update describing the immediate work you are starting.
 - During tool-driven work, send concise commentary updates at meaningful transitions so the user can follow progress without opening raw logs.
 - Reserve \`report_progress\` for meaningful durable milestones on longer work. Do not call it merely to create a completion comment on a short run; Paperclip materializes the final assistant response as the durable completion comment.
-- Invoke the semantic completion tool exactly once before the final assistant response. After it succeeds, send one self-contained final response with the outcome and verification, then do not call another tool. The completion tool records task disposition; Paperclip keeps receiving your answer until the provider turn ends.`;
+- When discovering tools through \`ALL_TOOLS\`, filter by the relevant server prefix or exact tool name and return names only first. Read full definitions only for the tools needed for the next action, then reuse them. Do not print the whole catalog or search every tool description for broad words such as "complete".`;
 
 export function withCodexCollaborationRuntimeInstructions(
   instructions: string,
   enabled = true,
+  tools: readonly Readonly<Record<string, unknown>>[] = [],
 ): string {
   if (!enabled) return instructions;
   const base = instructions.trimEnd();
-  return `${base}\n\n${CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS}`;
+  const completion = tools.some((tool) => tool.name === PRP_COMPLETION_TOOL_NAME)
+    ? `Invoke the semantic completion tool \`${PRP_COMPLETION_TOOL_NAME}\` exactly once before the final assistant response. After it succeeds, send one self-contained final response with the outcome and verification, then do not call another tool. The completion tool records task disposition; Paperclip keeps receiving your answer until the provider turn ends.`
+    : "No semantic completion tool is assigned to this session. Return the final answer when the requested work is complete; do not search other tool catalogs for a completion tool.";
+  return `${base}\n\n${CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS}\n- ${completion}`;
 }
 
 const CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
@@ -5093,6 +5098,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       ? withCodexCollaborationRuntimeInstructions(
                           baseInstructions,
                           includeCodexCollaborationInstructions,
+                          dynamicTools,
                         )
                       : baseInstructions,
                   collaborationMode:

@@ -14,6 +14,17 @@ session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
 
+## Codex tool discovery
+
+The native controller instructs Codex to discover tools by server prefix or exact
+name, list names before reading definitions, and reuse the selected definitions.
+It does not ask the model to print entire tool catalogs. Large unrelated app
+catalogs can otherwise consume context before the first task action.
+The controller requests semantic finalization only when `paperclip_finish` is in
+the session's assigned dynamic tools. Sessions without that tool return their
+answer without searching other servers for a substitute. This does not relax
+Runner completion validation or change tool authorization.
+
 ## Execution environment lifecycle
 
 `RunnerExecutionDriver` defines the environment hooks shared by coding harnesses

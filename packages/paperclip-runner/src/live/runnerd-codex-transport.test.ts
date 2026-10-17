@@ -1790,16 +1790,59 @@ it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
 
 it("adds Codex-style turn updates only when collaboration instructions are enabled", () => {
   const base = "Base Paperclip instructions.";
-  const enabled = withCodexCollaborationRuntimeInstructions(base, true);
+  const enabled = withCodexCollaborationRuntimeInstructions(base, true, codexSemanticToolSpecs());
   expect(enabled).toContain(base);
   expect(enabled).toContain("Before the first tool call in a turn");
   expect(enabled).toContain(
     "Do not call it merely to create a completion comment",
   );
-  expect(enabled).toContain("semantic completion tool exactly once before");
+  expect(enabled).toContain("semantic completion tool `paperclip_finish` exactly once before");
   expect(enabled).toContain("After it succeeds");
   expect(enabled).not.toContain("Before semantic finalization");
   expect(withCodexCollaborationRuntimeInstructions(base, false)).toBe(base);
+});
+
+it("bounds Codex tool discovery and does not request an unassigned completion tool", () => {
+  for (const tools of [[], [{ name: "unrelated_complete", description: "Complete another workflow" }]]) {
+    const instructions = withCodexCollaborationRuntimeInstructions("Base", true, tools);
+    expect(instructions).toContain("return names only first");
+    expect(instructions).toContain("Read full definitions only for the tools needed for the next action");
+    expect(instructions).toContain("No semantic completion tool is assigned");
+    expect(instructions).not.toContain("Invoke the semantic completion tool");
+  }
+  expect(withCodexCollaborationRuntimeInstructions("Base", false, codexSemanticToolSpecs())).toBe("Base");
+});
+
+it.each([false, true])("derives remote Codex completion instructions from assigned tools (%s)", async (assigned) => {
+  const root = await mkdtemp(join(tmpdir(), "runner-completion-instructions-"));
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  let instructions = "";
+  const launch = vi.fn(() => { throw new Error("unexpected launch"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary, stateDirectory: root, sourceCodexHome: null,
+    runnerFilesystemRoot: "/runner", codexCommand: "/runtime/codex",
+    runnerProcessLauncher: launch,
+    controlPlaneRegistration: async (authority) => {
+      const payload = authority.store.state.runAttachTemplate;
+      instructions = String((payload?.provider as Record<string, unknown>)?.instructions ?? "");
+      throw new Error("fixture_stop_before_launch");
+    },
+  });
+  try {
+    await expect(transport.request("thread/start", {
+      cwd: "/workspace", baseInstructions: "Use the assigned desktop tools.",
+      dynamicTools: assigned ? codexSemanticToolSpecs() : [],
+    })).rejects.toThrow("fixture_stop_before_launch");
+    expect(instructions).toContain("Use the assigned desktop tools.");
+    expect(instructions).toContain("return names only first");
+    expect(instructions.includes("Invoke the semantic completion tool `paperclip_finish`")).toBe(assigned);
+    expect(instructions.includes("No semantic completion tool is assigned")).toBe(!assigned);
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("resolves the ordinary ~/.codex credential home when CODEX_HOME is unset", () => {
@@ -5032,6 +5075,8 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     params: {
       developerInstructions: withCodexCollaborationRuntimeInstructions(
         CODEX_SKILLLESS_BASE_INSTRUCTIONS,
+        true,
+        codexSemanticToolSpecs(),
       ),
     },
   });
