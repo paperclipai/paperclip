@@ -29,6 +29,7 @@ import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publi
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
+import { redactRunResultSecrets } from "../run-result-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
@@ -557,7 +558,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ),
     };
 
-    const persistedResultJson = cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
+    // Host-side credentials that Paperclip did not inject can reach captured output or the summary;
+    // mask token-shaped text in the final merged result before it is stored.
+    const persistedResultJson = redactRunResultSecrets(cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
       mergeRunStopMetadataForAgent(agent, outcome, {
         resultJson: mergeAdapterRecoveryMetadata({
           resultJson: {
@@ -578,7 +581,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         errorMessage: runErrorMessage,
       }),
       adapterResult.summary ?? null,
-    ), runErrorCode, runErrorMessage);
+    ), runErrorCode, runErrorMessage));
 
     const ledgerScope = runLedgerScope;
     const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
