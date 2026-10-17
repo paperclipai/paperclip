@@ -65,6 +65,73 @@ describe("SidebarShell", () => {
     expect(handle()?.getAttribute("aria-valuenow")).toBe("320");
   });
 
+  // The bottom-left overlays — the announcement well and the toast viewport —
+  // are fixed to the viewport, so without this width they land on the sidebar
+  // footer, on top of the account menu and the Share feedback button.
+  function reservedWidthVariable() {
+    return document.documentElement.style.getPropertyValue("--sidebar-reserved-width");
+  }
+
+  it("publishes the width the bottom-left overlays have to clear", () => {
+    window.localStorage.setItem("test.sidebar.width", "320");
+
+    act(() => {
+      root.render(
+        <SidebarShell open resizable storageKey="test.sidebar.width">
+          <div>Sidebar</div>
+        </SidebarShell>,
+      );
+    });
+
+    expect(reservedWidthVariable()).toBe("320px");
+
+    const separator = handle()!;
+    separator.setPointerCapture = vi.fn();
+    act(() => {
+      separator.dispatchEvent(pointerEvent("pointerdown", 320));
+      separator.dispatchEvent(pointerEvent("pointermove", 260));
+      separator.dispatchEvent(pointerEvent("pointerup", 260));
+    });
+
+    // It tracks a drag, so the overlays do not hang over a narrowed sidebar.
+    expect(reservedWidthVariable()).toBe("260px");
+  });
+
+  it("publishes only the rail width when collapsed, and none when closed", () => {
+    act(() => {
+      root.render(
+        <SidebarShell open collapsed storageKey="test.sidebar.width">
+          <div>Sidebar</div>
+        </SidebarShell>,
+      );
+    });
+    expect(reservedWidthVariable()).toBe(`${SIDEBAR_RAIL_WIDTH}px`);
+
+    act(() => {
+      root.render(
+        <SidebarShell open={false} storageKey="test.sidebar.width">
+          <div>Sidebar</div>
+        </SidebarShell>,
+      );
+    });
+    // Nothing reserved means the overlays return to the viewport edge.
+    expect(reservedWidthVariable()).toBe("0px");
+  });
+
+  it("reserves nothing to clear while the panel is only peeking", () => {
+    act(() => {
+      root.render(
+        <SidebarShell open collapsed peeking storageKey="test.sidebar.width">
+          <div>Sidebar</div>
+        </SidebarShell>,
+      );
+    });
+
+    // A peeking panel overlays content on purpose and is transient, so the
+    // overlays must not jump sideways as the pointer crosses the rail.
+    expect(reservedWidthVariable()).toBe(`${SIDEBAR_RAIL_WIDTH}px`);
+  });
+
   it("resizes by dragging and persists the new width", () => {
     act(() => {
       root.render(

@@ -41,7 +41,10 @@ export function AnnouncementWell({ health }: { health?: HealthStatus }) {
   const modalOpen = useModalOpen(Boolean(announcement));
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
-    <aside aria-label="Paperclip announcements" className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)">
+    // `md:left` clears the desktop sidebar, whose footer holds the account menu
+    // and the Share feedback button. Mobile keeps the viewport edge: its sidebar
+    // is a drawer that reserves no width.
+    <aside aria-label="Paperclip announcements" className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:left-(--overlay-gutter-left) md:bottom-3 md:max-h-(--announcement-max-height)">
       <AnnouncementCard key={announcement.id} announcement={announcement} onDismiss={() => dismiss(announcement.id)} />
     </aside>
   );
