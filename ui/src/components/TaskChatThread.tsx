@@ -2773,9 +2773,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return agentMap?.get(assigneeAgentId) ?? null;
   }, [agentMap, currentAssigneeValue]);
 
+  // Keyed per pending input: the cards keep their selection, reason and page
+  // in local state, which must not carry over to the next pending card.
   const takeoverContent = selectedPendingInput ? (
     selectedPendingInput.kind === "runtime" ? (
       <TaskChatProtocolCard
+        key={selectedPendingInput.key}
         item={selectedPendingInput.item}
         presentation="takeover"
         draftKey={interactionDraftKey}
@@ -2785,6 +2788,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       />
     ) : (
       <TaskChatInteractionCard
+        key={selectedPendingInput.key}
         item={{
           id: `interaction:${selectedPendingInput.interaction.id}`,
           kind: "interaction",
