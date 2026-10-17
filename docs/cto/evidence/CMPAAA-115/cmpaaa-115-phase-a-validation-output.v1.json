@@ -1,0 +1,46 @@
+{
+  "issue": "CMPAAA-126",
+  "parallel_lane": "CMPAAA-115",
+  "baseline_contract": "CMPAAA-49",
+  "generated_at": "2026-04-30T17:03:22+00:00",
+  "inputs": {
+    "schema_path": "cto/evidence/CMPAAA-115/cmpaaa-115-failure-drill-record.v1.schema.json",
+    "sample_path": "cto/evidence/CMPAAA-115/samples/cmpaaa-115-failure-drill-record.sample.v1.json",
+    "cmpaaa49_sample_path": "cto/evidence/CMPAAA-49/traceback-audit-samples.v1.json"
+  },
+  "shared_fields": [
+    "sample_id",
+    "candidate_id",
+    "run_id",
+    "lineage_id",
+    "traceback_request_id",
+    "checked_at",
+    "traceback_status",
+    "missing_lineage_fields",
+    "root_cause_category",
+    "source_gate_decision_id",
+    "audit_evidence_refs"
+  ],
+  "summary": {
+    "schema_error_count": 0,
+    "shared_field_total": 11,
+    "shared_fields_present_in_cmpaaa115_count": 11,
+    "shared_fields_present_in_cmpaaa49_count": 11,
+    "evidence_prefixes_ok": true,
+    "escalation_timestamp_ordering_ok": true,
+    "handling_latency_matches_timestamp_diff": true
+  },
+  "acceptance": {
+    "schema_error_count_eq_0": true,
+    "shared_fields_present_in_cmpaaa115_eq_11": true,
+    "shared_fields_present_in_cmpaaa49_eq_11": true,
+    "evidence_prefixes_ok": true,
+    "escalation_timestamp_ordering_ok": true,
+    "handling_latency_matches_timestamp_diff": true
+  },
+  "missing_shared_fields": {
+    "cmpaaa115_sample": [],
+    "cmpaaa49_sample": []
+  },
+  "schema_errors": []
+}
