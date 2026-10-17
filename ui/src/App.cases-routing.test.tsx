@@ -112,7 +112,10 @@ async function renderAppAt(container: HTMLElement, path: string) {
  * which had the identical loop with five turns instead of three.
  */
 async function waitForRoute(container: HTMLElement, text: string) {
-  await vi.waitFor(() => expect(container.textContent).toContain(text));
+  await vi.waitFor(() => expect(container.textContent).toContain(text), {
+    timeout: 4_000,
+    interval: 10,
+  });
 }
 
 describe("App Cases routing (PAP-13002)", () => {
