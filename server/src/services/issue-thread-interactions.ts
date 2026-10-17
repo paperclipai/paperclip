@@ -9,6 +9,7 @@ import { parseQuestionInteractionAnswers } from "./question-interaction-answers.
 import { isUniqueViolation } from "../db-errors.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -88,6 +89,7 @@ import {
   rejectIssueThreadInteractionSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
+  REQUEST_CONFIRMATION_CUSTOM_TARGET_KEY_MAX_LENGTH,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsPayloadSchema,
@@ -279,6 +281,28 @@ function isMergeConfirmationOnlyText(value: string) {
       (word) =>
         word === "pr_reference" || MERGE_CONFIRMATION_ALLOWED_WORDS.has(word),
     );
+}
+
+/**
+ * Builds the request_confirmation target key for a connection authorization
+ * card. The readable form is kept while it fits the payload schema cap; an
+ * over-long uid (app-gallery uids embed a provider slug, a uuid, and a
+ * suffixed name, which pushed real keys past the old 120-char cap and made
+ * the issue's interactions unreadable) falls back to a digest form that is
+ * always within the cap and stable for the same connection and user.
+ */
+export function connectionAuthorizationTargetKey(
+  connectionUid: string,
+  userId: string,
+): string {
+  const readable = `connection:${connectionUid}:user:${userId}`;
+  if (readable.length <= REQUEST_CONFIRMATION_CUSTOM_TARGET_KEY_MAX_LENGTH) {
+    return readable;
+  }
+  const digest = createHash("sha256")
+    .update(`${connectionUid}:${userId}`)
+    .digest("hex");
+  return `connection:sha256:${digest}`;
 }
 
 export function getMergeConfirmationPullRequestReferences(

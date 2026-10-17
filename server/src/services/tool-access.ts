@@ -1,4 +1,5 @@
 import { stableHash, descriptorHash } from "./tool-catalog-hash.js";
+import { connectionAuthorizationTargetKey } from "./issue-thread-interactions.js";
 import { assertProfileEntryInputs, assertProfileEntryShape } from "./tool-profile-entry-validation.js";
 import { DAYTONA_TOOLS, daytonaClient, daytonaRisk, isDaytonaConnection, isDaytonaToolName } from "./daytona.js";
 import { chatCredentialMutationLease } from "./chat-credential-mutation-lease.js";
@@ -15048,7 +15049,7 @@ export function toolAccessService(
         },
         target: {
           type: "custom" as const,
-          key: `connection:${connection.uid}:user:${authorizationSubjectUserId}`,
+          key: connectionAuthorizationTargetKey(connection.uid, authorizationSubjectUserId),
           revisionId: state,
           label: `Connect ${providerName}`,
           href: authorizationUrl.toString(),

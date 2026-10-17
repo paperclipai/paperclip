@@ -144,7 +144,10 @@ import {
 } from "./tool-access-policy.js";
 import { toolDiscoveryScheduler, ToolDiscoveryBusyError } from "./tool-discovery-scheduler.js";
 import { commitToolActionReview } from "./tool-action-review.js";
-import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import {
+  connectionAuthorizationTargetKey,
+  issueThreadInteractionService,
+} from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
   ToolRuntimeSupervisorError,
@@ -4411,7 +4414,7 @@ export function createToolGatewayService(
           : "This run needs your personal authorization. Paperclip will not use another user's identity.",
       target: {
         type: "custom" as const,
-        key: `connection:${connection.uid}:user:${userId}`,
+        key: connectionAuthorizationTargetKey(connection.uid, userId),
         revisionId: connection.updatedAt.toISOString(),
         label: `Connect ${connection.name}`,
         href,

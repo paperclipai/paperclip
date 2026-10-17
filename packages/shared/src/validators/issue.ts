@@ -1534,10 +1534,25 @@ export const requestConfirmationIssueDocumentTargetSchema =
     revisionNumber: z.number().int().positive().nullable().optional(),
   });
 
+/**
+ * Cap for custom confirmation target keys. Producers compose keys from
+ * connection uids and user ids (for example
+ * `connection:app-gallery:google-drive:<uuid>/google-drive-<hex>:user:<id>`
+ * runs 132 characters), so the cap must leave room for those composed keys:
+ * a stored payload that fails this schema makes the whole issue's
+ * interactions unreadable. 255 matches the revisionId and idempotency-key
+ * caps used across this module.
+ */
+export const REQUEST_CONFIRMATION_CUSTOM_TARGET_KEY_MAX_LENGTH = 255;
+
 export const requestConfirmationCustomTargetSchema =
   requestConfirmationTargetBaseSchema.extend({
     type: z.literal("custom"),
-    key: z.string().trim().min(1).max(120),
+    key: z
+      .string()
+      .trim()
+      .min(1)
+      .max(REQUEST_CONFIRMATION_CUSTOM_TARGET_KEY_MAX_LENGTH),
     revisionId: z.string().trim().min(1).max(255).nullable().optional(),
     revisionNumber: z.number().int().positive().nullable().optional(),
   });

@@ -654,3 +654,32 @@ describe("issue thread interaction schemas", () => {
     })).toThrow("verdict item ids must be unique");
   });
 });
+
+describe("requestConfirmationPayloadSchema custom target key length", () => {
+  function payloadWithKey(key: string) {
+    return {
+      version: 1 as const,
+      prompt: "Connect your account to continue?",
+      target: {
+        type: "custom" as const,
+        key,
+        revisionId: "2026-10-05T00:00:00.000Z",
+        label: "Connect Google Drive",
+      },
+    };
+  }
+
+  it("accepts the 132-character app-gallery authorization key from a stored payload", () => {
+    // This key shape bricked the issue page: the stored payload failed the
+    // old 120-char cap when interactions were read back.
+    const key =
+      "connection:app-gallery:google-drive:9ae3b8fd-1234-4abc-8def-eb476aa91fde/google-drive-396cb713:user:qpYBSE2yxjUXBqlWGLIT1WTysNNjSDWn";
+    expect(key.length).toBe(132);
+    expect(requestConfirmationPayloadSchema.parse(payloadWithKey(key)).target?.key).toBe(key);
+  });
+
+  it("accepts keys up to the 255 cap and rejects longer ones", () => {
+    expect(requestConfirmationPayloadSchema.parse(payloadWithKey("k".repeat(255))).target?.key).toHaveLength(255);
+    expect(() => requestConfirmationPayloadSchema.parse(payloadWithKey("k".repeat(256)))).toThrow();
+  });
+});

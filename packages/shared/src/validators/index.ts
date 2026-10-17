@@ -472,6 +472,7 @@ export {
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
   requestConfirmationIssueDocumentTargetSchema,
+  REQUEST_CONFIRMATION_CUSTOM_TARGET_KEY_MAX_LENGTH,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,

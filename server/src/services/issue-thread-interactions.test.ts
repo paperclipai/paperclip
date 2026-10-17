@@ -400,3 +400,33 @@ describe("issueThreadInteractionService", () => {
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
   });
 });
+
+describe("connectionAuthorizationTargetKey", () => {
+  it("keeps the readable form for ordinary connection uids", async () => {
+    const { connectionAuthorizationTargetKey } = await import("./issue-thread-interactions.js");
+    expect(connectionAuthorizationTargetKey("conn-123", "user-1")).toBe(
+      "connection:conn-123:user:user-1",
+    );
+  });
+
+  it("keeps the readable form for app-gallery uids whose composed key passed the old 120-char cap", async () => {
+    const { connectionAuthorizationTargetKey } = await import("./issue-thread-interactions.js");
+    const uid = "app-gallery:google-drive:9ae3b8fd-1234-4abc-8def-eb476aa91fde/google-drive-396cb713";
+    const userId = "qpYBSE2yxjUXBqlWGLIT1WTysNNjSDWn";
+    const key = connectionAuthorizationTargetKey(uid, userId);
+    expect(key).toBe(`connection:${uid}:user:${userId}`);
+    expect(key.length).toBe(132);
+    expect(key.length).toBeLessThanOrEqual(255);
+  });
+
+  it("falls back to a bounded digest form for over-long uids", async () => {
+    const { connectionAuthorizationTargetKey } = await import("./issue-thread-interactions.js");
+    const uid = `app-gallery:${"x".repeat(300)}`;
+    const key = connectionAuthorizationTargetKey(uid, "user-1");
+    expect(key).toMatch(/^connection:sha256:[0-9a-f]{64}$/);
+    expect(key.length).toBeLessThanOrEqual(255);
+    // Stable for the same connection and user, distinct across users.
+    expect(connectionAuthorizationTargetKey(uid, "user-1")).toBe(key);
+    expect(connectionAuthorizationTargetKey(uid, "user-2")).not.toBe(key);
+  });
+});
