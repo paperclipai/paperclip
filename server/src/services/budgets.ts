@@ -38,6 +38,12 @@ type ScopeRecord = {
   pauseReason: PauseReason | null;
 };
 
+/**
+ * Why an invocation is blocked. `company_paused` covers every company pause,
+ * operator or budget; every other block is `budget_exhausted`.
+ */
+export type InvocationBlockCause = "company_paused" | "budget_exhausted";
+
 type PolicyRow = typeof budgetPolicies.$inferSelect;
 type IncidentRow = typeof budgetIncidents.$inferSelect;
 
@@ -559,6 +565,12 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   async function reconcileScope(companyId: string, scopeType: BudgetScopeType, scopeId: string) {
     const scope = await resolveScopeRecord(db, scopeType, scopeId);
     if (scope.companyId !== companyId) throw notFound("Budget scope not found");
+    // A paused company is a stop of the whole company, and the pause can come
+    // from an operator as well as from a budget hard-stop. The cause is taken
+    // from this read, so callers never read the company again to tell the two
+    // apart: a second read can observe a later resume and turn a pause into a
+    // false budget verdict.
+    const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
     const policies = await db.select().from(budgetPolicies).where(and(
       eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, scopeType), eq(budgetPolicies.scopeId, scopeId),
     ));
@@ -570,12 +582,12 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         await pauseAndCancelScopeForBudget(policy);
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
         if (observed.pendingRunCount > 0) {
-          return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work while completed runs await accounting.` };
+          return { scopeType, scopeId, scopeName: scope.name, cause, reason: `${title} cannot start work while completed runs await accounting.` };
         }
         if (policy.unpricedUsagePolicy !== "allow" && observed.unpricedEventCount > 0) {
-          return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work because recorded usage has no reliable price.` };
+          return { scopeType, scopeId, scopeName: scope.name, cause, reason: `${title} cannot start work because recorded usage has no reliable price.` };
         }
-        return { scopeType, scopeId, scopeName: scope.name, reason: scopeType === "project"
+        return { scopeType, scopeId, scopeName: scope.name, cause, reason: scopeType === "project"
           ? "Project cannot start work because its budget hard-stop is still exceeded."
           : `${title} is paused because its budget hard-stop was reached.` };
       }
@@ -592,13 +604,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     // Agent status has its own admission gate and error code. Preserve a
     // manual pause without misclassifying it as a budget failure.
     if (scopeType !== "agent" && scope.paused && scope.pauseReason !== "budget") {
-      return { scopeType, scopeId, scopeName: scope.name, reason: `${scopeType === "company" ? "Company" : "Project"} is paused and cannot start new work.` };
+      return { scopeType, scopeId, scopeName: scope.name, cause, reason: `${scopeType === "company" ? "Company" : "Project"} is paused and cannot start new work.` };
     }
     if (scope.paused && scope.pauseReason === "budget" && !policies.length) {
-      return { scopeType, scopeId, scopeName: scope.name, reason: "Budget pause requires a policy or an explicit operator resume." };
+      return { scopeType, scopeId, scopeName: scope.name, cause, reason: "Budget pause requires a policy or an explicit operator resume." };
     }
     if (scope.pauseReason === "budget" && policies[0]) await resumeScopeFromBudget(policies[0]);
-    if (recoveringPolicy) return { scopeType, scopeId, scopeName: scope.name,
+    if (recoveringPolicy) return { scopeType, scopeId, scopeName: scope.name, cause,
       reason: "New work must wait while a native run recovers its unfinished accounting." };
     return null;
   }
