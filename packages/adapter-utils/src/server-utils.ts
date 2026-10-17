@@ -3515,6 +3515,10 @@ export function sanitizeInheritedPaperclipEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
+  // Server-only secrets: never inherited by an agent process. An adapter that
+  // genuinely needs a database URL passes one explicitly through its `env`.
+  delete env.DATABASE_URL;
+  delete env.BETTER_AUTH_SECRET;
   for (const key of Object.keys(env)) {
     if (AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase())) {
       delete env[key];
