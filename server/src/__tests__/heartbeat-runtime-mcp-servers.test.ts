@@ -519,7 +519,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(await db.select().from(toolMcpGateways)).toHaveLength(1);
   });
 
-  it("exposes only the dedicated GitHub connection when a personal connection is also installed", async () => {
+  it("exposes only the responsible person's own GitHub connection when a dedicated connection is also installed", async () => {
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime GitHub identity ${randomUUID()}`,
@@ -642,7 +642,9 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(runtimeGateway).toBeTruthy();
     const runtimeEntries = await db.select().from(toolProfileEntries)
       .where(eq(toolProfileEntries.profileId, runtimeGateway!.profileId!));
-    expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([dedicated!.id]);
+    // The responsible person's own ("Just me") identity outranks the agent's
+    // dedicated identity, so only that connection is delivered to the run.
+    expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([personal!.id]);
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {

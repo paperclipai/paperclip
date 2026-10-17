@@ -39,7 +39,7 @@ Read-only access must use separately authorized tools that enforce that boundary
 
 Server-side Git operations and GitHub gateway calls follow the same selection rules. Approved gateway operations retain their signed originating identity. Connection audience and tool policies continue to apply to the selected person's connection. Native catalogs remain stable across identity changes, but each invocation resolves the selected grant again. Personal OAuth secret declarations survive connection pauses and metadata edits.
 
-Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. Anonymous/local operations remain available where supported.
+Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. A shared company GitHub grant is used only as the explicit last tier of selection, never as a substitute for an unavailable personal or dedicated grant. Anonymous/local operations remain available where supported.
 
 OpenCode retains the controller-projected GitHub broker environment through
 runner startup and provider startup. Shell operations acquire credentials for
@@ -113,9 +113,11 @@ a reconnect requirement.
 
 ## Dedicated accounts and diagnostics
 
-An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection.
+Selection order is: the responsible person's own ("Just me") grant, then a dedicated-agent grant, then a standing delegation (ownerless runs only), then a shared company (organization) grant. Only the first tier that has a grant is used. Revoked, disabled, unavailable, or ambiguous grants in that tier do not fall back to a lower tier or another person's account. A dedicated-agent grant applies when the responsible person has not connected GitHub, or when the run has no responsible person. Removing a person's own connection hands selection to the dedicated grant, then to the shared company grant.
 
-Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
+Personal access token grants work for every managed operation, like sign-in grants. Paperclip records the token's GitHub account (`GET /user`) at setup and reconnect, or on first use for older tokens. That account authors managed commits and de-duplicates connections for the same account. Reconnecting a dedicated agent's token rotates the agent grant's own secret in place.
+
+Connection setup and permissions display: “This agent uses this GitHub account when the person giving instructions hasn’t connected their own GitHub account.”
 
 The GitHub permissions page shows repositories across all connected accounts in one scrollable list. It has no account filter or repository search. Repository icons, private-repository indicators, refresh, and GitHub configuration links remain available. The “Add More Repos on GitHub” button opens GitHub’s app installation and repository-access setup.
 
@@ -123,14 +125,14 @@ Multiple eligible connections for the same GitHub account are treated as one
 identity, using GitHub's stable account ID rather than its login. The resolver
 selects an available grant, preferring the newest authorization with a stable
 ID tie-breaker. Duplicate eligibility includes an active credential record with
-the correct owner, the OAuth access-token reference, and repository access
-metadata. It keeps that grant's credential and connection policy together;
+the correct owner, the OAuth access-token reference with repository access
+metadata, or a personal access token reference. It keeps that grant's credential and connection policy together;
 it does not combine repository access or bypass connection audiences. Distinct
 accounts or unidentifiable duplicate grants remain ambiguous. Managed commands
 print the redacted reason when GitHub access is unavailable, while unrelated
 local operations can still proceed without credentials.
 
-Run details show identity revisions and redacted GitHub results: responsible person, selected login when available, personal/dedicated source, and an unavailable reason. Tasks do not receive an additional identity indicator or takeover action.
+Run details show identity revisions and redacted GitHub results: responsible person, selected login when available, personal/dedicated/shared source, and an unavailable reason. Tasks do not receive an additional identity indicator or takeover action.
 
 ## Deployment and verification
 

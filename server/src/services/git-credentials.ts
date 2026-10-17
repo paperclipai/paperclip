@@ -3,6 +3,7 @@ import {
   heartbeatRuns,
   companyMemberships,
   connectionGrantDelegations,
+  connectionGrantMembers,
   connectionGrants,
   toolConnectionInstalls,
   toolConnections,
@@ -11,8 +12,15 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
+import {
+  currentGitHubTokenBinding,
+  isGitHubAccountCurrent,
+  loadGitHubTokenAccount,
+  recordGitHubTokenAccount,
+} from "./github-token-account.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
+import { isConnectionGrantAudienceAllowed } from "./tool-gateway.js";
 
 /**
  * Server-side git credentials for managed project checkouts and execution-workspace base
@@ -44,13 +52,24 @@ export const GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
 const GIT_CREDENTIAL_HELPER =
   `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
 
+/**
+ * Which managed GitHub identity a run resolved to, in priority order: the responsible
+ * person's own ("Just me") grant, the agent's dedicated grant, then a shared company grant.
+ */
+export type GitHubIdentitySource = "personal" | "dedicated" | "shared";
+
+/** Grant config path of a personal access token supplied at connect time. */
+const GITHUB_PAT_CONFIG_PATH = "credentials.authorization";
+/** Grant config path of a GitHub App user-to-server (sign-in) token. */
+const GITHUB_OAUTH_CONFIG_PATH = "oauth.access_token";
+
 export type GitCredential = {
   token: string;
   source: "managed_connection" | "company_secret" | "server_env";
   /** The company-secret name the token came from; null for a server-environment token. */
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
-  identitySource?: "personal" | "dedicated";
+  identitySource?: GitHubIdentitySource;
   connectionId?: string;
   grantId?: string;
 };
@@ -293,6 +312,74 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+type ConnectionGrantRow = typeof connectionGrants.$inferSelect;
+
+/** The grant's GitHub credential: a sign-in token, else a personal access token. */
+function githubCredentialRef(grant: ConnectionGrantRow) {
+  return grant.credentialSecretRefs.find((ref) => ref.configPath === GITHUB_OAUTH_CONFIG_PATH)
+    ?? grant.credentialSecretRefs.find((ref) => ref.configPath === GITHUB_PAT_CONFIG_PATH);
+}
+
+/**
+ * The GitHub account a grant authenticates as. Sign-in grants carry it with their
+ * installation metadata; personal-access-token grants record it from `GET /user`.
+ */
+function githubAccountForGrant(grant: ConnectionGrantRow): { userId: string; login: string } | null {
+  const account = grant.providerTenant?.github ?? grant.providerTenant?.githubAccount;
+  const userId = account?.userId?.trim();
+  return userId && account?.login ? { userId, login: account.login } : null;
+}
+
+function githubAccountIdForGrant(grant: ConnectionGrantRow) {
+  return githubAccountForGrant(grant)?.userId;
+}
+
+/** The login a grant authenticates as, for run identity summaries. */
+export function githubLoginForGrant(grant: ConnectionGrantRow): string | undefined {
+  return githubAccountForGrant(grant)?.login;
+}
+
+/** How a selected grant is reported: a person's grant (own or delegated), an agent's, or shared. */
+export function githubIdentitySourceForGrant(grant: Pick<ConnectionGrantRow, "kind">): GitHubIdentitySource {
+  return grant.kind === "agent" ? "dedicated" : grant.kind === "organization" ? "shared" : "personal";
+}
+
+/** Organization grants whose audience admits the run's responsible person. */
+async function sharedGitHubGrantsForRun(
+  db: Db,
+  companyId: string,
+  organizationGrants: ConnectionGrantRow[],
+  responsibleUserId: string | null,
+): Promise<ConnectionGrantRow[]> {
+  if (organizationGrants.length === 0) return [];
+  const members = await db
+    .select({ grantId: connectionGrantMembers.grantId, subjectId: connectionGrantMembers.subjectId })
+    .from(connectionGrantMembers)
+    .where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      inArray(connectionGrantMembers.grantId, organizationGrants.map((grant) => grant.id)),
+      eq(connectionGrantMembers.subjectType, "user"),
+    ));
+  const responsibleIsActiveMember = responsibleUserId
+    ? Boolean(await db
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, responsibleUserId),
+          eq(companyMemberships.status, "active"),
+        ))
+        .limit(1)
+        .then((rows) => rows[0]))
+    : false;
+  return organizationGrants.filter((grant) => isConnectionGrantAudienceAllowed(
+    members.filter((member) => member.grantId === grant.id).map((member) => member.subjectId),
+    responsibleUserId,
+    responsibleIsActiveMember,
+  ));
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,
@@ -304,7 +391,7 @@ export async function resolveManagedGitHubIdentitySelection(
   },
 ): Promise<{
   configured: boolean;
-  identitySource?: "personal" | "dedicated";
+  identitySource?: GitHubIdentitySource;
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
 }> {
@@ -339,11 +426,25 @@ export async function resolveManagedGitHubIdentitySelection(
   const grants = await db.select().from(connectionGrants).where(and(
     eq(connectionGrants.companyId, companyId),
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),
-    or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
+    or(
+      eq(connectionGrants.kind, "agent"),
+      eq(connectionGrants.kind, "user"),
+      eq(connectionGrants.kind, "organization"),
+    ),
   ));
   const dedicated = context.agentId
     ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
     : [];
+  // A shared company identity is the last resort, after any person or agent
+  // identity. Installing its connection is not enough: like every other
+  // organization-grant consumer, the run's responsible person must be in the
+  // grant's audience (an empty audience means everyone) and an active member.
+  const shared = await sharedGitHubGrantsForRun(
+    db,
+    companyId,
+    grants.filter((grant) => grant.kind === "organization" && grant.isDefault),
+    context.responsibleUserId ?? null,
+  );
   // Connections are already restricted above to the owner-selected install
   // targets. Within that consent boundary the server-resolved responsible user
   // is authoritative; standing delegation is only an ownerless-run fallback.
@@ -360,13 +461,22 @@ export async function resolveManagedGitHubIdentitySelection(
         return grants.filter((grant) => grant.kind === "user" && delegatedIds.has(grant.id));
       })
     : [];
-  const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
-  const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
+  // The responsible person's own ("Just me") identity wins, then the agent's
+  // dedicated identity, then a person's standing delegation (ownerless runs
+  // only), then a shared company identity. Only the first non-empty tier is
+  // considered, so identities in different tiers never conflict.
+  const tiers: Array<[GitHubIdentitySource, Array<typeof connectionGrants.$inferSelect>]> = [
+    ["personal", personal],
+    ["dedicated", dedicated],
+    ["personal", delegated],
+    ["shared", shared],
+  ];
+  const [identitySource, candidates] = tiers.find(([, tier]) => tier.length > 0) ?? ["personal", []];
   // Reconnecting can create another connection/grant for the same GitHub
   // account. Ambiguity is about provider identities, not the number of rows.
   // Only trust GitHub's stable account ID; equal logins or missing metadata
   // cannot establish that two grants belong to the same person.
-  const githubUserIds = candidates.map((candidate) => candidate.providerTenant?.github?.userId?.trim());
+  const githubUserIds = candidates.map((candidate) => githubAccountIdForGrant(candidate));
   if (candidates.length === 0 || (candidates.length > 1 && (
     githubUserIds.some((id) => !id) || new Set(githubUserIds).size !== 1
   ))) {
@@ -377,8 +487,10 @@ export async function resolveManagedGitHubIdentitySelection(
         : "More than one managed GitHub identity matches this run",
     };
   }
-  const credentialIds = candidates.flatMap((grant) => grant.credentialSecretRefs
-    .filter((ref) => ref.configPath === "oauth.access_token").map((ref) => ref.secretId));
+  const credentialIds = candidates.flatMap((grant) => {
+    const ref = githubCredentialRef(grant);
+    return ref ? [ref.secretId] : [];
+  });
   const credentialRecords = candidates.length > 1 && credentialIds.length > 0
     ? await db.select({
         id: companySecrets.id, status: companySecrets.status, deletedAt: companySecrets.deletedAt,
@@ -394,8 +506,12 @@ export async function resolveManagedGitHubIdentitySelection(
   const hasCredentialRecord = (grant: typeof connectionGrants.$inferSelect) => {
     if (candidates.length === 1) return true;
     const github = grant.providerTenant?.github;
-    const ref = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
-    return Boolean(github && github.installationCount > 0 && github.repositoryCount > 0 && ref
+    const ref = githubCredentialRef(grant);
+    // A sign-in grant proves repository reach through its GitHub App
+    // installations; a personal access token's reach is the token's own scope.
+    const hasRepositoryReach = ref?.configPath === GITHUB_PAT_CONFIG_PATH
+      || Boolean(github && github.installationCount > 0 && github.repositoryCount > 0);
+    return Boolean(hasRepositoryReach && ref
       && credentialRecords.some((secret) => secret.id === ref.secretId
         && secret.status === "active" && !secret.deletedAt
         && (grant.kind === "user"
@@ -472,7 +588,7 @@ export async function resolveManagedGitHubCredential(
     agentId?: string | null;
     allowStandingDelegation?: boolean;
   },
-): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
+): Promise<{ configured: boolean; identitySource?: GitHubIdentitySource; credential?: GitCredential; error?: string }> {
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
@@ -505,10 +621,15 @@ export async function resolveManagedGitHubCredential(
         heartbeatRunId: context.heartbeatRunId,
       });
     }
-    const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    // A sign-in grant carries a GitHub App user token plus the installation
+    // metadata that proves repository reach. A grant made with a personal access
+    // token carries the token itself; its repository reach is the token's own
+    // scope, which GitHub enforces on every push.
+    const accessRef = githubCredentialRef(grant);
+    const oauthRef = accessRef?.configPath === GITHUB_OAUTH_CONFIG_PATH ? accessRef : undefined;
     const github = grant.providerTenant?.github;
-    if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
-    if (github.installationCount < 1 || github.repositoryCount < 1) {
+    if (!accessRef || (oauthRef && !github)) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
+    if (oauthRef && github && (github.installationCount < 1 || github.repositoryCount < 1)) {
       return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity no longer has repository access" };
     }
     const accessContext = {
@@ -520,6 +641,9 @@ export async function resolveManagedGitHubCredential(
       heartbeatRunId: context.heartbeatRunId ?? null,
       responsibleUserId: context.responsibleUserId ?? null,
     };
+    // Read a personal access token's version before its value, so the account
+    // recorded below is bound to a version no newer than the token it came from.
+    const tokenBinding = oauthRef ? null : await currentGitHubTokenBinding(db, companyId, accessRef.secretId);
     let token: string;
     if (grant.kind === "user") {
       if (!grant.subjectUserId || !secrets.resolveUserSecretValue) {
@@ -544,20 +668,40 @@ export async function resolveManagedGitHubCredential(
     } else {
       token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
     }
+    // A personal access token connected before its account was recorded learns it
+    // now, once, so managed commits are authored as that account. Best effort: a
+    // GitHub outage must not block the clone or push the token itself can perform.
+    // A recorded token account is trusted only for the exact token version it
+    // was read with; after a rotation it is read again.
+    const recordedTokenAccount = grant.providerTenant?.githubAccount;
+    let account = oauthRef
+      ? githubAccountForGrant(grant)
+      : isGitHubAccountCurrent(recordedTokenAccount, tokenBinding)
+        ? { userId: recordedTokenAccount.userId, login: recordedTokenAccount.login }
+        : null;
+    if (!account && !oauthRef) {
+      try {
+        const loaded = await loadGitHubTokenAccount(token);
+        await recordGitHubTokenAccount(db, grant, loaded, tokenBinding);
+        account = { userId: loaded.userId, login: loaded.login };
+      } catch {
+        // Keep the credential; commits then need a configured repository identity.
+      }
+    }
     return {
       configured: true, identitySource: selection.identitySource,
       credential: {
         token,
         source: "managed_connection" as const,
         secretName: null,
-        githubIdentity: { userId: github.userId, login: github.login },
-        identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
+        ...(account ? { githubIdentity: account } : {}),
+        identitySource: selection.identitySource,
         connectionId: grant.connectionId,
         grantId: grant.id,
       },
     };
   };
-  let failure: { configured: boolean; identitySource?: "personal" | "dedicated"; error?: string };
+  let failure: { configured: boolean; identitySource?: GitHubIdentitySource; error?: string };
   try {
     const result = await acquire(selection);
     if (result.credential) return result;
@@ -570,9 +714,9 @@ export async function resolveManagedGitHubCredential(
   const alternate = await resolveManagedGitHubIdentitySelection(db, companyId, {
     ...context, excludeGrantId: selection.grant.id,
   });
-  const accountId = selection.grant.providerTenant?.github?.userId;
+  const accountId = githubAccountIdForGrant(selection.grant);
   if (!accountId || !alternate.grant || alternate.identitySource !== selection.identitySource
-    || alternate.grant.providerTenant?.github?.userId !== accountId
+    || githubAccountIdForGrant(alternate.grant) !== accountId
     || alternate.grant.subjectUserId !== selection.grant.subjectUserId
     || alternate.grant.subjectAgentId !== selection.grant.subjectAgentId) return failure;
   try { return await acquire(alternate); } catch { return failure; }

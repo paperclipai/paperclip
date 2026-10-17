@@ -77,6 +77,7 @@ import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
+import { resolveManagedGitHubCredential } from "../services/git-credentials.js";
 import {
   canonicalToolArguments,
   signToolArguments,
@@ -6513,6 +6514,157 @@ describeEmbeddedPostgres("tool access service", () => {
         .from(toolConnections)
         .where(eq(toolConnections.companyId, company.id)),
     ).resolves.toHaveLength(1);
+  });
+
+  it("gives an agent its GitHub identity from a personal access token, for git as well as tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const agent = await createAgent(db, company.id);
+    mockToolsList([{ name: "get_pull_request", annotations: { readOnlyHint: true } }]);
+
+    const connected = await withGalleryServerUrl(
+      "github",
+      PUBLIC_MCP_FIXTURE_URL,
+      () =>
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "github",
+            connectionMethodKey: "mcp-key",
+            grantKind: "agent",
+            subjectAgentId: agent.id,
+            name: "Agent GitHub PAT",
+            credentialValues: { "credentials.authorization": "ghp_agent_pat_fixture" },
+          },
+          { actorType: "user", actorId: "board" },
+        ),
+      "mcp-key",
+    );
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.actions.readOnly.map((action) => action.catalogEntryId),
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agent.id] },
+    });
+
+    // Setup used to leave a dedicated PAT identity with no grant at all.
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(grants).toEqual([
+      expect.objectContaining({ kind: "agent", subjectAgentId: agent.id, status: "active" }),
+    ]);
+    expect(grants[0]!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.authorization"]);
+
+    // The setup screen installs a dedicated identity for its agent as a separate step.
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+
+    // The git credential broker used to accept only a sign-in token.
+    const resolved = await resolveManagedGitHubCredential(db, secretService(db), company.id, {
+      agentId: agent.id,
+      allowStandingDelegation: false,
+      responsibleUserId: null,
+    });
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.credential).toMatchObject({
+      token: "ghp_agent_pat_fixture",
+      source: "managed_connection",
+      identitySource: "dedicated",
+    });
+  });
+
+  it("records a GitHub personal access token's account and replaces an agent's token in place on reconnect", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const agent = await createAgent(db, company.id);
+    const accounts: Record<string, { id: number; login: string }> = {
+      "Bearer ghp_old_fixture": { id: 101, login: "old-bot" },
+      "Bearer ghp_new_fixture": { id: 202, login: "new-bot" },
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://api.github.com/user") {
+        const account = accounts[new Headers(init?.headers).get("authorization") ?? ""];
+        return account ? Response.json(account) : new Response("unauthorized", { status: 401 });
+      }
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return mcpHttpResponse({ jsonrpc: "2.0", id: body.id,
+        result: body.method === "initialize"
+          ? { protocolVersion: "2025-06-18" }
+          : { tools: [{ name: "get_pull_request", annotations: { readOnlyHint: true } }] } });
+    });
+
+    const connected = await withGalleryServerUrl(
+      "github",
+      PUBLIC_MCP_FIXTURE_URL,
+      () =>
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "github",
+            connectionMethodKey: "mcp-key",
+            grantKind: "agent",
+            subjectAgentId: agent.id,
+            name: "Agent GitHub PAT",
+            credentialValues: { "credentials.authorization": "ghp_old_fixture" },
+          },
+          { actorType: "user", actorId: "board" },
+        ),
+      "mcp-key",
+    );
+    const agentGrant = async () =>
+      (await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId)))[0]!;
+    const original = await agentGrant();
+    // The account is recorded at setup, so several tokens for it de-duplicate.
+    expect(original.providerTenant?.githubAccount).toMatchObject({ userId: "101", login: "old-bot" });
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.actions.readOnly.map((action) => action.catalogEntryId),
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agent.id] },
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+
+    await withGalleryServerUrl(
+      "github",
+      PUBLIC_MCP_FIXTURE_URL,
+      () =>
+        service.reconnectGalleryApp(
+          connected.connectionId,
+          company.id,
+          { credentialValues: { "credentials.authorization": "ghp_new_fixture" } },
+          { actorType: "user", actorId: "board" },
+        ),
+      "mcp-key",
+    );
+
+    const replaced = await agentGrant();
+    // The agent's own grant carries the replacement, rotated in place; the
+    // connection never gains a shared copy of the agent's credential.
+    expect(replaced.credentialSecretRefs.map((ref) => ref.secretId)).toEqual(
+      original.credentialSecretRefs.map((ref) => ref.secretId),
+    );
+    expect(replaced.providerTenant?.githubAccount).toMatchObject({ userId: "202", login: "new-bot" });
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+    const resolved = await resolveManagedGitHubCredential(db, secretService(db), company.id, {
+      agentId: agent.id,
+      allowStandingDelegation: false,
+      responsibleUserId: null,
+    });
+    expect(resolved.credential).toMatchObject({
+      token: "ghp_new_fixture",
+      identitySource: "dedicated",
+      githubIdentity: { userId: "202", login: "new-bot" },
+    });
   });
 
   it("reconnects an exact active custom MCP connection without duplicating its identity", async () => {
@@ -16141,7 +16293,11 @@ describeEmbeddedPostgres("tool access service", () => {
     }).where(eq(toolConnections.id, connected.connectionId));
     await service.refreshCatalog(connected.connectionId, actor);
     expect(fetchMock.mock.calls.length).toBeGreaterThan(setupRequestCount);
-    for (const [url, init] of fetchMock.mock.calls) {
+    // Setup also learns the token's account from GitHub's REST API (once).
+    const accountLookups = fetchMock.mock.calls.filter(([url]) => String(url) === "https://api.github.com/user");
+    expect(accountLookups).toHaveLength(1);
+    expect(new Headers(accountLookups[0]![1]?.headers).get("authorization")).toBe("Bearer github-actions-test-token");
+    for (const [url, init] of fetchMock.mock.calls.filter(([url]) => String(url) !== "https://api.github.com/user")) {
       expect(url).toBe("https://api.githubcopilot.com/mcp/");
       expect(new Headers(init?.headers).get("X-MCP-Toolsets")).toBe("default,actions");
       expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer github-actions-test-token");
@@ -16190,7 +16346,8 @@ describeEmbeddedPostgres("tool access service", () => {
       "mcp-key",
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Two MCP requests, plus one GitHub REST lookup of the token's account.
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) !== "https://api.github.com/user")).toHaveLength(2);
     expect(fetchMock).toHaveBeenCalledWith(
       PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({

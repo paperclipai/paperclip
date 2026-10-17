@@ -533,9 +533,10 @@ const support = await getEmbeddedPostgresTestSupport();
         ).toEqual([connections[0]]);
       },
     );
-    it("retains dedicated override semantics when the dedicated account has duplicate grants", async () => {
+    it("retains dedicated semantics when the dedicated account has duplicate grants", async () => {
       const input = await seed();
-      await grant(input, "A");
+      // The responsible person has no GitHub of their own, so the agent's
+      // dedicated identity is the highest-priority one available.
       const first = await grant(input, "robot", true);
       const second = await grant(input, "robot", true);
       expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
@@ -562,35 +563,35 @@ const support = await getEmbeddedPostgresTestSupport();
         env: {},
       });
     });
-    it("honors dedicated overrides and never substitutes personal credentials when revoked or disabled", async () => {
+    it("prefers the responsible person's own GitHub over the agent's dedicated identity and never substitutes it when revoked or disabled", async () => {
       const input = await seed();
-      await grant(input, "A");
-      const dedicated = await grant(input, "robot", true);
+      const personal = await grant(input, "A");
+      await grant(input, "robot", true);
       expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
         status: "available",
-        source: "dedicated",
-        login: "robot",
+        source: "personal",
+        login: "A",
       });
       await db
         .update(connectionGrants)
         .set({ status: "revoked" })
-        .where(eq(connectionGrants.id, dedicated.id));
+        .where(eq(connectionGrants.id, personal.id));
       expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
         status: "unavailable",
-        source: "dedicated",
+        source: "personal",
         env: {},
       });
       await db
         .update(connectionGrants)
         .set({ status: "active" })
-        .where(eq(connectionGrants.id, dedicated.id));
+        .where(eq(connectionGrants.id, personal.id));
       await db
         .update(toolConnections)
         .set({ enabled: false })
-        .where(eq(toolConnections.id, dedicated.connectionId));
+        .where(eq(toolConnections.id, personal.connectionId));
       expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
         status: "unavailable",
-        source: "dedicated",
+        source: "personal",
         env: {},
       });
     });

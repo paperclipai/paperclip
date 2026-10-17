@@ -19,7 +19,11 @@ import { runIdentityContexts } from "@paperclipai/db";
 import { executeSpekoVoiceTool, spekoToolsForSession } from "./voice/speko-agent-tools.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
-import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import {
+  githubIdentitySourceForGrant,
+  githubLoginForGrant,
+  resolveManagedGitHubIdentitySelection,
+} from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
 import { spawn } from "node:child_process";
@@ -4008,8 +4012,8 @@ export function createToolGatewayService(
           .set({
             github: {
               status: "available",
-              login: grant.providerTenant?.github?.login,
-              source: grant.kind === "agent" ? "dedicated" : "personal",
+              login: githubLoginForGrant(grant),
+              source: githubIdentitySourceForGrant(grant),
               connectionId: connection.id,
               grantId: grant.id,
               authenticationMode: "managed",
@@ -4030,7 +4034,7 @@ export function createToolGatewayService(
             github: {
               status: "unavailable",
               reason: "GitHub authorization is unavailable",
-              source: grant.kind === "agent" ? "dedicated" : "personal",
+              source: githubIdentitySourceForGrant(grant),
             },
           })
           .where(
@@ -4541,7 +4545,8 @@ export function createToolGatewayService(
         }
       }
       // Managed GitHub selection is final: a legacy shared policy cannot replace
-      // the captured person's grant with an organization or teammate's account.
+      // the captured person's grant with a teammate's account. A shared
+      // (organization) grant is only selected when no person or agent identity is.
       return selected.grant;
     }
     const autonomous =

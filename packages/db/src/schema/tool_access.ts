@@ -232,6 +232,19 @@ export const connectionGrants = pgTable(
         lastWebhookAt?: string;
         webhookHealth?: "pending" | "healthy" | "unhealthy";
       };
+      /**
+       * The GitHub account a personal access token authenticates as, recorded from
+       * `GET /user`. A token has no GitHub App installations, so it never carries `github`.
+       */
+      githubAccount?: {
+        userId: string;
+        login: string;
+        avatarUrl?: string;
+        verifiedAt: string;
+        /** The token secret and version this account was read with; a rotation invalidates it. */
+        secretId?: string;
+        secretVersion?: number;
+      };
     }>(),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
     externalCredential: jsonb("external_credential").$type<VercelConnectGrantReference>(),

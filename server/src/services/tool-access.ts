@@ -23,6 +23,7 @@ import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "./cognee-connection.js";
 import { isMemoryConnectorId, isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { githubBotRequest } from "./chat-github-client.js";
+import { currentGitHubTokenBinding, loadGitHubTokenAccount, recordGitHubTokenAccount } from "./github-token-account.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import {
   emitConnectionCreated,
@@ -12985,6 +12986,7 @@ export function toolAccessService(
       current: typeof connectionGrants.$inferSelect;
     } | null = null;
     let personalPublicSetupEstablished = false;
+    let replacedGrantSecretRefs: CreateToolConnection["credentialSecretRefs"] = [];
 
     try {
       const credentialFields =
@@ -13370,6 +13372,70 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // A credential supplied at connect time (a personal access token) has no
+        // callback to wait for: commit it to the agent's own grant here, exactly
+        // as "Just me" does for a user, or the agent is left with no identity.
+        if (credentialSecretRefs.length > 0) {
+          const [existingGrant] = await db
+            .select()
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.connectionId, connectionRow.id),
+                eq(connectionGrants.kind, "agent"),
+                eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+              ),
+            )
+            .limit(1);
+          const grantValues = {
+            credentialSecretRefs,
+            status: "active" as const,
+            revokedAt: null,
+            revokedByAgentId: null,
+            revokedByUserId: null,
+            updatedAt: new Date(),
+          };
+          const [changedGrant] = existingGrant
+            ? await db
+                .update(connectionGrants)
+                .set(grantValues)
+                .where(eq(connectionGrants.id, existingGrant.id))
+                .returning()
+            : await db
+                .insert(connectionGrants)
+                .values({
+                  companyId,
+                  connectionId: connectionRow.id,
+                  kind: "agent",
+                  subjectAgentId: dedicatedAgentId,
+                  ...grantValues,
+                  isDefault: false,
+                  createdByUserId: actor?.actorType === "user" ? actor.actorId : null,
+                })
+                .returning();
+          if (!changedGrant)
+            throw new Error("Failed to create the agent's connection grant");
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = { previous: existingGrant ?? null, current: changedGrant };
+          }
+          // A new credential replaced the agent's previous one. Its old
+          // secret is deleted only after setup succeeds (below): a failed
+          // setup rolls the grant back to it.
+          replacedGrantSecretRefs = existingGrant?.credentialSecretRefs ?? [];
+          await db.insert(toolAccessAuditEvents).values({
+            companyId,
+            connectionId: connectionRow.id,
+            actorType: actor?.actorType ?? "system",
+            actorId: actor?.actorId ?? "system",
+            action: existingGrant ? "connection_grant.updated" : "connection_grant.created",
+            outcome: "success",
+            reasonCode: existingGrant ? "dedicated_identity_reconnected" : "dedicated_identity_created",
+            details: {
+              kind: "agent",
+              credentialSecretRefCount: credentialSecretRefs.length,
+            },
+          });
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
@@ -13592,6 +13658,22 @@ export function toolAccessService(
             ),
           )
         : await refreshCatalog(catalogConnectionId, actor, refreshOptions);
+      // Only a verified setup learns the token's account, so a failed or
+      // rolled-back attempt never calls GitHub or writes grant metadata.
+      await recordPastedGitHubTokenAccount(
+        connectionRow,
+        galleryEntry?.slug,
+        credentialSecretRefs,
+        credentialValues,
+      );
+      // Setup is verified, so a credential the agent's grant no longer uses can
+      // go, unless something else (another grant, connection, or consumer)
+      // still resolves it.
+      await removeReplacedGrantSecrets(
+        connectionRow,
+        replacedGrantSecretRefs,
+        credentialSecretRefs,
+      ).catch(() => undefined);
       const [application] = await db
         .select()
         .from(toolApplications)
@@ -14360,6 +14442,116 @@ export function toolAccessService(
    * identity's credential, but it may never create a different user's identity
    * on the same connection.
    */
+  /**
+   * A pasted GitHub personal access token has no GitHub App installation metadata, so
+   * learn the account it authenticates as (`GET /user`) and store it on every grant that
+   * holds the token. That lets several connections for one account de-duplicate and
+   * authors managed commits. Best effort: setup never fails on this lookup, and a failed
+   * lookup clears an account recorded for a token this one replaced.
+   */
+  async function recordPastedGitHubTokenAccount(
+    connection: typeof toolConnections.$inferSelect,
+    sourceTemplateKey: unknown,
+    credentialSecretRefs: CreateToolConnection["credentialSecretRefs"],
+    credentialValues: Record<string, string | undefined>,
+  ) {
+    if (sourceTemplateKey !== "github") return;
+    const token = credentialValues["credentials.authorization"]?.trim();
+    const tokenRef = credentialSecretRefs.find(
+      (ref) => ref.configPath === "credentials.authorization",
+    );
+    if (!token || !tokenRef) return;
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        ),
+      );
+    const holders = grants.filter((grant) =>
+      grant.credentialSecretRefs.some((ref) => ref.secretId === tokenRef.secretId),
+    );
+    if (holders.length === 0) return;
+    // The token was just written, so its current version is this token's.
+    const binding = await currentGitHubTokenBinding(db, connection.companyId, tokenRef.secretId);
+    const account = await loadGitHubTokenAccount(token).catch(() => null);
+    for (const grant of holders) {
+      await recordGitHubTokenAccount(db, grant, account, binding).catch(() => null);
+    }
+  }
+
+  /**
+   * Delete secrets a grant no longer references after its credential was replaced,
+   * when nothing else references them: not this connection or its other grants, and
+   * nothing `classifyConnectionSecrets` finds outside it. Ambiguity keeps the secret.
+   */
+  async function removeReplacedGrantSecrets(
+    connection: typeof toolConnections.$inferSelect,
+    previousRefs: CreateToolConnection["credentialSecretRefs"],
+    nextRefs: CreateToolConnection["credentialSecretRefs"],
+  ) {
+    const kept = new Set(nextRefs.map((ref) => ref.secretId));
+    const replaced = previousRefs
+      .map((ref) => ref.secretId)
+      .filter((secretId) => !kept.has(secretId));
+    if (replaced.length === 0) return;
+    const [current] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id))
+      .limit(1);
+    const sameConnectionGrants = await db
+      .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        ),
+      );
+    const stillReferenced = new Set([
+      ...(current?.credentialRefs ?? []).map((ref) => ref.secretId),
+      ...(current?.credentialSecretRefs ?? []).map((ref) => ref.secretId),
+      ...sameConnectionGrants.flatMap((grant) =>
+        (grant.credentialSecretRefs ?? []).map((ref) => ref.secretId),
+      ),
+    ]);
+    const { owned } = await classifyConnectionSecrets(
+      connection,
+      replaced.filter((secretId) => !stillReferenced.has(secretId)),
+    );
+    for (const secretId of owned) await secrets.remove(secretId);
+  }
+
+  /** The one credential-bearing agent grant of a dedicated-identity connection. */
+  async function dedicatedGrantForReconnect(
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<typeof connectionGrants.$inferSelect | null> {
+    if (connection.credentialPolicy !== "per_agent") return null;
+    const agentGrants = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "agent"),
+        ),
+      );
+    const holders = agentGrants.filter(
+      (grant) => grant.credentialSecretRefs.length > 0,
+    );
+    if (holders.length > 1) {
+      throw conflict(
+        "This connection holds more than one agent identity. Reconnect it from each agent's setup instead.",
+        { code: "dedicated_identity_ambiguous" },
+      );
+    }
+    return holders[0] ?? null;
+  }
+
   async function fixedPersonalIdentityForReconnect(
     connection: typeof toolConnections.$inferSelect,
     requestedSubjectUserId: string | undefined,
@@ -14495,8 +14687,15 @@ export function toolAccessService(
       undefined,
       actor,
     );
+    // A dedicated agent identity keeps its credential on the agent's grant, not
+    // the connection. Replace it there (rotating the existing secret in place),
+    // or the agent would keep using the old, possibly revoked, credential.
+    const dedicatedGrant = personalIdentity
+      ? null
+      : await dedicatedGrantForReconnect(connection);
     const credentialSecretRefs = [
       ...(personalIdentity?.grant?.credentialSecretRefs ??
+        dedicatedGrant?.credentialSecretRefs ??
         connection.credentialSecretRefs),
     ];
     const credentialRefs: McpConnectionCredentialRef[] = [
@@ -14568,14 +14767,27 @@ export function toolAccessService(
             createdByUserId: personalIdentity.subjectUserId,
           });
         }
+      } else if (dedicatedGrant) {
+        await tx
+          .update(connectionGrants)
+          .set({
+            credentialSecretRefs,
+            status: "active",
+            revokedAt: null,
+            revokedByAgentId: null,
+            revokedByUserId: null,
+            updatedAt,
+          })
+          .where(eq(connectionGrants.id, dedicatedGrant.id));
       }
+      const grantHoldsCredential = Boolean(personalIdentity || dedicatedGrant);
       const [nextConnection] = await tx
         .update(toolConnections)
         .set({
           credentialRefs,
-          // Personal reconnect rotates the existing user's grant. The
-          // connection-level organization slot stays exactly as it was.
-          credentialSecretRefs: personalIdentity
+          // Personal and dedicated reconnects rotate the identity's own grant.
+          // The connection-level organization slot stays exactly as it was.
+          credentialSecretRefs: grantHoldsCredential
             ? connection.credentialSecretRefs
             : credentialSecretRefs,
           lastError: null,
@@ -14584,9 +14796,15 @@ export function toolAccessService(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await syncConnectionCredentialBindings(tx, nextConnection,
-        personalIdentity ? credentialSecretRefs : []);
+        grantHoldsCredential ? credentialSecretRefs : []);
       return nextConnection;
     });
+    await recordPastedGitHubTokenAccount(
+      updated,
+      sourceTemplateKey,
+      credentialSecretRefs,
+      input.credentialValues,
+    );
     const health = await checkConnectionHealth(updated.id, actor);
     const refresh = await refreshCatalog(updated.id, actor, {
       enableAllByDefault: true,

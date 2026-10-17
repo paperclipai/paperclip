@@ -32,7 +32,7 @@ export const runIdentityContexts = pgTable(
     github: jsonb("github").$type<{
       status: "available" | "absent" | "unavailable";
       login?: string;
-      source?: "personal" | "dedicated";
+      source?: "personal" | "dedicated" | "shared";
       reason?: string;
       connectionId?: string;
       grantId?: string;
