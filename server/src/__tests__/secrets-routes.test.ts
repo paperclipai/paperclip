@@ -24,6 +24,7 @@ const mockSecretService = vi.hoisted(() => ({
   rotate: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  removeIfUnbound: vi.fn(),
   listUserSecretDefinitions: vi.fn(),
   createUserSecretDefinition: vi.fn(),
   updateUserSecretDefinition: vi.fn(),
@@ -1018,7 +1019,7 @@ describe("secret routes", () => {
       status: "deleted",
     };
     mockSecretService.getById.mockResolvedValue(secret);
-    mockSecretService.remove.mockResolvedValue(secret);
+    mockSecretService.removeIfUnbound.mockResolvedValue(secret);
 
     const res = await request(createApp()).delete(
       "/api/secrets/33333333-3333-4333-8333-333333333333",
@@ -1026,7 +1027,7 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
-    expect(mockSecretService.remove).toHaveBeenCalledWith(
+    expect(mockSecretService.removeIfUnbound).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333",
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -1037,6 +1038,112 @@ describe("secret routes", () => {
         entityId: secret.id,
       }),
     );
+  });
+
+  it("surfaces the 409 from removeIfUnbound with the binding references when consumers still bind the secret", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      name: "OpenAI API Key",
+      key: "openai-api-key",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      status: "active",
+    };
+    const bindingReference = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.OPENAI_API_KEY",
+      versionSelector: "latest",
+      required: true,
+      label: null,
+      projectionClass: "unclassified",
+      projectionAllowlistKey: null,
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+      target: {
+        type: "agent",
+        id: "agent-1",
+        label: "Helper (Coder)",
+        href: "/agents/helper",
+        status: "active",
+      },
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.removeIfUnbound.mockRejectedValue(
+      new HttpError(
+        409,
+        'Secret is still bound to 1 consumer. Remove the bindings before you delete the secret: agent "Helper (Coder)" at env.OPENAI_API_KEY',
+        { code: "secret_in_use", bindings: [bindingReference] },
+      ),
+    );
+
+    const res = await request(createApp()).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("still bound to 1 consumer");
+    expect(res.body.error).toContain('agent "Helper (Coder)" at env.OPENAI_API_KEY');
+    expect(res.body.error).toContain("Remove the bindings before you delete the secret");
+    expect(res.body.bindings).toHaveLength(1);
+    expect(res.body.bindings[0]).toMatchObject({
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.OPENAI_API_KEY",
+    });
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("deletes an active secret through DELETE /secrets/:id once no bindings reference it", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      name: "OpenAI API Key",
+      key: "openai-api-key",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      status: "active",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.removeIfUnbound.mockResolvedValue(secret);
+
+    const res = await request(createApp()).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mockSecretService.removeIfUnbound).toHaveBeenCalledWith(secret.id);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+  });
+
+  it("propagates service failures from DELETE /secrets/:id unchanged", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      name: "OpenAI API Key",
+      key: "openai-api-key",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      status: "active",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.removeIfUnbound.mockRejectedValue(
+      new HttpError(422, "provider rejected the delete"),
+    );
+
+    const res = await request(createApp()).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("provider rejected the delete");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   describe("GET /companies/:companyId/secrets/catalog", () => {
