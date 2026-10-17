@@ -1614,6 +1614,93 @@ describe("claude execute", () => {
     }
   });
 
+  it.each([
+    ["a result event", (commandPath: string, message: string) =>
+      writeFailingClaudeCommand(commandPath, {
+        resultEvent: {
+          type: "result",
+          subtype: "success",
+          session_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          is_error: true,
+          result: message,
+        },
+      })],
+    ["unparsed stderr", (commandPath: string, message: string) =>
+      writeTextFailingClaudeCommand(commandPath, { stderr: `${message}\n` })],
+    ["unparsed stdout", (commandPath: string, message: string) =>
+      writeTextFailingClaudeCommand(commandPath, { stdout: `${message}\n` })],
+  ])("classifies the Claude spend limit from %s as provider quota without a retry time", async (_source, writeCommand) => {
+    const message =
+      "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 7, 5am (America/Toronto)";
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-spend-limit-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeCommand(commandPath, message),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-claude-spend-limit",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.errorFamily).toBe("provider_quota");
+      expect([result.errorMessage ?? "", JSON.stringify(result.resultJson ?? {})].join("\n")).toContain("monthly spend limit");
+      expect(result.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.errorFamily).toBe("provider_quota");
+      expect(result.resultJson?.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.transientRetryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.providerQuotaRetryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.providerQuotaResetUnknown).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark a weekly limit as having no reset time", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-weekly-limit-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeTextFailingClaudeCommand(commandPath, { stderr: "You've hit your weekly limit · resets 5am (America/Toronto)\n" }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-claude-weekly-limit",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.retryNotBefore).not.toBeNull();
+      expect(result.resultJson?.providerQuotaResetUnknown).toBeUndefined();
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats subtype=success results as successful even when the process exits nonzero", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-subtype-"));
     const workspace = path.join(root, "workspace");
