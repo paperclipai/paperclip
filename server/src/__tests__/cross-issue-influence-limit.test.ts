@@ -2,24 +2,33 @@ import { describe, expect, it } from "vitest";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
+  CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+  CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
   crossIssueInfluenceLimitError,
   evaluateCrossIssueInfluenceLimit,
   observeCrossIssueInfluence,
+  observeServiceKeyCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.ts";
 
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  // Oldest in-window observation the service-key count query sees alongside it,
+  // which is what the retry hint is derived from.
+  oldestObserved: Date | string | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
   const tx = {
+    // The service-key path opens with a transaction-scoped advisory lock.
+    execute: async () => undefined,
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
             return {
-              then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve([{ count: observedCount, oldest: oldestObserved }]),
             };
           }
           return {
@@ -237,5 +246,143 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([
       expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
     ]);
+  });
+});
+
+describe("cross-issue influence limit for run-less service keys", () => {
+  const serviceInput = {
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    serviceKeyId: "66666666-6666-4666-8666-666666666666",
+    targetIssueId: "55555555-5555-4555-8555-555555555555",
+    targetIssueIdentifier: "STA-8192",
+    kind: "comment" as const,
+    now: new Date("2026-09-30T08:00:00.000Z"),
+  };
+
+  it("allows the last comment inside the window and fails closed on the next", async () => {
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT - 1);
+
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({
+      allowed: true,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+    });
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({
+      allowed: false,
+      count: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT + 1,
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+    });
+    expect(fake.inserted.map((row) => row.action)).toEqual([
+      "issue.cross_issue_influence_observed",
+      "issue.cross_issue_influence_cap_rejected",
+    ]);
+  });
+
+  it("records the attempt against the agent with no run and a bounded window", async () => {
+    const fake = counterDb(0);
+
+    await observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput);
+
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        actorType: "agent",
+        agentId: serviceInput.agentId,
+        runId: null,
+        entityType: "issue",
+        entityId: serviceInput.targetIssueId,
+        details: expect.objectContaining({
+          actorScope: "service_key",
+          serviceKeyId: serviceInput.serviceKeyId,
+          sourceIssueId: null,
+          targetIssueIdentifier: "STA-8192",
+          windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+          windowStart: "2026-09-30T07:00:00.000Z",
+          cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+        }),
+      }),
+    ]);
+  });
+
+  it("tells a capped service key when the window frees up instead of naming a heartbeat", async () => {
+    // Per-run copy ("the budget resets per run", "continue on the next
+    // heartbeat") is unusable advice for a caller that has no run: every one of
+    // its comments spends the same rolling allowance. The denial has to name the
+    // window and the moment the oldest counted write ages out of it.
+    const oldest = new Date("2026-09-30T07:12:00.000Z");
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT, {}, oldest);
+
+    const rejected = await observeServiceKeyCrossIssueInfluence(
+      fake.db as never,
+      serviceInput,
+    );
+    expect(rejected).toMatchObject({
+      allowed: false,
+      windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      retryAfter: new Date(
+        oldest.getTime() + CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      ).toISOString(),
+    });
+
+    const capError = crossIssueInfluenceLimitError(rejected, {
+      actorLabel: "Inbox Router",
+      issueIdentifier: "STA-8192",
+    });
+    expect(capError.details).toMatchObject({
+      code: "cross_issue_influence_cap_exceeded",
+      cap: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT,
+      windowMs: CROSS_ISSUE_INFLUENCE_SERVICE_KEY_WINDOW_MS,
+      retryAfter: "2026-09-30T08:12:00.000Z",
+    });
+    expect(capError.details.sanctionedPath).toContain("2026-09-30T08:12:00.000Z");
+    expect(capError.details.boundary).toContain("per hour");
+    // The advice a run-less caller cannot act on must be gone, not merely joined.
+    expect(capError.error).not.toContain("next heartbeat");
+    expect(capError.error).not.toContain("resets per run");
+    expect(capError.error).toContain("rolling window");
+
+    // A run-budgeted decision still gets the per-run copy — no windowMs, no
+    // retry hint, and the heartbeat path intact.
+    const runRejected = evaluateCrossIssueInfluenceLimit({
+      priorCount: CROSS_ISSUE_INFLUENCE_LIMIT,
+      now: serviceInput.now,
+    });
+    const runError = crossIssueInfluenceLimitError(runRejected);
+    expect(runError.error).toContain("next heartbeat");
+    expect(runError.details).not.toHaveProperty("windowMs");
+    expect(runError.details).not.toHaveProperty("retryAfter");
+  });
+
+  it("drops the retry hint rather than guessing when the window has no counted writes", async () => {
+    // An empty window (or a driver value that will not parse) must not produce
+    // "Invalid Date" in operator-facing copy.
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_SERVICE_KEY_LIMIT, {}, "not-a-date");
+
+    const rejected = await observeServiceKeyCrossIssueInfluence(
+      fake.db as never,
+      serviceInput,
+    );
+    expect(rejected.retryAfter).toBeNull();
+    const capError = crossIssueInfluenceLimitError(rejected);
+    expect(capError.error).not.toContain("Invalid Date");
+    expect(capError.details.sanctionedPath).toContain("hour");
+  });
+
+  it("charges every attempt because a service key has no source issue", async () => {
+    const fake = counterDb(0);
+
+    // The run path returns null (uncharged) for a write to the run's own issue.
+    // A run-less key has no own issue, so nothing is free.
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({ count: 1 });
+    await expect(
+      observeServiceKeyCrossIssueInfluence(fake.db as never, serviceInput),
+    ).resolves.toMatchObject({ count: 2 });
   });
 });
