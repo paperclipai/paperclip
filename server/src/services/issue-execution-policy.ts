@@ -53,6 +53,7 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  reviewDecision?: "approve" | "request_changes";
 };
 
 type TransitionResult = {
@@ -803,7 +804,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     if (principalsEqual(currentParticipant, actor)) {
-      if (requestedStatus === "done") {
+      const isApprovalDecision =
+        input.reviewDecision === "approve" ||
+        (input.reviewDecision === undefined && requestedStatus === "done");
+      if (isApprovalDecision) {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
@@ -867,7 +871,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         return { patch };
       }
 
-      if (requestedStatus && requestedStatus !== "in_review") {
+      const isChangesRequestedDecision =
+        input.reviewDecision === "request_changes" ||
+        (input.reviewDecision === undefined &&
+          requestedStatus !== undefined &&
+          requestedStatus !== "in_review");
+      if (isChangesRequestedDecision) {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
