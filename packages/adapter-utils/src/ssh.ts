@@ -1340,6 +1340,18 @@ export async function runSshCommand(
   }
 }
 
+const REMOTE_PROCESS_IDENT_FN = [
+  "paperclip_ident() {",
+  '  if [ -r "/proc/$1/stat" ]; then',
+  "    sed 's/^.*) //' \"/proc/$1/stat\" 2>/dev/null | cut -d' ' -f1,20 | { read st t; [ \"$st\" = Z ] || printf '%s' \"$t\"; }",
+  "  else",
+  "    ps -o lstart= -p \"$1\" 2>/dev/null | tr -s ' '",
+  "  fi",
+  "}",
+].join("\n");
+
+const REMOTE_RUN_TOKEN_ENV = "PAPERCLIP_SSH_RUN";
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
@@ -1349,6 +1361,7 @@ export async function buildSshSpawnTarget(input: {
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote: (graceSec: number) => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
@@ -1358,9 +1371,15 @@ export async function buildSshSpawnTarget(input: {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[0] !== REMOTE_RUN_TOKEN_ENV)
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  const runToken = randomUUID();
+  const runDir = '"$HOME/.paperclip/ssh-runs"';
+  const recordRunStep = `{ ${REMOTE_PROCESS_IDENT_FN}
+{ d=${runDir}; mkdir -p "$d" && find "$d" -type f -mtime +2 -exec rm -f {} + ; printf '%s %s %s\\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" "$(paperclip_ident $$)" > "$d/${runToken}.tmp" && mv "$d/${runToken}.tmp" "$d/${runToken}"; } >/dev/null 2>&1 || true
+}`;
+  const stopCheckStep = `if [ -e ${runDir}/${runToken}.stop ]; then rm -f ${runDir}/${runToken} ${runDir}/${runToken}.stop; exit 143; fi`;
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
@@ -1377,6 +1396,9 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    recordRunStep,
+    stopCheckStep,
+    `export ${REMOTE_RUN_TOKEN_ENV}=${runToken}`,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -1394,7 +1416,48 @@ export async function buildSshSpawnTarget(input: {
     command: "ssh",
     args: sshArgs,
     cleanup: auth.cleanup,
+    stopRemote: (graceSec: number) => stopSshRun(input.spec, runToken, graceSec),
   };
+}
+
+async function stopSshRun(spec: SshConnectionConfig, runToken: string, graceSec: number): Promise<void> {
+  const grace = Math.max(1, Math.min(60, Math.floor(Number(graceSec) || 1)));
+  const script = [
+    REMOTE_PROCESS_IDENT_FN,
+    'd="$HOME/.paperclip/ssh-runs"',
+    `f="$d/${runToken}"`,
+    'mkdir -p "$d" 2>/dev/null',
+    ': > "$f.stop" 2>/dev/null',
+    'p=""; g=""; s=""',
+    'if [ -f "$f" ]; then read p g s < "$f"; rm -f "$f"; fi',
+    `members() { grep -l -a "${REMOTE_RUN_TOKEN_ENV}=${runToken}" /proc/[0-9]*/environ 2>/dev/null | sed 's#^/proc/\\([0-9]*\\)/environ$#\\1#'; }`,
+    'i=0',
+    'case "$p" in ""|*[!0-9]*) p="";; esac',
+    'if [ -n "$p" ] && [ -n "$s" ] && [ "$(paperclip_ident "$p")" = "$s" ]; then',
+    '  case "$g" in ""|*[!0-9]*|0|1) g="";; esac',
+    '  [ -n "$g" ] && [ "$g" != "$(ps -o pgid= -p "$p" | tr -d \' \')" ] && g=""',
+    '  if [ -n "$g" ] && [ "$g" = "$(ps -o pgid= -p $$ | tr -d \' \')" ]; then exit 0; fi',
+    '  alive() { if [ -n "$g" ]; then kill -0 "-$g" 2>/dev/null; else [ "$(paperclip_ident "$p")" = "$s" ]; fi; }',
+    '  sig() { if [ -n "$g" ]; then kill "-$1" "-$g" 2>/dev/null; else kill "-$1" "$p" 2>/dev/null; fi; }',
+    '  sig TERM',
+    '  while alive; do',
+    `    if [ "$i" -ge ${grace} ]; then sig KILL; break; fi`,
+    '    sleep 1; i=$((i+1))',
+    '  done',
+    'fi',
+    'm=$(members)',
+    '[ -n "$m" ] || exit 0',
+    'kill -TERM $m 2>/dev/null',
+    'while :; do',
+    '  m=$(members)',
+    '  [ -n "$m" ] || break',
+    `  if [ "$i" -ge ${grace} ]; then kill -KILL $m 2>/dev/null; break; fi`,
+    '  sleep 1; i=$((i+1))',
+    'done',
+    'j=0; while [ -n "$(members)" ] && [ "$j" -lt 3 ]; do sleep 1; j=$((j+1)); done',
+    'exit 0',
+  ].join("\n");
+  await runSshCommand(spec, script, { timeoutMs: (grace + 30) * 1000 });
 }
 
 export async function syncDirectoryToSsh(input: {

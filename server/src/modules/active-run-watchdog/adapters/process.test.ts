@@ -71,6 +71,36 @@ describe("adapters", () => {
       expect(mockedTerminateLocalService).not.toHaveBeenCalled();
     });
 
+    it("bounds the output wait of a registered run whose process already exited", async () => {
+      mockedIsPidAlive.mockReturnValue(false);
+      mockedIsProcessGroupAlive.mockReturnValue(false);
+      const markStopRequested = vi.fn();
+      runningProcesses.set("run-1", {
+        child: { pid: 4242 } as never,
+        graceSec: 5,
+        processGroupId: 4242,
+        markStopRequested,
+      });
+      const adapter = createProcessAdapter();
+
+      const outcome = await adapter.cleanupRunProcess({
+        runId: "run-1",
+        adapterType: "codex_local",
+        fallbackPid: null,
+        fallbackProcessGroupId: null,
+      });
+
+      expect(outcome).toEqual({
+        attempted: false,
+        outcome: "not_running",
+        adapterType: "codex_local",
+        pid: 4242,
+        processGroupId: 4242,
+      });
+      expect(markStopRequested).toHaveBeenCalledTimes(1);
+      expect(mockedTerminateLocalService).not.toHaveBeenCalled();
+    });
+
     it("reports terminated when the live process stops after termination", async () => {
       mockedIsPidAlive.mockReturnValueOnce(true).mockReturnValueOnce(false);
       mockedIsProcessGroupAlive.mockReturnValue(false);
