@@ -403,6 +403,31 @@ describe("grok_local execute", () => {
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
   });
 
+  it("pipes the prompt on stdin through --prompt-file instead of passing it as an argument", async () => {
+    const root = await makeTempRoot();
+    // Long enough that `--single <prompt>` would exceed MAX_ARG_STRLEN (128 KiB) on Linux.
+    const longComment = "x".repeat(140 * 1024);
+    let seenArgs: string[] = [];
+    let seenStdin: string | undefined;
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args, options) => {
+      seenArgs = args as string[];
+      seenStdin = (options as { stdin?: string }).stdin;
+      await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
+      return makeSuccessfulRunResult({ sessionId: "sess-stdin" });
+    });
+
+    const ctx = await makeCtx("run-stdin", root);
+    ctx.config = { ...ctx.config, promptTemplate: longComment };
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(seenArgs).not.toContain("--single");
+    expect(seenArgs.slice(-2)).toEqual(["--prompt-file", "/dev/stdin"]);
+    expect(seenStdin).toBeTypeOf("string");
+    expect(seenStdin).toContain(longComment);
+    for (const arg of seenArgs) expect(arg.length).toBeLessThan(64 * 1024);
+  });
+
   it("reports real per-run token usage, marks it as per_run, and only surfaces cost for API billing", async () => {
     runProcessMock.mockImplementation(async () => ({
       exitCode: 0,
@@ -1077,12 +1102,12 @@ describe("grok_local execute", () => {
       );
     });
 
-    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+    it("delivers the owned assignment and ordered wake comments on stdin", async () => {
       const root = await makeTempRoot();
       const fixture = createPromptContextFixture();
       let deliveredPrompt = "";
-      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        deliveredPrompt = String(args.at(-1) ?? "");
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        deliveredPrompt = String((options as { stdin?: string }).stdin ?? "");
         return makeSuccessfulRunResult();
       });
 
@@ -1108,8 +1133,8 @@ describe("grok_local execute", () => {
       const root = await makeTempRoot();
       const fixture = createPromptContextFixture();
       const prompts: string[] = [];
-      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
-        prompts.push(String(args.at(-1) ?? ""));
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        prompts.push(String((options as { stdin?: string }).stdin ?? ""));
         if (prompts.length === 1) {
           return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
         }
