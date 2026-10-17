@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { readFile } from "node:fs/promises";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
@@ -295,4 +296,19 @@ export function handleCommandError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(pc.red(message));
   process.exit(1);
+}
+
+export async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export async function readBodyFile(filePath: string): Promise<string> {
+  if (filePath === "-") {
+    return readStdin();
+  }
+  return readFile(filePath, "utf8");
 }

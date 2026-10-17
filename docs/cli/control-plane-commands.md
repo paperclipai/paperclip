@@ -21,7 +21,7 @@ npx paperclipai issue create --title "..." [--description "..."] [--status todo]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 
 # Add comment
-npx paperclipai issue comment <issue-id> --body "..." [--reopen]
+npx paperclipai issue comment <issue-id> (--body "..." | --body-file <path-or->) [--reopen]
 
 # Checkout task
 npx paperclipai issue checkout <issue-id> --agent-id <agent-id>
@@ -123,7 +123,7 @@ npx paperclipai approval request-revision <approval-id> [--decision-note "..."]
 npx paperclipai approval resubmit <approval-id> [--payload '{"..."}']
 
 # Comment
-npx paperclipai approval comment <approval-id> --body "..."
+npx paperclipai approval comment <approval-id> (--body "..." | --body-file <path-or->)
 ```
 
 ## Activity Commands
