@@ -1381,6 +1381,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
     .select({
       principalId: companyMemberships.principalId,
       status: companyMemberships.status,
+      membershipRole: companyMemberships.membershipRole,
     })
     .from(companyMemberships)
     .where(
@@ -1398,6 +1399,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
   return members.map((member) => ({
     principalId: member.principalId,
     status: "active" as const,
+    membershipRole: member.membershipRole,
     user: userMap.get(member.principalId) ?? null,
   }));
 }

@@ -149,6 +149,7 @@ export type CompanyMembersResponse = {
 export type CompanyUserDirectoryEntry = {
   principalId: string;
   status: "active";
+  membershipRole: string | null;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
 };
 
