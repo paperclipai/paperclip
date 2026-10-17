@@ -24,7 +24,9 @@ vi.mock("@paperclipai/adapter-utils/workspace-restore-teardown", async (importOr
 
 import {
   buildCodexAcpConfig,
+  commandPathCandidates,
   createCodexAcpExecutor,
+  findCommandOnPath,
   nodeVersionMeetsCodexAcpMinimum,
   resolveCodexAcpBillingIdentity,
   resolveCodexExecutionEngine,
@@ -236,6 +238,12 @@ async function makeTempRoot(prefix: string) {
   process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
   process.env.PAPERCLIP_INSTANCE_ID = "test";
   return root;
+}
+
+async function makeTempDir(prefix: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempRoots.push(dir);
+  return dir;
 }
 
 async function createRuntimeSkill(root: string) {
@@ -1422,6 +1430,89 @@ describe("codex_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+describe("findCommandOnPath", () => {
+  // The Windows PATH lookup must mirror PATHEXT, but the bare name stays first:
+  // this fix may only ADD hits, never change a resolution that already worked.
+  it("probes the PATH extensions Windows resolves, keeping the bare name first", () => {
+    expect(commandPathCandidates("codex-acp", "win32", ".COM;.EXE;.BAT;.CMD")).toEqual([
+      "codex-acp",
+      "codex-acp.com",
+      "codex-acp.COM",
+      "codex-acp.exe",
+      "codex-acp.EXE",
+      "codex-acp.bat",
+      "codex-acp.BAT",
+      "codex-acp.cmd",
+      "codex-acp.CMD",
+    ]);
+  });
+
+  it("falls back to the default Windows extensions when PATHEXT is empty", () => {
+    expect(commandPathCandidates("codex-acp", "win32", "")).toEqual([
+      "codex-acp",
+      "codex-acp.exe",
+      "codex-acp.EXE",
+      "codex-acp.cmd",
+      "codex-acp.CMD",
+      "codex-acp.bat",
+      "codex-acp.BAT",
+      "codex-acp.com",
+      "codex-acp.COM",
+    ]);
+  });
+
+  it("probes only the bare name off Windows", () => {
+    expect(commandPathCandidates("codex-acp", "linux", ".EXE")).toEqual(["codex-acp"]);
+    expect(commandPathCandidates("codex-acp", "darwin", ".EXE")).toEqual(["codex-acp"]);
+  });
+
+  it("finds a codex-acp.exe PATH install on Windows", async () => {
+    const dir = await makeTempDir("paperclip-codex-acp-pathext-");
+    const executable = path.join(dir, "codex-acp.exe");
+    await fs.writeFile(executable, "");
+
+    await expect(
+      findCommandOnPath("codex-acp", { platform: "win32", pathValue: dir, pathExt: ".EXE;.CMD" }),
+    ).resolves.toBe(executable);
+  });
+
+  it("keeps an existing extensionless resolution ahead of the .exe", async () => {
+    // npm-style `.bin` shims must keep winning, so a layout that works today
+    // cannot start resolving to a different file.
+    const dir = await makeTempDir("paperclip-codex-acp-shim-");
+    const shim = path.join(dir, "codex-acp");
+    await fs.writeFile(shim, "#!/usr/bin/env sh\n");
+    await fs.writeFile(path.join(dir, "codex-acp.exe"), "");
+
+    await expect(
+      findCommandOnPath("codex-acp", { platform: "win32", pathValue: dir, pathExt: ".EXE" }),
+    ).resolves.toBe(shim);
+  });
+
+  it("scans later PATH segments and skips empty ones", async () => {
+    const first = await makeTempDir("paperclip-codex-acp-empty-");
+    const second = await makeTempDir("paperclip-codex-acp-second-");
+    const executable = path.join(second, "codex-acp.exe");
+    await fs.writeFile(executable, "");
+
+    await expect(
+      findCommandOnPath("codex-acp", {
+        platform: "win32",
+        pathValue: `;${first};;${second};`,
+        pathExt: ".EXE",
+      }),
+    ).resolves.toBe(executable);
+  });
+
+  it("returns null when no segment holds any candidate", async () => {
+    const dir = await makeTempDir("paperclip-codex-acp-missing-");
+
+    await expect(
+      findCommandOnPath("codex-acp", { platform: "win32", pathValue: dir, pathExt: ".EXE" }),
+    ).resolves.toBeNull();
   });
 });
 
