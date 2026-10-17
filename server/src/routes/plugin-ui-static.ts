@@ -156,8 +156,14 @@ export function resolvePluginUiDir(
   // Resolve the UI directory relative to the package root
   const uiDir = path.resolve(packageRoot, entrypointsUi);
 
-  // Verify the resolved UI directory exists and is actually inside the package
+  // Verify the resolved UI directory exists and is actually inside the package.
+  // entrypoints.ui is manifest-controlled, so a crafted value like
+  // "../../.." or an absolute path must not escape the package root —
+  // otherwise the static route would serve arbitrary server-local files.
   if (!fs.existsSync(uiDir)) {
+    return null;
+  }
+  if (uiDir !== packageRoot && !uiDir.startsWith(packageRoot + path.sep)) {
     return null;
   }
 
