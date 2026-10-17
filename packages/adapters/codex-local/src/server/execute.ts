@@ -1267,8 +1267,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
           ...identityNames,
         ])];
-        args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
-          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
+        args.splice(args.indexOf("exec") + 1, 0, "-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", "shell_environment_policy.exclude=[]", "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
       }
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null

@@ -206,6 +206,19 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     expect(commandArgs.join(" ")).not.toContain("assigned-tool-token");
   });
 
+  it("passes the shell environment policy after exec with an empty exclude list", async () => {
+    const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity: true });
+    const execIndex = commandArgs.indexOf("exec");
+    expect(execIndex).toBe(0);
+    const policyFlags = commandArgs.filter(arg => arg === "features.shell_snapshot=false" || arg.startsWith("shell_environment_policy."));
+    expect(policyFlags).toHaveLength(5);
+    expect(policyFlags).toContain("shell_environment_policy.exclude=[]");
+    for (const flag of policyFlags) {
+      expect(commandArgs.indexOf(flag)).toBeGreaterThan(execIndex);
+      expect(commandArgs[commandArgs.indexOf(flag) - 1]).toBe("-c");
+    }
+  });
+
   it("collects stopped-provider instruction edits before a throwing remote restore", async () => {
     const order: string[] = [];
     prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
