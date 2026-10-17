@@ -619,6 +619,99 @@ describe("issue execution policy transitions", () => {
       expect(result.workflowControlledAssignment).toBeUndefined();
     });
 
+    it("board override lets the current stage participant close with done instead of approving", () => {
+      const approvalStageId = policy.stages[1].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: ctoUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [reviewStageId],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        allowBoardOverride: true,
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
+      expect(result.workflowControlledAssignment).toBeUndefined();
+    });
+
+    it("board override close with done records no approval decision even with a comment", () => {
+      const approvalStageId = policy.stages[1].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: ctoUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [reviewStageId],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        allowBoardOverride: true,
+        commentBody: "Closing this issue without voting",
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
+    });
+
+    it("stage participant closing with done and no override still requires a comment", () => {
+      const approvalStageId = policy.stages[1].id;
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: null,
+            assigneeUserId: ctoUserId,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: approvalStageId,
+              currentStageIndex: 1,
+              currentStageType: "approval",
+              currentParticipant: { type: "user", userId: ctoUserId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [reviewStageId],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { userId: ctoUserId },
+        }),
+      ).toThrow("Approving a review or approval stage requires a comment");
+    });
+
     it("board override can cancel a drifted pending review without rebuilding the pending stage", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
