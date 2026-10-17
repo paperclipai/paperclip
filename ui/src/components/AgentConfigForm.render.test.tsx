@@ -18,6 +18,7 @@ import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
+import { invalidateConfigSchemaCache } from "../adapters/schema-config-fields";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -1185,6 +1186,29 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.querySelector('[data-testid="hermes-gateway-config-fields"]')).toBeTruthy();
     expect(result.container.textContent).toContain("Hermes Gateway fields");
+  });
+
+  it("shows the section that a schema field names in meta.section", async () => {
+    invalidateConfigSchemaCache("hermes_gateway");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/api/adapters/hermes_gateway/config-schema")
+        ? new Response(JSON.stringify({
+          fields: [{ key: "approvalMode", label: "Approval requests", type: "text", meta: { section: "advanced" } }],
+        }), { status: 200 })
+        : new Response("{}", { status: 404 })));
+    try {
+      const result = await renderForm(
+        [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+        { adapterType: "hermes_gateway", adapterConfig: { apiBaseUrl: "http://127.0.0.1:8642" } },
+      );
+      roots.push(result.root);
+      await flushReact();
+      const labels = Array.from(result.container.querySelectorAll("button, h3, span")).map((element) => element.textContent?.trim());
+      expect(labels).toContain("Advanced");
+    } finally {
+      vi.unstubAllGlobals();
+      invalidateConfigSchemaCache("hermes_gateway");
+    }
   });
 
   it("tests a Codex agent after clearing the primary model to the adapter default", async () => {

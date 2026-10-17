@@ -2,6 +2,7 @@ import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "../types";
+import { SchemaConfigFields } from "../schema-config-fields";
 import {
   DraftInput,
   DraftNumberInput,
@@ -97,7 +98,7 @@ function SecretField({
   );
 }
 
-export function HermesGatewayConfigFields({
+function HermesGatewayBuiltInFields({
   section,
   isCreate,
   values,
@@ -251,4 +252,25 @@ export function HermesGatewayConfigFields({
       </Field>
     </>
   ));
+}
+
+const BUILT_IN_FIELD_KEYS = [
+  "apiBaseUrl",
+  "apiKey",
+  "paperclipApiUrl",
+  "sessionKeyStrategy",
+  "timeoutSec",
+  "eventReconnectMs",
+  "dangerouslyAllowInsecureRemoteHttp",
+  "headers",
+  "instructions",
+] as const;
+
+export function HermesGatewayConfigFields(props: AdapterConfigFieldsProps) {
+  return (
+    <>
+      <HermesGatewayBuiltInFields {...props} />
+      <SchemaConfigFields {...props} excludeKeys={BUILT_IN_FIELD_KEYS} />
+    </>
+  );
 }

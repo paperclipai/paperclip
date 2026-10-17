@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import { beforeAll, describe, expect, it } from "vitest";
 import { TooltipProvider } from "../components/ui/tooltip";
 import type { AdapterConfigFieldsProps, AdapterConfigSection } from "./types";
+import { configFieldSection } from "./config-sections";
 import { CodexLocalConfigFields } from "./codex-local/config-fields";
 import { ClaudeLocalAdvancedFields } from "./claude-local/config-fields";
 import { GeminiLocalConfigFields } from "./gemini-local/config-fields";
@@ -163,4 +164,13 @@ describe("adapter configuration sections", () => {
       );
     },
   );
+});
+
+describe("configFieldSection", () => {
+  it("uses the section a field names and falls back to the key", () => {
+    expect(configFieldSection({ key: "approvalMode", meta: { section: "advanced" } })).toBe("advanced");
+    expect(configFieldSection({ key: "approvalMode", meta: { section: "not-a-section" } })).toBe("configuration");
+    expect(configFieldSection({ key: "model" })).toBe("adapter");
+    expect(configFieldSection({ key: "envVars", meta: null })).toBe("environment");
+  });
 });

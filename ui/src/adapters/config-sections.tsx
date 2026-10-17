@@ -7,6 +7,15 @@ import {
 } from "react";
 import type { AdapterConfigSection } from "./types";
 
+const CONFIG_SECTIONS: readonly string[] = ["adapter", "configuration", "advanced", "runPolicy", "environment"];
+
+export function configFieldSection(field: { key: string; meta?: Record<string, unknown> | null }): AdapterConfigSection {
+  const declared = field.meta?.section;
+  return typeof declared === "string" && CONFIG_SECTIONS.includes(declared)
+    ? (declared as AdapterConfigSection)
+    : schemaFieldSection(field.key);
+}
+
 /** Partition declarative adapter fields without coupling placement to visible labels. */
 export function configFieldsForSection(
   section: AdapterConfigSection | undefined,

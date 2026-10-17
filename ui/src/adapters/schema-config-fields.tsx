@@ -1,4 +1,4 @@
-import { schemaFieldSection } from "./config-sections";
+import { configFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -330,7 +330,8 @@ export function SchemaConfigFields({
   config,
   eff,
   mark,
-}: AdapterConfigFieldsProps) {
+  excludeKeys,
+}: AdapterConfigFieldsProps & { excludeKeys?: readonly string[] }) {
   const schema = useConfigSchema(adapterType);
 
   const defaultsApplied = useRef({ adapterType, applied: false });
@@ -344,6 +345,7 @@ export function SchemaConfigFields({
     defaultsApplied.current.applied = true;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
+      if (excludeKeys?.includes(field.key)) continue;
       const def = getDefaultValue(field);
       if (def !== undefined && def !== "") {
         defaults[field.key] = def;
@@ -410,8 +412,9 @@ export function SchemaConfigFields({
   return (
     <>
       {schema.fields
+        .filter((field) => !excludeKeys?.includes(field.key))
         .filter((field) => !hideModel || field.key !== "model")
-        .filter((field) => !section || schemaFieldSection(field.key) === section)
+        .filter((field) => !section || configFieldSection(field) === section)
         .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))
         .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
         .map((field) => {

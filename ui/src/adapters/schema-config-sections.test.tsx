@@ -69,3 +69,27 @@ it("restores cleared defaults after switching back before the intermediate schem
   await act(async () => root?.render(view(firstType)));
   expect(set).toHaveBeenCalledExactlyOnceWith({ adapterSchemaValues: { model: "default-model" } });
 });
+
+it("places a field in the section that its meta.section names", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const adapterType = "section-test-declared";
+  invalidateConfigSchemaCache(adapterType);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ fields: [
+    { key: "reasoningEffort", label: "Reasoning level", type: "text", meta: { section: "adapter" } },
+    { key: "notes", label: "Notes", type: "text", meta: { section: "not-a-section" } },
+  ] }) }));
+  const props: AdapterConfigFieldsProps = {
+    mode: "edit", isCreate: false, adapterType, values: null, set: null,
+    config: {}, eff: (_group, _field, original) => original, mark: vi.fn(), models: [],
+  };
+  const view = (section: AdapterConfigFieldsProps["section"]) => <TooltipProvider><SchemaConfigFields {...props} section={section} /></TooltipProvider>;
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root?.render(view("adapter")));
+  expect(container.textContent).toContain("Reasoning level");
+  expect(container.textContent).not.toContain("Notes");
+  await act(async () => root?.render(view("configuration")));
+  expect(container.textContent).not.toContain("Reasoning level");
+  expect(container.textContent).toContain("Notes");
+});

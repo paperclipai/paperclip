@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { HermesGatewayConfigFields } from "./config-fields";
 import type { AdapterConfigFieldsProps } from "../types";
+import { invalidateConfigSchemaCache } from "../schema-config-fields";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -48,6 +49,7 @@ describe("HermesGatewayConfigFields", () => {
       act(() => root.unmount());
     }
     document.body.innerHTML = "";
+    vi.unstubAllGlobals();
   });
 
   it("shows the gateway URL and runtime fields in edit mode", () => {
@@ -80,5 +82,27 @@ describe("HermesGatewayConfigFields", () => {
     expect(apiKeyInput).toBeTruthy();
 
     expect(result.container.querySelector('button[aria-label="Show API key"]')).toBeTruthy();
+  });
+
+  it("shows fields that an adapter override adds to the config schema", async () => {
+    invalidateConfigSchemaCache("hermes_gateway");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        fields: [
+          { key: "apiBaseUrl", label: "API base URL", type: "text" },
+          { key: "approvalMode", label: "Approval requests", type: "text" },
+        ],
+      }),
+    }));
+    const result = renderFields({ config: { apiBaseUrl: "http://127.0.0.1:8642", approvalMode: "policy" } });
+    roots.push(result.root);
+    await act(async () => { await Promise.resolve(); });
+
+    const text = result.container.textContent ?? "";
+    expect(text).toContain("Approval requests");
+    expect(text.split("API base URL").length - 1).toBe(1);
+    expect(result.container.querySelector<HTMLInputElement>('input[value="policy"]')).toBeTruthy();
+    invalidateConfigSchemaCache("hermes_gateway");
   });
 });
