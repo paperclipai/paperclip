@@ -7,10 +7,10 @@ import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 const itWindows = process.platform === "win32" ? it : it.skip;
 const itPosix = process.platform === "win32" ? it.skip : it;
 
-async function runProbeFixture(options: { failCleanup?: boolean; error?: string; managedProvider?: boolean } = {}) {
+async function runProbeFixture(options: { failCleanup?: boolean; error?: string; managedProvider?: boolean; commandName?: string; model?: string; version?: string } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-probe-result-"));
   const capture = path.join(root, "capture.json");
-  const command = path.join(root, "codex");
+  const command = path.join(root, options.commandName ?? "codex");
   const managedHome = path.join(root, "managed");
   if (options.managedProvider) {
     await fs.mkdir(managedHome);
@@ -18,6 +18,10 @@ async function runProbeFixture(options: { failCleanup?: boolean; error?: string;
   }
   await fs.writeFile(command, `#!${process.execPath}
 const fs = require('node:fs');
+if (process.argv.includes('--version')) {
+  fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({ args: process.argv.slice(2) }));
+  console.log('codex-cli ${options.version ?? "0.160.0"}'); process.exit(0);
+}
 fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), home: process.env.CODEX_HOME, nativeKey: process.env.OPENAI_API_KEY, providerKey: process.env.PAPERCLIP_AI_PROVIDER_KEY, config: fs.existsSync(process.env.CODEX_HOME + "/config.toml") ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8") : null }));
 console.error('WARN codex_core_plugins::manager: remote installed plugin bundle sync failed error=chatgpt authentication required for remote plugin catalog');
 const error = process.env.PROBE_ERROR;
@@ -32,7 +36,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
   try {
     const result = await testEnvironment({
       companyId: "company-1", adapterType: "codex_local",
-      config: { engine: "cli", command, cwd: root, ...(options.managedProvider ? { managedAiConnection: { identity: "fixture" }, managedAiRouting: { kind: "openrouter" } } : {}), env: {
+      config: { engine: "cli", command, cwd: root, model: options.model, ...(options.managedProvider ? { managedAiConnection: { identity: "fixture" }, managedAiRouting: { kind: "openrouter" } } : {}), env: {
         ...(options.managedProvider ? { CODEX_HOME: managedHome, PAPERCLIP_AI_PROVIDER_KEY: "gateway-fixture-key" } : {}),
         OPENAI_API_KEY: options.managedProvider ? "" : "fixture-key", PROBE_CAPTURE: capture,
         PROBE_ERROR: options.error ?? "", PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -47,6 +51,19 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
 }
 
 describe("codex_local environment diagnostics", () => {
+  itPosix("runs the hello probe for a packaged codex.js executable", async () => {
+    const { result, capture } = await runProbeFixture({ commandName: "codex.js", model: "gpt-6.1-sol" });
+    expect(result.checks.some(check => check.code === "codex_cli_version_compatible")).toBe(true);
+    expect(result.checks.some(check => check.code === "codex_hello_probe_passed")).toBe(true);
+    expect(capture.args).toContain("exec");
+  });
+
+  itPosix("rejects an old packaged codex.js before the hello turn", async () => {
+    const { result, capture } = await runProbeFixture({ commandName: "codex.js", model: "gpt-6.1-sol", version: "0.100.0" });
+    expect(result.status).toBe("fail");
+    expect(result.checks.some(check => check.code === "codex_cli_version_incompatible")).toBe(true);
+    expect(capture.args).toEqual(["--version"]);
+  });
   beforeEach(() => {
     vi.stubEnv("OPENAI_API_KEY", "");
   });

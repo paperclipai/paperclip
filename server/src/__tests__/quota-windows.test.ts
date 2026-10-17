@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import type { QuotaWindow } from "@paperclipai/adapter-utils";
+vi.mock("../../../packages/adapters/codex-local/src/server/quota-http.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../packages/adapters/codex-local/src/server/quota-http.js")>(),
+  fetchQuotaResponse: (url: string, headers: Record<string, string>, signal?: AbortSignal) => fetch(url, { headers, signal }),
+}));
 
 // Pure utility functions — import directly from adapter source
 import {

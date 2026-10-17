@@ -1,12 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
+import { CodexQuotaRequestError } from "../../../packages/adapters/codex-local/src/server/quota-http.js";
 const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain }));
-vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
+vi.mock("@paperclipai/adapter-codex-local/server", async () => ({
+  readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota,
+  ...(await import("../../../packages/adapters/codex-local/src/server/quota-http.js")),
+}));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
 describe("explicit local subscription import", () => {
+  it.each([
+    ["network", "network or proxy"],
+    ["rejected", "Start sign-in again"],
+    ["unavailable", "temporarily unavailable"],
+  ] as const)("reports %s verification failures without exposing provider details", async (kind, message) => {
+    mocks.codex.mockResolvedValue({ accessToken: "access", refreshToken: "refresh", idToken: "identity" });
+    mocks.codexQuota.mockRejectedValue(new CodexQuotaRequestError(kind, "secret-provider-detail"));
+    await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toMatchObject({ status: 422, message: expect.stringContaining(message) });
+    await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.not.toThrow("secret-provider-detail");
+    mocks.codexQuota.mockResolvedValue([]);
+    await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).resolves.toContain('"access_token":"access"');
+  });
   it("verifies Claude only from the selected isolated home, never the host account", async () => {
     mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-claude" } }));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-claude");

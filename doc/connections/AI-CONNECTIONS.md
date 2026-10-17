@@ -472,6 +472,20 @@ does not delete its credential home. **Start sign-in again**
 explicitly cancels the old attempt; abandoned attempts expire after 30 minutes.
 Completed and expired attempts are cleaned up through the existing lifecycle.
 
+OpenAI subscription verification uses the server's `HTTPS_PROXY` and `NO_PROXY`
+environment variables, including their lowercase forms. Lowercase values take
+precedence. This request does not require `NODE_USE_ENV_PROXY`, change global
+network settings, or follow redirects. HTTP and HTTPS proxies are supported;
+unsupported proxy protocols fail verification. Network failures preserve the
+active sign-in attempt so Connect can be retried without repeating browser login.
+Rejected credentials require a new sign-in; temporary provider failures can be retried.
+
+On Linux and macOS, default local Codex CLI probes and runs use Paperclip's
+installed Codex dependency, with PATH as a fallback when no dependency exists.
+An explicit command keeps its configured behavior. Remote targets resolve their
+own commands, and Windows keeps its existing command lookup. Subscription adoption
+still requires a successful provider hello test, including for a packaged `codex.js`.
+
 ### Disposable live inline-repair test
 
 The normal app test configuration excludes `*.live.spec.ts`. To run the destructive

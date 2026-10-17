@@ -2,10 +2,21 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readIsolatedClaudeKeychainToken } from "@paperclipai/adapter-claude-local/server";
-import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
+import { readCodexAuthInfo, fetchCodexQuota, CodexQuotaRequestError } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import type { AiProvider } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
+
+export class LocalAiVerificationError extends HttpError {
+  constructor(kind: "network" | "rejected" | "unavailable") {
+    const messages = {
+      network: "Could not reach OpenAI to verify the subscription. Check the server's network or proxy connection, then try Connect again.",
+      rejected: "OpenAI rejected this connection's credentials. Start sign-in again.",
+      unavailable: "OpenAI subscription verification is temporarily unavailable. Try Connect again.",
+    };
+    super(422, messages[kind]);
+  }
+}
 
 /** Read and verify a connection-specific login home. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
@@ -53,7 +64,10 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     await response.body?.cancel();
     if (!response.ok) throw new Error("Invalid login");
     return raw;
-  } catch {
+  } catch (error) {
+    if (provider === "openai" && error instanceof CodexQuotaRequestError) {
+      throw new LocalAiVerificationError(error.kind);
+    }
     // Provider/CLI errors may contain credential material; never return them.
     throw unprocessable(provider === "xai"
       ? "Could not verify the local subscription. Run the sign-in command shown for this connection, finish signing in, then try Connect again."

@@ -18,6 +18,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { fetchCodexQuota, fetchCodexRpcQuota, getQuotaWindows } from "./quota.js";
+vi.mock("./quota-http.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./quota-http.js")>(),
+  fetchQuotaResponse: (url: string, headers: Record<string, string>, signal?: AbortSignal) => fetch(url, { headers, signal }),
+}));
 
 function createChildThatErrorsOnMicrotask(err: Error): ChildProcess {
   const child = new EventEmitter() as ChildProcess;

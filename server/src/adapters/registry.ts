@@ -1,6 +1,7 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
+import { executeWithLocalCodexCommand as codexExecute, testWithLocalCodexCommand as codexTestEnvironment } from "./codex-local-command.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -27,10 +28,8 @@ import {
   models as claudeModels,
 } from "@paperclipai/adapter-claude-local";
 import {
-  execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
-  testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,

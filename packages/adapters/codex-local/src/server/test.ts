@@ -60,7 +60,7 @@ function firstNonEmptyLine(text: string): string {
 
 function commandLooksLike(command: string, expected: string): boolean {
   const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe` || base === `${expected}.js`;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -250,6 +250,7 @@ async function prepareCodexHelloProbe(input: {
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
+  options: { isResolvedCodexCommand?: boolean } = {},
 ): Promise<AdapterEnvironmentTestResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun({
     config: parseObject(ctx.config),
@@ -277,6 +278,7 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
+  const isCodexCommand = options.isResolvedCodexCommand === true || commandLooksLike(command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -392,7 +394,7 @@ export async function testEnvironment(
   // hides the real gap: the CLI (often a stale sandbox image), not the account.
   let detectedCliVersion: string | null = null;
   let configuredModelIsCompatible = true;
-  if (canRunProbe && commandLooksLike(command, "codex")) {
+  if (canRunProbe && isCodexCommand) {
     const versionCheck = await checkCodexCliVersionForModel({
       runId,
       model: asString(config.model, ""),
@@ -414,7 +416,7 @@ export async function testEnvironment(
       message: "Skipped hello probe because the installed Codex CLI cannot use the configured model.",
     });
   } else if (canRunProbe) {
-    if (!commandLooksLike(command, "codex")) {
+    if (!isCodexCommand) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
         level: "info",
