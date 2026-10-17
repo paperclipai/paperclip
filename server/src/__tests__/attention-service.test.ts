@@ -2164,4 +2164,98 @@ describeEmbeddedPostgres("attention service", () => {
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
   });
+
+  // The sidebar badge and the Decisions desk must agree: the desk hides shelved
+  // (aged-out) rows behind their own curtain, so a shelved row must not keep the
+  // sidebar badge lit. A `decideBy` preset re-resolves against *today* forever,
+  // so an un-actioned row triaged "today" stays `isDecideNow` long after it has
+  // aged onto the shelf — that is the shape that stranded the badge.
+  it("excludes shelved rows from the desk badge so the sidebar matches 'You're all caught up'", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("SHLF");
+    // Keep the company's only attention row the seeded interaction.
+    await db.update(agents).set({ status: "idle", errorReason: null }).where(eq(agents.id, errorAgentId));
+    const now = Date.parse("2026-08-02T12:00:00.000Z");
+    const idleAt = new Date("2026-06-20T12:00:00.000Z");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "SHLF-1",
+      title: "Aged decision",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      createdAt: idleAt,
+      updatedAt: idleAt,
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: workerId,
+      payload: { version: 1, questions: [] },
+      createdAt: idleAt,
+      updatedAt: idleAt,
+    });
+    await db.insert(decisionTriage).values({
+      companyId,
+      sourceKind: "issue_thread_interaction",
+      sourceId: interactionId,
+      decideBy: "today",
+      setByType: "agent",
+      setByAgentId: workerId,
+    });
+
+    const feed = await attentionService(db, { now: () => now }).list(companyId, {
+      userId: "board-user",
+      limit: 100,
+    });
+
+    // The row is real and still reachable — it just lives on the aging shelf.
+    const item = feed.items.find((row) => row.subject.id === interactionId);
+    expect(item).toMatchObject({ shelf: true, decideBy: "today" });
+    expect(feed.totalCount).toBe(1);
+
+    // The desk itself is empty, so the page renders "You're all caught up".
+    const deskItems = feed.items.filter((row) => !row.shelf && !row.dismissal?.isActive);
+    expect(deskItems).toHaveLength(0);
+    // ...and the sidebar must say the same thing.
+    expect(feed.deskBadgeCount).toBe(0);
+  });
+
+  it("keeps legitimate un-shelved decisions in the desk badge", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("LIVE");
+    await db.update(agents).set({ status: "idle", errorReason: null }).where(eq(agents.id, errorAgentId));
+    const now = Date.parse("2026-08-02T12:00:00.000Z");
+    const freshAt = new Date("2026-08-02T09:00:00.000Z");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "LIVE-1",
+      title: "Fresh decision",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      createdAt: freshAt,
+      updatedAt: freshAt,
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: workerId,
+      payload: { version: 1, questions: [] },
+      createdAt: freshAt,
+      updatedAt: freshAt,
+    });
+
+    const feed = await attentionService(db, { now: () => now }).list(companyId, {
+      userId: "board-user",
+      limit: 100,
+    });
+    const deskItems = feed.items.filter((row) => !row.shelf && !row.dismissal?.isActive);
+    expect(deskItems).toHaveLength(1);
+    expect(feed.deskBadgeCount).toBe(1);
+  });
 });

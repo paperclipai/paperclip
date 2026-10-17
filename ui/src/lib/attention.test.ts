@@ -129,6 +129,31 @@ describe("attentionBadgeCount", () => {
     expect(attentionBadgeCount(null)).toBe(0);
     expect(attentionBadgeCount(undefined)).toBe(0);
   });
+
+  // The page shows "You're all caught up" when nothing survives to the desk.
+  // The badge is the server's `deskBadgeCount`, which excludes shelved rows for
+  // exactly the same reason — so the two surfaces must flip together.
+  it("reads zero when every row is shelved and the desk is empty", () => {
+    const shelved = [
+      buildItem({ id: "1", shelf: true, decideBy: "today" }),
+      buildItem({ id: "2", shelf: true, decideBy: "2026-01-01" }),
+    ];
+    const feed: AttentionFeed = {
+      companyId: "c1",
+      generatedAt: "2026-07-09T12:00:00Z",
+      totalCount: shelved.length,
+      // Server excludes shelved rows from the badge.
+      deskBadgeCount: 0,
+      nextCursor: null,
+      countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
+      items: shelved,
+    };
+    const deskItems = feed.items.filter((item) => !item.shelf);
+    // Page renders the caught-up note...
+    expect(buildDeskShelves(deskItems, Date.parse("2026-07-09T12:00:00Z"))).toEqual([]);
+    // ...and the sidebar shows no badge.
+    expect(attentionBadgeCount(feed)).toBe(0);
+  });
 });
 
 // Desk grouping — arrival-based ("New today" / "Earlier") with a "Decide now"
