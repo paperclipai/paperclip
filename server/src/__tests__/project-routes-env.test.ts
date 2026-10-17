@@ -170,6 +170,19 @@ describe("project env routes", () => {
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 
+  it.each([0, 5000, null, "5000", {}])("rejects unsupported project budget writes (%j) without applying other fields", async (budgetMonthlyCents) => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(buildProject({ name: "Renamed" }));
+    const app = await createApp();
+    const response = await request(app)
+      .patch("/api/projects/project-1")
+      .send({ name: "Renamed", budgetMonthlyCents })
+      .expect(422);
+    expect(response.body.error).toContain("/budgets/policies");
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it('requires workspace-write authority to attach a repository despite project read access', async () => {
     mockProjectService.getById.mockResolvedValue(buildProject());
     mockAccessService.decide.mockImplementation(async (input) => ({ allowed: input.action !== 'project:write_workspace',
