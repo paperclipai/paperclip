@@ -1,4 +1,5 @@
 import { enrichPromotedWakeContext } from "../domain/context.js";
+import { isFormerOwnerDeferredWake } from "./deferred-wake-ownership.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -303,6 +304,12 @@ async function runReleaseDrain(
 
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
+    // Promoting it would spend this drain's only promotion on a run dispatch cancels.
+    if (isFormerOwnerDeferredWake(issue, candidate)) {
+      await ports.transaction.cancelDeferredWake({ companyId: run.companyId, wakeId: candidate.id,
+        reason: "Deferred wake belongs to an agent that no longer owns the issue", now: input.now });
+      continue;
+    }
 
     const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;

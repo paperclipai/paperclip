@@ -28,7 +28,11 @@ import {
 import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
 import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
-import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
+import {
+  ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  issueTreeControlService,
+  isVerifiedIssueTreeControlInteractionWake,
+} from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { issueService } from "../../../services/issues.js";
@@ -40,7 +44,8 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
-import { extractWakeCommentIds } from "../../run-dispatch/index.js";
+import { allowsIssueInteractionWake, extractWakeCommentIds, isNonAssigneeWorkspaceBusyRetry } from "../../run-dispatch/index.js";
+import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
 import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
@@ -180,6 +185,11 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     deferredContextSeed,
     deferredCommentIds,
     wakeReason,
+    // The ownership bypasses run dispatch reads from the same context.
+    requiresIssueOwnership:
+      !allowsIssueInteractionWake(deferredContextSeed, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) &&
+      !isNonAssigneeWorkspaceBusyRetry(readNonEmptyString(deferredContextSeed.retryReason), deferredContextSeed) &&
+      wakeReason !== "source_scoped_recovery_action",
   };
 }
 
@@ -236,6 +246,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const candidate = toDeferredWakeCandidate(row);
+        // Run dispatch also lets a native completion reviewer start without assignment.
+        if (candidate.requiresIssueOwnership && await getNativeReviewAssignment(tx as unknown as Db, {
+          companyId, issueId, agentId: row.agentId, contextSnapshot: candidate.deferredContextSeed,
+        })) {
+          candidate.requiresIssueOwnership = false;
+        }
         try {
           const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(
             db,
