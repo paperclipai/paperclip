@@ -42,6 +42,29 @@ describe("Pi caller-selected providers and models", () => {
     expect(() => piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({ custom: { apiKey } }) })).toThrow();
   });
 
+  it("uses the pinned SDK's env templates for credentials and headers", () => {
+    const configuration = piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({ custom: {
+      apiKey: "CUSTOM_MODEL_KEY", headers: { Authorization: "Bearer ${CUSTOM_HEADER_KEY}" },
+    } }) })!;
+    expect(JSON.parse(configuration.json).providers.custom).toEqual({
+      apiKey: "${CUSTOM_MODEL_KEY}", headers: { Authorization: "Bearer ${CUSTOM_HEADER_KEY}" },
+    });
+    expect(configuration.credentialNames).toEqual(["CUSTOM_MODEL_KEY", "CUSTOM_HEADER_KEY"]);
+    for (const apiKey of ["${NODE_OPTIONS}", "$PAPERCLIP_API_KEY", "Bearer ${AWS_SECRET_ACCESS_KEY}"]) {
+      expect(() => piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({ custom: { apiKey } }) })).toThrow();
+    }
+  });
+
+  it.each([
+    ["Bearer $HEADER_KEY", ["HEADER_KEY"]],
+    ["$FIRST_KEY:${SECOND_KEY}", ["FIRST_KEY", "SECOND_KEY"]],
+    ["literal-secret", []],
+    ["$${NODE_OPTIONS}:$!literal", []],
+    ["${invalid$NODE_OPTIONS}", []],
+  ])("discovers SDK template references in %s", (apiKey, names) => {
+    expect(piProviderConfiguration({ PAPERCLIP_PI_PROVIDERS: JSON.stringify({ custom: { apiKey } }) })?.credentialNames).toEqual(names);
+  });
+
   it("reserves loader and shell controls at the controller boundary", async () => {
     const names = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/reserved-credential-names.json", import.meta.url), "utf8"));
     for (const apiKey of names) {

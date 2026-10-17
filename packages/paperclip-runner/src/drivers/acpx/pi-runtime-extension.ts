@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { PI_QUESTION_LABEL_MAX_LENGTH, piQuestionLabel, PiToolIdentities } from "./pi-acp-runtime.js";
 import { lstat, realpath } from "node:fs/promises";
+import { constants, openSync, closeSync, fstatSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,13 +112,29 @@ export function readPiRuntimeConfiguration(environment: NodeJS.ProcessEnv): PiRu
     }
     return { type: "http", name: server.name, url: url.href, headers: [{ name: "Authorization", value: header.value }] };
   });
-  if (typeof value.instructions !== "string" || Buffer.byteLength(value.instructions) > 32 * 1024) throw new Error("Pi runtime instructions are invalid");
+  const protectedRoots = pathList(value.protectedRoots, "protected roots");
+  let instructions = value.instructions;
+  if (value.instructionsFile !== undefined) {
+    const file = absolutePath(value.instructionsFile, "instructions file");
+    if (instructions !== "" || realpathSync(file) !== file || !protectedRoots.some(root => inside(root, file))) throw new Error("Pi instruction file is outside protected runtime state");
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      if (!before.isFile() || before.nlink !== 1n || before.size > 256n * 1024n || (before.mode & 0o077n) !== 0n) throw new Error("Pi instruction file is invalid");
+      const bytes = Buffer.alloc(256 * 1024 + 1);
+      const size = readSync(fd, bytes, 0, bytes.length, 0);
+      const after = fstatSync(fd, { bigint: true });
+      if (BigInt(size) !== before.size || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) throw new Error("Pi instruction file changed during admission");
+      instructions = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
+    } finally { closeSync(fd); }
+  }
+  if (typeof instructions !== "string" || Buffer.byteLength(instructions) > 256 * 1024) throw new Error("Pi runtime instructions are invalid");
   return {
     invocationNamespace, servers, workspace, readOnly: value.readOnly,
     ...(value.agentHome === undefined ? {} : { agentHome: absolutePath(value.agentHome, "agent home") }),
     readRoots: pathList(value.readRoots, "read roots"),
-    protectedRoots: pathList(value.protectedRoots, "protected roots"),
-    instructions: value.instructions,
+    protectedRoots,
+    instructions,
   };
 }
 

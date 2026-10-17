@@ -292,6 +292,11 @@ describe("Pi ACP bridge", () => {
       PI_CODING_AGENT_DIR: root,
     };
     const launch = createPiLaunchSpec({ cwd: root, mcpServers: [] }, environment);
+    const instructionsFile = join(root, "instructions.txt");
+    await writeFile(instructionsFile, "x".repeat(256 * 1024), { mode: 0o600 });
+    const fileLaunch = createPiLaunchSpec({ cwd: root }, { ...environment, PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE: instructionsFile });
+    expect(JSON.parse(fileLaunch.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION!)).toMatchObject({ instructions: "", instructionsFile });
+    expect(Buffer.byteLength(fileLaunch.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION!)).toBeLessThan(64 * 1024);
     expect(launch.command).toBe(join(root, "node"));
     expect(launch.args).toEqual(expect.arrayContaining(["--no-extensions", "--no-approve", "--no-skills", "--offline"]));
     const ambient = createPiLaunchSpec({ cwd: root }, { ...environment, AGENT_HOME: "/ambient/unregistered" });

@@ -1,6 +1,6 @@
 import { startRunnerToolBridge } from "../runner-tool-bridge.js";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +31,31 @@ function harness() {
 }
 
 describe("owned Pi runtime extension", () => {
+  it("loads full instructions from a protected file without putting them in the process environment", async () => {
+    const { config } = await workspace();
+    const directory = await realpath(config.protectedRoots[0]!);
+    const file = join(directory, "instructions.txt");
+    const instructions = "字".repeat(80_000);
+    await writeFile(file, instructions, { mode: 0o600 });
+    const raw = JSON.stringify({ ...config, protectedRoots: [directory], instructions: "", instructionsFile: file });
+    expect(Buffer.byteLength(raw)).toBeLessThan(4096);
+    expect(readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: raw }).instructions).toBe(instructions);
+    await writeFile(file, "x".repeat(256 * 1024 + 1));
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: raw })).toThrow("instruction file");
+    await writeFile(file, instructions);
+    await chmod(file, 0o644);
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: raw })).toThrow("instruction file");
+    await chmod(file, 0o600);
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: JSON.stringify({ ...config, protectedRoots: [], instructions: "", instructionsFile: file }) })).toThrow("protected runtime state");
+    await writeFile(file, Buffer.from([0xff]));
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: raw })).toThrow();
+    await writeFile(file, instructions);
+    const hardlink = join(directory, "hardlink.txt"); await link(file, hardlink);
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: raw })).toThrow("instruction file");
+    await rm(hardlink);
+    const linkPath = join(directory, "alias.txt"); await symlink(file, linkPath);
+    expect(() => readPiRuntimeConfiguration({ PAPERCLIP_PI_RUNTIME_CONFIGURATION: JSON.stringify({ ...config, instructions: "", instructionsFile: linkPath }) })).toThrow("instruction file");
+  });
   it("advertises only the fields each native question method accepts", async () => {
     const { config } = await workspace(); const h = harness();
     await installPiRuntimeExtension(h.api, config);

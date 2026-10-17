@@ -348,7 +348,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
     throw new Error("Pi admission requires an explicit task execution policy");
   }
-  const policy = await validateProviderPolicy(input.providerPolicy);
+  const policy = await validateProviderPolicy(input.providerPolicy, input.agent);
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
     throw new Error("ACPX runtime root must be an absolute normalized path");
@@ -458,6 +458,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
       "[ui]\ndisable_bypass_permissions_mode = true\n");
   }
   if (input.agent === "pi") {
+    await writePrivateFile(join(agentHomeDirectory, "paperclip-instructions.txt"), policy.systemInstructions, { minBytes: 0, maxBytes: 256 * 1024 });
     await writePrivateFile(
       join(agentHomeDirectory, "settings.json"),
       `${JSON.stringify({
@@ -531,7 +532,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
           PAPERCLIP_PI_READ_ONLY: policy.readOnly ? "1" : "0",
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify(policy.readRoots),
           PAPERCLIP_PI_PROTECTED_ROOTS: JSON.stringify(protectedPaths),
-          PAPERCLIP_PI_SYSTEM_INSTRUCTIONS: policy.systemInstructions,
+          PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE: join(agentHomeDirectory, "paperclip-instructions.txt"),
         }
       : {}),
     ...(input.agent === "cursor"
@@ -592,7 +593,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
 }
 
-async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined): Promise<{
+async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent: QualifiedAcpxAgent): Promise<{
   readOnly: boolean; readRoots: string[]; protectedPaths: string[]; systemInstructions: string;
 }> {
   if (policy !== undefined && typeof policy.readOnly !== "boolean") throw new Error("Provider task execution policy is invalid");
@@ -605,7 +606,7 @@ async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefi
     }));
   };
   const systemInstructions = policy?.systemInstructions ?? "";
-  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > 32 * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
+  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > (agent === "pi" ? 256 : 32) * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
   return {
     readOnly: policy?.readOnly ?? true,
     readRoots: await paths(policy?.readRoots, true),
@@ -686,9 +687,10 @@ export async function refreshCopilotSystemInstructions(
 async function writePrivateFile(
   filePath: string,
   value: string,
+  limits = { minBytes: 1, maxBytes: 64 * 1024 },
 ): Promise<void> {
   const bytes = Buffer.from(value, "utf8");
-  if (bytes.length < 1 || bytes.length > 64 * 1024) {
+  if (bytes.length < limits.minBytes || bytes.length > limits.maxBytes) {
     throw new Error("ACPX sandbox file exceeds its bounded size");
   }
   const temporaryPath = `${filePath}.tmp-${randomBytes(12).toString("hex")}`;

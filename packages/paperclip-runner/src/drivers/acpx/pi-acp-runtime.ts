@@ -388,6 +388,9 @@ export function createPiLaunchSpec(
     readRoots, protectedRoots,
     ...(agentHome ? { agentHome } : {}),
     instructions: environment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS ?? "",
+    ...(environment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE ? {
+      instructionsFile: requiredFile(environment, "PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE"),
+    } : {}),
   });
   if (Buffer.byteLength(configuration) > 64 * 1024) throw new Error("Pi launch configuration exceeds its bound");
   const guard = environment.PAPERCLIP_PI_MODULE_GUARD_PATH === undefined ? []

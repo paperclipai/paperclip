@@ -78,22 +78,26 @@ export function piProviderConfiguration(environment?: NodeJS.ProcessEnv): {
   try { providers = JSON.parse(raw); } catch { throw invalid(); }
   if (!providers || typeof providers !== "object" || Array.isArray(providers)) throw invalid();
   const names = new Set<string>();
-  const credential = (value: unknown) => {
+  const credential = (value: unknown): string => {
     if (typeof value !== "string" || value.trimStart().startsWith("!")) throw invalid();
-    if (/^[A-Z][A-Z0-9_]{0,127}$/.test(value)) {
-      if (/^(?:PAPERCLIP_|NODE_|NPM_|npm_)/.test(value)
-        || RESERVED_PI_CREDENTIAL_NAMES.has(value)) throw invalid();
-      names.add(value);
+    const reference = /^[A-Z][A-Z0-9_]{0,127}$/.test(value) ? "${" + value + "}" : value;
+    for (const match of reference.matchAll(/\$\$|\$!|\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      const name = match[1] ?? match[2];
+      if (name === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+      if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name) || /^(?:PAPERCLIP_|NODE_|NPM_)/.test(name)
+        || RESERVED_PI_CREDENTIAL_NAMES.has(name)) throw invalid();
+      names.add(name);
     }
+    return reference;
   };
   const inspect = (value: unknown, depth = 0): void => {
     if (depth > 16) throw invalid();
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
-      if (key === "apiKey") credential(child);
+      if (key === "apiKey") (value as Record<string, unknown>)[key] = credential(child);
       else if (key === "headers") {
         if (!child || typeof child !== "object" || Array.isArray(child)) throw invalid();
-        for (const header of Object.values(child)) credential(header);
+        for (const [name, header] of Object.entries(child)) (child as Record<string, unknown>)[name] = credential(header);
       } else inspect(child, depth + 1);
     }
   };

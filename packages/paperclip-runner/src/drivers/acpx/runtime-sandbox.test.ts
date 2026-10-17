@@ -245,7 +245,7 @@ describe("ACPX runtime sandbox", () => {
         expect(sandbox.launchEnvironment).toMatchObject({
           PAPERCLIP_PI_READ_ONLY: "0", PAPERCLIP_PI_READ_ROOTS: "[]",
           PAPERCLIP_PI_PROTECTED_ROOTS: JSON.stringify(sandbox.protectedPaths),
-          PAPERCLIP_PI_SYSTEM_INSTRUCTIONS: "bound instructions",
+          PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE: join(sandbox.agentHomeDirectory, "paperclip-instructions.txt"),
         });
         expect(sandbox.persistedEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBeUndefined();
         await expect(
@@ -270,7 +270,22 @@ describe("ACPX runtime sandbox", () => {
     for (const readRoots of [["/"], ["relative"], ["/missing/assigned-skills"]]) {
       await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, readRoots } })).rejects.toThrow();
     }
-    await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } })).rejects.toThrow("bounded size");
+    await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions: "x".repeat(256 * 1024 + 1) } })).rejects.toThrow("bounded size");
+  });
+
+  it.each(["", "字".repeat(80_000), "x".repeat(256 * 1024)])("delivers bounded Pi instructions through a private file (%#)", async (systemInstructions) => {
+    const fixture = await sandboxFixture("pi");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions } });
+    const path = sandbox.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE!;
+    expect(await readFile(path, "utf8")).toBe(systemInstructions);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(sandbox.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBeUndefined();
+    expect(JSON.stringify(sandbox.launchEnvironment)).not.toContain(systemInstructions || "never-match-empty");
+  });
+
+  it.each(["claude", "codex", "cursor", "copilot"] as const)("keeps the existing %s instruction bound", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } })).rejects.toThrow("bounded size");
   });
 
   it("re-prepares and re-synchronizes an existing private sandbox", async () => {

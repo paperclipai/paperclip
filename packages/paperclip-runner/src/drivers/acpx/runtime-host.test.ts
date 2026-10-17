@@ -968,7 +968,8 @@ describe("ACPX runtime host", () => {
     const profile = resolveQualifiedAcpxProfile("pi", model);
     const openRuntime = vi.fn(async (options: AcpxRuntimePortOpenOptions) => {
       expect(options.launchEnvironment.PAPERCLIP_PI_READ_ONLY).toBe("1");
-      expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBe("Bound instructions");
+      expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBeUndefined();
+      expect(await readFile(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS_FILE!, "utf8")).toBe("Bound instructions");
       expect(JSON.parse(options.launchEnvironment.PAPERCLIP_PI_READ_ROOTS!)).toEqual([]);
       expect(options.permissionMode).toBe("approve-all");
       return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", piThinkingLevel: "low" }) });
@@ -1060,10 +1061,11 @@ describe("ACPX runtime host", () => {
         { encoding: "utf8", env: process.env });
       console.log(JSON.stringify({ shell,
         configuration: JSON.parse(process.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION),
+        instructions: require("node:fs").readFileSync(JSON.parse(process.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION).instructionsFile, "utf8"),
         arguments: process.argv.slice(2) }));
     `);
     const model = "openrouter/deepseek/deepseek-v4-flash-0731";
-    const observed: Array<{ shell: string; configuration: { agentHome: string; instructions: string }; arguments: string[] }> = [];
+    const observed: Array<{ shell: string; configuration: { agentHome: string; instructionsFile: string }; instructions: string; arguments: string[] }> = [];
     const dependencies = fixture.dependencies({ openRuntime: async launch => {
       const spec = createPiLaunchSpec({ cwd: fixture.options.workingDirectory, sessionPath }, {
         ...launch.launchEnvironment,
@@ -1094,7 +1096,7 @@ describe("ACPX runtime host", () => {
       }, dependencies);
       try {
         expect(observed.at(-1)).toMatchObject({
-          shell: `${agentHome}\nT${turn}\n`, configuration: { agentHome, instructions },
+          shell: `${agentHome}\nT${turn}\n`, configuration: { agentHome, instructionsFile: expect.any(String) }, instructions,
           arguments: expect.arrayContaining(["--session", sessionPath]),
         });
       } finally {

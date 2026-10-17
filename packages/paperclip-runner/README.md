@@ -128,7 +128,10 @@ the native `models.json` provider entries (without the outer `providers` key).
 The runner writes that configuration to the private Pi agent directory and binds
 its digest to recovery. API-key and header environment references are forwarded
 only from the explicit run environment; command-based credential resolution is
-unsupported. Select the provider/model ID explicitly in the agent configuration.
+unsupported. A legacy bare reference such as `CUSTOM_API_KEY` is written as
+`${CUSTOM_API_KEY}` for the Pi SDK. References such as `Bearer ${CUSTOM_API_KEY}`
+and `$CUSTOM_API_KEY` in headers use the same explicit credential binding.
+Select the provider/model ID explicitly in the agent configuration.
 The bundled ACPX package tests exercise unlisted model selection, rejection,
 exact acknowledgement, and replay on a loaded connection. Catalog membership
 and Cursor model-alias expansion do not determine the selected model.
@@ -269,6 +272,12 @@ restore them. JavaScript preparation and native compilation run concurrently,
 and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
+
+Pi system instructions use a private file inside protected runtime state. The
+launcher passes its path and retains the 64 KiB environment configuration bound.
+The extension reads up to 256 KiB, including empty instructions, and rejects
+linked, non-private, changed, or out-of-bound files. Updating this launch contract
+requires Pi profile 24 and its matching runtime pack; older profiles must reopen.
 
 Pi cold provider admission has an absolute 60-second budget. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
