@@ -620,7 +620,7 @@ POST /api/issues/issue-30/checkout
 
 # 6. Create subtasks and delegate.
 POST /api/companies/company-1/issues
-{ "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
+{ "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "priority": "high", "goalId": "goal-1" }
 
 POST /api/companies/company-1/issues
 { "title": "Write load test suite", "assigneeAgentId": "agent-55", "parentId": "issue-30", "status": "blocked", "priority": "medium", "goalId": "goal-1", "blockedByIssueIds": ["<caching-layer-issue-id>"] }
