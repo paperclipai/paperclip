@@ -44,6 +44,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   PLUGIN_STATUSES,
+  parseNpmPackageSpec,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -1203,9 +1204,12 @@ export function pluginRoutes(
     }
 
     try {
+      const npmSpec = canonicalLocalPath === undefined
+        ? parseNpmPackageSpec(trimmedPackage, version)
+        : undefined;
       const installOptions = canonicalLocalPath !== undefined
         ? { localPath: canonicalLocalPath }
-        : { packageName: trimmedPackage, version: version?.trim() };
+        : { packageName: npmSpec!.packageName, version: npmSpec!.version };
 
       const discovered = await loader.installPlugin(installOptions);
 

@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { pluginRoutes } from "../routes/plugins.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -54,11 +56,6 @@ async function createApp(
     captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
-  const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/plugins.js"),
-    import("../middleware/index.js"),
-  ]);
-
   const loader = {
     installPlugin: vi.fn(),
     ...loaderOverrides,
@@ -232,6 +229,51 @@ describe("plugin install and upgrade authz", () => {
       version: undefined,
     });
     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
+  }, 20_000);
+
+  it("splits a scoped package with an inline exact version", async () => {
+    const pluginKey = "kujolang.paperclip";
+    const discovered = { manifest: { id: pluginKey } };
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey,
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey,
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+    mockLifecycle.load.mockResolvedValue(undefined);
+
+    const { app, loader } = await createApp(
+      boardActor({ isInstanceAdmin: true }),
+      { installPlugin: vi.fn().mockResolvedValue(discovered) },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "@kujolang/paperclip@0.1.5" });
+
+    expect(res.status).toBe(200);
+    expect(loader.installPlugin).toHaveBeenCalledWith({
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+  }, 20_000);
+
+  it("rejects conflicting inline and body versions", async () => {
+    const { app, loader } = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "@kujolang/paperclip@0.1.5", version: "0.1.4" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("conflicts with --version 0.1.4");
+    expect(loader.installPlugin).not.toHaveBeenCalled();
   }, 20_000);
 
   it("rejects plugin upgrades for non-admin board users", async () => {

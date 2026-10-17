@@ -163,6 +163,24 @@ describe("plugin install", () => {
       isLocalPath: false,
     });
   });
+
+  it("splits a scoped package with an inline exact version", () => {
+    expect(
+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", {}, {
+        cwd: makeTempDir(),
+      }),
+    ).toEqual({
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+      isLocalPath: false,
+    });
+  });
+
+  it("rejects conflicting inline and option versions", () => {
+    expect(() =>
+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", { version: "0.1.4" }),
+    ).toThrow("conflicts with --version 0.1.4");
+  });
 });
 
 describe("plugin target diagnostics", () => {
