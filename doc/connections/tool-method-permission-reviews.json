@@ -1946,6 +1946,21 @@
       "liveProof": "not-run"
     },
     {
+      "app": "serply",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: Google, Bing, Amazon and Reddit search tools plus public page scraping (usage is billed to the Serply account).",
+      "evidence": [
+        "https://serply.io/mcp"
+      ],
+      "reviewedAt": "2026-10-11",
+      "liveProof": "not-run",
+      "keyPermissions": "None: Google, Bing, Amazon and Reddit search tools plus public page scraping (usage is billed to the Serply account). Any Serply API key works."
+    },
+    {
       "app": "similarweb",
       "method": "mcp-api-key",
       "auth": "api_key",
