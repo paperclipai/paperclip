@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload resolved target lockfile
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
           path: pnpm-lock.yaml
@@ -619,7 +619,7 @@ jobs:
         run: echo "name=runner-e2e-build-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable shared campaign outputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.build_artifact_name.outputs.name }}
           path: |
@@ -757,7 +757,7 @@ jobs:
 
       - name: Upload immutable remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.provider_pack_artifact_name.outputs.name }}
           path: |
@@ -1070,7 +1070,7 @@ jobs:
 
       - name: Upload access-controlled packaged cell evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
           path: tests/runner-e2e/results/
@@ -1203,7 +1203,7 @@ jobs:
 
       - name: Upload access-controlled merged report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-e2e-merged-report/
