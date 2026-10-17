@@ -24,6 +24,10 @@ vi.mock('node:child_process', async importOriginal => {
     return child;
   } };
 });
+vi.mock('node:os', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, default: { ...actual.default, devNull: '\\\\.\\nul' } };
+});
 import { clearGitSkillSnapshotCache, openGitSkillSnapshot, parseGitDownloadProgress } from '../services/skill-source-git-snapshot.js';
 import { scanGitHubSkills, scanGitHubSkillsWithPackageFallback, type GitHubRead } from '../services/github-skill-source.js';
 const exec = promisify(execFile);
@@ -183,6 +187,15 @@ describe('Git skill snapshots', () => {
     expect(snapshot.commitSha).toBe(commit);
     expect(snapshot.entries.some(entry => entry.type === 'commit')).toBe(false);
     await snapshot.release();
+  });
+  it('isolates Git config and hooks with /dev/null even where os.devNull is the Windows device path', async () => {
+    const snapshot = await openGitSkillSnapshot(request());
+    await snapshot.release();
+    expect(interception.commands.length).toBeGreaterThan(0);
+    for (const command of interception.commands) {
+      expect(command.args).toContain('core.hooksPath=/dev/null');
+      expect(command.env).toMatchObject({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' });
+    }
   });
   it('cleans up cancelled downloads, terminates the child and permits retry', async () => {
     interception.hang = true;
