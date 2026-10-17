@@ -598,7 +598,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       http: {
-        async fetch(url: string, init?: RequestInit): Promise<Response> {
+        async fetch(url: string, init?: RequestInit, options?: { companyId?: string }): Promise<Response> {
           const serializedInit: Record<string, unknown> = {};
           if (init) {
             if (init.method) serializedInit.method = init.method;
@@ -626,6 +626,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           const result = await callHost("http.fetch", {
             url,
             init: Object.keys(serializedInit).length > 0 ? serializedInit : undefined,
+            companyId: options?.companyId,
           });
 
           // Reconstruct a Response-like object from the serialized result

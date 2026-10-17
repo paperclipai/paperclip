@@ -365,6 +365,7 @@ export type {
   PluginApiRouteCompanyResolution,
   PluginApiRouteDeclaration,
   PluginLocalFolderDeclaration,
+  PluginPrivateNetworkHostDeclaration,
   PluginCompanySettings,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,

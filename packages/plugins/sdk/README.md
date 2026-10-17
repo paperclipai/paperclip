@@ -356,6 +356,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `webhooks.receive` |
 | | `api.routes.register` |
 | | `http.outbound` |
+| | `http.outbound.private-network` |
 | | `secrets.read-ref` |
 | | `environment.drivers.register` |
 | | `local.folders` |
@@ -464,6 +465,46 @@ readiness through:
 Worker code should access files through `ctx.localFolders.readText()` and
 `ctx.localFolders.writeTextAtomic()`. Relative paths must stay inside the
 configured root; symlinks that escape the root are rejected.
+
+### Private-Network Outbound Allowlist
+
+`ctx.http.fetch` blocks any request that resolves to a private/reserved IP
+(RFC 1918, loopback, link-local) by default — this is what keeps a plugin
+from reaching an operator's LAN by surprise. A plugin that legitimately needs
+to reach one specific LAN host (e.g. a local Home Assistant instance) can
+declare it and ask the operator to approve it, the same two-step shape as a
+trusted local folder:
+
+```ts
+export const manifest = {
+  // ...
+  capabilities: ["http.outbound", "http.outbound.private-network"],
+  privateNetworkHosts: [
+    { hostKey: "ha", displayName: "Home Assistant" },
+  ],
+};
+```
+
+The host stores the operator-approved hostname in company-scoped plugin
+settings and exposes it through:
+
+- `GET /api/plugins/:pluginId/companies/:companyId/private-network-hosts`
+- `PUT /api/plugins/:pluginId/companies/:companyId/private-network-hosts/:hostKey`
+- `DELETE /api/plugins/:pluginId/companies/:companyId/private-network-hosts/:hostKey`
+
+Worker code passes `companyId` on the fetch call so the host knows which
+company's approvals to check:
+
+```ts
+await ctx.http.fetch(haBaseUrl, init, { companyId });
+```
+
+The host only bypasses the private-IP block when the fetch target's hostname
+exactly matches (case-insensitive) an operator-approved host for that
+plugin+company — never a prefix, suffix, or wildcard match, and never for a
+plugin that lacks the capability or a request that omits `companyId`.
+Declaring the capability and a candidate host grants nothing by itself; the
+operator's approval is what actually opens the door, one host at a time.
 
 ### Scoped API Routes
 

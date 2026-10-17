@@ -1407,6 +1407,10 @@ export const PLUGIN_CAPABILITIES = [
   "webhooks.receive",
   "api.routes.register",
   "http.outbound",
+  // Opt-in: lets an operator approve a specific private-network host, per
+  // company, for a plugin that also holds `http.outbound`. Does not loosen
+  // the SSRF guard's default-deny for any plugin that lacks this capability.
+  "http.outbound.private-network",
   "secrets.read-ref",
   "environment.drivers.register",
   "local.folders",
