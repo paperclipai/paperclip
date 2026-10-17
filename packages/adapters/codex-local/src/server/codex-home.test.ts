@@ -11,6 +11,7 @@ import {
   isManagedCodexHomePath,
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
+  resolveManagedCodexHomeDir,
   seedManagedCodexHome,
   stageCodexHomeForSync,
   writeManagedCodexMcpConfig,
@@ -30,6 +31,23 @@ describe("mergeManagedCodexMcpGateways", () => {
       { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
       { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
     ]);
+  });
+});
+
+describe("resolveManagedCodexHomeDir", () => {
+  it("returns a per-agent path nested under the company when agentId is supplied", () => {
+    const env = { PAPERCLIP_HOME: "/instance" } as NodeJS.ProcessEnv;
+    const companyOnly = resolveManagedCodexHomeDir(env, "company-1");
+    const perAgent = resolveManagedCodexHomeDir(env, "company-1", "agent-1");
+    expect(perAgent).toBe(path.join(path.dirname(companyOnly), "agents", "agent-1", "codex-home"));
+    expect(perAgent).not.toBe(companyOnly);
+  });
+
+  it("ignores agentId when companyId is absent, preserving the instance-wide home", () => {
+    const env = { PAPERCLIP_HOME: "/instance" } as NodeJS.ProcessEnv;
+    expect(resolveManagedCodexHomeDir(env, undefined, "agent-1")).toBe(
+      resolveManagedCodexHomeDir(env),
+    );
   });
 });
 

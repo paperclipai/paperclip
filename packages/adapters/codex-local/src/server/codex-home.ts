@@ -126,15 +126,28 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
   return TRUTHY_ENV_RE.test(env.PAPERCLIP_IN_WORKTREE ?? "");
 }
 
+/**
+ * Resolves the managed `CODEX_HOME` directory. When `agentId` is supplied
+ * (alongside `companyId`), returns the per-agent home under the company's
+ * agent tree — mirroring `resolveManagedClaudeAgentHomeDir` in
+ * `claude-config.ts` — so each agent gets a separated run directory instead
+ * of sharing the one company-wide home. Omitting `agentId` preserves the
+ * existing company-wide (or instance-wide) home for callers that have not
+ * yet been wired to per-agent scoping.
+ */
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  agentId?: string,
 ): string {
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
     env,
   });
+  if (companyId && agentId) {
+    return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+  }
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
     : path.resolve(instanceRoot, "codex-home");
