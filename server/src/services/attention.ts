@@ -1794,7 +1794,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           ),
           inlineResolvable: true,
           entryRule: "latest failed/timed_out run has a Bounded retry exhausted lifecycle event.",
-          exitRule: "A newer run exists for the same issue/agent pair or the row is dismissed.",
+          exitRule: "A newer run exists for the same issue/agent pair, the issue is done or cancelled, or the row is dismissed.",
           dedupKey,
           severity: "high",
           activityAt: toIso(run.finishedAt ?? run.updatedAt ?? run.createdAt),

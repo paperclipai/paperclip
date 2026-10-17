@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
-import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 
 export function listAttentionExhaustedRuns(db: Db, companyId: string) {
   // Recovery can revisit an exhausted run. Deduplicate its historical events
@@ -47,6 +47,18 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       eq(agents.companyId, companyId),
       notInArray(agents.status, ["terminated"]),
       inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+      // A closed issue never gets a newer run, so the "newer run for the same
+      // issue/agent pair" exit rule would keep its failure in the feed forever.
+      // Compare as text: a context snapshot may carry a non-uuid id.
+      sql`not exists (
+        select 1 from ${issues}
+        where ${issues.companyId} = ${heartbeatRuns.companyId}
+          and ${issues.status} in ('done', 'cancelled')
+          and ${issues.id}::text = coalesce(
+            ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+            ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+          )
+      )`,
     ))
     .orderBy(desc(heartbeatRuns.createdAt), desc(latestExhaustion.eventId));
 }
