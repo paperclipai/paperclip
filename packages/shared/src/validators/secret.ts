@@ -308,11 +308,18 @@ export const vaultProviderConfigSchema = z.object({
   secretPathPrefix: optionalSafeShortText,
 }).strict();
 
+export const onepasswordProviderConfigSchema = z.object({
+  vaultId: z.string().trim().min(1).max(128),
+  fieldId: optionalSafeShortText,
+  itemTitlePrefix: optionalSafeShortText,
+}).strict();
+
 export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("local_encrypted"), config: localEncryptedProviderConfigSchema }),
   z.object({ provider: z.literal("aws_secrets_manager"), config: awsSecretsManagerProviderConfigSchema }),
   z.object({ provider: z.literal("gcp_secret_manager"), config: gcpSecretManagerProviderConfigSchema }),
   z.object({ provider: z.literal("vault"), config: vaultProviderConfigSchema }),
+  z.object({ provider: z.literal("onepassword"), config: onepasswordProviderConfigSchema }),
 ]);
 
 export const createSecretProviderConfigSchema = z.object({

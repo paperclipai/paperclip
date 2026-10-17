@@ -1,6 +1,7 @@
 import type { SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
 import { awsSecretsManagerProvider } from "./aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "./local-encrypted-provider.js";
+import { onePasswordProvider } from "./onepassword-provider.js";
 import {
   gcpSecretManagerProvider,
   vaultProvider,
@@ -11,6 +12,7 @@ import { unprocessable } from "../errors.js";
 const providers: SecretProviderModule[] = [
   localEncryptedProvider,
   awsSecretsManagerProvider,
+  onePasswordProvider,
   gcpSecretManagerProvider,
   vaultProvider,
 ];

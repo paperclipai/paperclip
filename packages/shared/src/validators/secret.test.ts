@@ -142,6 +142,43 @@ describe("secret validators", () => {
     ).not.toThrow();
   });
 
+  it("accepts non-sensitive 1Password provider vault metadata without requiring coming_soon status", () => {
+    expect(() =>
+      createSecretProviderConfigSchema.parse({
+        provider: "onepassword",
+        displayName: "1Password",
+        config: { vaultId: "vault-1", fieldId: "paperclip_value" },
+      }),
+    ).not.toThrow();
+
+    const parsed = secretProviderConfigPayloadSchema.parse({
+      provider: "onepassword",
+      config: { vaultId: "vault-1" },
+    });
+    expect(parsed.provider).toBe("onepassword");
+    if (parsed.provider !== "onepassword") throw new Error("Expected onepassword provider payload");
+    expect(parsed.config.vaultId).toBe("vault-1");
+  });
+
+  it("rejects 1Password provider vault config missing the vault id", () => {
+    expect(() =>
+      secretProviderConfigPayloadSchema.parse({
+        provider: "onepassword",
+        config: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects sensitive fields in 1Password provider vault config", () => {
+    expect(() =>
+      createSecretProviderConfigSchema.parse({
+        provider: "onepassword",
+        displayName: "1Password",
+        config: { vaultId: "vault-1", token: "ops_abc123" },
+      }),
+    ).toThrow(/sensitive field/i);
+  });
+
   it("accepts origin-only Vault provider vault addresses", () => {
     expect(() =>
       createSecretProviderConfigSchema.parse({
