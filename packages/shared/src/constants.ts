@@ -328,6 +328,30 @@ export function legacyIssueThreadInteractionResolverPolicyAlias(
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
 
+/**
+ * Maximum comments returned by one `GET /api/issues/:id/comments` page.
+ *
+ * Lives here, not in a route or service module, because it is a bound a caller
+ * must be able to discover: a client that asks for more gets this many and no
+ * field, header or status distinguishes "the thread is this long" from "the
+ * server stopped here". It was previously two module-private `500` literals —
+ * one in `routes/issues.ts`, one in `services/issues.ts` — applied in series,
+ * so nothing published could derive it and the two could drift apart silently.
+ */
+export const ISSUE_COMMENT_PAGE_MAX_LIMIT = 500;
+
+/**
+ * Maximum comment ids accepted in one queued-comment reorder payload.
+ *
+ * Deliberately a separate constant that happens to share a value, and NOT
+ * `= ISSUE_COMMENT_PAGE_MAX_LIMIT`: these are different promises. The page cap
+ * bounds one read; this bounds one mutation's request body, and a client can
+ * accumulate ids across several pages, so the two are not logically tied.
+ * Deriving one from the other would make a future change to the page size
+ * silently move a request-validation bound.
+ */
+export const ISSUE_COMMENT_REORDER_IDS_LIMIT = 500;
+
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
   "accepted",

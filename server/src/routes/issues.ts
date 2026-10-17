@@ -13,7 +13,11 @@ import {
 } from "../services/issue-creation-source.js";
 import { activeIssueInteractionCondition, readTaskQuestionContext } from "../services/issue-question-context.js";
 import { setIssueTitle } from "../services/issue-title.js";
-import { setIssueTitleSchema } from "@paperclipai/shared";
+import {
+  ISSUE_COMMENT_PAGE_MAX_LIMIT,
+  ISSUE_COMMENT_REORDER_IDS_LIMIT,
+  setIssueTitleSchema,
+} from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
@@ -375,7 +379,6 @@ import {
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
 
-const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -401,7 +404,7 @@ const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
     ),
 });
 const reorderQueuedCommentsSchema = queuedCommentMutationTargetSchema.extend({
-  orderedCommentIds: z.array(z.string().min(1)).max(MAX_ISSUE_COMMENT_LIMIT),
+  orderedCommentIds: z.array(z.string().min(1)).max(ISSUE_COMMENT_REORDER_IDS_LIMIT),
 });
 
 function prefersMinimalIssueUpdateResponse(req: Request) {
@@ -16160,7 +16163,7 @@ export function issueRoutes(
         : null;
     const limit =
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
+        ? Math.min(Math.floor(limitRaw), ISSUE_COMMENT_PAGE_MAX_LIMIT)
         : null;
     const comments = await svc.listComments(id, {
       afterCommentId,

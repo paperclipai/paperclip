@@ -63,3 +63,29 @@ Use issue-thread interactions when the user should respond through a structured 
 For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions`. Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work.
 
 Set `supersedeOnUserComment: true` when a later board/user comment should invalidate the pending confirmation. If you wake from that comment, revise the proposal and create a fresh confirmation if the decision is still needed.
+
+## Reading a Thread
+
+```
+GET /api/issues/{issueId}/comments?order=asc&limit=200
+```
+
+The response is a JSON array of comments. The endpoint accepts three query parameters:
+
+- `order` — `asc` or `desc`. The default is `desc`.
+- `limit` — the maximum number of comments to return. The server caps this value at 500. A request for more returns 500 comments.
+- `after` — a comment id. The response contains only the comments after that one. A cursor that is not a valid id returns an empty array. `afterCommentId` is an older name for the same parameter.
+
+**Omit `limit` and the server returns the whole thread.** The cap of 500 applies only when you send an explicit `limit`. It is a ceiling on your request, not a default page size.
+
+**An empty page does not prove that you reached the end.** The response carries no total and no end-of-thread flag, so you must read the page itself.
+
+⚠️ Compare the page against the **effective** page size, not against the limit you asked for. The effective size is `min(floor(your limit), 500)`. A request for `limit=2000` returns 500 comments on a long thread. A client that compares 500 with 2000 sees a short page, decides the thread ended, and silently drops every comment after the first 500.
+
+The server rounds a positive limit down to a whole number, so the `floor` matters: `limit=50.5` returns at most 50 comments, and a client that compares 50 with 50.5 sees a short page and stops early. Send a positive integer.
+
+- If the page is as long as the effective size, more comments can exist. Request the next page with `after` set to the last comment id.
+- If the page is shorter than the effective size, you reached the end of the thread.
+- If you did not send a `limit`, the array is the complete thread.
+
+An empty page has two causes, and you cannot tell them apart from the response alone: the thread ended, or your cursor is invalid or stale. Treat an empty page as a floor, not as proof. Keep the id you paged from so that you can tell a real end from a bad cursor.
