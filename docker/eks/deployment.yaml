@@ -1,0 +1,84 @@
+# Paperclip server Deployment and Service. Used by docs/deploy/aws-eks.md.
+# One replica with the Recreate strategy: Paperclip is a single-instance
+# control plane, so the old pod must stop before the new one starts.
+# Do not set `command:` on the container. It would replace the image's
+# ENTRYPOINT and drop tini as PID 1 (see container-init-reaping.test.ts).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperclip-server
+  namespace: paperclip
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: paperclip-server
+  template:
+    metadata:
+      labels:
+        app: paperclip-server
+    spec:
+      containers:
+        - name: paperclip-server
+          image: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/paperclip-server:latest
+          ports:
+            - containerPort: 3100
+          env:
+            - { name: NODE_ENV, value: "production" }
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: PORT, value: "3100" }
+            - { name: SERVE_UI, value: "true" }
+            - { name: PAPERCLIP_HOME, value: "/paperclip" }
+            - { name: PAPERCLIP_INSTANCE_ID, value: "default" }
+            - { name: PAPERCLIP_CONFIG, value: "/paperclip/instances/default/config.json" }
+            - { name: PAPERCLIP_DEPLOYMENT_MODE, value: "authenticated" }
+            - { name: PAPERCLIP_DEPLOYMENT_EXPOSURE, value: "public" }
+            - { name: PAPERCLIP_PUBLIC_URL, value: "https://<DOMAIN>" }
+            - { name: PAPERCLIP_MIGRATION_AUTO_APPLY, value: "true" }
+            - { name: HEARTBEAT_SCHEDULER_ENABLED, value: "true" }
+          envFrom:
+            - secretRef:
+                name: paperclip-secrets
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3100
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3100
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: paperclip-data
+              mountPath: /paperclip
+      volumes:
+        - name: paperclip-data
+          persistentVolumeClaim:
+            claimName: paperclip-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperclip-server
+  namespace: paperclip
+spec:
+  type: ClusterIP
+  selector:
+    app: paperclip-server
+  ports:
+    - port: 80
+      targetPort: 3100
