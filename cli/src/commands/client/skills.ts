@@ -15,14 +15,15 @@ import {
   type CompanySkillProjectScanResult,
   type CompanySkillUpdateStatus,
 } from "@paperclipai/shared";
-import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
   addCommonClientOptions,
+  decodeUtf8Content,
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  readUtf8ContentFile,
   resolveCommandContext,
   type BaseClientOptions,
   type ResolvedClientContext,
@@ -996,7 +997,7 @@ async function readBodyFile(filePath: string): Promise<string> {
   if (filePath === "-") {
     return readStdin();
   }
-  return readFile(filePath, "utf8");
+  return readUtf8ContentFile(filePath);
 }
 
 async function readStdin(): Promise<string> {
@@ -1004,7 +1005,7 @@ async function readStdin(): Promise<string> {
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return decodeUtf8Content(Buffer.concat(chunks), "stdin content");
 }
 
 async function confirmDangerousAction(yes: boolean | undefined, message: string): Promise<void> {
