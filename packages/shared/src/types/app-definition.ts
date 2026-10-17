@@ -18,7 +18,7 @@ export type SelfServeMcpAuthMode =
 export interface SelfServeMcpResearchEntry {
   slug: string;
   name: string;
-  wave: 1 | 2 | 3 | "blocked";
+  wave: 1 | 2 | 3 | 4 | "blocked";
   status: "self_serve" | "blocked";
   docsUrl: string;
   serverUrl: string;

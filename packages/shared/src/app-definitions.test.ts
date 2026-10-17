@@ -283,7 +283,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(63);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(64);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -448,15 +448,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 67 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 68 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(67);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(68);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 67);
+    ).toHaveProperty("size", 68);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -884,7 +884,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(81);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(82);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1167,6 +1167,55 @@ describe("AppDefinition catalog", () => {
         },
       });
       expect(method.warnings?.length).toBe(2);
+    }
+  });
+  it("connects Ditto's hosted server with browser sign-in or a workspace API key", () => {
+    const ditto = APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
+    expect(ditto).toMatchObject({
+      name: "Ditto",
+      categories: ["content"],
+      urlPatterns: ["https://api.dittowords.com/*"],
+      docsUrl: "https://developer.dittowords.com/guides/connect-the-mcp",
+      branding: { logoUrl: "/brands/apps/ditto.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "ditto")).toBe(true);
+    expect(ditto.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    const [oauth, apiKey] = ditto.methods;
+    expect(oauth).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      // Ditto signs in through Auth0, which issues a refresh token only for
+      // offline_access.
+      defaults: {
+        serverUrl: "https://api.dittowords.com/v2/mcp",
+        scopesHint: ["openid", "profile", "email", "offline_access"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://api.dittowords.com/v2/mcp" },
+      // Ditto API keys use the `token` scheme, not `Bearer`.
+      keyPlacement: { location: "header", name: "Authorization", prefix: "token " },
+      consoleLinks: { keys: "https://app.dittowords.com/developers" },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("set delete and link actions to Ask first");
+    for (const method of ditto.methods) {
+      // The access step shows the profile description before sign-in.
+      expect(method.capabilityProfile).toMatchObject({
+        key: "write",
+        description: expect.stringContaining("cannot be undone"),
+      });
+      expect(method.tenantFields ?? []).toEqual([]);
+      expect(method.warnings).toHaveLength(2);
     }
   });
   it("connects Gauge's hosted server with browser sign-in or an organization API key", () => {

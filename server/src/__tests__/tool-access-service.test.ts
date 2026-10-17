@@ -6299,6 +6299,52 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
+  it("connects Ditto with a workspace API key sent with the token scheme", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "search_ditto_text" },
+      { name: "translate_text_items" },
+      { name: "delete_text_items" },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "ditto",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "ditto-test-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    // Ditto rejects the Bearer scheme for API keys; it expects `token <key>`.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.dittowords.com/v2/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "token ditto-test-secret",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        url: "https://api.dittowords.com/v2/mcp",
+        sourceTemplateKey: "ditto",
+        connectionMethodKey: "mcp-api-key",
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("ditto-test-secret");
+    expect(result.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "search_ditto_text", riskLevel: "read", status: "active" }),
+        expect.objectContaining({ toolName: "translate_text_items", riskLevel: "write", status: "active" }),
+        expect.objectContaining({ toolName: "delete_text_items", riskLevel: "destructive", status: "active" }),
+      ]),
+    );
+  });
+
   it("connects Superagent with an organization API key sent as a bearer header", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -19521,6 +19567,35 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
     // Without the provider rule, the generic classifier treats these as reads.
     expect(classifyRisk({ name: "triage_finding" })).toBe("read");
+  });
+
+  it("classifies Ditto translate, link and unlink tools as writes", () => {
+    for (const name of [
+      "get_styleguide_rules",
+      "suggest_edit",
+      "search_ditto_text",
+      "list_projects",
+      "list_variants",
+      "get_workspace_tags",
+    ])
+      expect(classifyRisk({ name }, "ditto")).toBe("read");
+    for (const name of [
+      "translate_text_items",
+      "translate_library_components",
+      "link_figma_nodes_to_text_item",
+      "link_text_items_to_component",
+      "unlink_text_items_from_component",
+      "publish_library_component",
+      "create_text_items",
+      "update_styleguide_rules",
+    ])
+      expect(classifyRisk({ name }, "ditto")).toBe("write");
+    for (const name of ["delete_text_items", "delete_styleguide_rules", "delete_variants"])
+      expect(classifyRisk({ name }, "ditto")).toBe("destructive");
+    expect(classifyRisk({ name: "list_projects", annotations: { readOnlyHint: false } }, "ditto")).toBe("write");
+    // Without the provider rule, the generic classifier treats these as reads.
+    expect(classifyRisk({ name: "translate_text_items" })).toBe("read");
+    expect(classifyRisk({ name: "link_text_items_to_component" })).toBe("read");
   });
 
   it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {

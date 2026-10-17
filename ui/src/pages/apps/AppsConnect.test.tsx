@@ -66,6 +66,7 @@ const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog"
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -2035,6 +2036,44 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "superagent",
       connectionMethodKey: "mcp-api-key",
       credentialValues: { "credentials.authorization": "sk_live_test-key" },
+    }));
+  });
+
+  it("defaults Ditto to browser sign-in and connects a workspace API key once entered", async () => {
+    mockParams.appKey = "ditto";
+    listGalleryMock.mockResolvedValueOnce({ apps: [DITTO] });
+    await render();
+    // The delete warning must be visible on the default sign-in path.
+    expect(container.textContent).toContain("delete tools cannot be undone");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Ditto")?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("set delete and link actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "ditto-test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "ditto",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "ditto-test-key" },
     }));
   });
 

@@ -393,6 +393,45 @@
       "evidenceLimit": "Live proof covers anonymous MCP initialize/discovery and one narrow public React documentation lookup through Paperclip's actual Apps connection and Test dialog, including a successful repeat after reload. It does not prove elevated API-key rate limits, private-repository access, or any non-public provider content."
     },
     {
+      "app": "ditto",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "write",
+      "supportedActions": "Read style guide rules and check text against them; search, create, update, translate and permanently delete text items; create, update, translate and publish library components and link or unlink text items to them (linking replaces a text item's developer ID); link synced Figma text nodes; manage component folders, projects, project blocks, variables, variants, style guides and style guide rules; read statuses and workspace tags. The connection acts as the Ditto user who signs in.",
+      "evidence": [
+        "https://developer.dittowords.com/guides/connect-the-mcp",
+        "https://developer.dittowords.com/mcp-reference/tools",
+        "https://api.dittowords.com/.well-known/oauth-protected-resource",
+        "https://login.dittowords.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-10",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "ditto",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Read style guide rules and check text against them; search, create, update, translate and permanently delete text items; create, update, translate and publish library components and link or unlink text items to them (linking replaces a text item's developer ID); link synced Figma text nodes; manage component folders, projects, project blocks, variables, variants, style guides and style guide rules; read statuses and workspace tags.",
+      "evidence": [
+        "https://developer.dittowords.com/guides/connect-the-mcp",
+        "https://developer.dittowords.com/mcp-reference/tools",
+        "https://developer.dittowords.com/api-reference/authentication"
+      ],
+      "reviewedAt": "2026-10-10",
+      "liveProof": "not-run",
+      "keyPermissions": "Ditto API keys are not scoped: a key reaches all data in its workspace, including permanent deletes, and actions are attributed to the user who created the key. Create a separate key for Paperclip so it can be removed independently, and set delete and link actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
+    },
+    {
       "app": "egnyte",
       "method": "mcp-oauth",
       "auth": "oauth",

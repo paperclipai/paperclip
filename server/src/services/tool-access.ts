@@ -2415,6 +2415,19 @@ export function classifyRisk(
     if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
     return /^(list|get)-/.test(normalizedToolName) || annotations.readOnlyHint === true ? "read" : "write";
   }
+  // Ditto's translate, link and unlink tools replace saved text or developer
+  // IDs, but the generic classifier reads those verbs as reads. Only
+  // list/get/search tools, suggest_edit, and tools Ditto marks read-only are
+  // reads.
+  if (sourceTemplateKey === "ditto") {
+    if (verbMatches(tool.name, "delete|remove|destroy")) return "destructive";
+    if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+    return /^(list|get|search)-/.test(normalizedToolName) ||
+      normalizedToolName === "suggest-edit" ||
+      annotations.readOnlyHint === true
+      ? "read"
+      : "write";
+  }
   if (
     sourceTemplateKey === "shopify" &&
     SHOPIFY_DESTRUCTIVE_TOOLS.has(normalizedToolName)

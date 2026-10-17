@@ -117,6 +117,12 @@
       "darkAsset": "/brands/apps/discord-dark.svg"
     },
     {
+      "slug": "ditto",
+      "provider": "Ditto",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/ditto.png"
+    },
+    {
       "slug": "egnyte",
       "provider": "Egnyte",
       "catalogVisible": false,
