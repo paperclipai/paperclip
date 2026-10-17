@@ -4426,6 +4426,231 @@ rl.on("line", (line) => {
     });
   }
 
+  async function createRemoteConnectionWithSlowAndFastTools(companyId: string, url: string) {
+    const slow = await createRemoteMcpTool(db, companyId, {
+      applicationKey: `timeouts-${randomUUID().slice(0, 8)}`,
+      toolName: "slow_query",
+      riskLevel: "read",
+      url,
+    });
+    const { id: _id, ...slowEntry } = slow.catalogEntry;
+    await db.insert(toolCatalogEntries).values({
+      ...slowEntry,
+      name: `fast_lookup-${randomUUID()}`,
+      toolName: "fast_lookup",
+      description: "Call fast_lookup",
+      versionHash: randomUUID(),
+    });
+    const toolName = (name: string) => expectedConnectedToolName({
+      applicationKey: slow.application.applicationKey,
+      connectionId: slow.connection.id,
+      toolName: name,
+    });
+    return {
+      connection: slow.connection,
+      slowTool: toolName("slow_query"),
+      fastTool: toolName("fast_lookup"),
+    };
+  }
+
+  function upstreamToolName(request: FakeMcpRequest) {
+    return (request.body?.params as { name?: string } | undefined)?.name;
+  }
+
+  async function connectionHealth(connectionId: string) {
+    const [row] = await db
+      .select({ healthStatus: toolConnections.healthStatus })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectionId));
+    return row?.healthStatus;
+  }
+
+  it("keeps a connection's other tools listed and callable after one tool times out", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((request) => ({
+      delayMs: upstreamToolName(request) === "slow_query" ? 150 : 0,
+    }));
+    try {
+      const { connection, slowTool, fastTool } =
+        await createRemoteConnectionWithSlowAndFastTools(company.id, fake.url);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool,
+        parameters: { key: "alpha", value: "one" },
+        timeoutMs: 20,
+      }).then(
+        () => {
+          throw new Error("Expected the slow remote tool to time out");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+
+      expect(await connectionHealth(connection.id)).toBe("ok");
+      const listed = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+      expect(listed).toEqual(expect.arrayContaining([slowTool, fastTool]));
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: fastTool,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result.result).toMatchObject({ content: "ok" });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("skips a non-JSON stream event before the result and keeps the connection's tools usable", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((request) => {
+      if (upstreamToolName(request) !== "slow_query") return {};
+      const message = {
+        jsonrpc: "2.0",
+        id: request.body?.id,
+        result: { content: [{ type: "text", text: "after non-json" }] },
+      };
+      return {
+        headers: { "content-type": "text/event-stream" },
+        rawBody: `event: ping\ndata: not json\n\nevent: message\ndata: ${JSON.stringify(message)}\n\n`,
+      };
+    });
+    try {
+      const { connection, slowTool, fastTool } =
+        await createRemoteConnectionWithSlowAndFastTools(company.id, fake.url);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      const first = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(first).toMatchObject({ status: "completed", result: { content: "after non-json" } });
+
+      expect(await connectionHealth(connection.id)).toBe("ok");
+      const listed = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+      expect(listed).toEqual(expect.arrayContaining([slowTool, fastTool]));
+      const sibling = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: fastTool,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(sibling.result).toMatchObject({ content: "ok" });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("fails a stream without the tools/call response as malformed, with a content-free summary, and keeps the connection healthy", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const marker = "SECRET-MARKER";
+    const fake = await startFakeRemoteMcpServer((request) => {
+      if (upstreamToolName(request) !== "slow_query") return {};
+      const messages = [
+        { jsonrpc: "2.0", method: `notifications/progress/${marker}`, params: {} },
+        { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: marker } },
+        { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "t", progress: 1 } },
+      ];
+      return {
+        headers: { "content-type": "text/event-stream" },
+        rawBody: `data: ${marker} not json\n\n`
+          + messages.map((message) => `event: message\ndata: ${JSON.stringify(message)}\n\n`).join(""),
+      };
+    });
+    try {
+      const { connection, slowTool, fastTool } =
+        await createRemoteConnectionWithSlowAndFastTools(company.id, fake.url);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      const error = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool,
+        parameters: { key: "alpha", value: "one" },
+      }).catch((caught) => caught);
+      expectGatewayError(error, 502, "remote_mcp_malformed_response");
+      expect(error.details).toMatchObject({
+        responseSummary: {
+          eventCount: 3,
+          skippedEventCount: 1,
+          methods: { "notifications/progress": 1, "notifications/message": 1, other: 1 },
+          sawId: false,
+          sawResponse: false,
+        },
+        execution: { request: { mcpMethod: "tools/call", dispatched: true } },
+      });
+      expect(JSON.stringify(error.details.responseSummary)).not.toContain(marker);
+
+      expect(await connectionHealth(connection.id)).toBe("ok");
+      const listed = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+      expect(listed).toEqual(expect.arrayContaining([slowTool, fastTool]));
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("keeps a connection listed after a remote JSON-RPC error but not after an auth failure", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    let unauthorized = false;
+    const fake = await startFakeRemoteMcpServer((request) => {
+      if (unauthorized) return { status: 401, body: { error: "unauthorized" } };
+      if (upstreamToolName(request) === "slow_query") {
+        return { body: { jsonrpc: "2.0", id: request.body?.id ?? "test", error: { code: -32602, message: "Invalid params" } } };
+      }
+      return {};
+    });
+    try {
+      const { connection, slowTool, fastTool } =
+        await createRemoteConnectionWithSlowAndFastTools(company.id, fake.url);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const call = (tool: string) => gateway.executeTool({
+        sessionToken: session.token,
+        tool,
+        parameters: { key: "alpha", value: "one" },
+      });
+
+      await call(slowTool).then(
+        () => {
+          throw new Error("Expected the remote JSON-RPC error to fail the call");
+        },
+        (error) => expectGatewayError(error, 502, "remote_mcp_error"),
+      );
+      expect(await connectionHealth(connection.id)).toBe("ok");
+      expect((await gateway.listToolsForSession(session.token)).map((tool) => tool.name))
+        .toEqual(expect.arrayContaining([slowTool, fastTool]));
+      expect((await call(fastTool)).result).toMatchObject({ content: "ok" });
+
+      unauthorized = true;
+      await call(fastTool).then(
+        () => {
+          throw new Error("Expected the remote 401 to fail the call");
+        },
+        (error) => expectGatewayError(error, 502, "mcp_remote_status"),
+      );
+      expect(await connectionHealth(connection.id)).toBe("error");
+      const listedAfterAuthFailure = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
+      expect(listedAfterAuthFailure).not.toContain(slowTool);
+      expect(listedAfterAuthFailure).not.toContain(fastTool);
+    } finally {
+      await fake.close();
+    }
+  });
+
   function initializeFakeMcpSession(request: FakeMcpRequest, sessionId: string) {
     return {
       headers: { "mcp-session-id": sessionId },
@@ -4436,6 +4661,69 @@ rl.on("line", (line) => {
       },
     };
   }
+
+  it("keeps a remote MCP connection healthy and starts a fresh MCP session after a tool call timeout", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    let initializeCount = 0;
+    let toolCallCount = 0;
+    const fake = await startFakeRemoteMcpServer((request) => {
+      if (request.body?.method === "initialize") {
+        initializeCount += 1;
+        return initializeFakeMcpSession(request, `session-${initializeCount}`);
+      }
+      if (request.body?.method === "notifications/initialized") return { status: 202, rawBody: "" };
+      toolCallCount += 1;
+      return { delayMs: toolCallCount === 1 ? 1_000 : 0 };
+    });
+    try {
+      const { connection } = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "per-call-timeout",
+        toolName: "kv_get",
+        url: fake.url,
+        connectionConfig: { mcpSessionRequired: true },
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha" },
+        timeoutMs: 300,
+      }).then(
+        () => {
+          throw new Error("Expected the remote MCP call to time out");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+      expect(await connectionHealth(connection.id)).toBe("ok");
+      expect(toolCallCount).toBe(1);
+      expect(initializeCount).toBe(1);
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({ status: "timed_out", errorCode: "tool_timeout" });
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "beta" },
+      })).resolves.toMatchObject({ status: "completed" });
+      expect(initializeCount).toBe(2);
+      expect(toolCallCount).toBe(2);
+      expect(fake.requests.filter((request) => request.body?.method === "initialize")
+        .map((request) => request.headers["mcp-session-id"])).toEqual([undefined, undefined]);
+      expect(fake.requests.filter((request) => request.body?.method === "tools/call")
+        .map((request) => request.headers["mcp-session-id"])).toEqual(["session-1", "session-2"]);
+      expect(await connectionHealth(connection.id)).toBe("ok");
+    } finally {
+      await fake.close();
+    }
+  });
 
   const perCallResponseFailures = [
     {

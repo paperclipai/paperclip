@@ -17,8 +17,42 @@ import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnecti
 export const MCP_HTTP_ACCEPT = "application/json, text/event-stream";
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
+/** Shape of a response stream that had no message for the request. It must
+ * stay free of server-supplied text: counts, flags and fixed labels only. */
+export type McpHttpResponseSummary = {
+  eventCount: number;
+  /** Non-JSON SSE `data:` events that were skipped. */
+  skippedEventCount: number;
+  /** Message count per label. Keys come from KNOWN_MCP_METHOD_LABELS or are
+   * "other"; a method name sent by the server is never copied here. */
+  methods: Record<string, number>;
+  sawId: boolean;
+  sawResponse: boolean;
+};
+
+// Methods a server may send on a response stream (MCP 2025-06-18). Matched
+// exactly: a name that only starts like one of these is counted as "other".
+const KNOWN_MCP_METHOD_LABELS: ReadonlySet<string> = new Set([
+  "notifications/progress",
+  "notifications/message",
+  "notifications/cancelled",
+  "notifications/tools/list_changed",
+  "notifications/resources/list_changed",
+  "notifications/resources/updated",
+  "notifications/prompts/list_changed",
+  "notifications/roots/list_changed",
+  "elicitation/create",
+  "sampling/createMessage",
+  "roots/list",
+  "ping",
+]);
+
 export class McpHttpResponseError extends Error {
-  constructor(readonly reason: "invalid_json" | "malformed_response" | "too_large", message: string) {
+  constructor(
+    readonly reason: "invalid_json" | "malformed_response" | "too_large",
+    message: string,
+    readonly summary?: McpHttpResponseSummary,
+  ) {
     super(message);
     this.name = "McpHttpResponseError";
   }
@@ -57,6 +91,8 @@ export async function initializeMcpHttpSession(input: {
   send: (init: RequestInit) => Promise<Response>;
   headers?: Record<string, string>;
   requestId: string;
+  /** Total deadline of the caller, see readMcpHttpResponse. */
+  signal?: AbortSignal;
 }): Promise<Record<string, string>> {
   const initializeResponse = await input.send({
     method: "POST",
@@ -82,8 +118,9 @@ export async function initializeMcpHttpSession(input: {
   }
   let payload: unknown;
   try {
-    payload = await withMcpConnectionFailure(() => readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`));
+    payload = await withMcpConnectionFailure(() => readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`, { signal: input.signal }));
   } catch (error) {
+    input.signal?.throwIfAborted();
     throw retainMcpConnectionFailure(error, new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null));
   }
   const result = payload && typeof payload === "object" && "result" in payload
@@ -176,19 +213,38 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
 }
 
 /** Read until the response for this request arrives, without waiting for an SSE
- * connection to close. Notifications and responses for other IDs are ignored. */
+ * connection to close. Notifications and responses for other IDs are ignored.
+ *
+ * `signal` is the caller's total deadline. Skipped events and notifications
+ * keep a stream alive without answering, and each chunk resets the transport's
+ * idle deadline, so a caller whose request carries no deadline of its own must
+ * pass one here. An abort rejects with the signal's reason and cancels the stream. */
 export async function readMcpHttpResponse(
   response: Response,
   requestId: string | number,
-  options: { maxBytes?: number; onRequest?: (message: Record<string, unknown>) => Promise<void> } = {},
+  options: { maxBytes?: number; signal?: AbortSignal; onRequest?: (message: Record<string, unknown>) => Promise<void> } = {},
 ): Promise<unknown> {
   const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
+  const signal = options.signal;
+  signal?.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    if (!signal) return;
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  // The race below is the only consumer, so a late abort must not surface as an
+  // unhandled rejection.
+  aborted.catch(() => undefined);
+  const stopListening = () => { if (onAbort) signal?.removeEventListener("abort", onAbort); };
   const isStream = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
   const reader = response.body?.getReader();
   // Injected HTTP transports can expose a buffered text response rather than a
   // Web ReadableStream. Keep the same size and message-ID checks for both forms.
   if (!reader) {
-    const body = await response.text();
+    let body: string;
+    try { body = await Promise.race([response.text(), aborted]); }
+    finally { stopListening(); }
     if (Buffer.byteLength(body, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
     return readMcpHttpResponse(new Response(body, {
       headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
@@ -197,25 +253,41 @@ export async function readMcpHttpResponse(
   const decoder = new TextDecoder();
   let buffer = "";
   let bytes = 0;
+  const summary: McpHttpResponseSummary = { eventCount: 0, skippedEventCount: 0, methods: {}, sawId: false, sawResponse: false };
   const parse = (text: string): unknown => {
     try { return JSON.parse(text); }
     catch { throw new McpHttpResponseError("invalid_json", "MCP response contained invalid JSON"); }
   };
   const inspect = async (message: unknown): Promise<unknown | undefined> => {
+    summary.eventCount += 1;
     if (!message || typeof message !== "object") return undefined;
     const record = message as Record<string, unknown>;
     if (record.id === requestId && ("result" in record || "error" in record)) return record;
+    if ("id" in record) summary.sawId = true;
+    if ("result" in record || "error" in record) summary.sawResponse = true;
+    if ("method" in record) {
+      const label = typeof record.method === "string" && KNOWN_MCP_METHOD_LABELS.has(record.method) ? record.method : "other";
+      summary.methods[label] = (summary.methods[label] ?? 0) + 1;
+    }
     if ("method" in record && "id" in record) await options.onRequest?.(record);
     return undefined;
   };
   const event = async (value: string) => {
     const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data) return undefined;
-    return inspect(parse(data));
+    // A stray keep-alive or comment-like event must not fail the call. Skip
+    // it and keep reading, as parseMcpHttpResponseBody does.
+    let message: unknown;
+    try { message = JSON.parse(data); }
+    catch {
+      summary.skippedEventCount += 1;
+      return undefined;
+    }
+    return inspect(message);
   };
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await Promise.race([reader.read(), aborted]);
       bytes += value?.byteLength ?? 0;
       if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
@@ -233,8 +305,9 @@ export async function readMcpHttpResponse(
     }
     const result = isStream ? await event(buffer) : await inspect(parse(buffer));
     if (result !== undefined) return result;
-    throw new McpHttpResponseError("malformed_response", "MCP response did not contain the requested message ID");
+    throw new McpHttpResponseError("malformed_response", "MCP response did not contain the requested message ID", summary);
   } finally {
+    stopListening();
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }

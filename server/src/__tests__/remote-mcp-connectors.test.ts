@@ -191,6 +191,44 @@ describe("remote connector lifecycle", () => {
     expect(calls).toHaveLength(3);
     expect(calls[2]).not.toBe(executionSession);
   });
+  it("fails discovery at its total deadline when a server keeps the tools/list stream alive without answering", async () => {
+    const org = await company();
+    let stall = false;
+    let cancelled = 0;
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const send = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return Response.json({ id: body.id, result: { protocolVersion: "2025-06-18" } }, { headers: { "Mcp-Session-Id": "session" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (!stall) return Response.json({ id: body.id, result: { tools: [tool("read")] } });
+      signals.push(init.signal);
+      // A keep-alive every few milliseconds: each chunk would reset an idle deadline.
+      let timer: ReturnType<typeof setInterval> | undefined;
+      return new Response(new ReadableStream({
+        start(controller) { timer = setInterval(() => controller.enqueue(new TextEncoder().encode("data: keep-alive\n\n")), 5); },
+        cancel() { clearInterval(timer); cancelled += 1; },
+      }), { headers: { "content-type": "text/event-stream" } });
+    };
+    const service = toolAccessService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: send, catalogDiscoveryTimeoutMs: 150 });
+    const connected = await service.connectGalleryApp(org.id, { galleryKey: "arcade", connectionMethodKey: "mcp", link: "https://api.arcade.dev/mcp/keep-alive", authMode: "none" }, actor);
+    expect(connected.catalog).toHaveLength(1);
+    stall = true;
+    const started = Date.now();
+    await expect(service.refreshCatalog(connected.connectionId, actor)).rejects.toMatchObject({ status: 502, details: { code: "remote_http_response_timeout" } });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(cancelled).toBe(1);
+    // The same deadline reaches the transport, so the real one drops the socket.
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+    // The health check uses the same probe and must not wait either.
+    await expect(service.checkHealth(connected.connectionId, actor)).rejects.toMatchObject({ details: { code: "remote_http_response_timeout" } });
+    expect(cancelled).toBe(2);
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(row!.healthStatus).toBe("error");
+    // An answering server is not affected by the deadline.
+    stall = false;
+    expect((await service.refreshCatalog(connected.connectionId, actor)).catalog).toHaveLength(1);
+  });
   it("saves a vaulted draft without contacting the provider and resumes with custom headers", async () => {
     const org = await company(); const remote = remoteFixture();
     const input = { galleryKey: "arcade", connectionMethodKey: "mcp", link: "https://api.arcade.dev/mcp/fixture", authMode: "bearer" as const };

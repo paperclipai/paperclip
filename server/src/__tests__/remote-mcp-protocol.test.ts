@@ -30,6 +30,76 @@ describe("remote connector Streamable HTTP", () => {
     await expect(readMcpHttpResponse(buffered("not json"), "call")).rejects.toMatchObject({ reason: "invalid_json" });
     await expect(readMcpHttpResponse(buffered("too large"), "call", { maxBytes: 2 })).rejects.toMatchObject({ reason: "too_large" });
   });
+  it("skips a non-JSON stream event and returns the response after it", async () => {
+    const result = { jsonrpc: "2.0", id: "call", result: { content: [] } };
+    expect(await readMcpHttpResponse(stream(["data: not json\n\n", event(result)]).response, "call")).toEqual(result);
+    // A plain body has no later event to wait for, so it still fails.
+    await expect(readMcpHttpResponse(new Response("not json", { headers: { "content-type": "application/json" } }), "call")).rejects.toMatchObject({ reason: "invalid_json" });
+  });
+  it("stops at the caller's deadline when a stream stays alive without the response", async () => {
+    const deadline = new Error("deadline");
+    // Skipped events and notifications arrive, the response never does, and the stream stays open.
+    const open = stream(["data: keep-alive\n\n", event({ jsonrpc: "2.0", method: "notifications/progress", params: { progress: 1 } })], false);
+    const controller = new AbortController();
+    const pending = readMcpHttpResponse(open.response, "call", { signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(open.cancel).not.toHaveBeenCalled();
+    controller.abort(deadline);
+    await expect(pending).rejects.toBe(deadline);
+    expect(open.cancel).toHaveBeenCalledOnce();
+    // A deadline that already passed reads nothing.
+    const late = stream([event({ id: "call", result: {} })]);
+    await expect(readMcpHttpResponse(late.response, "call", { signal: controller.signal })).rejects.toBe(deadline);
+    // A buffered transport response obeys the same deadline.
+    const stalled = new AbortController();
+    const buffered = { headers: new Headers({ "content-type": "application/json" }), body: null, text: () => new Promise<string>(() => {}) } as unknown as Response;
+    const bufferedPending = readMcpHttpResponse(buffered, "call", { signal: stalled.signal });
+    stalled.abort(deadline);
+    await expect(bufferedPending).rejects.toBe(deadline);
+    // A signal that never fires changes nothing.
+    expect(await readMcpHttpResponse(stream(["data: keep-alive\n\n", event({ id: "call", result: {} })]).response, "call", { signal: new AbortController().signal })).toEqual({ id: "call", result: {} });
+  });
+  it("reports the caller's deadline, not an invalid response, when the handshake stream stays alive", async () => {
+    const deadline = new Error("deadline");
+    const controller = new AbortController();
+    const open = stream(["data: keep-alive\n\n"], false);
+    const pending = initializeMcpHttpSession({ requestId: "a", send: async () => open.response, signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort(deadline);
+    await expect(pending).rejects.toBe(deadline);
+    expect(open.cancel).toHaveBeenCalledOnce();
+  });
+  it("summarizes a stream without the requested response by counts only", async () => {
+    const progress = { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "t", progress: 1 } };
+    const logging = { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "private text" } };
+    const notifications = await readMcpHttpResponse(stream(["data: keep-alive private text\n\n", event(progress), event(logging), event(progress), "data: {broken\n\n"]).response, "call").catch((caught) => caught);
+    expect(notifications).toMatchObject({
+      reason: "malformed_response",
+      summary: { eventCount: 3, skippedEventCount: 2, methods: { "notifications/progress": 2, "notifications/message": 1 }, sawId: false, sawResponse: false },
+    });
+    expect(JSON.stringify(notifications.summary)).not.toContain("private text");
+    const otherId = await readMcpHttpResponse(stream([event({ jsonrpc: "2.0", id: 7, result: {} })]).response, "call").catch((caught) => caught);
+    expect(otherId.summary).toEqual({ eventCount: 1, skippedEventCount: 0, methods: {}, sawId: true, sawResponse: true });
+  });
+  it("never copies a method name sent by the server into the summary", async () => {
+    const marker = "SECRET-MARKER";
+    const methods = [
+      `leak ${marker} {"token":"abc"}`,
+      // A valid protocol prefix must not make the rest of the name reportable.
+      `notifications/progress/${marker}`,
+      `notifications/${marker}/list_changed`,
+      `ping${marker}`,
+      "__proto__",
+      "constructor",
+      { text: marker },
+    ];
+    const error = await readMcpHttpResponse(stream([
+      event({ jsonrpc: "2.0", method: "notifications/progress", params: {} }),
+      ...methods.map((method) => event({ jsonrpc: "2.0", method, params: {} })),
+    ]).response, "call").catch((caught) => caught);
+    expect(error.summary).toEqual({ eventCount: 8, skippedEventCount: 0, methods: { "notifications/progress": 1, other: 7 }, sawId: false, sawResponse: false });
+    expect(JSON.stringify(error.summary)).not.toContain(marker);
+  });
   it("delivers server requests before the matching response", async () => {
     const onRequest = vi.fn(async () => {});
     const request = { jsonrpc: "2.0", id: "auth", method: "elicitation/create", params: { mode: "url", url: "https://example.com/auth", elicitationId: "consent" } };

@@ -304,6 +304,8 @@ type ActorInfo = {
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REMOTE_HTTP_REDIRECTS = 5;
+// Total budget for one remote tool discovery: the handshake and every catalog page.
+const CATALOG_DISCOVERY_TIMEOUT_MS = 60_000;
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
@@ -671,6 +673,8 @@ type ToolAccessServiceOptions = {
   now?: () => Date;
   /** How long persisted remote MCP action discovery remains fresh. */
   catalogCacheTtlMs?: number;
+  /** Total time one remote MCP tool discovery may take, across all its requests. */
+  catalogDiscoveryTimeoutMs?: number;
   /** Test seam for deciding whether an OAuth client metadata URL is publicly resolvable. */
   oauthClientMetadataLookup?: RemoteHttpEndpointLookup;
   /** Test seam for deterministic remote endpoint resolution. Production uses DNS. */
@@ -7141,8 +7145,41 @@ export function toolAccessService(
     return headers;
   }
 
+  /**
+   * Discovery sends no caller deadline, and the transport's own deadline is
+   * idle-based: a server that keeps a `tools/list` stream alive with
+   * notifications or keep-alive events, and never answers, resets it with each
+   * chunk. Bound the whole discovery instead, and cancel the stream when the
+   * bound is reached.
+   */
   async function remoteTools(
     connection: typeof toolConnections.$inferSelect,
+    credentialHeaders?: Record<string, string>,
+    actor?: ActorInfo,
+  ): Promise<McpToolDescriptor[]> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      options.catalogDiscoveryTimeoutMs ?? CATALOG_DISCOVERY_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    try {
+      return await discoverRemoteTools(connection, controller.signal, credentialHeaders, actor);
+    } catch (error) {
+      // Same failure as a server that never sends headers, which the transport
+      // already reports with this code.
+      if (controller.signal.aborted) {
+        throw badRequest("Remote MCP endpoint did not respond in time", { code: "remote_http_response_timeout" });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function discoverRemoteTools(
+    connection: typeof toolConnections.$inferSelect,
+    deadline: AbortSignal,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
@@ -7157,7 +7194,7 @@ export function toolAccessService(
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
+    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), { ...init, signal: deadline }));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
@@ -7180,7 +7217,7 @@ export function toolAccessService(
     let response: Response;
     if (usedInitializedSession) {
       try {
-        sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
+        sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers, signal: deadline,
           scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
           requestId: listRequestId });
         response = await sendToolsList(sessionHeaders);
@@ -7199,6 +7236,7 @@ export function toolAccessService(
             send: sendRemote,
             headers,
             requestId: "paperclip-catalog-refresh",
+            signal: deadline,
           });
           response = await sendToolsList(sessionHeaders);
           usedInitializedSession = response.ok;
@@ -7213,7 +7251,7 @@ export function toolAccessService(
       // discard the stale session and retry it once with a new handshake.
       forgetMcpHttpSessions(connection.id);
       await response.body?.cancel().catch(() => undefined);
-      sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
+      sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers, signal: deadline,
         scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
         requestId: listRequestId });
       response = await sendToolsList(sessionHeaders);
@@ -7363,7 +7401,7 @@ export function toolAccessService(
     const descriptors: McpToolDescriptor[] = [];
     const seenCursors = new Set<string>();
     for (let page = 0; ; page += 1) {
-      const payload = await withMcpConnectionFailure(() => readMcpHttpResponse(response, listRequestId));
+      const payload = await withMcpConnectionFailure(() => readMcpHttpResponse(response, listRequestId, { signal: deadline }));
       const record = asRecord(payload);
       if (record.error) throw new HttpError(502, "Remote MCP tool discovery failed", { code: "mcp_catalog_error" });
       const result = asRecord(record.result);
