@@ -146,7 +146,7 @@ describe("normalizeIssueExecutionPolicy", () => {
         nextCheckAt: "2026-04-11T12:30:00.000Z",
         notes: "Check deployment",
         scheduledBy: "assignee",
-        externalRef: "[redacted]",
+        externalRef: "https://example.test/deploy?token=secret",
       },
     });
   });

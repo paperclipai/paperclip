@@ -4,7 +4,7 @@ import { z } from "zod";
 import { forbidden, unprocessable } from "../errors.js";
 import type { accessService } from "./access.js";
 import { authorizationDeniedDetails, type AuthorizationActor } from "./authorization.js";
-import { applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
+import { applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
 
 type NormalizedExecutionPolicy = ReturnType<typeof normalizeIssueExecutionPolicy>;
 
@@ -95,9 +95,7 @@ export function summarizeIssueMonitor(
     kind: policy?.monitor?.kind ?? state?.monitor?.kind ?? null,
     serviceName:
       policy?.monitor?.serviceName ?? state?.monitor?.serviceName ?? null,
-    externalRef: redactIssueMonitorExternalRef(
-      policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null,
-    ),
+    externalRef: policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null,
     timeoutAt: policy?.monitor?.timeoutAt ?? state?.monitor?.timeoutAt ?? null,
     maxAttempts:
       policy?.monitor?.maxAttempts ?? state?.monitor?.maxAttempts ?? null,
