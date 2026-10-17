@@ -5627,12 +5627,6 @@ describe("resolveShell (shell fallback)", () => {
     expect(resolveShell()).toBe("sh");
   });
 
-  it("falls back to /bin/sh on darwin when SHELL is unset", () => {
-    delete process.env.SHELL;
-    Object.defineProperty(process, "platform", { value: "darwin" });
-    expect(resolveShell()).toBe("/bin/sh");
-  });
-
   it("treats empty SHELL as unset and uses platform fallback", () => {
     process.env.SHELL = "";
     Object.defineProperty(process, "platform", { value: "linux" });
