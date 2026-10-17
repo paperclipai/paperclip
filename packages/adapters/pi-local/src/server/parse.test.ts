@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
 
 describe("parsePiJsonl", () => {
+  it.each([null, "***REDACTED***"])("does not fall back from an explicitly unavailable primary price (%s)", total => {
+    const parsed = parsePiJsonl(JSON.stringify({ type: "usage", usage: { cost: { total }, costUsd: 0 } }));
+    expect(parsed.usage.costUsd).toBeNull();
+    expect(parsed.costComplete).toBe(false);
+  });
+
+  it("uses a direct price only when the primary price is absent", () => {
+    const parsed = parsePiJsonl(JSON.stringify({ type: "usage", usage: { cost: {}, costUsd: 0 } }));
+    expect(parsed.usage.costUsd).toBe(0);
+    expect(parsed.costComplete).toBe(true);
+  });
   it("parses agent lifecycle and messages", () => {
     const stdout = [
       JSON.stringify({ type: "agent_start" }),
@@ -208,6 +219,7 @@ describe("parsePiJsonl", () => {
     expect(parsed.usage.outputTokens).toBe(75);
     expect(parsed.usage.cachedInputTokens).toBe(25);
     expect(parsed.usage.costUsd).toBe(0.003);
+    expect(parsed.costComplete).toBe(true);
   });
 
   it("surfaces failed auto-retry exhaustion as an error", () => {
@@ -295,5 +307,14 @@ describe("Pi price availability", () => {
     expect(parsePiJsonl(JSON.stringify(event)).usage).toEqual({ inputTokens: 30, cachedInputTokens: 100, outputTokens: 3, costUsd: null });
     event.message.usage = { ...event.message.usage, cost: { total: 0 } } as typeof event.message.usage;
     expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
+  });
+});
+
+describe("Pi cost-bearing record count", () => {
+  it("counts every usage-bearing record, priced or not, so views can be reconciled", () => {
+    const turn = (total?: number) => JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "x", usage: { input: 1, output: 1, ...(total === undefined ? {} : { cost: { total } }) } } });
+    expect(parsePiJsonl("").costRecords).toBe(0);
+    expect(parsePiJsonl([turn(0.5), turn(0.25)].join("\n"))).toMatchObject({ costRecords: 2, costComplete: true, usage: { costUsd: 0.75 } });
+    expect(parsePiJsonl([turn(0.5), turn()].join("\n"))).toMatchObject({ costRecords: 2, costComplete: false, usage: { costUsd: null } });
   });
 });

@@ -22,7 +22,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { firstCursorDiagnosticLine, parseCursorJsonl } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorProcessOutput } from "./parse.js";
 import { isDefaultCursorCommand, prepareCursorSandboxCommand } from "./remote-command.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
@@ -313,7 +313,7 @@ export async function testEnvironment(
           onLog: async () => {},
         },
       );
-      const parsed = parseCursorJsonl(probe.stdout);
+      const parsed = parseCursorProcessOutput(probe);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
 

@@ -14,6 +14,46 @@ const createParser = () => {
 const event = JSON.stringify({ type: "usage", usage: { inputTokens: 2, costUsd: 0.25 }, text: "private content" });
 
 describe("usage checkpoint stream", () => {
+  it.each([false, true])("retains intact accounting when only ignored metadata is redacted (newline=%s)", async newline => {
+    const saved = vi.fn(); const consume = vi.fn(createParser());
+    const log = createUsageCheckpointLog(vi.fn(), saved, consume, value => value.type === "result");
+    const line = '{"type":"result","duration_ms":91***REDACTED***78,"diagnostic":{"n":***REDACTED***},"usage":{"inputTokens":2,"costUsd":0.25}}';
+    await log("stdout", line + (newline ? "\n" : ""));
+    await log.flush();
+    expect(log.unreadRecords()).toBe(0);
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: 0.25, complete: true }));
+    expect(consume.mock.calls[0][0]).not.toContain("REDACTED");
+    expect(consume.mock.calls[0][0]).not.toContain("duration_ms");
+  });
+
+  it.each([false, true])("loss-only tracking never calls the consumer (damaged=%s)", async damaged => {
+    const consume = vi.fn(() => { throw new Error("No checkpoint subscriber"); });
+    const log = createUsageCheckpointLog(vi.fn(), undefined, consume, value => value.type === "result",
+      { trackLossWithoutSubscriber: true });
+    await log("stdout", `{"type":"result","usage":{"inputTokens":${damaged ? "***REDACTED***" : 2}}}`);
+    await log.flush();
+    expect(log.unreadRecords()).toBe(damaged ? 1 : 0);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps oversized-output failure fatal only for real subscribers (subscriber=%s)", async subscriber => {
+    const output = vi.fn(); const consume = vi.fn(() => null);
+    const log = createUsageCheckpointLog(output, subscriber ? vi.fn() : undefined, consume, () => true,
+      { trackLossWithoutSubscriber: true });
+    const chunk = "x".repeat(1024 * 1024);
+    for (let i = 0; i < 9; i++) await log("stdout", chunk);
+    if (subscriber) await expect(log.flush()).rejects.toThrow("Accounting protocol line exceeds 8 MiB");
+    else {
+      await expect(log.flush()).resolves.toBeUndefined();
+      expect(log.unreadRecords()).toBe(1);
+      await log("stdout", "after overflow\n");
+      await expect(log.flush()).resolves.toBeUndefined();
+      expect(log.unreadRecords()).toBe(1);
+    }
+    expect(output).toHaveBeenCalledTimes(subscriber ? 9 : 10);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
   it("redacts malformed counter text without making the counter absent", async () => {
     const consume = vi.fn((_records: string) => null);
     const log = createUsageCheckpointLog(vi.fn(), vi.fn(), consume);
@@ -100,6 +140,19 @@ describe("usage checkpoint stream", () => {
     await expect(log.flush()).rejects.toBe(failure);
   });
 
+  it.each([false, true])("clears completeness and every price after record loss (parser complete=%s)", async parserComplete => {
+    const saved = vi.fn();
+    const log = createUsageCheckpointLog(vi.fn(), saved, () => ({
+      usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25, costUsdExact: "0.25",
+      cacheAdjustedCostUsd: 0.25, usageByModel: [{ model: "example", usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25 }], complete: parserComplete,
+    }));
+    await log("stdout", '{"type":"step_finish","part":{"cost":***REDACTED***}}\n');
+    await log("stdout", event + "\n");
+    await log.flush({ complete: true });
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced", complete: false }));
+    expect(saved.mock.calls.at(-1)![0].usageByModel).toBeUndefined();
+  });
+
   it("does not promote partial usage to complete merely because the stream was flushed", async () => {
     const saved = vi.fn(); const log = createUsageCheckpointLog(vi.fn(), saved, createParser());
     await log("stdout", event); await log.flush();
@@ -128,5 +181,59 @@ describe("usage checkpoint stream", () => {
     expect(saved).toHaveBeenCalledTimes(1025); // all updates plus completion
     expect(parser).toHaveBeenCalledTimes(1024);
     expect(parser.mock.calls.reduce((sum, [input]) => sum + input.length, 0)).toBeLessThanOrEqual(1024 * (event.length + 1));
+  });
+
+  describe("records the display stream lost to redaction", () => {
+    const marker = "***REDACTED***";
+    const damagedStep = `{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":${marker},"output":7}}}`;
+    const run = async (...lines: string[]) => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      for (const line of lines) await log("stdout", line + "\n");
+      await log.flush();
+      return log.unreadRecords();
+    };
+
+    it("counts an accounting line whose numeric counter was replaced by the marker", async () => {
+      expect(await run(damagedStep, damagedStep)).toBe(2);
+    });
+
+    it("recognizes partial and repeated secret matches within one numeric token", async () => {
+      expect(await run(
+        damagedStep.replace(`:${marker},`, `:91${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}7${marker}78,`),
+      )).toBe(3);
+    });
+
+    it("does not count accounting words, nested envelopes, or Pi message duplicates as costs", async () => {
+      expect(await run(
+        `{"type":"text","part":{"text":"cost usage tokens step_finish turn_end","cost":${marker}}}`,
+        `{"type":"text","part":{"type":"step_finish","tokens":{"input":${marker}}}}`,
+        `{"type":"message_end","message":{"role":"assistant","usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+      )).toBe(0);
+    });
+
+    it("counts Pi turns and standalone usage, not words in their content", async () => {
+      expect(await run(
+        `{"type":"turn_end","message":{"usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+        `{"type":"usage","usage":{"costUsd":${marker}}}`,
+      )).toBe(2);
+    });
+
+    it("counts a marker-damaged line that is still unterminated at flush", async () => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      await log("stdout", damagedStep);
+      await log.flush();
+      expect(log.unreadRecords()).toBe(1);
+    });
+
+    it("does not count a line that parses, a non-record line, or an unrelated damaged line", async () => {
+      expect(await run(
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":' + JSON.stringify(marker) + ',"output":7}}}',
+        `not json ${marker} tokens cost`,
+        `{"type":"text","part":{"text":"hello ${marker.slice(0, 4)}","n":${marker}}}`,
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":',
+      )).toBe(0);
+    });
   });
 });

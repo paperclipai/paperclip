@@ -11,7 +11,7 @@
  * available. If username detection fails, the check degrades gracefully.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, spawn as spawnChild } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { resolve } from "node:path";
@@ -49,10 +49,11 @@ export function resolveForbiddenTokens(tokensFile, env = process.env, osModule =
   ]);
 }
 
-export function runForbiddenTokenCheck({
+export async function runForbiddenTokenCheck({
   repoRoot,
   tokens,
-  exec = execSync,
+  spawn = spawnChild,
+  output = process.stderr,
   log = console.log,
   error = console.error,
 }) {
@@ -62,32 +63,55 @@ export function runForbiddenTokenCheck({
   }
 
   let found = false;
+  let failed = false;
+  const reportMatch = () => {
+    if (!found) {
+      error("ERROR: Forbidden tokens found in tracked files:\n");
+    }
+    found = true;
+  };
 
   for (const token of tokens) {
-    try {
-      const result = exec(
-        `git grep -in --no-color -- ${JSON.stringify(token)} -- ':!pnpm-lock.yaml' ':!.git'`,
-        { encoding: "utf8", cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] },
-      );
-      if (result.trim()) {
-        if (!found) {
-          error("ERROR: Forbidden tokens found in tracked files:\n");
-        }
-        found = true;
-        const lines = result.trim().split("\n");
-        for (const line of lines) {
-          error(`  ${line}`);
-        }
+    const result = await new Promise((resolveResult) => {
+      let child;
+      try {
+        child = spawn(
+          "git",
+          ["grep", "-in", "--no-color", "--", token, "--", ":!pnpm-lock.yaml", ":!.git"],
+          { cwd: repoRoot, stdio: ["ignore", "pipe", "ignore"] },
+        );
+      } catch (err) {
+        resolveResult({ failed: true, errorCode: err.code });
+        return;
       }
-    } catch {
-      // git grep returns exit code 1 when no matches — that's fine
+
+      child.once("error", (err) => resolveResult({ failed: true, errorCode: err.code }));
+      child.stdout.once("error", (err) => {
+        child.kill();
+        resolveResult({ failed: true, errorCode: err.code });
+      });
+      child.stdout.on("data", reportMatch);
+      // Pipe with backpressure rather than retaining execSync's capped output buffer.
+      child.stdout.pipe(output, { end: false });
+      child.once("close", (code, signal) => resolveResult({ code, signal }));
+    });
+
+    if (result.failed || result.signal || (result.code !== 0 && result.code !== 1)) {
+      failed = true;
+      error(`ERROR: Forbidden token scan failed (exit ${result.code ?? "unknown"}, signal ${result.signal ?? "none"}, error ${result.errorCode ?? "none"}).`);
+    } else if (result.code === 0) {
+      reportMatch();
     }
+    // Only git grep's normal exit 1 means no matches.
   }
 
   if (found) {
     error("\nBuild blocked. Remove the forbidden token(s) before publishing.");
-    return 1;
   }
+  if (failed) {
+    error("\nBuild blocked. Forbidden token scan did not complete successfully.");
+  }
+  if (found || failed) return 1;
 
   log("  ✓  No forbidden tokens found.");
   return 0;
@@ -102,14 +126,17 @@ function resolveRepoPaths(exec = execSync) {
   };
 }
 
-function main() {
+async function main() {
   const { repoRoot, tokensFile } = resolveRepoPaths();
   const tokens = resolveForbiddenTokens(tokensFile);
-  process.exit(runForbiddenTokenCheck({ repoRoot, tokens }));
+  process.exitCode = await runForbiddenTokenCheck({ repoRoot, tokens });
 }
 
 const isMainModule = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMainModule) {
-  main();
+  main().catch(() => {
+    console.error("ERROR: Forbidden token check could not run.");
+    process.exitCode = 1;
+  });
 }

@@ -1,4 +1,5 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
   asNumber,
@@ -164,6 +165,22 @@ export function createClaudeStreamParser() {
       resultJson: finalResult,
     };
   };
+}
+
+export function parseClaudeProcessOutput(proc: Pick<RunProcessResult, "stdout" | "controlOutput">) {
+  let stdout = proc.controlOutput?.stdout ?? proc.stdout;
+  let parsedStream = parseClaudeStreamJson(stdout);
+  if (parsedStream.resultJson === null && stdout !== proc.stdout &&
+    proc.controlOutput?.displayFallbackSafe === true) {
+    // Literal redaction can retain a compact result after raw control clipping.
+    const displayStream = parseClaudeStreamJson(proc.stdout);
+    if (displayStream.resultJson !== null) {
+      stdout = proc.stdout;
+      parsedStream = displayStream;
+    }
+  }
+  const parsed = parsedStream.resultJson ?? parseJson(stdout);
+  return { parsedStream, parsed };
 }
 
 function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {

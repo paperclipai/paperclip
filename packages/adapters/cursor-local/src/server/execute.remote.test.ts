@@ -82,6 +82,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { createSecretEnvRedactionScanner, redactKnownSecretEnvValues } from "@paperclipai/adapter-utils/secret-env-redaction";
 
 describe("cursor remote execution", () => {
   const cleanupDirs: string[] = [];
@@ -94,6 +95,39 @@ describe("cursor remote execution", () => {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   });
+
+  it.each([false, true].flatMap(timedOut => [false, true].flatMap(checkpoints =>
+    [false, true].map(collision => ({ timedOut, checkpoints, collision }))))) (
+    "keeps lost accounting incomplete ($timedOut, $checkpoints, $collision)", async ({ timedOut, checkpoints, collision }) => {
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "cursor-accounting-loss-"));
+      cleanupDirs.push(cwd);
+      // Supported stdout framing is normalized before the accounting log.
+      const raw = "stdout: " + JSON.stringify({ duration_ms: 123456, type: "result", result: "done", total_cost_usd: 0.2,
+        usage: { input_tokens: collision ? 123456 : 17, output_tokens: 7, cached_input_tokens: 2 },
+      }) + "\n";
+      const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
+      control.append(raw);
+      const stdout = redactKnownSecretEnvValues(raw, ["123456"]);
+      runChildProcess.mockImplementationOnce((async (...args: unknown[]) => {
+        const opts = args[3] as { onLog: (stream: "stdout", text: string) => Promise<void> };
+        await opts.onLog("stdout", stdout);
+        return { exitCode: 0, signal: null, timedOut, stdout, stderr: "", pid: 123,
+          startedAt: new Date().toISOString(), controlOutput: { stdout: control.snapshot(), stderr: "" } };
+      }) as never);
+      const result = await execute({
+        runId: "cursor-accounting-loss", agent: { id: "agent-1", companyId: "company-1", name: "Cursor", adapterType: "cursor_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { cwd, command: "agent" }, context: {}, onLog: async () => {},
+        ...(checkpoints ? { onUsage: vi.fn(async () => {}) } : {}),
+      });
+      expect(result.timedOut).toBe(timedOut);
+      expect(result.usage).toMatchObject({ inputTokens: collision ? 0 : 17, outputTokens: 7, cachedInputTokens: 2 });
+      expect(result.costUsd).toBe(0.2);
+      expect(result.usageComplete).toBe(!collision);
+      expect(stdout).not.toContain("123456");
+      expect(control.snapshot()).not.toContain("123456");
+    },
+  );
 
   it("prepares the workspace, syncs Cursor skills, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-remote-"));

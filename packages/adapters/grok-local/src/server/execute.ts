@@ -1,4 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
@@ -48,7 +49,7 @@ import {
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
-import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
+import { isGrokUnknownSessionError, parseGrokProcessOutput } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -620,6 +621,10 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         });
       }
 
+      // Grok has no incremental checkpoint parser. Use the bounded display
+      // classifier only to prevent a neutralized counter becoming complete usage.
+      const accountingLog = createUsageCheckpointLog(onLog, undefined, () => null,
+        event => event.type === "end", { trackLossWithoutSubscriber: true });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -628,11 +633,13 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
+        onLog: accountingLog,
       });
+      await accountingLog.flush();
       return {
         proc,
-        parsed: parseGrokJsonl(proc.stdout),
+        parsed: parseGrokProcessOutput(proc),
+        accountingComplete: accountingLog.unreadRecords() === 0,
       };
     };
 
@@ -645,7 +652,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
           stdout: string;
           stderr: string;
         };
-        parsed: ReturnType<typeof parseGrokJsonl>;
+        parsed: ReturnType<typeof parseGrokProcessOutput>;
+        accountingComplete: boolean;
       },
       clearSessionOnMissingSession = false,
       isRetry = false,
@@ -680,6 +688,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: attempt.proc.timedOut,
+        usageComplete: attempt.accountingComplete,
         errorMessage: attempt.proc.timedOut ? `Timed out after ${timeoutSec}s` : failed ? fallbackErrorMessage : null,
         usage: {
           inputTokens: attempt.parsed.inputTokens,

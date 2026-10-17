@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import {
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexAccountingRecord,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -262,5 +264,31 @@ describe("isCodexTransientUpstreamError", () => {
         ].join("\n"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("isCodexAccountingRecord", () => {
+  it.each(["turn.completed", "turn.failed", "error"])("covers %s", (type) => {
+    expect(isCodexAccountingRecord({ type })).toBe(true);
+  });
+
+  it.each(["thread.started", "turn.started", "item.completed", "unknown", ""])("excludes %j", (type) => {
+    expect(isCodexAccountingRecord({ type })).toBe(false);
+  });
+
+  it.each(["turn.failed", "error"])("counts a redacted counter in %s as lost accounting", async (type) => {
+    const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null, isCodexAccountingRecord,
+      { trackLossWithoutSubscriber: true });
+    await log("stdout", `{"type":"${type}","usage":{"input_tokens":***REDACTED***,"output_tokens":7}}\n`);
+    await log.flush();
+    expect(log.unreadRecords()).toBe(1);
+  });
+
+  it("does not count a damaged non-accounting record as lost", async () => {
+    const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null, isCodexAccountingRecord,
+      { trackLossWithoutSubscriber: true });
+    await log("stdout", '{"type":"item.completed","item":{"text":"hello ***REDACTED***","n":***REDACTED***}}\n');
+    await log.flush();
+    expect(log.unreadRecords()).toBe(0);
   });
 });
