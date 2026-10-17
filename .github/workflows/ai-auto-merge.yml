@@ -1,0 +1,109 @@
+name: AI Auto Merge (Squash)
+
+on:
+  workflow_run:
+    workflows: ["PR"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: ai-auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Auto-merge PR when CI is green
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.pull_requests[0].number != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide and merge (squash)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const wr = context.payload.workflow_run;
+            const prRef = wr.pull_requests?.[0];
+            if (!prRef?.number) {
+              core.info('No PR attached to workflow_run; skip.');
+              return;
+            }
+
+            const prNumber = prRef.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+            if (pr.state !== 'open' || pr.draft) {
+              core.info(`PR #${prNumber} not mergeable (state=${pr.state}, draft=${pr.draft}).`);
+              return;
+            }
+
+            if (pr.base.ref !== 'master') {
+              core.info(`PR #${prNumber} base is ${pr.base.ref}, not master -> skip.`);
+              return;
+            }
+
+            // CONTRIBUTING.md requires a 5/5 Greptile score with all comments addressed
+            // before merge. Auto-merge must not bypass that gate; require an explicit
+            // human-applied label so this workflow can never silently merge a PR that
+            // hasn't been reviewed (or worse, where Greptile flagged P1/P2 findings).
+            const REQUIRED_LABEL = 'ai-auto-merge';
+            const labels = (pr.labels || []).map(l => l.name);
+            if (!labels.includes(REQUIRED_LABEL)) {
+              core.info(`PR #${prNumber} missing '${REQUIRED_LABEL}' label -> skip auto-merge. Apply the label after Greptile 5/5 + review to opt this PR in.`);
+              return;
+            }
+
+            const headBranch = pr.head.ref;
+            const runsResp = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, branch: headBranch, event: 'pull_request', per_page: 50,
+            });
+
+            const required = new Set(['PR']);
+            const latestByName = new Map();
+            for (const run of runsResp.data.workflow_runs) {
+              if (!required.has(run.name)) continue;
+              if (run.status !== 'completed') continue;
+              if (run.head_sha !== pr.head.sha) continue;
+              if (!latestByName.has(run.name)) latestByName.set(run.name, run);
+              if (latestByName.size === required.size) break;
+            }
+
+            for (const name of required) {
+              if (!latestByName.has(name)) {
+                core.info(`Missing completed run for '${name}' on current PR head -> skip.`);
+                return;
+              }
+            }
+
+            const failed = [...latestByName.values()].find((r) => r.conclusion !== 'success');
+            if (failed) {
+              core.info(`Not merging: ${failed.name} conclusion=${failed.conclusion}`);
+              return;
+            }
+
+            try {
+              const result = await github.rest.pulls.merge({
+                owner, repo, pull_number: prNumber, merge_method: 'squash',
+                commit_title: `Auto-merge PR #${prNumber} (CI green + AI pipeline)`,
+              });
+              core.info(`Merged PR #${prNumber}: ${result.data.sha}`);
+
+              for (const wf of ['deploy-dev.yml']) {
+                try {
+                  await github.rest.actions.createWorkflowDispatch({
+                    owner, repo, workflow_id: wf, ref: 'master',
+                  });
+                  core.info(`Triggered ${wf} via workflow_dispatch.`);
+                } catch (e) {
+                  core.warning(`Could not dispatch ${wf}: ${e.message}`);
+                }
+              }
+            } catch (err) {
+              core.setFailed(`Merge failed for PR #${prNumber}: ${err.message}`);
+            }
