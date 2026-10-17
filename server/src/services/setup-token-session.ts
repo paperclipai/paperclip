@@ -228,6 +228,11 @@ export interface SetupTokenCleanupRecord {
   leaseId: string;
   deadline: number;
   state: SetupTokenSessionState;
+  // The login method discriminator. The setup-token flow never sets it (null),
+  // while a local terminal sign-in sets `local_subscription`. The reaper only
+  // owns null rows; the local-login service owns the rest, including their
+  // on-disk sign-in home.
+  connectionMethod?: string | null;
   // The claim-consumption marker. It is null while a `stored` claim is live. The
   // create path sets it one time when it consumes the claim.
   boundAt: number | null;
@@ -334,8 +339,20 @@ export async function reapSetupTokenLeases(
   let released = 0;
   let failed = 0;
   for (const record of records) {
+    // A local terminal sign-in row carries a connection method and owns its own
+    // on-disk sign-in home. The local-login service removes that home using the
+    // row id; clearing the row here first would strand the directory and any
+    // credentials written there. Leave those rows to the local-login reaper.
+    if (record.connectionMethod) {
+      continue;
+    }
     try {
-      await deps.leases.releaseById(record.leaseId);
+      // A session that never bound a provider lease has no sandbox to tear
+      // down. Its lease id is the empty fallback, and releasing it would throw,
+      // leaving the durable row to be reaped again forever. Clear it directly.
+      if (record.leaseId) {
+        await deps.leases.releaseById(record.leaseId);
+      }
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
@@ -1464,6 +1481,7 @@ function toCleanupRecord(row: AdapterAuthSessionRow): SetupTokenCleanupRecord {
     adapterType: row.adapterType,
     environmentId: row.environmentId,
     leaseId: row.providerLeaseId ?? "",
+    connectionMethod: row.connectionMethod,
     // The setup-token flow always writes an expiry, so a null value means a
     // corrupt row. Treat it as already expired, so the reaper reclaims it.
     deadline: row.expiresAt ? row.expiresAt.getTime() : 0,
@@ -1585,6 +1603,10 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(
           and(
             eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
+            // Local terminal sign-ins share this adapter type but carry a
+            // connection method and their own on-disk home. Only the null rows
+            // are setup-token-owned and reapable by this store.
+            isNull(adapterAuthSessions.connectionMethod),
             or(
               inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
               lte(adapterAuthSessions.expiresAt, new Date(now)),

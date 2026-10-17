@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, environments, type Db } from "@paperclipai/db";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -14,6 +14,13 @@ import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-
 
 const LOCAL_LOGIN_METHOD = "local_subscription";
 const ATTEMPT_DURATION_MS = 30 * 60 * 1000;
+// The terminal states a local attempt can reach. `reapExpired` writes
+// `authenticated`/`timed_out`, and cancel writes `cancelled`.
+const TERMINAL_LOCAL_STATES = ["authenticated", "failed", "timed_out", "cancelled"] as const;
+// A terminal attempt stays readable for one more attempt horizon, so a client
+// that is still polling reads `expired` rather than a missing attempt. After
+// that the row is reclaimed; its on-disk home is already gone.
+const TERMINAL_RETENTION_MS = ATTEMPT_DURATION_MS;
 function loginHome(id: string) {
   const root = resolvePaperclipInstanceRoot();
   // macOS exposes /var through a system symlink to /private/var. Credential
@@ -79,6 +86,23 @@ export function localAiLoginService(db: Db) {
           expiresAt: null, finishedAt: session.finishedAt ?? new Date(), updatedAt: new Date(),
         }).where(eq(adapterAuthSessions.id, row.id));
       });
+    }
+
+    // Reclaim terminal attempts whose home is already gone. `reapExpired`
+    // removes the on-disk home in the same transaction that nulls `expires_at`,
+    // so a terminal row with no deadline, no provider lease, and an old finish
+    // time has nothing left to clean up. Nothing else deletes these rows: the
+    // setup-token reaper excludes local sign-ins, and cancel/complete leave the
+    // row terminal after removing the home. Bounded like the expiry pass.
+    const stale = await db.select({ id: adapterAuthSessions.id }).from(adapterAuthSessions)
+      .where(and(eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+        isNull(adapterAuthSessions.expiresAt),
+        isNull(adapterAuthSessions.providerLeaseId),
+        inArray(adapterAuthSessions.status, [...TERMINAL_LOCAL_STATES]),
+        lte(adapterAuthSessions.finishedAt, new Date(Date.now() - TERMINAL_RETENTION_MS))))
+      .orderBy(adapterAuthSessions.finishedAt).limit(100);
+    if (stale.length > 0) {
+      await db.delete(adapterAuthSessions).where(inArray(adapterAuthSessions.id, stale.map((row) => row.id)));
     }
   }
 
