@@ -481,4 +481,27 @@ describe("Shared Costs surfaces", () => {
     );
   });
 
+  it("renders Costs with pt-BR localization when language is switched", async () => {
+    const { changeLanguage } = await import("../i18n");
+    changeLanguage("pt-BR");
+    try {
+      for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+      costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+      costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+      costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>);
+      });
+      expect(container.querySelector("h1")?.textContent).toBe("Custos");
+      expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Custos" }]);
+      expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(
+        ["Visão Geral", "Orçamentos", "Provedores", "Faturadores", "Finanças", "Decisões", "Respostas rápidas"],
+      );
+    } finally {
+      changeLanguage("en");
+    }
+  });
+
 });

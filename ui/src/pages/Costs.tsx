@@ -10,6 +10,7 @@ import { CostDataQualityNotice } from "../components/CostDataQualityNotice";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import type {
   BudgetPolicySummary,
   CostByAgentModel,
@@ -131,37 +132,41 @@ function FinanceSummaryCard({
   estimatedDebitCents: number;
   eventCount: number;
 }) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Finance ledger</CardTitle>
+        <CardTitle className="text-base">{t("costs.finance.ledgerTitle", { defaultValue: "Finance ledger" })}</CardTitle>
         <CardDescription>
-          Account-level charges that do not map to a single inference request.
+          {t("costs.finance.ledgerDescription", { defaultValue: "Account-level charges that do not map to a single inference request." })}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 px-5 pb-5 pt-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Debits"
+          label={t("costs.finance.debits", { defaultValue: "Debits" })}
           value={formatCents(debitCents)}
-          subtitle={`${eventCount} total event${eventCount === 1 ? "" : "s"} in range`}
+          subtitle={t(eventCount === 1 ? "costs.finance.debitsSubtitle_one" : "costs.finance.debitsSubtitle_other", {
+            count: eventCount,
+            defaultValue: `${eventCount} total event${eventCount === 1 ? "" : "s"} in range`,
+          })}
           icon={ArrowUpRight}
         />
         <MetricTile
-          label="Credits"
+          label={t("costs.finance.credits", { defaultValue: "Credits" })}
           value={formatCents(creditCents)}
-          subtitle="Refunds, offsets, and credit returns"
+          subtitle={t("costs.finance.creditsSubtitle", { defaultValue: "Refunds, offsets, and credit returns" })}
           icon={ArrowDownLeft}
         />
         <MetricTile
-          label="Net"
+          label={t("costs.finance.net", { defaultValue: "Net" })}
           value={formatCents(netCents)}
-          subtitle="Debit minus credit for the selected period"
+          subtitle={t("costs.finance.netSubtitle", { defaultValue: "Debit minus credit for the selected period" })}
           icon={ReceiptText}
         />
         <MetricTile
-          label="Estimated"
+          label={t("costs.finance.estimated", { defaultValue: "Estimated" })}
           value={formatCents(estimatedDebitCents)}
-          subtitle="Estimated debits that are not yet invoice-authoritative"
+          subtitle={t("costs.finance.estimatedSubtitle", { defaultValue: "Estimated debits that are not yet invoice-authoritative" })}
           icon={Coins}
         />
       </CardContent>
@@ -175,6 +180,7 @@ export function Costs({
   lockTab = false,
   hideBudgetsTab = false,
 }: CostsProps = {}) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -198,8 +204,8 @@ export function Costs({
   } = useDateRange();
 
   useEffect(() => {
-    if (!embedded) setBreadcrumbs([{ label: "Costs" }]);
-  }, [embedded, setBreadcrumbs]);
+    if (!embedded) setBreadcrumbs([{ label: t("costs.title", { defaultValue: "Costs" }) }]);
+  }, [embedded, setBreadcrumbs, t]);
 
   useEffect(() => {
     const tab = searchParams.get("tab");
@@ -531,7 +537,7 @@ export function Costs({
         value: "all",
         label: (
           <span className="flex items-center gap-1.5">
-            <span>All providers</span>
+            <span>{t("costs.providers.allProviders", { defaultValue: "All providers" })}</span>
             {providerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
@@ -546,7 +552,7 @@ export function Costs({
         label: <ProviderTabLabel provider={provider} rows={byProvider.get(provider) ?? []} />,
       })),
     ];
-  }, [byProvider]);
+  }, [byProvider, t]);
 
   const billerTabItems = useMemo(() => {
     const billerKeys = Array.from(byBiller.keys());
@@ -563,7 +569,7 @@ export function Costs({
         value: "all",
         label: (
           <span className="flex items-center gap-1.5">
-            <span>All billers</span>
+            <span>{t("costs.billers.allBillers", { defaultValue: "All billers" })}</span>
             {billerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
@@ -578,7 +584,7 @@ export function Costs({
         label: <BillerTabLabel biller={biller} rows={byBiller.get(biller) ?? []} />,
       })),
     ];
-  }, [byBiller]);
+  }, [byBiller, t]);
 
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
@@ -590,7 +596,7 @@ export function Costs({
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select an organization to view costs." />;
+    return <EmptyState icon={DollarSign} message={t("costs.emptyOrganization", { defaultValue: "Select an organization to view costs." })} />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
@@ -603,9 +609,9 @@ export function Costs({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               {embedded ? (
-                <h2 className="text-lg font-semibold text-foreground">Costs</h2>
+                <h2 className="text-lg font-semibold text-foreground">{t("costs.title", { defaultValue: "Costs" })}</h2>
               ) : (
-                <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
+                <h1 className="text-3xl font-semibold tracking-tight">{t("costs.title", { defaultValue: "Costs" })}</h1>
               )}
             </div>
 
@@ -618,7 +624,7 @@ export function Costs({
                   onClick={() => setPreset(key)}
                   aria-pressed={preset === key}
                 >
-                  {PRESET_LABELS[key]}
+                  {t(`costs.presets.${key}`, { defaultValue: PRESET_LABELS[key] })}
                 </Button>
               ))}
             </div>
@@ -632,7 +638,7 @@ export function Costs({
                 onChange={(event) => setCustomFrom(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               />
-              <span className="text-sm text-muted-foreground">to</span>
+              <span className="text-sm text-muted-foreground">{t("costs.dateRangeTo", { defaultValue: "to" })}</span>
               <input
                 type="date"
                 value={customTo}
@@ -649,7 +655,7 @@ export function Costs({
           )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <MetricTile
-              label="API spend"
+              label={t("costs.metrics.apiSpend", { defaultValue: "API spend" })}
               value={subscriptions ? subscriptions.api.unpricedEventCount === subscriptions.api.eventCount && subscriptions.api.eventCount > 0 ? "—" : formatCents(Number(subscriptions.api.costCents)) : "—"}
               subtitle={subscriptions ? <div className="space-y-1">
                 <CostEstimateLabel eventCount={subscriptions.api.eventCount} estimatedEventCount={subscriptions.api.estimatedEventCount} />
@@ -659,36 +665,46 @@ export function Costs({
             />
             <SubscriptionCostCard key={companyId} companyId={companyId} report={subscriptions} error={subscriptionError} onChanged={invalidateSubscriptions} />
             <MetricTile
-              label="Budget"
+              label={t("costs.metrics.budget", { defaultValue: "Budget" })}
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
                 spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                   ? preset === "mtd" ? `${spendData.summary.utilizationPercent}%` : formatCents(spendData.summary.budgetCents)
-                  : "Open"
+                  : t("costs.metrics.budgetOpen", { defaultValue: "Open" })
               )}
               subtitle={
                 activeBudgetIncidents.length > 0
-                  ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
+                  ? t("costs.metrics.budgetIncidentsSubtitle", {
+                      agents: budgetData?.pausedAgentCount ?? 0,
+                      projects: budgetData?.pausedProjectCount ?? 0,
+                      defaultValue: `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`,
+                    })
                   : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                    ? preset === "mtd" ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)} this month` : "Monthly limit"
-                    : "No monthly cap configured"
+                    ? preset === "mtd"
+                      ? t("costs.metrics.budgetThisMonth", {
+                          spent: formatCents(spendData.summary.spendCents),
+                          budget: formatCents(spendData.summary.budgetCents),
+                          defaultValue: `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)} this month`,
+                        })
+                      : t("costs.metrics.monthlyLimit", { defaultValue: "Monthly limit" })
+                    : t("costs.metrics.budgetNoCap", { defaultValue: "No monthly cap configured" })
               }
               icon={Coins}
             />
             <MetricTile
-              label="Recorded charges"
+              label={t("costs.metrics.recordedCharges", { defaultValue: "Recorded charges" })}
               value={financeData ? formatCents(financeData.summary.netCents) : "—"}
               subtitle={financeData ? (
                 <>
-                  <span className="block whitespace-nowrap">{formatCents(financeData.summary.debitCents)} debits</span>
-                  <span className="block whitespace-nowrap">{formatCents(financeData.summary.creditCents)} credits</span>
+                  <span className="block whitespace-nowrap">{t("costs.metrics.debitsCount", { debits: formatCents(financeData.summary.debitCents), defaultValue: `${formatCents(financeData.summary.debitCents)} debits` })}</span>
+                  <span className="block whitespace-nowrap">{t("costs.metrics.creditsCount", { credits: formatCents(financeData.summary.creditCents), defaultValue: `${formatCents(financeData.summary.creditCents)} credits` })}</span>
                 </>
-              ) : "Financial data unavailable"}
+              ) : t("costs.metrics.financialDataUnavailable", { defaultValue: "Financial data unavailable" })}
               icon={ReceiptText}
             />
             <MetricTile
-              label="Finance events"
+              label={t("costs.metrics.financeEvents", { defaultValue: "Finance events" })}
               value={financeData ? String(financeData.summary.eventCount) : "—"}
-              subtitle={financeData ? `${formatCents(financeData.summary.estimatedDebitCents)} estimated in range` : "Financial data unavailable"}
+              subtitle={financeData ? t("costs.metrics.financeEventsSubtitle", { estimated: formatCents(financeData.summary.estimatedDebitCents), defaultValue: `${formatCents(financeData.summary.estimatedDebitCents)} estimated in range` }) : t("costs.metrics.financialDataUnavailable", { defaultValue: "Financial data unavailable" })}
               icon={ArrowUpRight}
             />
           </div>
@@ -725,13 +741,13 @@ export function Costs({
         {!lockTab ? (
           <div className="max-w-full overflow-x-auto pb-2">
             <TabsList variant="line" className="justify-start">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              {!hideBudgetsTab ? <TabsTrigger value="budgets">Budgets</TabsTrigger> : null}
-              <TabsTrigger value="providers">Providers</TabsTrigger>
-              <TabsTrigger value="billers">Billers</TabsTrigger>
-              <TabsTrigger value="finance">Finance</TabsTrigger>
-              <TabsTrigger value="decisions">Decisions</TabsTrigger>
-              <TabsTrigger value="fast-responses">Fast responses</TabsTrigger>
+              <TabsTrigger value="overview">{t("costs.tabs.overview", { defaultValue: "Overview" })}</TabsTrigger>
+              {!hideBudgetsTab ? <TabsTrigger value="budgets">{t("costs.tabs.budgets", { defaultValue: "Budgets" })}</TabsTrigger> : null}
+              <TabsTrigger value="providers">{t("costs.tabs.providers", { defaultValue: "Providers" })}</TabsTrigger>
+              <TabsTrigger value="billers">{t("costs.tabs.billers", { defaultValue: "Billers" })}</TabsTrigger>
+              <TabsTrigger value="finance">{t("costs.tabs.finance", { defaultValue: "Finance" })}</TabsTrigger>
+              <TabsTrigger value="decisions">{t("costs.tabs.decisions", { defaultValue: "Decisions" })}</TabsTrigger>
+              <TabsTrigger value="fast-responses">{t("costs.tabs.fastResponses", { defaultValue: "Fast responses" })}</TabsTrigger>
             </TabsList>
           </div>
         ) : null}
@@ -751,11 +767,11 @@ export function Costs({
                 <div className="min-w-0 space-y-4">
                   <Card className="gap-3 py-4">
                     <CardHeader className="gap-0 px-5">
-                      <CardTitle className="text-base">By agent</CardTitle>
+                      <CardTitle className="text-base">{t("costs.byAgent.title", { defaultValue: "By agent" })}</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5">
                       {(spendData?.byAgent.length ?? 0) === 0 ? (
-                        <p className="text-sm text-muted-foreground">No cost events yet.</p>
+                        <p className="text-sm text-muted-foreground">{t("costs.byAgent.empty", { defaultValue: "No cost events yet." })}</p>
                       ) : (
                         spendData?.byAgent.map((row) => {
                           const modelRows = agentModelRows.get(row.agentId) ?? [];
@@ -848,18 +864,18 @@ export function Costs({
                 <div className="space-y-4">
                   <Card className="gap-3 py-4">
                     <CardHeader className="gap-0 px-5">
-                      <CardTitle className="text-base">By project</CardTitle>
+                      <CardTitle className="text-base">{t("costs.byProject.title", { defaultValue: "By project" })}</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5">
                       {(spendData?.byProject.length ?? 0) === 0 ? (
-                        <p className="text-sm text-muted-foreground">No project-attributed run costs yet.</p>
+                        <p className="text-sm text-muted-foreground">{t("costs.byProject.empty", { defaultValue: "No project-attributed run costs yet." })}</p>
                       ) : (
                         spendData?.byProject.map((row, index) => (
                           <div
                             key={row.projectId ?? `unattributed-${index}`}
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
-                            <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
+                            <span className="truncate">{row.projectName ?? row.projectId ?? t("costs.byProject.unattributed", { defaultValue: "Unattributed" })}</span>
                             <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
                           </div>
                         ))
@@ -914,34 +930,34 @@ export function Costs({
             <>
               <Card className="border-border/70 bg-(image:--gradient-extract-2)">
                 <CardHeader className="px-5 pt-5 pb-3">
-                  <CardTitle className="text-base">Budget control plane</CardTitle>
+                  <CardTitle className="text-base">{t("costs.budgets.controlPlaneTitle", { defaultValue: "Budget control plane" })}</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    {t("costs.budgets.controlPlaneDescription", { defaultValue: "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers." })}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
                   <MetricTile
-                    label="Active incidents"
+                    label={t("costs.budgets.activeIncidents", { defaultValue: "Active incidents" })}
                     value={String(activeBudgetIncidents.length)}
-                    subtitle="Open soft or hard threshold crossings"
+                    subtitle={t("costs.budgets.activeIncidentsSubtitle", { defaultValue: "Open soft or hard threshold crossings" })}
                     icon={ReceiptText}
                   />
                   <MetricTile
-                    label="Pending approvals"
+                    label={t("costs.budgets.pendingApprovals", { defaultValue: "Pending approvals" })}
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
-                    subtitle="Budget override approvals awaiting board action"
+                    subtitle={t("costs.budgets.pendingApprovalsSubtitle", { defaultValue: "Budget override approvals awaiting board action" })}
                     icon={ArrowUpRight}
                   />
                   <MetricTile
-                    label="Paused agents"
+                    label={t("costs.budgets.pausedAgents", { defaultValue: "Paused agents" })}
                     value={String(budgetData?.pausedAgentCount ?? 0)}
-                    subtitle="Agent heartbeats blocked by budget"
+                    subtitle={t("costs.budgets.pausedAgentsSubtitle", { defaultValue: "Agent heartbeats blocked by budget" })}
                     icon={Coins}
                   />
                   <MetricTile
-                    label="Paused projects"
+                    label={t("costs.budgets.pausedProjects", { defaultValue: "Paused projects" })}
                     value={String(budgetData?.pausedProjectCount ?? 0)}
-                    subtitle="Project execution blocked by budget"
+                    subtitle={t("costs.budgets.pausedProjectsSubtitle", { defaultValue: "Project execution blocked by budget" })}
                     icon={DollarSign}
                   />
                 </CardContent>
@@ -950,9 +966,9 @@ export function Costs({
               {activeBudgetIncidents.length > 0 ? (
                 <div className="space-y-3">
                   <div>
-                    <h2 className="text-lg font-semibold">Active incidents</h2>
+                    <h2 className="text-lg font-semibold">{t("costs.budgets.activeIncidentsHeading", { defaultValue: "Active incidents" })}</h2>
                     <p className="text-sm text-muted-foreground">
-                      Raise the budget or keep a hard stop paused. Dismiss a warning when no action is needed.
+                      {t("costs.budgets.activeIncidentsDescription", { defaultValue: "Raise the budget or keep a hard stop paused. Dismiss a warning when no action is needed." })}
                     </p>
                   </div>
                   <div className="grid gap-4 xl:grid-cols-2">
@@ -981,13 +997,19 @@ export function Costs({
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
-                        <h2 className="text-lg font-semibold capitalize">{scopeType === "company" ? "organization" : scopeType} budgets</h2>
+                        <h2 className="text-lg font-semibold capitalize">
+                          {scopeType === "company"
+                            ? t("costs.budgets.organizationBudgets", { defaultValue: "Organization budgets" })
+                            : scopeType === "agent"
+                              ? t("costs.budgets.agentBudgets", { defaultValue: "Agent budgets" })
+                              : t("costs.budgets.projectBudgets", { defaultValue: "Project budgets" })}
+                        </h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
-                            ? "Organization-wide monthly policy."
+                            ? t("costs.budgets.organizationBudgetsDescription", { defaultValue: "Organization-wide monthly policy." })
                             : scopeType === "agent"
-                              ? "Recurring monthly spend policies for individual agents."
-                              : "Lifetime spend policies for execution-bound projects."}
+                              ? t("costs.budgets.agentBudgetsDescription", { defaultValue: "Recurring monthly spend policies for individual agents." })
+                              : t("costs.budgets.projectBudgetsDescription", { defaultValue: "Lifetime spend policies for execution-bound projects." })}
                         </p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">
@@ -1010,7 +1032,7 @@ export function Costs({
                 {budgetPolicies.length === 0 ? (
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control.
+                      {t("costs.budgets.noPolicies", { defaultValue: "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control." })}
                     </CardContent>
                   </Card>
                 ) : null}
@@ -1029,7 +1051,7 @@ export function Costs({
 
                 <TabsContent value="all" className="mt-4">
                   {providers.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No cost events in this period.</p>
+                    <p className="text-sm text-muted-foreground">{t("costs.providers.empty", { defaultValue: "No cost events in this period." })}</p>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {providers.map((provider) => (
@@ -1090,7 +1112,7 @@ export function Costs({
 
                 <TabsContent value="all" className="mt-4">
                   {billers.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No billable events in this period.</p>
+                    <p className="text-sm text-muted-foreground">{t("costs.billers.empty", { defaultValue: "No billable events in this period." })}</p>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {billers.map((biller) => {
@@ -1158,12 +1180,12 @@ export function Costs({
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
-                      <CardTitle className="text-base">By biller</CardTitle>
-                      <CardDescription>Account-level financial events grouped by who charged or credited them.</CardDescription>
+                      <CardTitle className="text-base">{t("costs.finance.byBillerTitle", { defaultValue: "By biller" })}</CardTitle>
+                      <CardDescription>{t("costs.finance.byBillerDescription", { defaultValue: "Account-level financial events grouped by who charged or credited them." })}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">
                       {(financeData?.byBiller.length ?? 0) === 0 ? (
-                        <p className="text-sm text-muted-foreground">No finance events yet.</p>
+                        <p className="text-sm text-muted-foreground">{t("costs.finance.byBillerEmpty", { defaultValue: "No finance events yet." })}</p>
                       ) : (
                         financeData?.byBiller.map((row) => <FinanceBillerCard key={`${row.biller}:${row.currency}`} row={row} />)
                       )}

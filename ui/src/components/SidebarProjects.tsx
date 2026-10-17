@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { useTranslation } from "@/i18n";import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Lock, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
@@ -254,6 +255,7 @@ function SortableProjectItem(props: ProjectItemProps) {
 }
 
 export function SidebarProjects() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
@@ -410,7 +412,7 @@ export function SidebarProjects() {
 
   return (
     <SidebarSection
-      label="Projects"
+      label={t("nav.projects")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
         ariaLabel: "New project",

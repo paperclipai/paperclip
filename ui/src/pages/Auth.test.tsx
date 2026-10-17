@@ -309,4 +309,36 @@ describe("AuthPage", () => {
       root.unmount();
     });
   });
+
+  it("toggles password visibility when the eye button is clicked", async () => {
+    const { root } = await mount();
+
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+    expect(passwordInput).not.toBeNull();
+    expect(passwordInput.type).toBe("password");
+
+    const toggleButton = container.querySelector('button[aria-label="Show password"]') as HTMLButtonElement;
+    expect(toggleButton).not.toBeNull();
+
+    await act(async () => {
+      toggleButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(passwordInput.type).toBe("text");
+    expect(container.querySelector('button[aria-label="Hide password"]')).not.toBeNull();
+
+    const hideButton = container.querySelector('button[aria-label="Hide password"]') as HTMLButtonElement;
+    await act(async () => {
+      hideButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(passwordInput.type).toBe("password");
+    expect(container.querySelector('button[aria-label="Show password"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

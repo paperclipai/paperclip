@@ -3,6 +3,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import type { ReactNode } from "react";
 import { MoreHorizontal, Play } from "lucide-react";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -37,8 +38,11 @@ export type RoutineListRowItem = {
   } | null;
 };
 
-export function formatLastRunTimestamp(value: Date | string | null | undefined) {
-  if (!value) return "Never";
+export function formatLastRunTimestamp(
+  value: Date | string | null | undefined,
+  t?: (key: string, options?: Record<string, unknown>) => string,
+) {
+  if (!value) return t ? t("routines.row.never", { defaultValue: "Never" }) : "Never";
   return new Date(value).toLocaleString();
 }
 
@@ -98,6 +102,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
 }) {
+  const { t } = useTranslation();
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
   const isStatusPending = statusMutationRoutineId === routine.id;
@@ -135,7 +140,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           <span className="truncate text-sm font-medium">{routine.title}</span>
           {(isArchived || routine.status === "paused" || isDraft) ? (
             <span className="text-xs text-muted-foreground">
-              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
+              {isArchived
+                ? t("routines.row.archived", { defaultValue: "archived" }).toLowerCase()
+                : isDraft
+                  ? t("routines.row.draft", { defaultValue: "draft" }).toLowerCase()
+                  : t("routines.row.paused", { defaultValue: "paused" }).toLowerCase()}
             </span>
           ) : null}
           {managedByLabel ? (
@@ -148,14 +157,14 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
               className="h-2.5 w-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: project?.color ?? "var(--project-none)" }}
             />
-            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
+            <span>{routine.projectId ? (project?.name ?? "Unknown project") : t("routines.row.noProject", { defaultValue: "No project" })}</span>
           </span>
           <span className="flex items-center gap-2">
             {routine.assigneeAgentId ? <AgentAvatar agent={{ ...agent, id: routine.assigneeAgentId }} size={16} className="h-3.5 w-3.5 shrink-0"/> : null}
-            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
+            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : t("routines.row.noDefaultAgent", { defaultValue: "No default agent" })}</span>
           </span>
           <span>
-            {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
+            {formatLastRunTimestamp(routine.lastRun?.triggeredAt, t)}
             {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
           </span>
         </div>
@@ -173,7 +182,9 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             onClick={() => onRunNow(routine)}
           >
             <Play className="h-3.5 w-3.5" />
-            {runningRoutineId === routine.id ? "Running..." : "Run now"}
+            {runningRoutineId === routine.id
+              ? t("routines.row.running", { defaultValue: "Running..." })
+              : t("routines.row.runNow", { defaultValue: "Run now" })}
           </Button>
         ) : null}
 
@@ -186,7 +197,13 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
           />
           <span className="w-12 text-xs text-muted-foreground">
-            {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
+            {isArchived
+              ? t("routines.row.archived", { defaultValue: "Archived" })
+              : isDraft
+                ? t("routines.row.draft", { defaultValue: "Draft" })
+                : enabled
+                  ? t("routines.row.on", { defaultValue: "On" })
+                  : t("routines.row.off", { defaultValue: "Off" })}
           </span>
         </div>
 
@@ -198,13 +215,15 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
-              <Link to={href}>{configureLabel}</Link>
+              <Link to={href}>{configureLabel === "Edit" ? t("routines.row.edit", { defaultValue: "Edit" }) : configureLabel}</Link>
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={runDisabled}
               onClick={() => onRunNow(routine)}
             >
-              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+              {runningRoutineId === routine.id
+                ? t("routines.row.running", { defaultValue: "Running..." })
+                : t("routines.row.runNow", { defaultValue: "Run now" })}
             </DropdownMenuItem>
             {extraMenuItems ? (
               <>
@@ -217,14 +236,14 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
               onClick={() => onToggleEnabled(routine, enabled)}
               disabled={isStatusPending || isArchived || disableToggle}
             >
-              {enabled ? "Pause" : "Enable"}
+              {enabled ? t("routines.row.pause", { defaultValue: "Pause" }) : t("routines.row.enable", { defaultValue: "Enable" })}
             </DropdownMenuItem>
             {!hideArchiveAction && onToggleArchived ? (
               <DropdownMenuItem
                 onClick={() => onToggleArchived(routine)}
                 disabled={isStatusPending}
               >
-                {routine.status === "archived" ? "Restore" : "Archive"}
+                {routine.status === "archived" ? t("routines.row.restore", { defaultValue: "Restore" }) : t("routines.row.archive", { defaultValue: "Archive" })}
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>

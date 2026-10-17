@@ -1062,4 +1062,38 @@ describe("Routines page", () => {
       root.unmount();
     });
   });
+
+  it("renders Routines with pt-BR localization when language is switched", async () => {
+    const { changeLanguage } = await import("../i18n");
+    changeLanguage("pt-BR");
+    try {
+      routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Rotina de Backup" })]);
+
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+        },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Routines />
+          </QueryClientProvider>,
+        );
+        await flush();
+      });
+
+      expect(container.querySelector("h1")?.textContent).toBe("Rotinas");
+      expect(container.textContent).toContain("Criar rotina");
+      expect(container.textContent).toContain("Rotina de Backup");
+
+      await act(async () => {
+        root.unmount();
+      });
+    } finally {
+      changeLanguage("en");
+    }
+  });
 });

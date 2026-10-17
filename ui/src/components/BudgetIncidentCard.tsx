@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, AlertTriangle, ArrowUpRight, PauseCircle } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { formatCents } from "../lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,12 +18,12 @@ function parseDollarInput(value: string) {
   return Math.round(parsed * 100);
 }
 
-function incidentStateLabel(incident: BudgetIncident) {
-  if (incident.status === "resolved") return "Resolved";
-  if (incident.status === "dismissed") return "Dismissed";
-  if (incident.approvalStatus === "revision_requested") return "Escalated";
-  if (incident.approvalStatus === "pending") return "Pending approval";
-  return "Open";
+function incidentStateLabel(incident: BudgetIncident, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (incident.status === "resolved") return t("costs.incident.resolved", { defaultValue: "Resolved" });
+  if (incident.status === "dismissed") return t("costs.incident.dismissed", { defaultValue: "Dismissed" });
+  if (incident.approvalStatus === "revision_requested") return t("costs.incident.escalated", { defaultValue: "Escalated" });
+  if (incident.approvalStatus === "pending") return t("costs.incident.pendingApproval", { defaultValue: "Pending approval" });
+  return t("costs.incident.open", { defaultValue: "Open" });
 }
 
 export function BudgetIncidentCard({
@@ -36,6 +37,7 @@ export function BudgetIncidentCard({
   onKeepPaused: () => void;
   isMutating?: boolean;
 }) {
+  const { t } = useTranslation();
   const isWarning = incident.thresholdType === "soft";
   const [draftAmount, setDraftAmount] = useState(
     centsInputValue(isWarning
@@ -43,7 +45,7 @@ export function BudgetIncidentCard({
       : Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
   const parsed = parseDollarInput(draftAmount);
-  const stateLabel = incidentStateLabel(incident);
+  const stateLabel = incidentStateLabel(incident, t);
 
   return (
     <Card className={isWarning ? "overflow-hidden border-amber-500/30 bg-amber-500/5" : "overflow-hidden border-red-500/20 bg-(image:--gradient-extract-4)"}>
@@ -54,7 +56,9 @@ export function BudgetIncidentCard({
               <div className={isWarning
                 ? "text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-200"
                 : "text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-red-700/90 dark:text-red-200/80"}>
-                {incident.scopeType} {isWarning ? "budget warning" : "hard stop"}
+                {isWarning
+                  ? t("costs.incident.budgetWarning", { scope: incident.scopeType, defaultValue: `${incident.scopeType} budget warning` })
+                  : t("costs.incident.hardStop", { scope: incident.scopeType, defaultValue: `${incident.scopeType} hard stop` })}
               </div>
               <Badge variant={incident.status === "resolved" ? "outline" : "secondary"}>
                 {stateLabel}
@@ -64,7 +68,11 @@ export function BudgetIncidentCard({
             <CardDescription className={isWarning ? "mt-1" : "mt-1 text-red-900/75 dark:text-red-100/70"}>
               {incident.thresholdType === "hard" && incident.amountObserved < incident.amountLimit
                 ? `Accounting is incomplete. Known spend is ${formatCents(incident.amountObserved)}; review pending or unpriced usage in the budget policy.`
-                : `Spending reached ${formatCents(incident.amountObserved)} against a limit of ${formatCents(incident.amountLimit)}.`}
+                : t("costs.incident.spendingReached", {
+                    observed: formatCents(incident.amountObserved),
+                    limit: formatCents(incident.amountLimit),
+                    defaultValue: `Spending reached ${formatCents(incident.amountObserved)} against a limit of ${formatCents(incident.amountLimit)}.`,
+                  })}
             </CardDescription>
           </div>
           {isWarning ? (
@@ -83,7 +91,7 @@ export function BudgetIncidentCard({
           <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950/90 dark:text-amber-50/90">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
-              Spending crossed the warning threshold. This warning does not pause work.
+              {t("costs.incident.warningNotice", { defaultValue: "Spending crossed the warning threshold. This warning does not pause work." })}
             </div>
           </div>
         ) : (
@@ -91,15 +99,15 @@ export function BudgetIncidentCard({
             <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
               {incident.scopeType === "project"
-                ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-                : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+                ? t("costs.incident.projectPausedNotice", { defaultValue: "Project execution is paused. New work in this project will not start until you resolve the budget incident." })
+                : t("costs.incident.scopePausedNotice", { defaultValue: "This scope is paused. New heartbeats will not start until you resolve the budget incident." })}
             </div>
           </div>
         )}
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-            New budget (USD)
+            {t("costs.incident.newBudgetLabel", { defaultValue: "New budget (USD)" })}
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
@@ -116,19 +124,25 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : isWarning ? "Raise budget" : "Raise budget & resume"}
+              {isMutating
+                ? t("costs.incident.applying", { defaultValue: "Applying..." })
+                : isWarning
+                  ? t("costs.incident.raiseBudget", { defaultValue: "Raise budget" })
+                  : t("costs.incident.raiseAndResume", { defaultValue: "Raise budget & resume" })}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
             <p className="mt-2 text-xs text-red-700 dark:text-red-200/80">
-              The new budget must exceed current observed spend.
+              {t("costs.incident.budgetMustExceed", { defaultValue: "The new budget must exceed current observed spend." })}
             </p>
           ) : null}
         </div>
 
         <div className="flex justify-end">
           <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}>
-            {isWarning ? "Dismiss warning" : "Keep paused"}
+            {isWarning
+              ? t("costs.incident.dismissWarning", { defaultValue: "Dismiss warning" })
+              : t("costs.incident.keepPaused", { defaultValue: "Keep paused" })}
           </Button>
         </div>
       </CardContent>
