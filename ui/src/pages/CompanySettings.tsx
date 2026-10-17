@@ -1,7 +1,8 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  type Company,
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
@@ -13,6 +14,7 @@ import { resolveCompanyArchiveDeparture } from "../lib/company-selection";
 import { cloudPortfolioManageUrl } from "../lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
+import { type CompanyListResult } from "../api/companies-query";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -54,28 +56,69 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  const [defaultExecutionPolicyText, setDefaultExecutionPolicyText] = useState("");
+  const [defaultExecutionPolicyError, setDefaultExecutionPolicyError] = useState<string | null>(null);
 
-  // Sync local state from selected company
+  const [defaultExecutionPolicyDirty, setDefaultExecutionPolicyDirty] = useState(false);
+
+  const lastSavedDefaultExecutionPolicyTextRef = useRef<string | null>(null);
+
+  const [defaultExecutionPolicySyncedCompanyId, setDefaultExecutionPolicySyncedCompanyId] =
+    useState<string | null>(null);
+
+  const [generalSyncedCompanyId, setGeneralSyncedCompanyId] = useState<
+    string | null
+  >(null);
+
+  const [generalDirty, setGeneralDirty] = useState(false);
+
   useEffect(() => {
     if (!selectedCompany) return;
-    setCompanyName(selectedCompany.name);
-    setDescription(selectedCompany.description ?? "");
+    const companyChanged = selectedCompany.id !== generalSyncedCompanyId;
+    if (companyChanged || !generalDirty) {
+      setCompanyName(selectedCompany.name);
+      setDescription(selectedCompany.description ?? "");
+      setGeneralSyncedCompanyId(selectedCompany.id);
+      setGeneralDirty(false);
+    }
+  }, [selectedCompany, generalSyncedCompanyId, generalDirty]);
+
+  useEffect(() => {
+    if (!selectedCompany) return;
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
-  }, [selectedCompany]);
-
-  const generalDirty =
-    !!selectedCompany &&
-    (companyName !== selectedCompany.name ||
-      description !== (selectedCompany.description ?? ""));
+  }, [selectedCompany?.id, selectedCompany?.logoUrl, selectedCompany?.interactionResolverGovernance]);
 
   const generalMutation = useMutation({
     mutationFn: (data: {
+      companyId: string;
       name: string;
       description: string | null;
-    }) => companiesApi.update(selectedCompanyId!, data),
-    onSuccess: () => {
+    }) => companiesApi.update(data.companyId, { name: data.name, description: data.description }),
+    onSuccess: (result, variables) => {
+      queryClient.setQueriesData<CompanyListResult>(
+        { queryKey: queryKeys.companies.all },
+        (current) =>
+          current && Array.isArray(current.companies)
+            ? {
+                ...current,
+                companies: current.companies.map((company) =>
+                  company.id === variables.companyId
+                    ? { ...company, name: result.name, description: result.description }
+                    : company
+                ),
+              }
+            : current
+      );
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (variables.companyId !== selectedCompanyId) return;
+      if (
+        companyName.trim() !== variables.name ||
+        (description.trim() || null) !== variables.description
+      ) {
+        return;
+      }
+      setGeneralDirty(false);
     }
   });
 
@@ -106,6 +149,83 @@ export function CompanySettings() {
     const next = applyGovernanceChange(governance, kind, field, value);
     setGovernance(next);
     governanceMutation.mutate(next);
+  }
+
+  const defaultExecutionPolicyMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      policy
+    }: {
+      companyId: string;
+      policy: Company["defaultExecutionPolicy"];
+      submittedText: string;
+    }) => companiesApi.putDefaultExecutionPolicy(companyId, policy),
+    onSuccess: (result, variables) => {
+      queryClient.setQueriesData<CompanyListResult>(
+        { queryKey: queryKeys.companies.all },
+        (current) =>
+          current && Array.isArray(current.companies)
+            ? {
+                ...current,
+                companies: current.companies.map((company) =>
+                  company.id === variables.companyId
+                    ? { ...company, defaultExecutionPolicy: result.defaultExecutionPolicy }
+                    : company
+                ),
+              }
+            : current
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (variables.companyId !== selectedCompanyId) return;
+      lastSavedDefaultExecutionPolicyTextRef.current = variables.submittedText;
+      if (defaultExecutionPolicyText !== variables.submittedText) return;
+      setDefaultExecutionPolicyText(
+        result.defaultExecutionPolicy
+          ? JSON.stringify(result.defaultExecutionPolicy, null, 2)
+          : ""
+      );
+      setDefaultExecutionPolicyError(null);
+      setDefaultExecutionPolicyDirty(false);
+    }
+  });
+
+  useEffect(() => {
+    if (!selectedCompany) return;
+    const companyChanged = selectedCompany.id !== defaultExecutionPolicySyncedCompanyId;
+    if (companyChanged) {
+      defaultExecutionPolicyMutation.reset();
+    }
+    if (companyChanged || !defaultExecutionPolicyDirty) {
+      setDefaultExecutionPolicyText(
+        selectedCompany.defaultExecutionPolicy
+          ? JSON.stringify(selectedCompany.defaultExecutionPolicy, null, 2)
+          : ""
+      );
+      setDefaultExecutionPolicyError(null);
+      setDefaultExecutionPolicyDirty(false);
+      setDefaultExecutionPolicySyncedCompanyId(selectedCompany.id);
+    }
+  }, [selectedCompany, defaultExecutionPolicySyncedCompanyId, defaultExecutionPolicyDirty]);
+
+  function handleSaveDefaultExecutionPolicy() {
+    if (!selectedCompanyId) return;
+    const companyId = selectedCompanyId;
+    const submittedText = defaultExecutionPolicyText;
+    const trimmed = submittedText.trim();
+    if (!trimmed) {
+      setDefaultExecutionPolicyError(null);
+      defaultExecutionPolicyMutation.mutate({ companyId, policy: null, submittedText });
+      return;
+    }
+    let parsed: Company["defaultExecutionPolicy"];
+    try {
+      parsed = JSON.parse(trimmed) as Company["defaultExecutionPolicy"];
+    } catch {
+      setDefaultExecutionPolicyError("Invalid JSON");
+      return;
+    }
+    setDefaultExecutionPolicyError(null);
+    defaultExecutionPolicyMutation.mutate({ companyId, policy: parsed, submittedText });
   }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
@@ -209,7 +329,9 @@ export function CompanySettings() {
   }
 
   function handleSaveGeneral() {
+    if (!selectedCompanyId) return;
     generalMutation.mutate({
+      companyId: selectedCompanyId,
       name: companyName.trim(),
       description: description.trim() || null
     });
@@ -233,7 +355,10 @@ export function CompanySettings() {
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
+              onChange={(e) => {
+                setCompanyName(e.target.value);
+                setGeneralDirty(true);
+              }}
             />
             {isCloudManaged && (
               <p className="mt-1 text-xs text-muted-foreground">
@@ -251,7 +376,10 @@ export function CompanySettings() {
               type="text"
               value={description}
               placeholder="Optional organization description"
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => {
+                setDescription(e.target.value);
+                setGeneralDirty(true);
+              }}
             />
           </Field>
         </div>
@@ -370,6 +498,59 @@ export function CompanySettings() {
             : null
         }
       />
+
+      {/* Default execution policy */}
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-default-execution-policy-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Default execution policy
+        </div>
+        <Field
+          label="Applied to new tasks that don't set one"
+          hint={
+            "Raw JSON matching an issue's executionPolicy shape (stages, reviewPreset, " +
+            "maxReviewRounds, ...). Leave blank to clear the default. Does not apply to " +
+            "routine-generated or chat-thread tasks, and never overrides a task's own " +
+            "explicit executionPolicy."
+          }
+        >
+          <textarea
+            className="w-full min-h-32 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+            placeholder={'{\n  "stages": [\n    { "type": "approval", "participants": [...] }\n  ]\n}'}
+            value={defaultExecutionPolicyText}
+            onChange={(e) => {
+              setDefaultExecutionPolicyText(e.target.value);
+              setDefaultExecutionPolicyDirty(true);
+            }}
+            data-testid="company-settings-default-execution-policy-textarea"
+          />
+        </Field>
+        {!!selectedCompany && defaultExecutionPolicyDirty && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleSaveDefaultExecutionPolicy}
+              disabled={defaultExecutionPolicyMutation.isPending}
+              data-testid="company-settings-default-execution-policy-save"
+            >
+              {defaultExecutionPolicyMutation.isPending ? "Saving..." : "Save changes"}
+            </Button>
+            {defaultExecutionPolicyMutation.isSuccess &&
+              defaultExecutionPolicyText === lastSavedDefaultExecutionPolicyTextRef.current && (
+                <span className="text-xs text-muted-foreground">Saved</span>
+              )}
+          </div>
+        )}
+        {defaultExecutionPolicyError && (
+          <span className="text-xs text-destructive">{defaultExecutionPolicyError}</span>
+        )}
+        {defaultExecutionPolicyMutation.isError && (
+          <span className="text-xs text-destructive">
+            {defaultExecutionPolicyMutation.error instanceof Error
+              ? defaultExecutionPolicyMutation.error.message
+              : "Failed to save default execution policy"}
+          </span>
+        )}
+      </div>
 
       {fastResponses.loaded && !fastResponses.enabled && (
         <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId!} />

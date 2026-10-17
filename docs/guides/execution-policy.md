@@ -223,6 +223,35 @@ POST /api/companies/{companyId}/issues
 
 Stage IDs and participant IDs are auto-generated if omitted. Duplicate participants within a stage are automatically deduplicated. Stages with no valid participants are removed. If no valid stages remain, the policy is set to `null`.
 
+### Company and project default execution policy
+
+A company or project can set a `defaultExecutionPolicy` template. When a create call omits `executionPolicy` entirely, the new issue picks up the project's default if the project has one, else the company's, else it stays ungated (today's behavior, unchanged). An explicit `executionPolicy` on the create call — including an explicit `null` — always wins over a default.
+
+```bash
+PUT /api/companies/{companyId}/default-execution-policy
+{
+  "defaultExecutionPolicy": {
+    "stages": [
+      {
+        "type": "approval",
+        "participants": [
+          { "type": "user", "userId": "cto-user-id" }
+        ]
+      }
+    ]
+  }
+}
+
+GET /api/companies/{companyId}/default-execution-policy
+```
+
+`PUT /api/projects/{projectId}/default-execution-policy` sets the project-level override with the same shape. `PUT` either endpoint with `{ "defaultExecutionPolicy": null }` to clear it.
+
+- Callers with company access can read defaults. Only board actors can write them; agent callers receive `403` on `PUT`.
+- Each issue that inherits a default gets its own fresh stage and participant IDs — the stored template is never attached to more than one issue by reference.
+- A stage with no participants is rejected outright (`400`) when saving a default template, rather than being silently dropped like it is on a per-issue `executionPolicy` (see above). A template has no issue-specific participant to fall back on, so an empty stage here is always a mistake, not a case worth tolerating.
+- Routine-generated issues (`originKind: "routine_execution"` or a plugin-operation origin) and conversation-thread issues (both `conversationAgentId` and `conversationUserId` set) never inherit a default — a routine's own configuration, or an ephemeral chat thread, should not pick up a sign-off gate meant for tracked work.
+
 ### Updating execution policy on an existing issue
 
 ```bash

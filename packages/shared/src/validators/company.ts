@@ -4,6 +4,7 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { issueExecutionPolicyTemplateSchema } from "./issue.js";
 
 const logoAssetIdSchema = z.string().guid().nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
@@ -64,3 +65,13 @@ export const updateCompanyBrandingSchema = z
   );
 
 export type UpdateCompanyBranding = z.infer<typeof updateCompanyBrandingSchema>;
+
+export const putCompanyDefaultExecutionPolicySchema = z
+  .object({
+    defaultExecutionPolicy: issueExecutionPolicyTemplateSchema,
+  })
+  .strict();
+
+export type PutCompanyDefaultExecutionPolicy = z.infer<
+  typeof putCompanyDefaultExecutionPolicySchema
+>;

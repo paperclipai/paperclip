@@ -299,6 +299,8 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  resolveDefaultIssueExecutionPolicy,
+  resolveResponsibleUserIdForIssueCreate,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import {
@@ -323,10 +325,9 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  issueAllowsMonitor,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
-  redactIssueMonitorExternalRef,
-  setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -2187,6 +2188,52 @@ function summarizeIssueReferenceActivityDetails(
   };
 }
 
+async function canManageIssueMonitor(
+  accessSvc: ReturnType<typeof accessService>,
+  req: Request,
+  companyId: string,
+  assigneeAgentId: string | null,
+): Promise<boolean> {
+  if (req.actor.type === "board") return true;
+  const runtimeDecision = await accessSvc.decide({
+    actor: req.actor,
+    action: "runtime:manage",
+    resource: { type: "company", companyId },
+  });
+  if (!runtimeDecision.allowed) return false;
+  return Boolean(
+    req.actor.type === "agent" &&
+      req.actor.agentId &&
+      req.actor.agentId === assigneeAgentId,
+  );
+}
+
+async function withAuthorizedInheritedMonitor(
+  accessSvc: ReturnType<typeof accessService>,
+  req: Request,
+  companyId: string,
+  assigneeAgentId: string | null,
+  assigneeUserId: string | null,
+  status: string,
+  policy: NormalizedExecutionPolicy | null,
+  monitorFromRequest: boolean,
+): Promise<NormalizedExecutionPolicy | null> {
+  if (!policy?.monitor || monitorFromRequest) return policy;
+  if (!issueAllowsMonitor(status, assigneeAgentId, assigneeUserId)) {
+    return normalizeIssueExecutionPolicy({ ...policy, monitor: undefined });
+  }
+  if (
+    policy.monitor.timeoutAt &&
+    new Date(policy.monitor.timeoutAt).getTime() <= Date.now()
+  ) {
+    return normalizeIssueExecutionPolicy({ ...policy, monitor: undefined });
+  }
+  if (await canManageIssueMonitor(accessSvc, req, companyId, assigneeAgentId)) {
+    return policy;
+  }
+  return normalizeIssueExecutionPolicy({ ...policy, monitor: undefined });
+}
+
 function activityExecutionParticipantKey(
   participant: ActivityExecutionParticipant,
 ): string {
@@ -3981,25 +4028,36 @@ export function issueRoutes(
     projectId: string | null,
     requestedPolicy: unknown,
   ) {
-    const policy = normalizeIssueExecutionPolicy(requestedPolicy);
-    if (req.actor.type !== "agent") return policy;
+    let policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    const monitorFromRequest = Boolean(policy?.monitor);
+    if (requestedPolicy === undefined && policy === null) {
+      policy = await resolveDefaultIssueExecutionPolicy(db, {
+        companyId,
+        projectId,
+      });
+    }
+    if (req.actor.type !== "agent") return { policy, monitorFromRequest };
     const trust = await resolveAgentTrustForIssue(
       { agentId: req.actor.agentId, runId: req.actor.runId },
       companyId,
       { companyId, projectId, executionPolicy: policy },
     );
     if (trust?.kind === "denied") throw forbidden(trust.detail);
-    if (trust?.kind !== "low_trust_review") return policy;
+    if (trust?.kind !== "low_trust_review")
+      return { policy, monitorFromRequest };
     // A new task must retain the creator's effective containment, including
     // run-only restrictions. Client policy can narrow it, never reset it.
-    return normalizeIssueExecutionPolicy({
-      ...policy,
-      authorizationPolicy: {
-        ...policy?.authorizationPolicy,
-        trustPreset: trust.preset,
-        trustBoundary: trust.boundary,
-      },
-    });
+    return {
+      policy: normalizeIssueExecutionPolicy({
+        ...policy,
+        authorizationPolicy: {
+          ...policy?.authorizationPolicy,
+          trustPreset: trust.preset,
+          trustBoundary: trust.boundary,
+        },
+      }),
+      monitorFromRequest,
+    };
   }
 
   async function directParentReportDisabledForIssue(issue: {
@@ -12397,13 +12455,52 @@ export function issueRoutes(
         createBody.executionWorkspaceSettings?.environmentId,
       );
 
-      const executionPolicy = applyActorMonitorScheduledBy(
+      if (
+        createBody.visibility === "private" &&
+        !createAssignmentScope.projectId &&
+        !createAssignmentScope.parentIssueId
+      ) {
+        const privateTaskResponsibleUserId =
+          await resolveResponsibleUserIdForIssueCreate(db, companyId, {
+            explicitResponsibleUserId: createBody.responsibleUserId ?? null,
+            createdByUserId:
+              actor.actorType === "user" ? actor.actorId : null,
+            parentId: null,
+            originKind: createBody.originKind ?? "manual",
+            originRunId: createBody.originRunId ?? null,
+            actorRunId: actor.runId,
+            actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+            trustExplicitResponsibleUserId: actor.actorType === "user",
+          });
+        if (privateTaskResponsibleUserId) {
+          const personalProject = await ensurePersonalPrivateProject(
+            db,
+            companyId,
+            privateTaskResponsibleUserId,
+          );
+          createAssignmentScope.projectId = personalProject.id;
+        }
+      }
+
+      const { policy: resolvedExecutionPolicy, monitorFromRequest } =
         await resolveCreatedIssueExecutionPolicy(
           req,
           companyId,
           createAssignmentScope.projectId,
           createBody.executionPolicy,
-        ),
+        );
+      const authorizedExecutionPolicy = await withAuthorizedInheritedMonitor(
+        access,
+        req,
+        companyId,
+        createBody.assigneeAgentId ?? null,
+        createBody.assigneeUserId ?? null,
+        createBody.status,
+        resolvedExecutionPolicy,
+        monitorFromRequest,
+      );
+      const executionPolicy = applyActorMonitorScheduledBy(
+        authorizedExecutionPolicy,
         actor.actorType,
       );
       await assertCanManageIssueMonitor(
@@ -12411,7 +12508,7 @@ export function issueRoutes(
         req,
         companyId,
         createBody.assigneeAgentId ?? null,
-        Boolean(executionPolicy?.monitor),
+        monitorFromRequest,
       );
       const issueId = randomUUID();
       const sourceTrust = await sourceTrustForActorWrite(
@@ -12764,13 +12861,25 @@ export function issueRoutes(
       const currentSerializedChild = serializationContext
         ? await findCurrentSerializedWatchdogChild(parent)
         : null;
-      const executionPolicy = applyActorMonitorScheduledBy(
+      const { policy: resolvedExecutionPolicy, monitorFromRequest } =
         await resolveCreatedIssueExecutionPolicy(
           req,
           parent.companyId,
           childAssignmentScope.projectId,
           createBody.executionPolicy,
-        ),
+        );
+      const authorizedExecutionPolicy = await withAuthorizedInheritedMonitor(
+        access,
+        req,
+        parent.companyId,
+        createBody.assigneeAgentId ?? null,
+        createBody.assigneeUserId ?? null,
+        currentSerializedChild ? "blocked" : createBody.status,
+        resolvedExecutionPolicy,
+        monitorFromRequest,
+      );
+      const executionPolicy = applyActorMonitorScheduledBy(
+        authorizedExecutionPolicy,
         actor.actorType,
       );
       await assertCanManageIssueMonitor(
@@ -12778,7 +12887,7 @@ export function issueRoutes(
         req,
         parent.companyId,
         createBody.assigneeAgentId ?? null,
-        Boolean(executionPolicy?.monitor),
+        monitorFromRequest,
       );
       const issueId = randomUUID();
       const sourceTrust = await sourceTrustForActorWrite(
@@ -12995,10 +13104,44 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const serializationContext =
+        await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
+      const existingSerializedChild = serializationContext
+        ? await findCurrentSerializedWatchdogChild(sourceIssue)
+        : null;
       const normalizedChildren = [];
       for (const child of requestedChildren) {
+        const index = normalizedChildren.length;
+        const willBeSerializedBlocked = serializationContext
+          ? index === 0
+            ? Boolean(existingSerializedChild)
+            : true
+          : false;
+        let resolvedExecutionPolicy = normalizeIssueExecutionPolicy(
+          child.executionPolicy,
+        );
+        const monitorFromRequest = Boolean(resolvedExecutionPolicy?.monitor);
+        if (child.executionPolicy === undefined && resolvedExecutionPolicy === null) {
+          resolvedExecutionPolicy = await resolveDefaultIssueExecutionPolicy(
+            db,
+            {
+              companyId: sourceIssue.companyId,
+              projectId: child.projectId ?? sourceIssue.projectId ?? null,
+            },
+          );
+        }
+        const authorizedExecutionPolicy = await withAuthorizedInheritedMonitor(
+          access,
+          req,
+          sourceIssue.companyId,
+          child.assigneeAgentId ?? null,
+          child.assigneeUserId ?? null,
+          willBeSerializedBlocked ? "blocked" : child.status,
+          resolvedExecutionPolicy,
+          monitorFromRequest,
+        );
         const executionPolicy = applyActorMonitorScheduledBy(
-          normalizeIssueExecutionPolicy(child.executionPolicy),
+          authorizedExecutionPolicy,
           actor.actorType,
         );
         await assertCanManageIssueMonitor(
@@ -13006,7 +13149,7 @@ export function issueRoutes(
           req,
           sourceIssue.companyId,
           child.assigneeAgentId ?? null,
-          Boolean(executionPolicy?.monitor),
+          monitorFromRequest,
         );
         const childIssueId = randomUUID();
         const sourceTrust = await sourceTrustForActorWrite(
@@ -13032,11 +13175,6 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         });
       }
-      const serializationContext =
-        await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
-      const existingSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(sourceIssue)
-        : null;
       const serializedBlockedChildIds = new Set<string>();
       if (serializationContext) {
         for (let index = 0; index < normalizedChildren.length; index += 1) {
@@ -13060,6 +13198,7 @@ export function issueRoutes(
       const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
         acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
         children: normalizedChildren,
+        fingerprintChildren: requestedChildren,
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId ?? null,

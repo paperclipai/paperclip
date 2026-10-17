@@ -1,7 +1,7 @@
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, projects as projectsTable } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
@@ -21,6 +21,7 @@ import {
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  putProjectDefaultExecutionPolicySchema,
   normalizeProjectUrlKey,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
@@ -33,6 +34,11 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import {
+  normalizeIssueExecutionPolicy,
+  preserveRedactedDefaultExecutionPolicyMonitorExternalRef,
+  REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+} from "../services/issue-execution-policy.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
 import {
@@ -509,6 +515,65 @@ export function projectRoutes(db: Db) {
 
     res.json(project);
   });
+
+  router.get("/projects/:id/default-execution-policy", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    res.json({
+      defaultExecutionPolicy: normalizeIssueExecutionPolicy(
+        project.defaultExecutionPolicy ?? null,
+      ),
+    });
+  });
+
+  router.put(
+    "/projects/:id/default-execution-policy",
+    validate(putProjectDefaultExecutionPolicySchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      if (!existing) return;
+      if (!(await assertProjectReadAllowed(req, res, existing))) return;
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can set the project default execution policy" });
+        return;
+      }
+      let rawStoredDefaultExecutionPolicy = null;
+      if (req.body.defaultExecutionPolicy?.monitor?.externalRef === REDACTED_ISSUE_MONITOR_EXTERNAL_REF) {
+        const [rawProjectRow] = await db
+          .select({ defaultExecutionPolicy: projectsTable.defaultExecutionPolicy })
+          .from(projectsTable)
+          .where(eq(projectsTable.id, id));
+        rawStoredDefaultExecutionPolicy = rawProjectRow?.defaultExecutionPolicy ?? null;
+      }
+      const submittedDefaultExecutionPolicy = preserveRedactedDefaultExecutionPolicyMonitorExternalRef(
+        req.body.defaultExecutionPolicy,
+        rawStoredDefaultExecutionPolicy,
+      );
+      const project = await svc.update(id, { defaultExecutionPolicy: submittedDefaultExecutionPolicy });
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      const redactedDefaultExecutionPolicy = normalizeIssueExecutionPolicy(
+        project.defaultExecutionPolicy ?? null,
+      );
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.updated",
+        entityType: "project",
+        entityId: project.id,
+        details: { defaultExecutionPolicy: redactedDefaultExecutionPolicy },
+      });
+      res.json({ defaultExecutionPolicy: redactedDefaultExecutionPolicy });
+    },
+  );
 
   router.get("/projects/:id/access-members", async (req, res) => {
     const id = req.params.id as string;

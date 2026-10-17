@@ -452,6 +452,14 @@ export const issueExecutionPolicySchema = z.object({
     .default(null),
 });
 
+export const issueExecutionPolicyTemplateSchema = issueExecutionPolicySchema
+  .nullable()
+  .refine(
+    (policy) =>
+      !policy || policy.stages.every((stage) => stage.participants.length > 0),
+    { message: "Each stage must have at least one participant" },
+  );
+
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
   nextCheckAt: z.string().datetime().nullable(),

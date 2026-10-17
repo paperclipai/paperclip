@@ -107,6 +107,7 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueExecutionPolicy,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -116,6 +117,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  isPluginOperationIssueOriginKind,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -157,6 +159,7 @@ import {
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
   buildInitialIssueMonitorFields,
+  issueAllowsMonitor,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -399,7 +402,7 @@ function readStringFromRecord(record: unknown, key: string) {
     : null;
 }
 
-async function resolveResponsibleUserIdForIssueCreate(
+export async function resolveResponsibleUserIdForIssueCreate(
   reader: DbReader,
   companyId: string,
   input: {
@@ -1983,6 +1986,7 @@ type IssueChildCreateInput = IssueCreateInput & {
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
   children: IssueChildCreateInput[];
+  fingerprintChildren?: IssueChildCreateInput[];
   actorAgentId?: string | null;
   actorUserId?: string | null;
   actorRunId?: string | null;
@@ -2208,14 +2212,53 @@ const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
   "skipExecutionWorkspaceInheritance",
 ]);
 
+function stripExecutionPolicyIdsForFingerprint(policy: unknown): unknown {
+  if (!policy || typeof policy !== "object") return policy;
+  const { stages, ...rest } = policy as { stages?: unknown[] } & Record<
+    string,
+    unknown
+  >;
+  if (!Array.isArray(stages)) return policy;
+  return {
+    ...rest,
+    stages: stages.map((stage) => {
+      if (!stage || typeof stage !== "object") return stage;
+      const { id: _stageId, participants, ...stageRest } = stage as {
+        id?: unknown;
+        participants?: unknown[];
+      } & Record<string, unknown>;
+      return {
+        ...stageRest,
+        participants: Array.isArray(participants)
+          ? participants.map((participant) => {
+              if (!participant || typeof participant !== "object")
+                return participant;
+              const { id: _participantId, ...participantRest } =
+                participant as Record<string, unknown>;
+              return participantRest;
+            })
+          : participants,
+      };
+    }),
+  };
+}
+
 function normalizeAcceptedPlanDecompositionFingerprintChild(
   child: IssueChildCreateInput,
 ) {
   return Object.fromEntries(
-    Object.entries(child).filter(
-      ([key]) =>
-        !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(key),
-    ),
+    Object.entries(child)
+      .filter(
+        ([key]) =>
+          !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(
+            key,
+          ),
+      )
+      .map(([key, value]) =>
+        key === "executionPolicy"
+          ? [key, stripExecutionPolicyIdsForFingerprint(value)]
+          : [key, value],
+      ),
   );
 }
 
@@ -6659,6 +6702,78 @@ export async function readIssueCommentRunLogText(run: {
   return content;
 }
 
+function isRoutineOriginatedIssueOriginKind(
+  originKind: string | null | undefined,
+): boolean {
+  return (
+    originKind === "routine_execution" ||
+    isPluginOperationIssueOriginKind(originKind)
+  );
+}
+
+function isConversationThreadIssueCreate(data: {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  originKind?: string | null;
+}): boolean {
+  return (
+    (data.conversationAgentId != null && data.conversationUserId != null) ||
+    data.originKind === "chat_channel"
+  );
+}
+
+function instantiateExecutionPolicyTemplate(
+  policy: IssueExecutionPolicy,
+): unknown {
+  return {
+    ...policy,
+    stages: policy.stages.map((stage) => ({
+      ...stage,
+      id: undefined,
+      participants: stage.participants.map((participant) => ({
+        ...participant,
+        id: undefined,
+      })),
+    })),
+  };
+}
+
+export async function resolveDefaultIssueExecutionPolicy(
+  dbOrTx: Db | DbTransaction,
+  params: { companyId: string; projectId?: string | null },
+): Promise<IssueExecutionPolicy | null> {
+  if (params.projectId) {
+    const [project] = await dbOrTx
+      .select({ defaultExecutionPolicy: projects.defaultExecutionPolicy })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.id, params.projectId),
+          eq(projects.companyId, params.companyId),
+        ),
+      );
+    if (project?.defaultExecutionPolicy) {
+      return normalizeIssueExecutionPolicy(
+        instantiateExecutionPolicyTemplate(
+          project.defaultExecutionPolicy as IssueExecutionPolicy,
+        ),
+      );
+    }
+  }
+  const [company] = await dbOrTx
+    .select({ defaultExecutionPolicy: companies.defaultExecutionPolicy })
+    .from(companies)
+    .where(eq(companies.id, params.companyId));
+  if (company?.defaultExecutionPolicy) {
+    return normalizeIssueExecutionPolicy(
+      instantiateExecutionPolicyTemplate(
+        company.defaultExecutionPolicy as IssueExecutionPolicy,
+      ),
+    );
+  }
+  return null;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -9520,7 +9635,7 @@ export function issueService(db: Db) {
       const requestFingerprint =
         createAcceptedPlanDecompositionRequestFingerprint({
           acceptedPlanRevisionId: data.acceptedPlanRevisionId,
-          children: data.children,
+          children: data.fingerprintChildren ?? data.children,
         });
 
       const initialClaim = await db.transaction(async (tx) => {
@@ -10332,6 +10447,37 @@ export function issueService(db: Db) {
           }
           const personalProject = await ensurePersonalPrivateProject(tx, companyId, responsibleUserId);
           issueData.projectId = personalProject.id;
+        }
+
+        if (
+          issueData.executionPolicy === undefined &&
+          !isRoutineOriginatedIssueOriginKind(issueData.originKind) &&
+          !isConversationThreadIssueCreate(issueData)
+        ) {
+          const defaultExecutionPolicy = await resolveDefaultIssueExecutionPolicy(
+            tx,
+            { companyId, projectId: issueData.projectId ?? null },
+          );
+          if (defaultExecutionPolicy) {
+            const defaultMonitorExpired = Boolean(
+              defaultExecutionPolicy.monitor?.timeoutAt &&
+                new Date(defaultExecutionPolicy.monitor.timeoutAt).getTime() <=
+                  Date.now(),
+            );
+            const defaultAllowsMonitor =
+              !defaultExecutionPolicy.monitor ||
+              (!defaultMonitorExpired &&
+                issueAllowsMonitor(
+                  issueData.status ?? "backlog",
+                  issueData.assigneeAgentId ?? null,
+                  issueData.assigneeUserId ?? null,
+                ));
+            issueData.executionPolicy = (
+              defaultAllowsMonitor
+                ? defaultExecutionPolicy
+                : { ...defaultExecutionPolicy, monitor: undefined }
+            ) as unknown as Record<string, unknown>;
+          }
         }
 
         const values = {

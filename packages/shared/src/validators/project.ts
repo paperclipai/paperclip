@@ -3,6 +3,7 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { issueExecutionPolicyTemplateSchema } from "./issue.js";
 
 export const projectDiscoverySchema = z.object({
   limit: z.number().int().min(1).max(50).default(50),
@@ -137,6 +138,16 @@ export const updateProjectSchema = objectWithoutDefaults(
 ).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const putProjectDefaultExecutionPolicySchema = z
+  .object({
+    defaultExecutionPolicy: issueExecutionPolicyTemplateSchema,
+  })
+  .strict();
+
+export type PutProjectDefaultExecutionPolicy = z.infer<
+  typeof putProjectDefaultExecutionPolicySchema
+>;
 
 export const addProjectAccessMemberSchema = z.object({
   subjectType: z.enum(["user", "agent"]),

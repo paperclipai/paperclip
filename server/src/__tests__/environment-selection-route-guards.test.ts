@@ -113,6 +113,11 @@ vi.mock("../services/activity-log.js", async () => ({
   publishActivity: vi.fn(),
 }));
 
+vi.mock("../services/issues.js", async () => ({
+  ...await vi.importActual<typeof import("../services/issues.js")>("../services/issues.js"),
+  resolveDefaultIssueExecutionPolicy: vi.fn(async () => null),
+}));
+
 vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));

@@ -30,6 +30,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { redactIssueMonitorExternalRef } from "./issue-execution-policy.js";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -120,6 +121,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     interactionResolverGovernance: companies.interactionResolverGovernance,
+    defaultExecutionPolicy: companies.defaultExecutionPolicy,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
@@ -129,10 +131,27 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     updatedAt: companies.updatedAt,
   };
 
-  function enrichCompany<T extends { logoAssetId: string | null }>(company: T) {
+  function redactCompanyDefaultExecutionPolicy(policy: unknown) {
+    if (!policy || typeof policy !== "object") return (policy ?? null) as typeof policy;
+    const monitor = (policy as { monitor?: unknown }).monitor;
+    if (!monitor || typeof monitor !== "object") return policy;
+    const externalRef = (monitor as { externalRef?: unknown }).externalRef;
+    if (typeof externalRef !== "string" || externalRef.length === 0) return policy;
+    return {
+      ...policy,
+      monitor: { ...monitor, externalRef: redactIssueMonitorExternalRef(externalRef) },
+    };
+  }
+
+  function enrichCompany<T extends { logoAssetId: string | null; defaultExecutionPolicy?: unknown }>(
+    company: T,
+  ) {
     return {
       ...company,
       logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
+      ...("defaultExecutionPolicy" in company
+        ? { defaultExecutionPolicy: redactCompanyDefaultExecutionPolicy(company.defaultExecutionPolicy) }
+        : {}),
     };
   }
 

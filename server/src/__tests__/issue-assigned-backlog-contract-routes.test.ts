@@ -117,6 +117,11 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
+vi.mock("../services/issues.js", async () => ({
+  ...await vi.importActual<typeof import("../services/issues.js")>("../services/issues.js"),
+  resolveDefaultIssueExecutionPolicy: vi.fn(async () => null),
+}));
+
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
 }));

@@ -266,6 +266,30 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     };
   }
 
+  type RetainedRowsSnapshot = Awaited<ReturnType<Awaited<ReturnType<typeof seedRetainedRows>>>>;
+
+  function omitNewlyAddedNullColumns(
+    row: Record<string, unknown> | null,
+    reference: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (row === null || reference === null) return row;
+    const result = { ...row };
+    for (const key of Object.keys(result)) {
+      if (!(key in reference) && result[key] === null) delete result[key];
+    }
+    return result;
+  }
+
+  function expectRetainedRowsUnchanged(actual: RetainedRowsSnapshot, expected: RetainedRowsSnapshot) {
+    expect({
+      company: omitNewlyAddedNullColumns(actual.company, expected.company),
+      task: omitNewlyAddedNullColumns(actual.task, expected.task),
+      run: omitNewlyAddedNullColumns(actual.run, expected.run),
+      grant: omitNewlyAddedNullColumns(actual.grant, expected.grant),
+      binding: omitNewlyAddedNullColumns(actual.binding, expected.binding),
+    }).toEqual(expected);
+  }
+
   it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
     const referenceUrl = await createTempDatabase();
     const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
@@ -319,7 +343,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expectRetainedRowsUnchanged(await retainedRows(), beforeRows!);
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -336,7 +360,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expectRetainedRowsUnchanged(await retainedRows(), beforeRows!);
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }

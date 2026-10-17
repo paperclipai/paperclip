@@ -4,7 +4,7 @@ import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable } from "@paperclipai/db";
+import { agents as agentsTable, companies as companiesTable } from "@paperclipai/db";
 import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
 import {
   MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
@@ -23,6 +23,7 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   hidesCompanyPage,
+  putCompanyDefaultExecutionPolicySchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -38,6 +39,11 @@ import { badRequest, conflict, forbidden, notFound, unprocessable } from "../err
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import {
+  normalizeIssueExecutionPolicy,
+  preserveRedactedDefaultExecutionPolicyMonitorExternalRef,
+  REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+} from "../services/issue-execution-policy.js";
 import {
   assembleImportTransferZip,
   importTransferPartName,
@@ -497,6 +503,77 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     }
     res.json(company);
   });
+
+  router.get("/:companyId/default-execution-policy", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({
+      defaultExecutionPolicy: normalizeIssueExecutionPolicy(
+        company.defaultExecutionPolicy ?? null,
+      ),
+    });
+  });
+
+  router.put(
+    "/:companyId/default-execution-policy",
+    validate(putCompanyDefaultExecutionPolicySchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can set the company default execution policy" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      const existingCompany = await svc.getById(companyId);
+      if (!existingCompany) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      let rawStoredDefaultExecutionPolicy = null;
+      if (req.body.defaultExecutionPolicy?.monitor?.externalRef === REDACTED_ISSUE_MONITOR_EXTERNAL_REF) {
+        const [rawCompanyRow] = await db
+          .select({ defaultExecutionPolicy: companiesTable.defaultExecutionPolicy })
+          .from(companiesTable)
+          .where(eq(companiesTable.id, companyId));
+        rawStoredDefaultExecutionPolicy = rawCompanyRow?.defaultExecutionPolicy ?? null;
+      }
+      const submittedDefaultExecutionPolicy = preserveRedactedDefaultExecutionPolicyMonitorExternalRef(
+        req.body.defaultExecutionPolicy,
+        rawStoredDefaultExecutionPolicy,
+      );
+      const company = await svc.update(
+        companyId,
+        { defaultExecutionPolicy: submittedDefaultExecutionPolicy },
+        actor,
+      );
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      const redactedDefaultExecutionPolicy = normalizeIssueExecutionPolicy(
+        company.defaultExecutionPolicy ?? null,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.updated",
+        entityType: "company",
+        entityId: companyId,
+        details: { defaultExecutionPolicy: redactedDefaultExecutionPolicy },
+      });
+      res.json({ defaultExecutionPolicy: redactedDefaultExecutionPolicy });
+    },
+  );
 
   router.get("/:companyId/feedback-traces", async (req, res) => {
     const companyId = req.params.companyId as string;

@@ -92,6 +92,21 @@ export function redactIssueMonitorExternalRef(value: string | null | undefined) 
   return normalizeMonitorText(value) ? REDACTED_ISSUE_MONITOR_EXTERNAL_REF : null;
 }
 
+export function preserveRedactedDefaultExecutionPolicyMonitorExternalRef(
+  submitted: IssueExecutionPolicy | null,
+  stored: IssueExecutionPolicy | null,
+): IssueExecutionPolicy | null {
+  if (!submitted?.monitor) return submitted;
+  if (submitted.monitor.externalRef !== REDACTED_ISSUE_MONITOR_EXTERNAL_REF) return submitted;
+  return {
+    ...submitted,
+    monitor: {
+      ...submitted.monitor,
+      externalRef: stored?.monitor?.externalRef ?? null,
+    },
+  };
+}
+
 function monitorMetadataFromPolicy(monitor: IssueExecutionMonitorPolicy) {
   return {
     kind: monitor.kind ?? null,
@@ -262,7 +277,7 @@ function buildClearedMonitorState(input: {
   };
 }
 
-function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
+export function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
   return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
 }
 
