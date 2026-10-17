@@ -7,6 +7,14 @@ on:
       - "docker/agent-runtime/**"
       - "tools/agent-shim/**"
       - ".github/workflows/agent-runtime-images.yml"
+  schedule:
+    # Weekly rebuild so the harness CLIs installed via `npm install -g
+    # <pkg>@latest` in the Dockerfiles (claude-code, codex, gemini-cli,
+    # opencode-ai, pi-coding-agent) stay current even when nothing under
+    # docker/agent-runtime changes. Without this, the published images
+    # silently drift behind upstream CLI releases (see #13544, #8757) until
+    # someone happens to touch this path.
+    - cron: "17 6 * * 1"
   workflow_dispatch:
     inputs:
       version:
@@ -24,23 +32,164 @@ env:
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
+  check-for-cli-updates:
+    # Runs on the weekly schedule only, and never builds, signs, or pushes
+    # anything. It reads the `npm install -g <pkg>@latest` package name out
+    # of each agent-runtime Dockerfile, queries the npm registry (a
+    # read-only, unauthenticated call) for that package's current latest
+    # version, and opens/updates a single tracking issue listing what it
+    # found. A human reviews the issue and decides whether to trigger a
+    # real, signed, published rebuild via workflow_dispatch.
+    #
+    # Deliberately NOT a docker build: publishing a cosign-signed image
+    # straight from a mutable `npm install -g <pkg>@latest` resolution, with
+    # no human in the loop, means a compromised upstream npm release could
+    # get built, signed, and pushed to GHCR fully unattended by this cron
+    # alone. Even a *local* (unpushed) build was rejected in review as an
+    # unnecessary CI cost/attack surface increase for what is fundamentally
+    # a version-string comparison. Keeping the schedule to a metadata-only
+    # npm registry query keeps every signed, published image behind an
+    # explicit push or manual workflow_dispatch from a trusted maintainer.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve each harness's npm package and current npm-latest version
+        id: versions
+        run: |
+          set -euo pipefail
+          declare -A PACKAGES=(
+            [claude]="@anthropic-ai/claude-code"
+            [codex]="@openai/codex"
+            [gemini]="@google/gemini-cli"
+            [opencode]="opencode-ai"
+            [pi]="@mariozechner/pi-coding-agent"
+          )
+          echo "table<<EOF" >> "$GITHUB_OUTPUT"
+          for harness in "${!PACKAGES[@]}"; do
+            pkg="${PACKAGES[$harness]}"
+            # Sanity-check the Dockerfile still installs this exact package,
+            # so this table can't silently drift from what actually ships.
+            if ! grep -q "npm install -g ${pkg}@latest" "docker/agent-runtime/Dockerfile.${harness}"; then
+              echo "::warning::docker/agent-runtime/Dockerfile.${harness} no longer installs ${pkg}@latest -- update the PACKAGES map in this workflow"
+            fi
+            latest=$(curl -fsSL --retry 3 "https://registry.npmjs.org/${pkg}/latest" | jq -r '.version // empty') || true
+            latest="${latest:-unknown}"
+
+            # Read the CLI version baked into the currently published ":latest"
+            # image (the tag the Kubernetes sandbox provider's built-in adapter
+            # defaults pull) straight from the installed package's
+            # package.json. The image is pulled and `docker create`d but never
+            # started: nothing from the image is executed on this runner, so a
+            # compromised upstream release baked into a published image can't
+            # run code here. The npm-registry value above is likewise only
+            # ever treated as a string.
+            image="ghcr.io/paperclipai/agent-runtime-${harness}:latest"
+            deployed=""
+            if docker pull --quiet "${image}" >/dev/null 2>&1 \
+              && cid=$(docker create "${image}" 2>/dev/null); then
+              deployed=$(docker cp "${cid}:/usr/lib/node_modules/${pkg}/package.json" - 2>/dev/null \
+                | tar -xO 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+              docker rm "${cid}" >/dev/null 2>&1 || true
+            fi
+
+            # Only call an image STALE when both versions were actually
+            # established. A failed registry/GHCR lookup (outage, image not
+            # published yet, package moved) is reported as UNKNOWN so it
+            # doesn't prompt an unnecessary rebuild.
+            if [ -z "${deployed}" ] || [ "${latest}" = "unknown" ]; then
+              deployed="${deployed:-unknown}"
+              status="UNKNOWN (check failed)"
+            elif [ "${deployed}" = "${latest}" ]; then
+              status="up to date"
+            else
+              status="STALE"
+            fi
+
+            echo "| \`agent-runtime-${harness}\` | \`${pkg}\` | ${latest} | ${deployed} | ${status} |" >> "$GITHUB_OUTPUT"
+          done
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure the tracking label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create agent-runtime-cli-check \
+            --repo "${{ github.repository }}" \
+            --color "fbca04" \
+            --description "Weekly agent-runtime CLI version check" \
+            2>/dev/null || true
+
+      - name: Open or update the weekly tracking issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          # Passed via env, not interpolated into the script string, so the
+          # npm-derived table content can never be read as JavaScript.
+          VERSION_TABLE: ${{ steps.versions.outputs.table }}
+        with:
+          script: |
+            const table = process.env.VERSION_TABLE;
+            const title = "Weekly agent-runtime CLI version check";
+            const body = [
+              "Automated weekly check of the npm packages installed by the",
+              "`agent-runtime-*` Dockerfiles, compared against the CLI version",
+              "actually baked into each currently published `:latest` image",
+              "(pulled read-only from GHCR and probed with `--version` -- no",
+              "build, sign, or push happens here). Trigger `workflow_dispatch`",
+              "on the `Agent runtime images` workflow for any row marked STALE.",
+              "",
+              "| Image | npm package | npm latest | deployed (`:latest`) | status |",
+              "| --- | --- | --- | --- | --- |",
+              table.trim(),
+            ].join("\n");
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "agent-runtime-cli-check",
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["agent-runtime-cli-check"],
+              });
+            }
+
   build-and-sign:
+    # Deliberately excludes `schedule` -- publishing signed images stays
+    # behind a human-initiated push or workflow_dispatch. See
+    # check-for-cli-updates above for what the weekly schedule actually does.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log into GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Build + push all deployed harness images (linux/amd64)
         id: bake
