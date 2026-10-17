@@ -11,6 +11,17 @@ describe("legacy continuation authority", () => {
   it("requests agent repair for a successful process without a task disposition", () => {
     expect(decideLegacyContinuation(input)).toMatchObject({ kind: "enqueue", nextAttempt: 1 });
   });
+  it("gives the original owner an actionable continuation path without resetting an exhausted monitor", () => {
+    const decision = decideLegacyContinuation(input);
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.instruction).toContain("status: todo");
+    expect(decision.instruction).toContain("resume: true");
+    expect(decision.instruction).toContain("PATCH /api/issues/{id}");
+    expect(decision.instruction).toContain("bounded_owner_disposition_repair");
+    expect(decision.instruction).toContain("board_escalation");
+    expect(decision.instruction).toContain("max_attempts_exhausted");
+  });
   it.each(["done", "cancelled", "blocked", "in_review"])("respects persisted %s disposition", status => {
     expect(decideLegacyContinuation({ ...input, issue: { ...input.issue!, status } }).kind).toBe("skip");
   });

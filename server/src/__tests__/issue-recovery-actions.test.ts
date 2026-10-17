@@ -39,6 +39,7 @@ import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { issueService } from "../services/issues.js";
+import { runningProcesses } from "../adapters/index.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
@@ -2266,6 +2267,294 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const logs = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
     expect(logs.filter(entry => entry.action === "issue.recovery_action_resolved")).toHaveLength(1);
     expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+  });
+
+  it("rejects an agent-owned disposition repair at the board retry entry with a usable next step", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:agent-owner",
+      nextAction: "Choose a live path.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const wake = vi.fn(async () => null);
+    const app = createApp({
+      type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt",
+    }, { recoveryActionEnqueueWakeup: wake });
+    const response = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" }).expect(409);
+    expect(response.body.details).toMatchObject({
+      code: "disposition_recovery_retry_stale",
+      nextAction: expect.stringContaining("PATCH /api/issues/{id}"),
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("continues two partial owner batches through the issue route with one successor each", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const responsibleUserId = randomUUID();
+    await db.insert(authUsers).values({
+      id: responsibleUserId, name: "Recovery operator", email: `${responsibleUserId}@example.test`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.update(companies).set({ defaultResponsibleUserId: responsibleUserId }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, coderId));
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: randomUUID(), status: "running" });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const firstRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: firstRunId, issueId: sourceIssueId, status: "succeeded" });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:partial-1",
+      nextAction: "Continue the unfinished work.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const ownerApp = (runId: string) => createApp({
+      type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt",
+    });
+    const continueBatch = async (runId: string, batch: number) => request(ownerApp(runId))
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", resume: true, comment: `Batch ${batch} succeeded but work remains.` });
+    const queuedForSource = () => db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, coderId),
+    ));
+
+    const first = await continueBatch(firstRunId, 1);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(1));
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]?.status).toBe("cancelled");
+
+    const repeated = await continueBatch(firstRunId, 1);
+    expect([200, 409]).toContain(repeated.status);
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(1));
+
+    const [firstWake] = await queuedForSource();
+    expect(firstWake?.runId).toBeTruthy();
+    expect(firstWake?.idempotencyKey).toBe(`issue-owner-resume:${sourceIssueId}:${firstRunId}`);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, firstWake!.runId!));
+    await db.update(issues).set({ status: "in_review", checkoutRunId: null, executionRunId: null }).where(eq(issues.id, sourceIssueId));
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:partial-2",
+      nextAction: "Continue the unfinished work.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const second = await continueBatch(firstWake!.runId!, 2);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body.status).toBe("todo");
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(2));
+    const wakes = await queuedForSource();
+    expect(wakes.filter(wake => wake.runId)).toHaveLength(2);
+    expect(wakes.map(wake => wake.idempotencyKey)).toEqual(expect.arrayContaining([
+      `issue-owner-resume:${sourceIssueId}:${firstRunId}`,
+      `issue-owner-resume:${sourceIssueId}:${firstWake!.runId!}`,
+    ]));
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]?.status).toBe("todo");
+  });
+
+  it("does not resume an in-review issue without an owner repair or while an interaction is pending", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "succeeded" });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceIssueId));
+    const app = createApp({ type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt" });
+    const resume = () => request(app).patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", resume: true, comment: "Work remains after the batch." });
+
+    const withoutRepair = await resume().expect(409);
+    expect(withoutRepair.body.error).toContain("active disposition repair");
+
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:review-wait",
+      nextAction: "Continue only if no review is pending.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: sourceIssueId, kind: "request_confirmation", status: "pending", createdByAgentId: coderId,
+      payload: { version: 1, prompt: "Confirm the next step." },
+    });
+    const withPendingInteraction = await resume().expect(409);
+    expect(withPendingInteraction.body.error).toContain("pending issue interaction");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]?.status).toBe("in_review");
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+  });
+
+  it.each(["none", "user", "agent"] as const)("keeps one source-run receipt behind a running repair with existing %s input", async (pendingActor) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const responsibleUserId = randomUUID();
+    await db.insert(authUsers).values({
+      id: responsibleUserId, name: "Recovery operator", email: `${responsibleUserId}@example.test`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.update(companies).set({ defaultResponsibleUserId: responsibleUserId }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, coderId));
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "running" });
+    await db.update(issues).set({ status: "todo", executionRunId: runId }).where(eq(issues.id, sourceIssueId));
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:running-repair",
+      nextAction: "Continue unfinished work.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    if (pendingActor !== "none") {
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId: coderId, source: "assignment", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedByActorType: pendingActor,
+        requestedByActorId: pendingActor === "user" ? responsibleUserId : coderId,
+        payload: { issueId: sourceIssueId },
+      });
+    }
+    const app = createApp({ type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt" });
+    const resume = () => request(app).patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", resume: true, comment: "This batch succeeded; queue the next one." });
+
+    const expectedCount = pendingActor === "none" ? 1 : 2;
+    await resume().expect(200);
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))).length).toBe(expectedCount));
+    await resume().expect(200);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes).toHaveLength(expectedCount);
+    const [receipt] = wakes.filter(wake => wake.idempotencyKey === `issue-owner-resume:${sourceIssueId}:${runId}`);
+    expect(receipt).toMatchObject({ requestedByActorType: "agent", requestedByActorId: coderId });
+    expect(["queued", "deferred_issue_execution", "coalesced"]).toContain(receipt?.status);
+    expect(receipt?.runId).not.toBe(runId);
+    if (pendingActor !== "none") {
+      // Even after the successor input is consumed, a repeat of this source
+      // run cannot turn the merged receipt into another queued successor.
+      await db.update(agentWakeupRequests).set({ status: "coalesced", finishedAt: new Date() })
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      await resume().expect(200);
+      await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(expectedCount));
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]?.status).toBe("todo");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("running");
+  });
+
+  it.each(["user", "agent"] as const)("retains an owner receipt when queue admission meets existing %s input", async (pendingActor) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    // Process adapters exercise the legacy wake queue; Codex uses native admission.
+    await db.update(agents).set({ adapterType: "process", adapterConfig: { command: "false" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, coderId));
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "running" });
+    await db.update(issues).set({ status: "in_progress", executionRunId: runId }).where(eq(issues.id, sourceIssueId));
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId: coderId, source: "automation", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: pendingActor,
+      requestedByActorId: pendingActor === "user" ? "board" : coderId,
+      payload: { issueId: sourceIssueId },
+    });
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId: sourceIssueId, authorType: "agent", authorAgentId: coderId,
+      createdByRunId: runId, body: "Queue the next authorized batch.",
+    }).returning();
+    const heartbeat = heartbeatService(db);
+    const wake = () => heartbeat.wakeup(coderId, {
+      source: "automation", triggerDetail: "system", reason: "issue_commented",
+      requestedByActorType: "agent", requestedByActorId: coderId,
+      idempotencyKey: `issue-owner-resume:${sourceIssueId}:${runId}`,
+      payload: { issueId: sourceIssueId, commentId: comment.id, resumeIntent: true, followUpRequested: true },
+      contextSnapshot: { issueId: sourceIssueId, wakeCommentId: comment.id, wakeReason: "issue_commented" },
+    });
+    runningProcesses.set(runId, { child: {} as never, graceSec: 0, processGroupId: null });
+    try {
+      await wake();
+      const wakes = () => db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      const rows = await wakes();
+      expect(rows).toHaveLength(2);
+      const [receipt] = rows.filter(row => row.idempotencyKey === `issue-owner-resume:${sourceIssueId}:${runId}`);
+      expect(receipt).toMatchObject({ requestedByActorType: "agent", requestedByActorId: coderId });
+      if (pendingActor === "agent") expect(receipt?.status).toBe("coalesced");
+      else expect(receipt?.status).toBe("deferred_issue_execution");
+      // Once the queued input is consumed, its durable source-run receipt must
+      // still prevent the same repair from creating another successor.
+      await db.update(agentWakeupRequests).set({ status: "coalesced", finishedAt: new Date() })
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      await wake();
+      expect(await wakes()).toHaveLength(2);
+    } finally { runningProcesses.delete(runId); }
+  });
+
+  it("rechecks a pending interaction committed while the owner resume waits for the issue lock", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "succeeded" });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceIssueId));
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:concurrent-wait",
+      nextAction: "Continue only if no review is pending.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const held = new Promise<void>(resolve => { locked = resolve; });
+    const competing = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, sourceIssueId)).for("update");
+      locked();
+      await released;
+      await tx.insert(issueThreadInteractions).values({
+        companyId, issueId: sourceIssueId, kind: "request_confirmation", status: "pending", createdByAgentId: coderId,
+        payload: { version: 1, prompt: "A new decision is required." },
+      });
+    });
+    await held;
+    const app = createApp({ type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt" });
+    let earlyResult: { status: number; body: unknown } | undefined;
+    const response = request(app).patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", resume: true, comment: "Continue if authorized." }).then(result => { earlyResult = result; return result; });
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
+          and cardinality(pg_blocking_pids(pid)) > 0`);
+        expect(waiting.length, JSON.stringify(earlyResult)).toBeGreaterThan(0);
+      }, { timeout: 5_000 });
+    } finally {
+      release();
+      await competing;
+    }
+    const result = await response;
+    expect(result.status, JSON.stringify(result.body)).toBe(409);
+    expect(result.body.error).toContain("pending issue interaction");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]?.status).toBe("in_review");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("keeps an exhausted monitor at its attempt limit when an old repair tries to re-arm it", async () => {
+    const { sourceIssueId } = await seedCompany();
+    await db.update(issues).set({
+      status: "in_review", monitorAttemptCount: 1, monitorNextCheckAt: null,
+      monitorScheduledBy: "assignee",
+    }).where(eq(issues.id, sourceIssueId));
+    const res = await request(createApp()).patch(`/api/issues/${sourceIssueId}`).send({
+      executionPolicy: { stages: [], monitor: {
+        nextCheckAt: "2099-04-11T12:30:00.000Z", maxAttempts: 1, scheduledBy: "board",
+      } },
+    }).expect(422);
+    expect(res.body.error).toContain("Monitor bounds are already exhausted");
+    expect(res.body.details?.clearReason).toBe("max_attempts_exhausted");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({
+      monitorAttemptCount: 1, monitorNextCheckAt: null, status: "in_review",
+    });
   });
 
   it("hands restored work back to the recorded return owner and records the outcome", async () => {

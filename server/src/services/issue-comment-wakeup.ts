@@ -1,6 +1,7 @@
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;
   resumeRequested: boolean;
+  allowCurrentIssueRunResume?: boolean;
   commentCreatedByRunId?: string | null;
   issueAtCommentStart: {
     checkoutRunId?: string | null;
@@ -17,7 +18,7 @@ export function shouldWakeAssigneeForIssueComment(input: {
   );
   if (
     input.selfComment &&
-    (!input.resumeRequested || commentIsFromCurrentIssueRun)
+    (!input.resumeRequested || (commentIsFromCurrentIssueRun && !input.allowCurrentIssueRunResume))
   ) {
     return false;
   }

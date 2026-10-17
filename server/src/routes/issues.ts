@@ -4224,7 +4224,11 @@ export function issueRoutes(
     resumeRequested?: boolean;
     reopened?: boolean;
     blockedToTodoRecovery?: boolean;
+    queryDb?: Db;
   }): Promise<string | null> {
+    const queryDb = input.queryDb ?? db;
+    const issueThreadInteractionsSvc = issueThreadInteractionService(queryDb);
+    const issueApprovalsSvc = issueApprovalService(queryDb);
     const { issue } = input;
     if (issue.status === "done" || issue.status === "cancelled") {
       return `Recovery action became stale because the source issue reached ${issue.status}.`;
@@ -4256,7 +4260,7 @@ export function issueRoutes(
     if (!durableSourceChange) return null;
 
     if (issue.status === "blocked") {
-      const readiness = await svc.getDependencyReadiness(issue.id);
+      const readiness = await svc.getDependencyReadiness(issue.id, queryDb);
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
@@ -6878,6 +6882,35 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertOwnerDispositionResumeAllowed(
+    req: Request,
+    issue: IssueRouteSnapshot,
+    queryDb: Db = db,
+  ) {
+    if (req.actor.type !== "agent") throw forbidden("Owner repair requires an agent");
+    const action = await issueRecoveryActionService(queryDb).getActiveForIssue(issue.companyId, issue.id);
+    if (
+      !action || action.ownerType !== "agent" ||
+      action.wakePolicy?.type !== "bounded_owner_disposition_repair" ||
+      action.ownerAgentId !== req.actor.agentId ||
+      action.returnOwnerAgentId !== req.actor.agentId ||
+      issue.assigneeAgentId !== req.actor.agentId
+    ) {
+      throw conflict("In-review follow-up requires the original owner's active disposition repair", { issueId: issue.id });
+    }
+    const reviewPath = await classifySourceRecoveryRevalidation({
+      issue, trigger: "issue_update", statusChanged: true, queryDb,
+    });
+    if (reviewPath) throw conflict(reviewPath, { issueId: issue.id });
+    const readiness = await svc.getDependencyReadiness(issue.id, queryDb);
+    if (readiness.unresolvedBlockerCount > 0) {
+      throw conflict("Issue follow-up blocked by unresolved blockers", {
+        issueId: issue.id, unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+      });
+    }
+    await assertSafeRecoveryHandBackGates({ req, issue, recoveryAction: action, queryDb, skipBudgetReconciliation: queryDb !== db });
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -6904,7 +6937,16 @@ export function issueRoutes(
       return false;
     }
 
-    if (!isExplicitResumeCapableStatus(issue.status)) {
+    if (
+      issue.status === "in_review" &&
+      options.resumeIntent === true &&
+      req.body.status === "todo" &&
+      req.actor.type === "agent"
+    ) {
+      const source = await svc.getById(issue.id);
+      if (!source) throw notFound("Issue not found");
+      await assertOwnerDispositionResumeAllowed(req, source);
+    } else if (!isExplicitResumeCapableStatus(issue.status)) {
       res.status(409).json({
         error: "Issue is not resumable through comment follow-up intent",
         details: { issueId: issue.id, status: issue.status },
@@ -7137,7 +7179,13 @@ export function issueRoutes(
     recoveryAction: NonNullable<
       Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>
     >;
+    queryDb?: Db;
+    skipBudgetReconciliation?: boolean;
   }) {
+    const queryDb = input.queryDb ?? db;
+    const projectsSvc = projectService(queryDb);
+    const issueApprovalsSvc = issueApprovalService(queryDb);
+    const gateTreeControlSvc = input.queryDb ? issueTreeControlFactory?.(queryDb) ?? treeControlSvc : treeControlSvc;
     const returnOwnerAgentId = input.recoveryAction.returnOwnerAgentId;
     if (
       !returnOwnerAgentId ||
@@ -7185,7 +7233,7 @@ export function issueRoutes(
       );
     }
 
-    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
+    const activePauseHold = await gateTreeControlSvc.getActivePauseHoldGate(
       input.issue.companyId,
       input.issue.id,
     );
@@ -7226,6 +7274,9 @@ export function issueRoutes(
         },
       );
     }
+    // The preflight reconciles budgets before the issue lock. Reconciliation
+    // owns a separate accounting transaction; dispatch rechecks the budget.
+    if (input.skipBudgetReconciliation) return;
     const budgetBlock = await budgetService(db).getInvocationBlock(
       input.issue.companyId,
       returnOwnerAgentId,
@@ -9795,6 +9846,18 @@ export function issueRoutes(
             !activeRecoveryAction.returnOwnerAgentId ||
             lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
           ) {
+            if (
+              activeRecoveryAction.ownerType === "agent" &&
+              activeRecoveryAction.wakePolicy?.type === "bounded_owner_disposition_repair"
+            ) {
+              throw conflict(
+                "This agent-owned disposition repair cannot use the board retry endpoint.",
+                {
+                  code: "disposition_recovery_retry_stale",
+                  nextAction: "If the original owner has authorized unfinished work and no execution or waiting gate applies, PATCH /api/issues/{id} with status: todo, resume: true, and an explanatory comment. Check the returned task and queued run. Otherwise record a real wait or let the bounded repair escalate to the board.",
+                },
+              );
+            }
             throw conflict(
               "This recovery notice no longer matches the task. Refresh the task before choosing its next step.",
               { code: "disposition_recovery_retry_stale" },
@@ -14430,11 +14493,19 @@ export function issueRoutes(
           ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
           : svc.update(id, issueUpdateData);
       };
+      const ownerResumeRequested = req.actor.type === "agent" && resumeRequested === true && updateFields.status === "todo";
       const assertLockedReviewPolicyAllowsMutation = async (
         tx: Parameters<typeof svc.update>[2],
       ) => {
         const lockedExisting = await svc.getByIdForUpdate(id, tx);
         if (!lockedExisting) return false;
+        if (ownerResumeRequested) {
+          if (lockedExisting.status === "in_review") {
+            await assertOwnerDispositionResumeAllowed(req, lockedExisting, tx as unknown as Db);
+          } else if (!isExplicitResumeCapableStatus(lockedExisting.status)) {
+            throw conflict("Issue is not resumable through comment follow-up intent", { issueId: id, status: lockedExisting.status });
+          }
+        }
         if (mcpReviewSensitiveMutation) await assertMcpTaskParticipation(tx ?? db, lockedExisting);
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&
@@ -14549,12 +14620,12 @@ export function issueRoutes(
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
-        reviewPolicySensitiveMutationRequested;
+        reviewPolicySensitiveMutationRequested || ownerResumeRequested;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
             if (
-              reviewPolicySensitiveMutationRequested &&
+              (reviewPolicySensitiveMutationRequested || ownerResumeRequested) &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
@@ -15560,12 +15631,20 @@ export function issueRoutes(
           // Re-derive closed-ness from the post-update issue so a status change
           // like in_progress -> done with a closure comment does not enqueue a
           // stale issue_commented wake for an already-completed issue.
-          // A completed prior run may explicitly resume, but the run that still
-          // owns this issue is already executing the comment's work.
+          // A completed prior run may explicitly resume. The current run only
+          // queues a successor when it owns a bounded disposition repair.
           const shouldWakeAssigneeForComment =
             shouldWakeAssigneeForIssueComment({
               selfComment,
               resumeRequested: resumeRequested === true,
+              allowCurrentIssueRunResume:
+                resumeRequested === true &&
+                actor.actorType === "agent" &&
+                actor.actorId === assigneeId &&
+                activeRecoveryActionBeforeUpdate?.ownerType === "agent" &&
+                activeRecoveryActionBeforeUpdate.ownerAgentId === actor.actorId &&
+                activeRecoveryActionBeforeUpdate.returnOwnerAgentId === actor.actorId &&
+                activeRecoveryActionBeforeUpdate.wakePolicy?.type === "bounded_owner_disposition_repair",
               commentCreatedByRunId: comment.createdByRunId,
               issueAtCommentStart: existing,
               reopened,
@@ -15581,6 +15660,11 @@ export function issueRoutes(
             addWakeup(assigneeId, {
               source: "automation",
               triggerDetail: "system",
+              idempotencyKey:
+                resumeRequested === true && actor.actorType === "agent" &&
+                actor.actorId === assigneeId && actor.runId
+                  ? `issue-owner-resume:${issue.id}:${actor.runId}`
+                  : undefined,
               reason: reopened
                 ? "issue_reopened_via_comment"
                 : "issue_commented",
