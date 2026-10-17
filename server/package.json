@@ -44,7 +44,7 @@
     "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.73.0",
+    "@agentclientprotocol/claude-agent-acp": "0.85.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@ai-sdk/amazon-bedrock": "5.0.113",
     "@ai-sdk/anthropic": "4.0.78",
