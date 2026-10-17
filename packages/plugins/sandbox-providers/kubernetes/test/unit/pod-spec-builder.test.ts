@@ -92,4 +92,26 @@ describe("buildJobManifest", () => {
     expect(job.spec.template.metadata.labels["paperclip.io/run-id"]).toBe("r1");
     expect(job.spec.template.metadata.labels["paperclip.io/role"]).toBe("agent");
   });
+
+  it("uses IfNotPresent for an immutable version-tagged image", () => {
+    const job = buildJobManifest(baseInput);
+    expect(job.spec.template.spec.containers[0].imagePullPolicy).toBe("IfNotPresent");
+  });
+
+  it("uses Always for a floating :latest image so stale node caches can't stick", () => {
+    const job = buildJobManifest({
+      ...baseInput,
+      image: "ghcr.io/paperclipai/agent-runtime-claude:latest",
+    });
+    expect(job.spec.template.spec.containers[0].imagePullPolicy).toBe("Always");
+  });
+
+  it("uses IfNotPresent for a floating :latest image when preloadedImages is set (air-gapped clusters)", () => {
+    const job = buildJobManifest({
+      ...baseInput,
+      image: "ghcr.io/paperclipai/agent-runtime-claude:latest",
+      preloadedImages: true,
+    });
+    expect(job.spec.template.spec.containers[0].imagePullPolicy).toBe("IfNotPresent");
+  });
 });

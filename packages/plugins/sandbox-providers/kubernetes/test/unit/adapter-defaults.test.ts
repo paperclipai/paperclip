@@ -11,7 +11,7 @@ import type { AdapterRegistryEntry } from "../../src/adapter-registry.js";
 describe("adapter-defaults (built-in)", () => {
   it("returns defaults for claude_local", () => {
     const d = getAdapterDefaults("claude_local");
-    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-claude:v1");
+    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-claude:latest");
     expect(d.envKeys).toContain("ANTHROPIC_API_KEY");
     expect(d.allowFqdns).toContain("api.anthropic.com");
     expect(d.probeCommand).toEqual(["claude", "--version"]);
@@ -19,7 +19,7 @@ describe("adapter-defaults (built-in)", () => {
 
   it("returns defaults for codex_local", () => {
     const d = getAdapterDefaults("codex_local");
-    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-codex:v1");
+    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-codex:latest");
     expect(d.envKeys).toContain("OPENAI_API_KEY");
     expect(d.probeCommand).toEqual(["codex", "--version"]);
   });

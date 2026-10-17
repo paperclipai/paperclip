@@ -381,6 +381,7 @@ const plugin = definePlugin({
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
           imagePullSecrets: config.imagePullSecrets,
+          preloadedImages: config.preloadedImages,
         })
       : buildJobManifest({
           namespace,
@@ -395,6 +396,7 @@ const plugin = definePlugin({
           activeDeadlineSec: config.podActivityDeadlineSec,
           ttlSecondsAfterFinished: config.jobTtlSecondsAfterFinished,
           imagePullSecrets: config.imagePullSecrets,
+          preloadedImages: config.preloadedImages,
         });
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
