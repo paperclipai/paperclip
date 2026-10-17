@@ -2321,6 +2321,135 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("commits one causal comment with a retried confirmation and preserves unrelated cards", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue(
+      "Atomic binding comment",
+    );
+    const target = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Ship this change?" },
+      },
+      { userId: "local-board" },
+    );
+    const unrelated = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve an unrelated request?",
+          supersedeOnUserComment: true,
+        },
+      },
+      { userId: "local-board" },
+      { supersedePendingSiblingInteractions: false },
+    );
+    const mutationOptions = {
+      afterResolveInTransaction: async (
+        tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+        resolved: { id: string },
+      ) => {
+        await issuesSvc.addComment(
+          issueId,
+          "Deploy after 19:00.",
+          { userId: "local-board" },
+          {
+            authorType: "user",
+            clientRequestId: resolved.id,
+            skipInteractionSupersede: true,
+          },
+          tx,
+        );
+      },
+    };
+
+    const results = await Promise.allSettled([
+      interactionsSvc.acceptInteraction(
+        acceptIssueScope(issueId, companyId, goalId),
+        target.id,
+        {},
+        { userId: "local-board" },
+        mutationOptions,
+      ),
+      interactionsSvc.acceptInteraction(
+        acceptIssueScope(issueId, companyId, goalId),
+        target.id,
+        {},
+        { userId: "local-board" },
+        mutationOptions,
+      ),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      body: "Deploy after 19:00.",
+      clientRequestId: target.id,
+    });
+    await expect(interactionsSvc.getById(unrelated.id)).resolves.toMatchObject({
+      status: "pending",
+    });
+  });
+
+  it("rolls back the decision and causal comment when transactional enrichment fails", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue(
+      "Atomic binding comment rollback",
+    );
+    const target = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Ship this change?" },
+      },
+      { userId: "local-board" },
+    );
+
+    await expect(
+      interactionsSvc.acceptInteraction(
+        acceptIssueScope(issueId, companyId, goalId),
+        target.id,
+        {},
+        { userId: "local-board" },
+        {
+          afterResolveInTransaction: async (tx, resolved) => {
+            await issuesSvc.addComment(
+              issueId,
+              "Deploy after 19:00.",
+              { userId: "local-board" },
+              {
+                authorType: "user",
+                clientRequestId: resolved.id,
+                skipInteractionSupersede: true,
+              },
+              tx,
+            );
+            throw new Error("controlled enrichment failure");
+          },
+        },
+      ),
+    ).rejects.toThrow("controlled enrichment failure");
+
+    await expect(interactionsSvc.getById(target.id)).resolves.toMatchObject({
+      status: "pending",
+      result: null,
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
   it("reopens an in-review issue before waking the assignee after rejection", async () => {
     const { companyId, issueId } = await seedConfirmationIssue(
       "Continue after review rejection",

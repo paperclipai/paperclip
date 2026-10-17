@@ -369,25 +369,31 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/interactions/{}/accept": {
     "section": "Issues (Tasks)",
-    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`)",
+    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`; optional `bindingComment: { body }` for an ordinary board confirmation)",
     "examples": [
       {
         "body": {
           "selectedOptionIds": [
             "draft-report-march",
             "tmp-export-2025"
-          ]
+          ],
+          "bindingComment": {
+            "body": "Delete only the selected files."
+          }
         }
       }
     ]
   },
   "POST /api/issues/{}/interactions/{}/reject": {
     "section": "Issues (Tasks)",
-    "description": "Reject suggested tasks or confirmation",
+    "description": "Reject suggested tasks or confirmation; ordinary board confirmations may include `bindingComment: { body }`",
     "examples": [
       {
         "body": {
-          "reason": "Keep the March draft; only delete tmp/export-2025.csv."
+          "reason": "Keep the March draft; only delete tmp/export-2025.csv.",
+          "bindingComment": {
+            "body": "Keep the March draft."
+          }
         }
       }
     ]

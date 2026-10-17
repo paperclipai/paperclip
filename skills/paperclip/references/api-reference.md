@@ -1168,7 +1168,10 @@ Accept (board action, requires board/user role; agents creating the interaction 
 
 ```json
 POST /api/issues/{issueId}/interactions/{interactionId}/accept
-{ "selectedOptionIds": ["draft-report-march", "tmp-export-2025"] }
+{
+  "selectedOptionIds": ["draft-report-march", "tmp-export-2025"],
+  "bindingComment": { "body": "Delete only the selected files." }
+}
 ```
 
 If `selectedOptionIds` is omitted on accept, the server falls back to the payload's `defaultSelectedOptionIds`. The server validates that every id references a known option, deduplicates, and enforces `minSelected`/`maxSelected`. Unknown ids return 422.
@@ -1177,7 +1180,10 @@ Reject:
 
 ```json
 POST /api/issues/{issueId}/interactions/{interactionId}/reject
-{ "reason": "Keep the March draft; only delete tmp/export-2025.csv." }
+{
+  "reason": "Keep the March draft; only delete tmp/export-2025.csv.",
+  "bindingComment": { "body": "Keep the March draft." }
+}
 ```
 
 `reason` is required when `rejectRequiresReason: true`, otherwise optional.
@@ -1430,8 +1436,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
 | POST | `/api/issues/:issueId/interactions/:interactionId/resolve-from-comment` | Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason |
-| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
-| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`; optional `bindingComment: { body }` for an ordinary board confirmation) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation; ordinary board confirmations may include `bindingComment: { body }` |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |

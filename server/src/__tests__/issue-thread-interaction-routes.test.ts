@@ -49,6 +49,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   cancelRun: vi.fn(async () => null),
 }));
+const mockPauseGate = vi.hoisted(() =>
+  vi.fn(async (): Promise<Record<string, unknown> | null> => null),
+);
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)
 );
@@ -221,6 +224,9 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
+    issueTreeControlService: () => ({
+      getActivePauseHoldGate: mockPauseGate,
+    }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
     taskWatchdogService: () => ({
@@ -353,6 +359,7 @@ describe("issue thread interaction routes", () => {
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
+    mockPauseGate.mockResolvedValue(null);
     mockInteractionService.getForIssue.mockResolvedValue({
       id: "interaction-withdraw",
       kind: "ask_user_questions",
@@ -585,6 +592,42 @@ describe("issue thread interaction routes", () => {
     mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
     mockCrossIssueInfluence.priorCount = 0;
     mockCrossIssueInfluence.inserted.length = 0;
+  });
+
+  it("keeps a plain default-policy acceptance wake-free", async () => {
+    const pending = {
+      id: "interaction-plain-no-wake",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "default",
+      effectiveResolverPolicySource: "requested",
+      sourceCommentId: null,
+      sourceRunId: RUN_1,
+      payload: { version: 1, prompt: "Ship it?" },
+      result: null,
+    };
+    mockInteractionService.getForIssue.mockResolvedValueOnce(pending);
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        ...pending,
+        companyId: "company-1",
+        issueId: ISSUE_ID,
+        status: "accepted",
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+
+    const response = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/${pending.id}/accept`)
+      .send({});
+
+    expect(response.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("creates board-authored interactions", async () => {
@@ -822,6 +865,132 @@ describe("issue thread interaction routes", () => {
       }),
     );
   });
+
+  it("persists a binding acceptance comment and carries it in the single interaction wake", async () => {
+    const interaction = {
+      id: "interaction-binding-accept",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "none",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "default",
+      effectiveResolverPolicySource: "requested",
+      sourceCommentId: null,
+      sourceRunId: RUN_1,
+      payload: { version: 1, prompt: "Ship it?" },
+      result: { version: 1, outcome: "accepted" },
+    };
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      ...interaction,
+      status: "pending",
+      result: null,
+    });
+    mockInteractionService.acceptInteraction.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        const mutationOptions = args[4] as {
+          afterResolveInTransaction?: (
+            tx: Record<string, unknown>,
+            resolved: Record<string, unknown>,
+          ) => Promise<void>;
+        };
+        await mutationOptions.afterResolveInTransaction?.({}, interaction);
+        return { interaction, createdIssues: [] };
+      },
+    );
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "comment-binding-accept",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "local-board",
+      body: "Deploy after 19:00.",
+      presentation: null,
+      metadata: null,
+      createdAt: new Date("2026-10-16T12:00:00Z"),
+      updatedAt: new Date("2026-10-16T12:00:00Z"),
+    });
+
+    const response = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/${interaction.id}/accept`)
+      .send({ bindingComment: { body: "Deploy after 19:00." } });
+
+    expect(response.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      ISSUE_ID,
+      "Deploy after 19:00.",
+      { userId: "local-board" },
+      expect.objectContaining({
+        authorType: "user",
+        clientRequestId: interaction.id,
+        skipInteractionSupersede: true,
+      }),
+      expect.anything(),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          interactionId: interaction.id,
+          commentId: "comment-binding-accept",
+          originCommentIds: ["comment-binding-accept"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          interactionId: interaction.id,
+          wakeCommentIds: ["comment-binding-accept"],
+          originCommentIds: ["comment-binding-accept"],
+        }),
+      }),
+    );
+  });
+
+  it.each(["accept", "reject"] as const)(
+    "rejects a binding %s comment under an active pause before any mutation",
+    async (action) => {
+      const interaction = {
+        id: `interaction-binding-paused-${action}`,
+        companyId: "company-1",
+        issueId: ISSUE_ID,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        resolverPolicyProvenance: "default",
+        effectiveResolverPolicySource: "requested",
+        sourceCommentId: null,
+        sourceRunId: RUN_1,
+        payload: { version: 1, prompt: "Ship it?" },
+        result: null,
+      };
+      mockInteractionService.getForIssue.mockResolvedValueOnce(interaction);
+      mockPauseGate.mockResolvedValueOnce({
+        holdId: "hold-1",
+        rootIssueId: "parent-1",
+      });
+
+      const response = await request(await createApp())
+        .post(`/api/issues/${ISSUE_ID}/interactions/${interaction.id}/${action}`)
+        .send({
+          ...(action === "reject" ? { reason: "Revise timing." } : {}),
+          bindingComment: { body: "Do not deploy while paused." },
+        });
+
+      expect(response.status).toBe(409);
+      expect(response.body.error).toBe(
+        "Task is paused. Resume it before sending a message.",
+      );
+      expect(mockPauseGate).toHaveBeenCalledWith("company-1", ISSUE_ID);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+      expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
 
   it("answers questions through the durable delivery service", async () => {
     const app = await createApp();
@@ -2030,6 +2199,75 @@ describe("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("persists a binding rejection comment without a second comment wake", async () => {
+    const interaction = {
+      id: "interaction-binding-reject",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee_on_accept",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "default",
+      effectiveResolverPolicySource: "requested",
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: { version: 1, prompt: "Ship it?" },
+      result: { version: 1, outcome: "rejected", reason: "Revise timing." },
+    };
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      ...interaction,
+      status: "pending",
+      result: null,
+    });
+    mockInteractionService.rejectInteraction.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        const mutationOptions = args[4] as {
+          afterResolveInTransaction?: (
+            tx: Record<string, unknown>,
+            resolved: Record<string, unknown>,
+          ) => Promise<void>;
+        };
+        await mutationOptions.afterResolveInTransaction?.({}, interaction);
+        return interaction;
+      },
+    );
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "comment-binding-reject",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "local-board",
+      body: "Keep the existing window.",
+      presentation: null,
+      metadata: null,
+      createdAt: new Date("2026-10-16T12:00:00Z"),
+      updatedAt: new Date("2026-10-16T12:00:00Z"),
+    });
+
+    const response = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/${interaction.id}/reject`)
+      .send({
+        reason: "Revise timing.",
+        bindingComment: { body: "Keep the existing window." },
+      });
+
+    expect(response.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          interactionId: interaction.id,
+          commentId: "comment-binding-reject",
+        }),
+      }),
+    );
   });
 
   it("wakes the assignee to revise a rejected plan even when its policy is accept-only", async () => {

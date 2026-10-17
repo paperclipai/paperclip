@@ -319,6 +319,13 @@ Invariants:
 - `author_user_id` uuid fk `users.id` null
 - `body` text not null
 
+An ordinary board confirmation accept/reject may carry one binding comment in
+the same authenticated request. The interaction verdict and user-attributed
+comment commit atomically, share the interaction ID as their causal key, and
+produce one continuation containing both records. Plain interaction decisions
+and ordinary comments retain their existing behavior; proximity or comment text
+is never used to infer causality.
+
 ## 7.7.1 `issue_access_grants`
 
 - `issue_id` uuid fk `issues.id` not null

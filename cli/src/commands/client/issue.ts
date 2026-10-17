@@ -150,6 +150,7 @@ interface IssueRecoveryResolveOptions extends BaseClientOptions {
 }
 
 interface InteractionAcceptOptions extends BaseClientOptions {
+  bindingComment?: string;
   selectedClientKeys?: string;
   selectedOptionIds?: string;
 }
@@ -759,14 +760,27 @@ export function registerIssueCommands(program: Command): void {
       .description("Accept an issue thread interaction")
       .argument("<issueId>", "Issue ID")
       .argument("<interactionId>", "Interaction ID")
+      .option(
+        "--binding-comment <text>",
+        "Persist a causal comment with the decision",
+      )
       .option("--selected-client-keys <csv>", "Client keys to accept")
       .option("--selected-option-ids <csv>", "Checkbox option IDs to accept")
       .action(async (issueId: string, interactionId: string, opts: InteractionAcceptOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = acceptIssueThreadInteractionSchema.parse({
-            selectedClientKeys: opts.selectedClientKeys === undefined ? undefined : parseCsv(opts.selectedClientKeys),
-            selectedOptionIds: opts.selectedOptionIds === undefined ? undefined : parseCsv(opts.selectedOptionIds),
+            bindingComment: opts.bindingComment
+              ? { body: opts.bindingComment }
+              : undefined,
+            selectedClientKeys:
+              opts.selectedClientKeys === undefined
+                ? undefined
+                : parseCsv(opts.selectedClientKeys),
+            selectedOptionIds:
+              opts.selectedOptionIds === undefined
+                ? undefined
+                : parseCsv(opts.selectedOptionIds),
           });
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
           printOutput(interaction, { json: ctx.json });

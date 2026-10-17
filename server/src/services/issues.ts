@@ -12443,6 +12443,9 @@ export function issueService(db: Db) {
         clientRequestId?: string;
         /** Server-only: authenticated Paperclip messages also belong in the Slack thread. */
         mirrorToSlack?: boolean;
+        /** Server-only: a comment resolved together with its causal interaction
+         * must not supersede unrelated pending confirmations. */
+        skipInteractionSupersede?: boolean;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -13049,7 +13052,8 @@ export function issueService(db: Db) {
         authorType === "user" &&
         actor.userId &&
         actor.userId !== "board-concierge" &&
-        !createdByRunId
+        !createdByRunId &&
+        options?.skipInteractionSupersede !== true
       ) {
         const { issueThreadInteractionService } =
           await import("./issue-thread-interactions.js");

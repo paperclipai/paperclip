@@ -2075,8 +2075,15 @@ export type CreateIssueThreadInteractionInput = z.input<
   typeof createIssueThreadInteractionSchema
 >;
 
+const interactionBindingCommentSchema = z
+  .object({
+    body: multilineTextSchema.pipe(z.string().min(1)),
+  })
+  .strict();
+
 export const acceptIssueThreadInteractionSchema = z
   .object({
+    bindingComment: interactionBindingCommentSchema.optional(),
     rememberAction: z.boolean().optional(),
     selectedClientKeys: z
       .array(z.string().trim().min(1).max(120))
@@ -2139,6 +2146,7 @@ export const resolveConfirmationFromCommentSchema = z.object({
 export type ResolveConfirmationFromComment = z.infer<typeof resolveConfirmationFromCommentSchema>;
 
 export const rejectIssueThreadInteractionSchema = z.object({
+  bindingComment: interactionBindingCommentSchema.optional(),
   reason: z.string().trim().max(4000).optional(),
 });
 export type RejectIssueThreadInteraction = z.infer<

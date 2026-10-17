@@ -446,6 +446,7 @@ export const issuesApi = {
     id: string,
     interactionId: string,
     data?: {
+      bindingComment?: { body: string };
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
       rememberAction?: boolean;
@@ -455,10 +456,18 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/accept`,
       data ?? {},
     ),
-  rejectInteraction: (id: string, interactionId: string, reason?: string) =>
+  rejectInteraction: (
+    id: string,
+    interactionId: string,
+    reason?: string,
+    bindingComment?: { body: string },
+  ) =>
     api.post<IssueThreadInteraction>(
       `/issues/${id}/interactions/${interactionId}/reject`,
-      reason ? { reason } : {},
+      {
+        ...(reason ? { reason } : {}),
+        ...(bindingComment ? { bindingComment } : {}),
+      },
     ),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(

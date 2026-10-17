@@ -14,6 +14,7 @@ import {
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsResultSchema,
+  rejectIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
@@ -545,6 +546,23 @@ describe("issue thread interaction schemas", () => {
     expect(() => acceptIssueThreadInteractionSchema.parse({
       selectedOptionIds: ["item-1", "item-1"],
     })).toThrow("selectedOptionIds must be unique");
+  });
+
+  it("parses an optional binding comment on accept and reject", () => {
+    expect(
+      acceptIssueThreadInteractionSchema.parse({
+        bindingComment: { body: "Proceed after 19:00." },
+      }),
+    ).toEqual({ bindingComment: { body: "Proceed after 19:00." } });
+    expect(
+      rejectIssueThreadInteractionSchema.parse({
+        bindingComment: { body: "Keep the existing deployment window." },
+        reason: "Revise the rollout timing.",
+      }),
+    ).toEqual({
+      bindingComment: { body: "Keep the existing deployment window." },
+      reason: "Revise the rollout timing.",
+    });
   });
 
   it("parses request_item_verdicts payloads with defaults", () => {
