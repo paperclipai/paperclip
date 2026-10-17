@@ -59,6 +59,33 @@ pnpm paperclipai onboard
 # Choose "authenticated" -> "public"
 ```
 
+## Sign-up modes
+
+In `authenticated` mode, the sign-up mode controls who can create an account:
+
+| Mode | Effect |
+|------|--------|
+| `open` (default) | Anyone who can reach the instance can create an account. A new account has no company access until an invite is accepted. |
+| `invite` | An account can be created only from a valid invite link. The invite must exist, must not be revoked, accepted, or expired, and must allow human joins. Other sign-ups get `403` with the code `SIGN_UP_REQUIRES_INVITE`. The sign-in page shows that registration is by invitation only. |
+| `disabled` | Nobody can create an account, including invited people. |
+
+Set the mode with the `PAPERCLIP_AUTH_SIGN_UP` environment variable or `auth.signUp` in the config file:
+
+```json
+{ "auth": { "signUp": "invite" } }
+```
+
+The server reads the first value that is set, in this order:
+
+1. `PAPERCLIP_AUTH_SIGN_UP`
+2. `auth.signUp`
+3. `PAPERCLIP_AUTH_DISABLE_SIGN_UP` (legacy: `true` means `disabled`, other values mean `open`)
+4. `auth.disableSignUp` (legacy: `true` means `disabled`)
+
+Existing configurations that set only the legacy flag keep their behavior.
+
+Invite mode also accepts the bootstrap CEO invite from `paperclipai auth bootstrap-ceo`, so a new instance can start in invite mode.
+
 ## Board Claim Flow
 
 When migrating from `local_trusted` to `authenticated`, Paperclip emits a one-time claim URL at startup:

@@ -413,9 +413,10 @@ curl -sf https://$PAPERCLIP_DOMAIN/api/health
 After the first user has signed up (which grants admin role), lock down the instance:
 
 ```bash
-# Disable public sign-up (prevents unauthorized users from creating accounts)
+# Restrict sign-up to invite links (prevents unauthorized users from creating accounts)
 # Add to the task definition environment section, then redeploy:
-#   { "name": "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "value": "true" }
+#   { "name": "PAPERCLIP_AUTH_SIGN_UP", "value": "invite" }
+# Use "disabled" instead to stop all new accounts, including invited ones.
 
 # Or update via Secrets Manager / task def override, then force new deployment
 aws ecs update-service \
@@ -424,7 +425,7 @@ aws ecs update-service \
   --force-new-deployment
 ```
 
-Use the invite flow (added in v2026.416.0) to grant access to additional users after sign-up is disabled.
+Use the invite flow (added in v2026.416.0) to grant access to additional users. In `invite` mode an invited person creates an account from the invite link. See [Sign-up modes](/deploy/deployment-modes#sign-up-modes).
 
 ## Deploying Updates
 

@@ -1,4 +1,5 @@
 import {
+  AUTH_SIGN_UP_INVITE_TOKEN_HEADER,
   authSessionSchema,
   currentUserProfileSchema,
   type AuthSession,
@@ -112,13 +113,17 @@ function logAuthHttpError(method: string, path: string, status: number, statusTe
   });
 }
 
-async function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function authPost(
+  path: string,
+  body: Record<string, unknown>,
+  extraHeaders?: Record<string, string>,
+): Promise<unknown> {
   let res: Response;
   try {
     res = await fetch(`/api/auth${path}`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...extraHeaders },
       body: JSON.stringify(body),
     });
   } catch (networkError) {
@@ -175,8 +180,18 @@ export const authApi = {
     await authPost("/sign-in/email", input);
   },
 
-  signUpEmail: async (input: { name: string; email: string; password: string }) => {
-    await authPost("/sign-up/email", input);
+  signUpEmail: async (
+    input: { name: string; email: string; password: string },
+    options?: { inviteToken?: string | null },
+  ) => {
+    // Invite-only instances accept a sign-up only with a valid invite token.
+    // It rides in a header so it never collides with Better Auth's body schema.
+    const inviteToken = options?.inviteToken?.trim();
+    await authPost(
+      "/sign-up/email",
+      input,
+      inviteToken ? { [AUTH_SIGN_UP_INVITE_TOKEN_HEADER]: inviteToken } : undefined,
+    );
   },
 
   getProfile: async (): Promise<CurrentUserProfile> => {

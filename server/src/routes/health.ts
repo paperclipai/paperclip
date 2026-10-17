@@ -4,7 +4,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { AuthSignUpMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import {
   readPersistedDevServerStatus,
   removeDevServerRestartRequest,
@@ -124,6 +124,8 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    /** Published so the sign-in page can hide a sign-up form that would fail. */
+    authSignUpMode?: AuthSignUpMode;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     runtimeEnv?: CloudInstanceEnv;
@@ -403,6 +405,13 @@ export function healthRoutes(
         })
       : undefined;
 
+    // Sign-up mode is public on purpose: an anonymous visitor can learn it by
+    // trying to sign up anyway, and the sign-in page needs it before a session.
+    const signUpMode =
+      opts.deploymentMode === "authenticated" && opts.authSignUpMode
+        ? { authSignUpMode: opts.authSignUpMode }
+        : {};
+
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
       const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
@@ -414,6 +423,7 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...signUpMode,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
@@ -438,6 +448,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      ...signUpMode,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

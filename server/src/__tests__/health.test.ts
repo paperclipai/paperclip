@@ -425,6 +425,63 @@ describe("GET /health", () => {
     expect(res.body.serverInfo).toBeUndefined();
   });
 
+  it.each(["open", "invite", "disabled"] as const)(
+    "publishes the %s sign-up mode to anonymous and signed-in callers in authenticated mode",
+    async (authSignUpMode) => {
+      const db = {
+        execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue([{ count: 1 }]),
+          })),
+        })),
+      } as unknown as Db;
+      for (const actor of [{ type: "none", source: "none" }, { type: "board", userId: "user-1", source: "session" }]) {
+        const app = express();
+        app.use((req, _res, next) => {
+          (req as any).actor = actor;
+          next();
+        });
+        app.use(
+          "/health",
+          healthRoutes(db, {
+            deploymentMode: "authenticated",
+            deploymentExposure: "public",
+            authReady: true,
+            companyDeletionEnabled: false,
+            authSignUpMode,
+            serverInfo: testServerInfo,
+          }),
+        );
+
+        const res = await request(app).get("/health");
+
+        expect(res.status).toBe(200);
+        expect(res.body.authSignUpMode).toBe(authSignUpMode);
+      }
+    },
+  );
+
+  it("omits the sign-up mode in local_trusted mode, where nobody signs up", async () => {
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(createHealthyDb(), {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        authSignUpMode: "invite",
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("authSignUpMode");
+  });
+
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

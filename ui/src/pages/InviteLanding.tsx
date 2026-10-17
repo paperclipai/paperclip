@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES, AUTH_SIGN_UP_REQUIRES_INVITE_CODE } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
@@ -79,6 +79,14 @@ function mapInviteAuthFeedback(
     return {
       tone: "info",
       message: `An account already exists for ${emailLabel}. Sign in below to continue with this invite.`,
+    };
+  }
+
+  if (code === AUTH_SIGN_UP_REQUIRES_INVITE_CODE) {
+    return {
+      tone: "error",
+      message:
+        "This invite can no longer be used to create an account. Ask the person who invited you for a new invite link.",
     };
   }
 
@@ -378,11 +386,15 @@ export function InviteLandingPage() {
         await authApi.signInEmail({ email: email.trim(), password });
         return;
       }
-      await authApi.signUpEmail({
-        name: name.trim(),
-        email: email.trim(),
-        password,
-      });
+      // The invite token unlocks sign-up on invite-only instances.
+      await authApi.signUpEmail(
+        {
+          name: name.trim(),
+          email: email.trim(),
+          password,
+        },
+        { inviteToken: token },
+      );
     },
     onSuccess: async () => {
       setAuthFeedback(null);
