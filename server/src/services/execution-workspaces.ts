@@ -67,6 +67,10 @@ import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@pap
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
+  pipelineCaseHoldsExecutionWorkspace,
+  pipelineCaseHoldsExecutionWorkspaceSql,
+} from "./pipeline-case-workspace.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -3334,6 +3338,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
+        // A pipeline case that shares this workspace across its stages (executionWorkspaceScope
+        // "case") keeps it while the case is open, even though the source issue (the first
+        // stage task) is terminal. Counted with the non-terminal tree: the case extends it.
+        if (await pipelineCaseHoldsExecutionWorkspace(db, workspace)) {
+          result.skippedNonTerminalTree += 1;
+          continue;
+        }
         if (assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
@@ -3487,6 +3498,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                 )
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
+              sql<boolean>`NOT ${pipelineCaseHoldsExecutionWorkspaceSql(workspace)}`,
               // Re-check the cooldown under the lifecycle lock. This predicate
               // matches the loop check above: block the archive when any issue in
               // the tree became terminal after the cutoff. The tree walk mirrors

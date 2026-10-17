@@ -37,6 +37,7 @@ import {
   type ExecutionWorkspaceMode,
   type IssueExecutionWorkspaceSettings,
   type PipelineStageAutomation,
+  type PipelineExecutionWorkspaceScope,
   PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   type RoutineVariable,
@@ -56,6 +57,12 @@ import {
   pipelineCaseOutputsService,
   summarizePipelineCaseOutputsForContext,
 } from "./pipeline-case-outputs.js";
+import {
+  pipelineCaseWorkspaceIssueBinding,
+  pipelineCaseWorkspaceRefForSourceIssue,
+  resolvePipelineCaseWorkspace,
+  writePipelineCaseWorkspaceRef,
+} from "./pipeline-case-workspace.js";
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
@@ -141,6 +148,7 @@ export type PipelineStageConfig = Record<string, unknown> & {
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: ExecutionWorkspaceMode | null;
     executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+    executionWorkspaceScope?: PipelineExecutionWorkspaceScope | null;
     env?: Record<string, EnvBinding> | null;
     latestRoutineRevisionId?: string | null;
     latestRoutineRevisionNumber?: number;
@@ -164,6 +172,7 @@ export type PipelineStageConfig = Record<string, unknown> & {
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: ExecutionWorkspaceMode | null;
     executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+    executionWorkspaceScope?: PipelineExecutionWorkspaceScope | null;
   };
 };
 
@@ -187,6 +196,8 @@ type PipelineAutomationExecutionContext = {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: ExecutionWorkspaceMode | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  /** Only present when set, so a stage without the opt-in keeps its stored shape. */
+  executionWorkspaceScope?: PipelineExecutionWorkspaceScope;
 };
 
 export interface ResolvedPipelineCaseConversationSource {
@@ -815,16 +826,33 @@ function readExecutionWorkspaceSettings(value: unknown): IssueExecutionWorkspace
     : null;
 }
 
+function readExecutionWorkspaceScope(value: unknown): PipelineExecutionWorkspaceScope | null {
+  return value === "case" ? value : null;
+}
+
 function readAutomationExecutionContext(
-  source?: Partial<PipelineAutomationExecutionContext> | null,
+  source?: (Partial<Omit<PipelineAutomationExecutionContext, "executionWorkspaceScope">> & {
+    executionWorkspaceScope?: unknown;
+  }) | null,
 ): PipelineAutomationExecutionContext {
+  const executionWorkspaceScope = readExecutionWorkspaceScope(source?.executionWorkspaceScope);
   return {
     projectId: readOptionalTrimmedString(source?.projectId),
     projectWorkspaceId: readOptionalTrimmedString(source?.projectWorkspaceId),
     executionWorkspaceId: readOptionalTrimmedString(source?.executionWorkspaceId),
     executionWorkspacePreference: readExecutionWorkspacePreference(source?.executionWorkspacePreference),
     executionWorkspaceSettings: readExecutionWorkspaceSettings(source?.executionWorkspaceSettings),
+    ...(executionWorkspaceScope ? { executionWorkspaceScope } : {}),
   };
+}
+
+function hasOwnKey(value: unknown, key: string) {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function storedExecutionWorkspaceScope(config: PipelineStageConfig) {
+  return readExecutionWorkspaceScope(config.onEnter?.executionWorkspaceScope)
+    ?? readExecutionWorkspaceScope(config.automation?.executionWorkspaceScope);
 }
 
 function readStageAutomationRequest(config?: PipelineStageConfig | null) {
@@ -2232,7 +2260,12 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
 
   async function assertRoutineInCompany(companyId: string, routineId: string) {
     const routine = await db
-      .select({ id: routines.id, companyId: routines.companyId, assigneeAgentId: routines.assigneeAgentId })
+      .select({
+        id: routines.id,
+        companyId: routines.companyId,
+        assigneeAgentId: routines.assigneeAgentId,
+        projectId: routines.projectId,
+      })
       .from(routines)
       .where(eq(routines.id, routineId))
       .limit(1)
@@ -2975,15 +3008,30 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             config: breakdownConfig,
           })
         : null;
+      // Opt-in: one execution workspace per case. Without the scope the stage task keeps
+      // the automation's own workspace fields (its own isolated workspace by default).
+      const caseWorkspace = automation.executionWorkspaceScope === "case"
+        ? await resolvePipelineCaseWorkspace(db, {
+            companyId: execution.companyId,
+            caseId: execution.caseId,
+            workspaceRef: detail.case.workspaceRef,
+            projectId: automation.projectId ?? routine.projectId ?? null,
+          })
+        : null;
+      const workspaceBinding = caseWorkspace?.kind === "reuse"
+        ? pipelineCaseWorkspaceIssueBinding(caseWorkspace, automation.executionWorkspaceSettings)
+        : {
+            executionWorkspaceId: automation.executionWorkspaceId,
+            executionWorkspacePreference: automation.executionWorkspacePreference,
+            executionWorkspaceSettings: automation.executionWorkspaceSettings,
+          };
       const run = await routinesSvc.runPipelineStageEntryRoutine(execution.routineId, {
         source: "api",
         assigneeAgentId: routine.assigneeAgentId,
         idempotencyKey: `pipeline:${execution.caseId}:${execution.automationId}:${execution.triggeringEventId}`,
         projectId: automation.projectId,
         projectWorkspaceId: automation.projectWorkspaceId,
-        executionWorkspaceId: automation.executionWorkspaceId,
-        executionWorkspacePreference: automation.executionWorkspacePreference,
-        executionWorkspaceSettings: automation.executionWorkspaceSettings,
+        ...workspaceBinding,
         payload: {
           pipeline: contextPack.pipeline,
           case: contextPack.case,
@@ -3035,6 +3083,18 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           automationAttemptId: execution.id,
         })
         .onConflictDoNothing({ target: [pipelineCaseIssueLinks.caseId, pipelineCaseIssueLinks.issueId] });
+      const nextWorkspaceRef = caseWorkspace?.kind === "reuse"
+        ? caseWorkspace.nextRef
+        : caseWorkspace?.kind === "fresh" && caseWorkspace.record
+          ? pipelineCaseWorkspaceRefForSourceIssue(detail.case.workspaceRef, run.linkedIssueId)
+          : null;
+      if (nextWorkspaceRef) {
+        await writePipelineCaseWorkspaceRef(db, {
+          companyId: execution.companyId,
+          caseId: execution.caseId,
+          workspaceRef: nextWorkspaceRef,
+        });
+      }
       await writeCaseEvent(db, {
         companyId: execution.companyId,
         caseId: execution.caseId,
@@ -3046,6 +3106,14 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           routineRunId: run.id,
           issueId: run.linkedIssueId,
           status: run.status,
+          ...(caseWorkspace
+            ? {
+                executionWorkspaceScope: "case",
+                executionWorkspace: caseWorkspace.kind === "reuse"
+                  ? { reused: true, executionWorkspaceId: caseWorkspace.executionWorkspaceId }
+                  : { reused: false },
+              }
+            : {}),
         },
       });
       return { status: "succeeded", execution: updated! };
@@ -3641,6 +3709,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       const automationRequest = input.patch.config !== undefined
         ? readStageAutomationRequest(input.patch.config)
         : null;
+      if (automationRequest && !hasOwnKey(input.patch.config?.automation, "executionWorkspaceScope")) {
+        // A client that does not send the key (an older settings form) keeps the stage's
+        // scope; only an explicit null clears it.
+        const existingScope = storedExecutionWorkspaceScope(stageConfig(existing));
+        if (existingScope) {
+          automationRequest.executionContext = {
+            ...automationRequest.executionContext,
+            executionWorkspaceScope: existingScope,
+          };
+        }
+      }
       const stageName = input.patch.name ?? existing.name;
       let config = normalizeStageConfig(kind, input.patch.config !== undefined ? input.patch.config : stageConfig(existing));
       if (automationRequest) {

@@ -144,6 +144,8 @@ function stageAutomationContext(config: Record<string, unknown>) {
       record.executionWorkspaceSettings && typeof record.executionWorkspaceSettings === "object" && !Array.isArray(record.executionWorkspaceSettings)
         ? record.executionWorkspaceSettings
         : null,
+    // Opt-in only: absent keeps the derived automation identical for stages without it.
+    ...(record.executionWorkspaceScope === "case" ? { executionWorkspaceScope: "case" as const } : {}),
   };
 }
 

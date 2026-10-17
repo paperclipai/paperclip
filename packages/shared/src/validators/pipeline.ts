@@ -22,6 +22,15 @@ export const pipelineStageApproverSchema = z.object({
   }
 });
 
+/**
+ * Opt-in workspace scope for a stage automation. Absent (default): each stage
+ * task gets its own execution workspace. "case": every stage task of one case
+ * reuses the case's execution workspace (recorded in pipeline_cases.workspace_ref),
+ * so all steps of a case share one worktree and branch.
+ */
+export const PIPELINE_EXECUTION_WORKSPACE_SCOPES = ["case"] as const;
+export const pipelineExecutionWorkspaceScopeSchema = z.enum(PIPELINE_EXECUTION_WORKSPACE_SCOPES);
+
 export const pipelineStageOnEnterSchema = z.object({
   type: z.literal("run_routine"),
   routineId: z.string().guid(),
@@ -31,6 +40,7 @@ export const pipelineStageOnEnterSchema = z.object({
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceScope: pipelineExecutionWorkspaceScopeSchema.optional().nullable(),
 }).passthrough();
 
 export const pipelineStageAutomationSchema = z.object({
@@ -42,6 +52,7 @@ export const pipelineStageAutomationSchema = z.object({
   executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspaceScope: pipelineExecutionWorkspaceScopeSchema.optional().nullable(),
 }).passthrough();
 
 export const pipelineStageCarryOverPolicySchema = z.object({

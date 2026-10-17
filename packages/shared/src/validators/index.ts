@@ -736,6 +736,8 @@ export {
 } from "./asset.js";
 
 export {
+  PIPELINE_EXECUTION_WORKSPACE_SCOPES,
+  pipelineExecutionWorkspaceScopeSchema,
   pipelineAutomationRetryCleanupOptionsSchema,
   pipelineAutomationRetryRequestSchema,
   pipelineAutomationRetryScopeSchema,

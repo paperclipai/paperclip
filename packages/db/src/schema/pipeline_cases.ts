@@ -30,6 +30,8 @@ export type PipelineCasePendingSuggestion = {
 
 export type PipelineCaseWorkspaceRef = {
   executionWorkspaceId?: string;
+  /** Stage issue whose execution workspace the case shares (executionWorkspaceScope "case"). */
+  sourceIssueId?: string;
   path?: string;
 };
 

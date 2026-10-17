@@ -25,6 +25,21 @@ export interface PipelineCaseConversationSource {
   sourceRunId?: string | null;
 }
 
+/** See PIPELINE_EXECUTION_WORKSPACE_SCOPES in validators/pipeline.ts. */
+export type PipelineExecutionWorkspaceScope = "case";
+
+/**
+ * Shape of pipeline_cases.workspace_ref. With executionWorkspaceScope "case" the
+ * server records the stage issue whose workspace the case uses (sourceIssueId)
+ * and, once that workspace is realised, its id (executionWorkspaceId). `path` is
+ * caller metadata the server does not read.
+ */
+export interface PipelineCaseWorkspaceRef {
+  executionWorkspaceId?: string;
+  sourceIssueId?: string;
+  path?: string;
+}
+
 export interface PipelineStageAutomation {
   routineId: string;
   assigneeAgentId: string | null;
@@ -35,6 +50,8 @@ export interface PipelineStageAutomation {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: ExecutionWorkspaceMode | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  /** Absent: each stage task gets its own workspace (default). "case": one workspace per case. */
+  executionWorkspaceScope?: PipelineExecutionWorkspaceScope | null;
   env: RoutineEnvConfig | null;
   latestRoutineRevisionId: string | null;
   latestRoutineRevisionNumber: number;
