@@ -8,11 +8,21 @@ import {
   type ReactNode,
 } from "react";
 
+/** The theme actually applied to the document. */
 type Theme = "light" | "dark";
 
+/**
+ * What the user asked for. `system` means "follow the operating system" and is
+ * the state a browser is in before any choice is stored.
+ */
+export type ThemePreference = Theme | "system";
+
 interface ThemeContextValue {
+  /** The theme in effect right now, with `system` already resolved. */
   theme: Theme;
-  setTheme: (theme: Theme) => void;
+  /** The stored preference, so a control can show which of the three is active. */
+  themePreference: ThemePreference;
+  setTheme: (preference: ThemePreference) => void;
   toggleTheme: () => void;
 }
 
@@ -21,19 +31,37 @@ const DARK_THEME_COLOR = "#18181b";
 const LIGHT_THEME_COLOR = "#ffffff";
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
+/**
+ * Order the single-button control walks through. `system` is a real stop rather
+ * than an extra control: the same button reaches all three states, and the
+ * label always names the state it moves to.
+ */
+const TOGGLE_ORDER: readonly ThemePreference[] = ["light", "dark", "system"];
+
+function isTheme(value: unknown): value is Theme {
+  return value === "light" || value === "dark";
+}
+
+function readStoredPreference(): ThemePreference {
+  if (typeof window === "undefined") return "system";
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return isTheme(stored) ? stored : "system";
+  } catch {
+    return "system";
+  }
+}
+
 function resolveThemeFromDocument(): Theme {
   if (typeof document === "undefined") return "dark";
   return document.documentElement.classList.contains("dark") ? "dark" : "light";
 }
 
-function hasStoredTheme(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "light" || stored === "dark";
-  } catch {
-    return false;
+function readSystemTheme(): Theme {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return resolveThemeFromDocument();
   }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function applyTheme(theme: Theme) {
@@ -49,52 +77,65 @@ function applyTheme(theme: Theme) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => resolveThemeFromDocument());
-  // Track whether the user has explicitly chosen a theme. If false, the
-  // theme is being derived from the OS `prefers-color-scheme` and should
-  // follow OS-level changes mid-session without being persisted.
-  const [hasExplicitChoice, setHasExplicitChoice] = useState<boolean>(() => hasStoredTheme());
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
+    readStoredPreference(),
+  );
+  const [systemTheme, setSystemTheme] = useState<Theme>(() => readSystemTheme());
 
-  const setTheme = useCallback((nextTheme: Theme) => {
-    setHasExplicitChoice(true);
-    setThemeState(nextTheme);
+  const theme = themePreference === "system" ? systemTheme : themePreference;
+
+  const setTheme = useCallback((nextPreference: ThemePreference) => {
+    // Read the OS now rather than trusting `systemTheme`, which stops tracking
+    // the OS while an explicit theme is selected. Both updates land in one
+    // render, so the first frame after the switch already shows the right theme.
+    if (nextPreference === "system") setSystemTheme(readSystemTheme());
+    setThemePreference(nextPreference);
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setHasExplicitChoice(true);
-    setThemeState((current) => (current === "dark" ? "light" : "dark"));
-  }, []);
+    const index = TOGGLE_ORDER.indexOf(themePreference);
+    const nextPreference = TOGGLE_ORDER[(index + 1) % TOGGLE_ORDER.length];
+    if (nextPreference === "system") setSystemTheme(readSystemTheme());
+    setThemePreference(nextPreference);
+  }, [themePreference]);
 
   useEffect(() => {
     applyTheme(theme);
-    if (!hasExplicitChoice) return;
     try {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
+      if (themePreference === "system") {
+        // Absence of a stored value is what means "follow the OS", so the
+        // bootstrap script in index.html agrees with this provider on reload.
+        window.localStorage.removeItem(THEME_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+      }
     } catch {
       // Ignore local storage write failures in restricted environments.
     }
-  }, [theme, hasExplicitChoice]);
+  }, [theme, themePreference]);
 
-  // When the user has not made an explicit choice, follow OS-level
-  // `prefers-color-scheme` changes so the UI flips alongside the OS theme.
+  // Follow OS-level `prefers-color-scheme` changes while the preference is
+  // `system`, so the UI flips alongside the OS theme mid-session.
   useEffect(() => {
-    if (hasExplicitChoice) return;
+    if (themePreference !== "system") return;
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
+    setSystemTheme(media.matches ? "dark" : "light");
     const handleChange = (event: MediaQueryListEvent) => {
-      setThemeState(event.matches ? "dark" : "light");
+      setSystemTheme(event.matches ? "dark" : "light");
     };
     media.addEventListener("change", handleChange);
     return () => media.removeEventListener("change", handleChange);
-  }, [hasExplicitChoice]);
+  }, [themePreference]);
 
   const value = useMemo(
     () => ({
       theme,
+      themePreference,
       setTheme,
       toggleTheme,
     }),
-    [theme, setTheme, toggleTheme],
+    [theme, themePreference, setTheme, toggleTheme],
   );
 
   return (
