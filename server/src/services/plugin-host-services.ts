@@ -2087,6 +2087,7 @@ export function buildHostServices(
             await requirePluginReadableIssue(sourceRun.issueId, companyId);
           }
         }
+        let deduplicated = false;
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
@@ -2096,7 +2097,18 @@ export function buildHostServices(
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,
           trustExplicitResponsibleUserId: true,
+          assertCanReuseIssue: async (existing) => {
+            if (!(await pluginCanReadIssue(existing))) throw new Error("Issue not found");
+          },
+          onDeduplicated: () => { deduplicated = true; },
         })) as Issue;
+        if (deduplicated) {
+          return pluginRedactRelationSummary(companyId, {
+            ...issue,
+            blockedBy: issue.blockedBy ?? [],
+            blocks: issue.blocks ?? [],
+          });
+        }
         await logPluginActivity({
           companyId,
           action: "issue.created",
