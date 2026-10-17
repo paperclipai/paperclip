@@ -44,6 +44,22 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("hands a responsible-user denial to recovery without a continuation or retry", () => {
+    const decision = arbitrate({
+      responsibleUserDenied: true,
+      assessment: assessment({
+        reportedDisposition: "yielded",
+        continuation: { summary: "Continue", nextAction: "Keep going" } as never,
+      }),
+    });
+    expect(decision).toMatchObject({
+      statusAction: "preserve",
+      toStatus: "in_progress",
+      reasonCode: "responsible_user_denied",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
   it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
     const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
       allCriteriaSatisfied: false, hasBlockingRemainingWork: true,

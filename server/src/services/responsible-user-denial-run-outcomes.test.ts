@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
+  clearRememberedResponsibleUserDenialForRun,
+  getRememberedResponsibleUserDenialForRun,
   normalizeResponsibleUserDenialCode,
   recordResponsibleUserDenialOnActiveRun,
+  rememberResponsibleUserDenialForRun,
 } from "./responsible-user-denial-run-outcomes.js";
 
 const publishLiveEventMock = vi.hoisted(() => vi.fn());
@@ -14,7 +17,7 @@ vi.mock("./live-events.js", () => ({
 function makeDbReturning(row: Record<string, unknown> | null) {
   const returning = vi.fn(() => Promise.resolve(row ? [row] : []));
   const where = vi.fn(() => ({ returning }));
-  const set = vi.fn(() => ({ where }));
+  const set = vi.fn((_patch: Record<string, unknown>) => ({ where }));
   const update = vi.fn(() => ({ set }));
   return {
     db: { update } as unknown as Db,
@@ -35,6 +38,20 @@ describe("responsible-user denial run outcomes", () => {
     );
     expect(normalizeResponsibleUserDenialCode("access_denied")).toBeNull();
     expect(normalizeResponsibleUserDenialCode(null)).toBeNull();
+  });
+
+  it("remembers a denial until the run finalizer clears it", () => {
+    expect(
+      rememberResponsibleUserDenialForRun(
+        "run-memory",
+        "RESPONSIBLE_USER_UNAVAILABLE",
+      ),
+    ).toBe("RESPONSIBLE_USER_UNAVAILABLE");
+    expect(getRememberedResponsibleUserDenialForRun("run-memory")).toBe(
+      "RESPONSIBLE_USER_UNAVAILABLE",
+    );
+    expect(clearRememberedResponsibleUserDenialForRun("run-memory")).toBe(true);
+    expect(getRememberedResponsibleUserDenialForRun("run-memory")).toBeNull();
   });
 
   it("records the code on an active run and publishes the live status payload", async () => {
@@ -65,6 +82,9 @@ describe("responsible-user denial run outcomes", () => {
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: "RESPONSIBLE_USER_UNAUTHORIZED",
     }));
+    const persistedPatch = set.mock.calls[0]?.[0];
+    expect(persistedPatch).not.toHaveProperty("status");
+    expect(persistedPatch).not.toHaveProperty("finishedAt");
     expect(publishLiveEventMock).toHaveBeenCalledWith({
       companyId: "company-1",
       type: "heartbeat.run.status",
