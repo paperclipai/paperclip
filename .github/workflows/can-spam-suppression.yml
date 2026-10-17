@@ -1,0 +1,93 @@
+name: CAN-SPAM suppression
+
+# The global suppression list is a compliance control, not a convenience. It
+# gates every marketing dispatch, and K-20062 was filed because a 28-check
+# control with zero production callers and zero CI coverage proved nothing.
+#
+# This workflow exists so the control cannot rot again: marketing/can-spam is
+# zero-dependency, so this runs on a bare node with no install step and no
+# pnpm lockfile churn. It fails the PR if the preflight's contract changes.
+on:
+  pull_request:
+    paths:
+      - "marketing/can-spam/**"
+      - ".github/workflows/can-spam-suppression.yml"
+  push:
+    branches: [master]
+    paths:
+      - "marketing/can-spam/**"
+      - ".github/workflows/can-spam-suppression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: can-spam-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suppression:
+    name: preflight + opt-out e2e
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to the same commit SHAs the rest of this repo pins to (54 and 49
+      # uses respectively), so a re-tag of either action cannot change what runs
+      # here, and so there is exactly one pin to keep current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Run the suppression-list end-to-end test
+        # 159 checks. Covers the preflight's load-bearing properties:
+        #   - reachable from the same origin that serves {OPT_OUT_URL}
+        #   - an opt-out recorded mid-batch blocks the unsent remainder
+        #   - fails closed on an unreadable store or an unparseable recipient
+        #   - the suppressed set is not readable without the origin token
+        #   - a dispatch whose audit record cannot be written is fatal
+        #   - two writers cannot erase each other's opt-out
+        #   - a malformed body is a 400, not a crash of the public origin
+        # The test uses an isolated temp store, so it never touches a real list.
+        run: node marketing/can-spam/tests/e2e.test.cjs
+
+      - name: Prove the send gate fails closed when the store is absent
+        # A store that does not exist cannot certify anyone. The preflight must
+        # block every recipient with `store_unavailable` and exit 3 — never
+        # report an empty allow-list, which would read as "nobody is
+        # suppressed". Pointed at a guaranteed-absent path so this asserts the
+        # property itself rather than relying on .gitignore.
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          recipients="$scratch/recipients.txt"
+          printf 'nobody@example.com\nsomeone@example.com\n' > "$recipients"
+          set +e
+          output="$(CAN_SPAM_STORE="$scratch/absent/list.json" \
+                   node marketing/can-spam/check-suppression.cjs preflight "$recipients" 2>&1)"
+          code=$?
+          set -e
+          echo "$output"
+          if [ "$code" -ne 3 ]; then
+            echo "::error::expected exit 3 (store_unavailable) with no store, got $code"
+            exit 1
+          fi
+          if ! printf '%s' "$output" | grep -q 'store_unavailable'; then
+            echo "::error::expected a store_unavailable block, got: $output"
+            exit 1
+          fi
+          echo "preflight refused to certify anyone without a store (exit 3)"
+
+      - name: Prove init creates the store and preflight then clears
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          recipients="$scratch/recipients.txt"
+          printf 'nobody@example.com\n' > "$recipients"
+          store="$scratch/list.json"
+          CAN_SPAM_STORE="$store" node marketing/can-spam/check-suppression.cjs init
+          CAN_SPAM_STORE="$store" node marketing/can-spam/check-suppression.cjs preflight "$recipients" --campaign ci-smoke
+          echo "store created, preflight cleared against it"

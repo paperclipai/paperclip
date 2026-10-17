@@ -46,6 +46,9 @@ COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plug
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
+# CAN-SPAM suppression list is a workspace importer (K-20062), so the deps stage
+# needs its manifest or `pnpm install --frozen-lockfile` below cannot resolve it.
+COPY marketing/can-spam/package.json marketing/can-spam/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
