@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { resolveInstallStorePaths } from "../install-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,7 +75,9 @@ function escapeRegExp(value: string): string {
 }
 
 export function resolveServiceShimPath(homeDir = os.homedir()): string {
-  return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
+  // One resolver for both the service definition and the managed install store,
+  // so PAPERCLIP_SHIM_PATH cannot point the service at a shim install never writes.
+  return resolveInstallStorePaths({ homeDir }).shimPath;
 }
 
 // The installed definition, not the current environment, is the truth

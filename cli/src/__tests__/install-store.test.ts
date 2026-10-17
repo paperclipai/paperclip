@@ -227,4 +227,46 @@ describe("managed install store", () => {
     fs.linkSync(paths.shimPath, path.join(root, "linked-shim"));
     expect(() => writeManagedShim(paths)).toThrow("multiply linked shim");
   });
+
+  it("installs to PAPERCLIP_SHIM_PATH when HOME cannot host ~/.local/bin", () => {
+    const homeDir = path.join(root, "studio-home");
+    const shimPath = path.join(root, "studio-bin", "paperclipai");
+    const relocated = resolveInstallStorePaths({
+      homeDir,
+      paperclipHome: path.join(homeDir, ".paperclip"),
+      shimPath,
+    });
+
+    writeManagedShim(relocated);
+    expect(fs.existsSync(shimPath)).toBe(true);
+    expect(fs.readFileSync(shimPath, "utf8")).toContain(process.execPath);
+    // The unusable default location is never created.
+    expect(fs.existsSync(path.join(homeDir, ".local"))).toBe(false);
+
+    const rcPath = path.join(homeDir, ".bashrc");
+    expect(addManagedPathBlock(rcPath, relocated)).toBe(true);
+    expect(fs.readFileSync(rcPath, "utf8")).toContain(`export PATH="${path.dirname(shimPath)}:$PATH"`);
+    expect(removeManagedShim(relocated)).toBe(true);
+  });
+
+  it("keeps the documented home-relative PATH block for the default shim location", () => {
+    writeManagedShim(paths);
+    const rcPath = path.join(root, "home", ".bashrc");
+    addManagedPathBlock(rcPath, paths);
+    expect(fs.readFileSync(rcPath, "utf8")).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("still refuses a symlinked shim directory under PAPERCLIP_SHIM_PATH", () => {
+    const homeDir = path.join(root, "studio-home");
+    const outsideBin = path.join(root, "outside-bin");
+    fs.mkdirSync(outsideBin);
+    fs.symlinkSync(outsideBin, path.join(root, "studio-bin"), "dir");
+    const relocated = resolveInstallStorePaths({
+      homeDir,
+      paperclipHome: path.join(homeDir, ".paperclip"),
+      shimPath: path.join(root, "studio-bin", "paperclipai"),
+    });
+
+    expect(() => writeManagedShim(relocated)).toThrow("unsafe shim directory");
+  });
 });

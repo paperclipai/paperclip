@@ -29,6 +29,7 @@ export type InstallManifest = InstallRecord & {
 
 export type InstallStorePaths = {
   paperclipHome: string;
+  homeDir: string;
   cliRoot: string;
   installsRoot: string;
   manifestPath: string;
@@ -70,19 +71,26 @@ function writeFileAtomic(filePath: string, contents: string, mode: number): void
 export function resolveInstallStorePaths(options: {
   paperclipHome?: string;
   homeDir?: string;
+  shimPath?: string;
 } = {}): InstallStorePaths {
   const paperclipHome = path.resolve(options.paperclipHome ?? resolvePaperclipHomeDir());
   const homeDir = path.resolve(options.homeDir ?? process.env.HOME ?? path.dirname(paperclipHome));
   const cliRoot = path.join(paperclipHome, "cli");
+  // PAPERCLIP_SHIM_PATH is the operator's declared shim location. Honoring it
+  // here keeps every writer (install, update, uninstall, doctor) on the same
+  // path the service definition executes, so a HOME that cannot host
+  // ~/.local/bin is not a dead end for a managed install.
+  const shimOverride = options.shimPath ?? process.env.PAPERCLIP_SHIM_PATH?.trim();
   return {
     paperclipHome,
+    homeDir,
     cliRoot,
     installsRoot: path.join(cliRoot, "installs"),
     manifestPath: path.join(cliRoot, "install.json"),
     markerPath: path.join(cliRoot, ".managed-install"),
     lockPath: path.join(cliRoot, ".install.lock"),
     currentPath: path.join(cliRoot, "current"),
-    shimPath: path.join(homeDir, ".local", "bin", "paperclipai"),
+    shimPath: path.resolve(shimOverride || path.join(homeDir, ".local", "bin", "paperclipai")),
   };
 }
 
@@ -348,15 +356,38 @@ export function pruneInstallPayloads(
   return removed;
 }
 
+// The directories the shim write passes through, nearest first. The walk stops
+// at the resolved home directory so a managed shim keeps the same checks it had
+// when the location was always $HOME/.local/bin, and falls back to the
+// filesystem root when PAPERCLIP_SHIM_PATH points outside home.
+function shimDirectoryChain(shimPath: string, homeDir: string): string[] {
+  const chain: string[] = [];
+  let current = path.dirname(path.resolve(shimPath));
+  for (;;) {
+    chain.push(current);
+    if (current === homeDir) return chain;
+    const parent = path.dirname(current);
+    if (parent === current) return chain;
+    current = parent;
+  }
+}
+
+function isWithinHome(directoryPath: string, homeDir: string): boolean {
+  return directoryPath === homeDir || directoryPath.startsWith(`${homeDir}${path.sep}`);
+}
+
 export function assertManagedShimWritable(paths = resolveInstallStorePaths()): void {
-  const homeDir = path.dirname(path.dirname(path.dirname(paths.shimPath)));
-  for (const directoryPath of [homeDir, path.join(homeDir, ".local"), path.dirname(paths.shimPath)]) {
+  for (const directoryPath of shimDirectoryChain(paths.shimPath, paths.homeDir)) {
     if (!fs.existsSync(directoryPath)) continue;
     const directoryStat = fs.lstatSync(directoryPath);
     if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
       throw new Error(`Refusing to use unsafe shim directory ${directoryPath}.`);
     }
-    assertOwnedByCurrentUser(directoryStat, directoryPath);
+    // Ancestors above home (/opt, /usr, the filesystem root) are legitimately
+    // owned by another user, so ownership only gates the operator's own tree.
+    if (isWithinHome(directoryPath, paths.homeDir)) {
+      assertOwnedByCurrentUser(directoryStat, directoryPath);
+    }
   }
   try {
     const stat = fs.lstatSync(paths.shimPath);
@@ -396,11 +427,14 @@ function isManagedShimContents(contents: string): boolean {
 
 export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   assertManagedShimWritable(paths);
-  const homeDir = path.dirname(path.dirname(path.dirname(paths.shimPath)));
-  const localDir = path.dirname(path.dirname(paths.shimPath));
-  fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(localDir, { recursive: true, mode: 0o755 });
-  fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true, mode: 0o755 });
+  // Create the chain outermost-first so the home directory keeps its private
+  // mode, matching the layout the managed installer has always produced.
+  const missing = shimDirectoryChain(paths.shimPath, paths.homeDir)
+    .filter((directoryPath) => !fs.existsSync(directoryPath))
+    .reverse();
+  for (const directoryPath of missing) {
+    fs.mkdirSync(directoryPath, { recursive: true, mode: directoryPath === paths.homeDir ? 0o700 : 0o755 });
+  }
   assertManagedShimWritable(paths);
   const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
   // ACP servers and package-manager shims use /usr/bin/env node. Pin their
@@ -421,11 +455,20 @@ export function removeManagedShim(paths = resolveInstallStorePaths()): boolean {
   }
 }
 
-export function managedPathBlock(): string {
-  return `${PATH_BLOCK_START}\nexport PATH="$HOME/.local/bin:$PATH"\n${PATH_BLOCK_END}`;
+// Keep the portable "$HOME/.local/bin" spelling for the default location so an
+// existing managed block stays byte-identical, and fall back to the resolved
+// directory when PAPERCLIP_SHIM_PATH puts the shim elsewhere.
+export function managedPathExport(paths = resolveInstallStorePaths()): string {
+  const binDirectory = path.dirname(paths.shimPath);
+  const defaultBin = path.join(paths.homeDir, ".local", "bin");
+  return binDirectory === defaultBin ? "$HOME/.local/bin" : binDirectory;
 }
 
-export function addManagedPathBlock(rcPath: string): boolean {
+export function managedPathBlock(paths = resolveInstallStorePaths()): string {
+  return `${PATH_BLOCK_START}\nexport PATH="${managedPathExport(paths)}:$PATH"\n${PATH_BLOCK_END}`;
+}
+
+export function addManagedPathBlock(rcPath: string, paths = resolveInstallStorePaths()): boolean {
   let existing = "";
   let mode = 0o600;
   try {
@@ -442,7 +485,7 @@ export function addManagedPathBlock(rcPath: string): boolean {
   if (existing.includes(PATH_BLOCK_START)) return false;
   fs.mkdirSync(path.dirname(rcPath), { recursive: true });
   const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  writeFileAtomic(rcPath, `${existing}${prefix}${managedPathBlock()}\n`, mode);
+  writeFileAtomic(rcPath, `${existing}${prefix}${managedPathBlock(paths)}\n`, mode);
   return true;
 }
 
