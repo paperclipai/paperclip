@@ -3,6 +3,7 @@ import test from "node:test";
 import { confidenceFor, readinessVerdict } from "./check-readiness.mjs";
 import { findCandidates } from "./find-candidates.mjs";
 import {
+  assessSignOffs,
   chooseOriginatingIssue,
   extractPullRequestNumber,
   isMissingPullRequestError,
@@ -233,6 +234,86 @@ test("unresolved nullable mergeability is reported instead of crashing", () => {
   });
   assert.equal(result.verdict, "needs_gardening");
   assert.equal(result.reasons[0].code, "mergeability_unknown");
+});
+
+test("sign-off markers are read with the head SHA they pin", () => {
+  // Fixtures mirror the real AUT-2104 markers: comments that carry `qa-approved` /
+  // `security-approved` and name the head they certified.
+  const headSha = "b1bca1ffb0aba5ad55d850519c3f83096130906c";
+  const atHead = assessSignOffs(
+    [
+      { body: "QA verdict: qa-approved at head b1bca1ffb0aba5ad55d850519c3f83096130906c" },
+      { body: "security-approved at head b1bca1ffb0aba5ad55d850519c3f83096130906c" },
+    ],
+    headSha,
+  );
+  assert.equal(atHead.qa.present, true);
+  assert.equal(atHead.qa.atHead, true);
+  assert.equal(atHead.security.atHead, true);
+
+  // A marker from an older head is present but does not cover the current head.
+  const moved = "73f5d64f62a76574fbf6fb169c401f3f83b142d9";
+  const stale = assessSignOffs([{ body: "qa-approved at b1bca1ffb0" }], moved);
+  assert.equal(stale.qa.present, true);
+  assert.equal(stale.qa.atHead, false);
+  assert.equal(stale.qa.pinnedSha, "b1bca1ffb0");
+
+  // An unpinned marker cannot certify any head, so it must not read as a pass.
+  const unpinned = assessSignOffs([{ body: "qa-approved" }], headSha);
+  assert.equal(unpinned.qa.present, true);
+  assert.equal(unpinned.qa.pinnedSha, null);
+  assert.equal(unpinned.qa.atHead, false);
+  assert.equal(assessSignOffs([], headSha).security.present, false);
+});
+
+test("stale or missing sign-offs block the AUT-2230 merge gate", () => {
+  const headSha = "73f5d64f62a76574fbf6fb169c401f3f83b142d9";
+  const base = {
+    pullRequest: { state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", headRefOid: headSha },
+    checks: { checks: [{}], pending: [], failing: [] },
+    greptile: { present: true, pending: false, clean: true },
+    behindBy: 0,
+    originatingIssue: { status: "done", identifier: "PAP-1" },
+  };
+  assert.equal(readinessVerdict(base).verdict, "ready");
+
+  const missing = readinessVerdict({ ...base, signOffs: assessSignOffs([], headSha) });
+  assert.equal(missing.verdict, "needs_gardening");
+  assert.deepEqual(
+    missing.reasons.filter((entry) => entry.code === "signoff_missing").map((entry) => entry.kind),
+    ["qa", "security"],
+  );
+
+  const stale = readinessVerdict({
+    ...base,
+    signOffs: assessSignOffs(
+      [
+        { body: "qa-approved at b1bca1ffb0" },
+        { body: `security-approved at head ${headSha}` },
+      ],
+      headSha,
+    ),
+  });
+  assert.equal(stale.verdict, "needs_gardening");
+  assert.deepEqual(
+    stale.reasons.filter((entry) => entry.code === "signoff_stale_head").map((entry) => entry.kind),
+    ["qa"],
+  );
+  assert.equal(stale.reasons.find((entry) => entry.code === "signoff_stale_head").pinnedSha, "b1bca1ffb0");
+  assert.equal(confidenceFor({ verdict: "needs_gardening", reasons: stale.reasons }), "low");
+
+  const current = readinessVerdict({
+    ...base,
+    signOffs: assessSignOffs(
+      [
+        { body: `qa-approved at head ${headSha}` },
+        { body: `security-approved at head ${headSha}` },
+      ],
+      headSha,
+    ),
+  });
+  assert.equal(current.verdict, "ready");
+  assert.deepEqual(current.reasons, []);
 });
 
 test("renders scope, purpose, confidence groups, and immutable guardrail", () => {
