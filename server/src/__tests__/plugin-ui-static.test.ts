@@ -109,6 +109,42 @@ describe("plugin UI static route", () => {
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
   });
 
+  it("falls back to key lookup when getById rejects with a drizzle-wrapped 22P02 (non-UUID pluginKey)", async () => {
+    const packageRoot = createPluginPackage(
+      "export const marker = 'key-bundle';\n",
+    );
+    // A non-UUID :pluginId makes getById's `WHERE id = $1` reject with Postgres
+    // 22P02; drizzle-orm wraps that error and exposes the code on `.cause`.
+    const wrapped = Object.assign(new Error("Failed query: select ..."), {
+      cause: Object.assign(
+        new Error('invalid input syntax for type uuid: "agent-pixels.camera"'),
+        { code: "22P02" },
+      ),
+    });
+    mockRegistry.getById.mockRejectedValue(wrapped);
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "agent-pixels.camera",
+      packageName: "paperclip-plugin-example",
+      packagePath: packageRoot,
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "agent-pixels.camera",
+        entrypoints: { ui: "./dist/ui" },
+      },
+    });
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get(
+      "/_plugins/agent-pixels.camera/ui/index.js",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("key-bundle");
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("agent-pixels.camera");
+  });
+
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
     readyPlugin(createPluginPackage());
     const app = await createApp({ type: "none", source: "none" });
