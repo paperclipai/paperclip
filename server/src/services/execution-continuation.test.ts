@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -372,6 +373,38 @@ const support = await getEmbeddedPostgresTestSupport();
             exposeLowTrustRaw: false,
           }),
       );
+    });
+    it("admits an origin comment proven discarded from the queue before dispatch", async () => {
+      const discardedId = randomUUID();
+      const buildWithDiscardedOrigin = () =>
+        buildExecutionContinuation({
+          db,
+          companyId,
+          issueId,
+          agentId,
+          context: { commentId: discardedId },
+          summary: null,
+          exposeLowTrustRaw: false,
+        });
+      // Without the discard record, the missing row still fails closed.
+      await expectMissingContinuationContext(buildWithDiscardedOrigin);
+      const [activity] = await db
+        .insert(activityLog)
+        .values({
+          companyId,
+          actorType: "user",
+          actorId: "local-board",
+          action: "issue.queued_comment_discarded",
+          entityType: "issue",
+          entityId: issueId,
+          details: { commentId: discardedId },
+        })
+        .returning();
+      try {
+        await expect(buildWithDiscardedOrigin()).resolves.toMatchObject({ companyId, issueId });
+      } finally {
+        await db.delete(activityLog).where(eq(activityLog.id, activity.id));
+      }
     });
     it.each(["done", "cancelled"])("rejects continuation after the task becomes %s", async (status) => {
       await db.update(issues).set({ status }).where(eq(issues.id, issueId));
