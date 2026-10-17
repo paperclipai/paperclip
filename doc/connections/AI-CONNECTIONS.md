@@ -259,6 +259,12 @@ blocked task whose latest failure and active configuration recovery still match
 the card. A newer failure, reassignment, manual hold, or restricted external chat
 does not resume through an old card.
 
+Codex CLI authentication failures are classified from protocol error events and
+process diagnostics. Command output and agent messages may quote application
+errors such as "expired refresh token" during a source review; those quotes do
+not invalidate the selected AI connection. A non-authentication provider failure
+keeps its original message and does not request sign-in again on that basis.
+
 An attributed managed credential is marked as needing reauthorization only if
 its stored generation still matches the failed run. Late failures cannot
 invalidate a refreshed or reconnected credential. Repair preserves the selected

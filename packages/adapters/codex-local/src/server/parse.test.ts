@@ -181,6 +181,65 @@ describe("classifyCodexAuthRefreshFailure", () => {
     expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBeNull();
     expect(classifyCodexAuthRefreshFailure({ errorMessage: "You've hit your usage limit for GPT-5." })).toBeNull();
   });
+
+  it.each([
+    "Invalid or expired refresh token",
+    "refresh_token_reused",
+    "credential refresh returned 401 Unauthorized",
+  ])("does not revoke auth when a failed review quotes %s in tool or agent output", (quotedError) => {
+    const providerError = "This content was flagged for possible cybersecurity risk.";
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "review-thread" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "command_execution", aggregated_output: `throw unauthorized('${quotedError}');` },
+      }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: quotedError } }),
+      JSON.stringify({ type: "error", message: providerError }),
+      JSON.stringify({ type: "turn.failed", error: { message: providerError } }),
+    ].join("\n");
+    expect(classifyCodexAuthRefreshFailure({ stdout, errorMessage: parseCodexJsonl(stdout).errorMessage })).toBeNull();
+    expect(parseCodexJsonl(stdout).errorMessage).toBe(providerError);
+  });
+
+  it.each([
+    ["refresh_token_reused", "refresh_token_reused"],
+    ["refresh token has expired", "refresh_token_expired"],
+    ["OAuth failed: invalid_grant", "refresh_token_invalidated"],
+  ])("still classifies a real protocol failure: %s", (message, expected) => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "auth-thread" }),
+      JSON.stringify({ type: "error", message }),
+      JSON.stringify({ type: "turn.failed", error: { message } }),
+    ].join("\n");
+    expect(classifyCodexAuthRefreshFailure({ stdout })).toBe(expected);
+  });
+
+  it("uses the final protocol failure rather than a recovered earlier error", () => {
+    const stdout = [
+      JSON.stringify({ type: "error", message: "refresh_token_expired" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "Unrelated provider failure" } }),
+    ].join("\n");
+    expect(classifyCodexAuthRefreshFailure({ stdout })).toBeNull();
+  });
+
+  it("ignores quoted auth errors when the protocol stops without a terminal error", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: { type: "command_execution", aggregated_output: "Invalid or expired refresh token" },
+    });
+    expect(classifyCodexAuthRefreshFailure({ stdout, stderr: "Process terminated unexpectedly" })).toBeNull();
+  });
+
+  it("retains a real stderr auth failure after protocol output", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Application error: refresh_token_reused" },
+    });
+    expect(classifyCodexAuthRefreshFailure({ stdout, stderr: "OAuth failed: refresh token has expired" })).toBe(
+      "refresh_token_expired",
+    );
+  });
 });
 
 describe("isCodexUnknownSessionError", () => {
