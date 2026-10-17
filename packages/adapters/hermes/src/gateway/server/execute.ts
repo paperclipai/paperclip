@@ -723,9 +723,18 @@ function extractSessionId(value: unknown): string | null {
   return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
 }
 
+const HERMES_API_SERVER_MODEL = "hermes-agent";
+
+function extractRuntime(value: unknown): { provider: string | null; model: string | null } {
+  const record = asRecord(value);
+  const runtime = asRecord(record?.runtime) ?? asRecord(asRecord(record?.usage)?.runtime);
+  return { provider: nonEmpty(runtime?.provider), model: nonEmpty(runtime?.model) };
+}
+
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  const model = extractRuntime(value).model ?? nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  return model === HERMES_API_SERVER_MODEL ? null : model;
 }
 
 function extractErrorMessage(value: unknown): string | null {
@@ -757,6 +766,7 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const runtime = extractRuntime(payload);
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -764,7 +774,8 @@ export function mapFinalResultForTest(input: {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
-    provider: "hermes_gateway",
+    provider: runtime.provider ?? "hermes_gateway",
+    ...(runtime.provider ? { biller: runtime.provider } : {}),
     model: extractModel(payload),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),

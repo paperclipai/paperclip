@@ -1107,3 +1107,50 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorMessage).toBe("boom");
   });
 });
+
+describe("served model and provider", () => {
+  const payload = {
+    event: "run.completed",
+    run_id: "run-1",
+    model: "hermes-agent",
+    output: "ok",
+    usage: { input_tokens: 120, output_tokens: 8, total_tokens: 128 },
+    runtime: { provider: "openai-codex", model: "gpt-5.5", route_source: "global" },
+  };
+
+  it("reports the model and provider from the Hermes runtime block", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.model).toBe("gpt-5.5");
+    expect(result.provider).toBe("openai-codex");
+    expect(result.biller).toBe("openai-codex");
+  });
+
+  it("does not report the API server name as a model when the runtime block is absent", () => {
+    const { runtime: _runtime, ...withoutRuntime } = payload;
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: withoutRuntime },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.model).toBeNull();
+    expect(result.provider).toBe("hermes_gateway");
+    expect(result).not.toHaveProperty("biller");
+  });
+
+  it("keeps a top-level model that is not the API server name", () => {
+    const { runtime: _runtime, ...withoutRuntime } = payload;
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: { ...withoutRuntime, model: "gpt-5.5" } },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.model).toBe("gpt-5.5");
+  });
+});
