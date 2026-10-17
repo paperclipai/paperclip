@@ -641,6 +641,50 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   });
 
+  it("keeps watchdog mutation scope valid when the armed fingerprint is already reviewed", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REVALIDATE-REVIEWED", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const reviewedFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(reviewedFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // Record the review of exactly this fingerprint, as a completed watchdog
+    // run does. The classifier now settles to "already_reviewed" for the
+    // unchanged subtree.
+    await db
+      .update(issueWatchdogs)
+      .set({ lastReviewedFingerprint: reviewedFingerprint })
+      .where(eq(issueWatchdogs.id, watchdog!.id));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: reviewedFingerprint,
+    });
+
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("already_reviewed");
+    if (revalidated.classification?.state !== "already_reviewed") throw new Error("Expected already_reviewed classification");
+    expect(revalidated.classification.stopFingerprint).toBe(reviewedFingerprint);
+
+    // A scope armed with a different fingerprint is still refused.
+    const stale = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: "task_watchdog_stop:stale",
+    });
+    expect(stale.allowed).toBe(false);
+  });
+
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });
