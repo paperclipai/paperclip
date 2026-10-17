@@ -156,7 +156,9 @@ if sys.argv[1] != "completion":
     const read = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/cat", args: [secret] }, authorize);
     expect(read).toMatchObject({ exitCode: 1 }); expect(String((read as any).output)).not.toContain("PRIVATE");
     const write = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/sh", args: ["-c", 'printf stolen > "$1"', "sh", secret] }, authorize);
-    expect(write).toMatchObject({ exitCode: 1 }); expect(await readFile(secret, "utf8")).toBe("PRIVATE");
+    expect(write).toMatchObject({ stopped: null });
+    expect((write as { exitCode: number }).exitCode).toBeGreaterThan(0);
+    expect(await readFile(secret, "utf8")).toBe("PRIVATE");
   });
   it.skipIf(!workspaceCommandSandboxAvailable())("stops its owned process on authority loss and bounds output", async () => {
     const directory = await root(); let calls = 0;
