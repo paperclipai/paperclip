@@ -1184,6 +1184,29 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows a grant-less agent to read its own configuration through the self branch", async () => {
+    const company = await createCompany(db, "SelfConfigRead");
+    const actorAgent = await createAgent(db, company.id);
+    const peerAgent = await createAgent(db, company.id);
+    const authz = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    // The skills read route relies on this branch: an agent with no
+    // agents:configure grant must still read its own configuration.
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: actorAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+
+    // The same grant-less actor must not read a peer agent's configuration.
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: peerAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+  });
+
   it("hard-blocks assignment when the target agent blocks protected assignment", async () => {
     const company = await createCompany(db, "ProtectedAssignment");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
