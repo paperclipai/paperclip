@@ -356,6 +356,27 @@ can override) the deployment-level `PAPERCLIP_SECRETS_AWS_*` env. Bootstrap
 credentials still come from the AWS SDK default credential chain — see
 `doc/SECRETS-AWS-PROVIDER.md` for the full IAM and KMS contract.
 
+**Infisical vaults** link existing Infisical secrets as external references
+(read and value updates only — Paperclip never creates or deletes Infisical
+secrets). Vault config holds the non-secret routing fields `projectId`
+(Infisical project / workspace id), `environment` (slug such as `prod`), and
+optional `secretPath` (default `/`) and `siteUrl`. The machine identity is a
+Universal Auth client read from the server environment:
+
+| Env var | Purpose |
+|---------|---------|
+| `PAPERCLIP_SECRETS_INFISICAL_CLIENT_ID` | Universal Auth client id (required) |
+| `PAPERCLIP_SECRETS_INFISICAL_CLIENT_SECRET` | Universal Auth client secret (required) |
+| `PAPERCLIP_SECRETS_INFISICAL_SITE_URL` | Infisical origin; defaults to `https://app.infisical.com`. Vault `siteUrl` must match it, so credentials are never sent to another origin. |
+| `PAPERCLIP_SECRETS_INFISICAL_ALLOWED_PROJECT_IDS` | Optional comma-separated allowlist of project ids vaults may target |
+| `PAPERCLIP_SECRETS_INFISICAL_PROJECT_ID` / `_ENVIRONMENT` / `_SECRET_PATH` | Deployment-level defaults used when a secret has no provider vault |
+
+External refs use `<path>:<KEY>@<environment>`, for example
+`/paperclip:GITHUB_TOKEN@prod`. The path and environment are optional and fall
+back to the vault defaults (`GITHUB_TOKEN`, `GITHUB_TOKEN@prod`, and
+`/paperclip/GITHUB_TOKEN` are also accepted). Linked secrets resolve the latest
+Infisical version unless a numeric provider version is pinned.
+
 **GCP Secret Manager** and **HashiCorp Vault** vaults are coming soon. You can
 save draft `projectId`, `location`, `namespace`, `address`, and `mountPath`
 metadata so the company is ready to flip them on when the provider modules
