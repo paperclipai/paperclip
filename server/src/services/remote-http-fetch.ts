@@ -100,7 +100,11 @@ export async function guardedRemoteHttpFetch(
   const approved = await resolveApprovedRemoteHttpAddresses(endpoint, options, options.error);
   const literalHost = isIP(endpoint.hostname.replace(/^\[|\]$/g, "")) !== 0;
   const platformFetch = options.unpinnedFetch ?? fetch;
-  if (literalHost) {
+  // An explicit responseTimeoutMs must be honoured for IP literals too: the platform fetch
+  // applies undici's fixed 300 s headersTimeout/bodyTimeout, which silently caps long-running
+  // callers such as the http agent adapter (a held webhook is the run's lifetime). The pinned
+  // path dials the literal itself and applies the caller's deadline instead.
+  if (literalHost && options.responseTimeoutMs === undefined) {
     try {
       return await platformFetch(endpoint.toString(), { ...init, redirect: "manual" });
     } catch (error) {
