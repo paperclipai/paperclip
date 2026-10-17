@@ -15,6 +15,11 @@ import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import {
+  segmentTaskChatFocusRows,
+  TaskChatFocusFold,
+  useTaskChatFocusMode,
+} from "./focus-mode";
+import {
   buildTurnTimelineRows,
   isTerminalRunStatus,
   omitProgressRepeatedByResponse,
@@ -201,6 +206,38 @@ export function TaskChatRunnerTurn({
     !terminal,
   );
 
+  const focusMode = useTaskChatFocusMode();
+  // One fold per contiguous activity segment keeps the timeline chronological:
+  // a persistent receipt or plan stays between the activity that surrounds it.
+  const focusSegments = segmentTaskChatFocusRows(timelineRows);
+  const renderTimelineRow = (row: (typeof timelineRows)[number]) => (
+    <div
+      className="min-w-0"
+      key={`${runId ?? "run"}:${row.id}`}
+      data-testid="task-chat-turn-timeline-row"
+      data-timeline-row-id={row.id}
+      data-thread-anchor={row.id}
+    >
+      {row.kind === "activity_phase" ? (
+        <TaskChatRunnerActivityGroup item={row} />
+      ) : row.kind === "plan_document" ? (
+        <TaskChatPlanPreviewCard
+          source={{ kind: "saved", document: row.document }}
+          testId={
+            row.placement === "fallback"
+              ? "task-chat-plan-preview-fallback"
+              : "task-chat-plan-preview"
+          }
+        />
+      ) : row.kind === "protocol" ? (
+        <TaskChatProtocolCard
+          item={row}
+          onRuntimeRequestDecision={onRuntimeRequestDecision}
+        />
+      ) : null}
+    </div>
+  );
+
   return (
     <div
       className="flex min-w-0 flex-col"
@@ -238,33 +275,22 @@ export function TaskChatRunnerTurn({
           className="flex min-w-0 flex-col gap-2 py-1"
           data-testid="task-chat-turn-timeline"
         >
-          {timelineRows.map((row) => (
-            <div
-              className="min-w-0"
-              key={`${runId ?? "run"}:${row.id}`}
-              data-testid="task-chat-turn-timeline-row"
-              data-timeline-row-id={row.id}
-              data-thread-anchor={row.id}
-            >
-              {row.kind === "activity_phase" ? (
-                <TaskChatRunnerActivityGroup item={row} />
-              ) : row.kind === "plan_document" ? (
-                <TaskChatPlanPreviewCard
-                  source={{ kind: "saved", document: row.document }}
-                  testId={
-                    row.placement === "fallback"
-                      ? "task-chat-plan-preview-fallback"
-                      : "task-chat-plan-preview"
-                  }
-                />
-              ) : row.kind === "protocol" ? (
-                <TaskChatProtocolCard
-                  item={row}
-                  onRuntimeRequestDecision={onRuntimeRequestDecision}
-                />
-              ) : null}
-            </div>
-          ))}
+          {focusMode ? (
+            focusSegments.map((segment) =>
+              segment.kind === "fold" ? (
+                <TaskChatFocusFold
+                  key={`focus-fold:${segment.rows[0]?.id ?? "empty"}`}
+                  stepCount={segment.rows.length}
+                >
+                  {segment.rows.map(renderTimelineRow)}
+                </TaskChatFocusFold>
+              ) : (
+                renderTimelineRow(segment.row)
+              ),
+            )
+          ) : (
+            timelineRows.map(renderTimelineRow)
+          )}
         </div>
       ) : null}
       {final ? (

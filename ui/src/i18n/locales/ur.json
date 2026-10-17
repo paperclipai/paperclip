@@ -5,5 +5,15 @@
       "description": "کمپنی بنا کر شروع کریں۔",
       "newCompany": "نئی کمپنی"
     }
+  },
+  "taskChat": {
+    "focus": {
+      "viewGroup": "Thread view",
+      "fullView": "All activity",
+      "focusView": "Focus view",
+      "expand": "Activity hidden, click to expand",
+      "collapse": "Hide activity",
+      "stepCount": "(steps: {{count}})"
+    }
   }
 }
