@@ -145,6 +145,66 @@ default first-install skeleton is copied from the vanilla LLM Wiki layout, with
 `CLAUDE.md` renamed to `AGENTS.md` and Paperclip project overviews, standups,
 decisions, and history kept together under `wiki/projects/<slug>/`.
 
+## Git Mirror (Read-Only)
+
+One wiki space per company can mirror the Markdown files of a GitHub branch, so
+a handbook kept in Git shows up in the Wiki without anyone copying it. Git stays
+the only writer.
+
+Configure it on the plugin's settings page (company-scoped plugin config,
+`gitMirror`): enable it, set `repository` (`owner/name`), `branch` and the wiki
+`spaceSlug` (`default` is the space the Wiki opens on; any other slug is created
+if missing), then pick one credential:
+
+- a GitHub App installed on the repository: `githubAppId`,
+  `githubAppInstallationId` and the App's private key as a Paperclip secret.
+  Each sync mints a one-hour installation token narrowed to the one repository
+  and `contents: read`, and refuses the token if GitHub grants anything wider;
+- or a fine-grained token with `contents: read` on that repository, as a secret;
+- or nothing, for a public repository.
+
+How it behaves:
+
+- The scheduled job `git-mirror-sync` runs every 15 minutes. It reads the
+  branch head and stops there when the commit is unchanged; otherwise it lists
+  the tree, fetches only the blobs whose Git object id changed, checks each
+  blob's id against its bytes, and writes it into the space's folder. Files it
+  mirrored that left the branch are deleted; it never deletes a file it did not
+  write. Saving the config syncs at once; **Sync now** on the Wiki page banner
+  re-fetches everything.
+- Every sync runs in the handler of a company-scoped plugin event
+  (`git-mirror-sync-requested`) that the plugin emits to itself: a host-issued
+  invocation scope ends when its RPC settles and a scheduled job has none, and
+  the host refuses unscoped calls while other invocations are active. The job
+  syncs the companies the host reported through `onConfigChanged`.
+- Only `*.md` files outside dot-directories are mirrored, up to 1 MB each,
+  5,000 files and 50 MB in total. A truncated tree listing fails the sync
+  instead of mirroring part of the repository.
+- Against the repository the plugin only issues `GET` requests. Inside
+  Paperclip the mirrored space refuses page writes, source captures, log
+  appends, space bootstrap and (for the default space) template edits. Root
+  bootstrap on a mirrored default space still sets the folder path but writes
+  no starter files, and the mirror creates a missing target space without them.
+- Credential fields accept only Paperclip secret references, so a raw key or
+  token sent through the API is refused before it is stored. Credentials are
+  checked before they reach a header, and every error the mirror stores, logs
+  or returns is scrubbed of them.
+- One sync runs per company at a time; a forced sync waits for the running one
+  and then reads the config afresh. A sync that fails part-way is redone in
+  full next time, even if the branch moved back to the last synced commit.
+- Sync state (commit, per-file object ids, last error) lives in plugin state;
+  no credential is ever stored there or in an error message.
+- The wiki-root folder path must be configured first (the Wiki setup screen, or
+  the host's local-folder route). Each sync creates the folder and the plugin's
+  required directories when they are missing, without bootstrap's starter files
+  or managed agent. A mirror into the default space supplies the required root
+  files from the repository; a mirror into another space needs the root
+  bootstrapped.
+- Each mirrored page is indexed (path, title from its first level-one heading,
+  page type, outgoing links), so `wiki_list_pages`, `wiki_search` and backlinks
+  cover it. Search covers indexed page titles and paths, not mirrored file
+  contents. No revision rows are written: the repository holds the history.
+
 ## Managed Agent Instructions
 
 Plugin-managed agent instruction bundles live under:

@@ -751,6 +751,27 @@ function useOverview(companyId: string | null) {
   return usePluginData<OverviewData>("overview", params);
 }
 
+type GitMirrorStatusData = {
+  enabled: boolean;
+  configError: string | null;
+  repository: string | null;
+  branch: string | null;
+  spaceSlug: string | null;
+  running: boolean;
+  continuing: boolean;
+  forcePending: boolean;
+  commitSha: string | null;
+  syncedAt: string | null;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  fileCount: number;
+};
+
+function useGitMirrorStatus(companyId: string | null) {
+  const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
+  return usePluginData<GitMirrorStatusData>("git-mirror", params);
+}
+
 function useSettings(companyId: string | null) {
   const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
   return usePluginData<SettingsData>("settings", params);
@@ -1687,6 +1708,7 @@ export function WikiPage({ context }: PluginPageProps) {
       onDrop={handleDrop}
     >
       <style>{`@keyframes pcWikiPulse { 0%,100% { opacity:1 } 50% { opacity:0.45 } }`}</style>
+      <GitMirrorBanner companyId={context.companyId} spaceSlug={activeSpaceSlug} />
       <section style={{ flex: 1, minHeight: isMobile ? "auto" : 0, overflow: isMobile ? "visible" : "hidden", display: "flex" }}>
         {overview.error ? (
           <div style={{ padding: 24, flex: 1 }}>
@@ -2980,6 +3002,92 @@ const shellStyle: CSSProperties = {
   fontFamily: fontStack,
   fontSize: 14,
 };
+
+// ---------------------------------------------------------------------------
+// Git mirror: the mirrored space is read-only here; its repository is the writer.
+// ---------------------------------------------------------------------------
+
+function GitMirrorBanner({ companyId, spaceSlug }: { companyId: string; spaceSlug: string }) {
+  const status = useGitMirrorStatus(companyId);
+  const sync = usePluginAction("sync-git-mirror");
+  const toast = usePluginToast();
+  const [busy, setBusy] = useState(false);
+  // Set when Sync now queued a run: the attempt time seen then, so a newer attempt marks it picked up.
+  const [queued, setQueued] = useState<{ since: string | null; at: number } | null>(null);
+  const refreshRef = useRef(status.refresh);
+  refreshRef.current = status.refresh;
+  const mirror = status.data;
+
+  // usePluginData does not poll: refresh while a sync runs or hands off to a continuation, while a forced
+  // rewrite is pending, and until a queued run has been attempted. Polling stops after 20 minutes regardless.
+  const syncActive = Boolean(mirror?.running || mirror?.continuing || mirror?.forcePending);
+  // One deadline per logical sync: hand-offs and refreshes must not re-arm it. Once it passes, polling stops
+  // and the button unlocks until the status settles on its own.
+  const pollDeadline = useRef<number | null>(null);
+  const [pollExpired, setPollExpired] = useState(false);
+  useEffect(() => {
+    if (!mirror) return;
+    const pickedUp = queued !== null && mirror.lastAttemptAt !== queued.since;
+    if (!syncActive && (queued === null || pickedUp)) {
+      pollDeadline.current = null;
+      if (pollExpired) setPollExpired(false);
+      if (queued !== null) setQueued(null);
+      return;
+    }
+    if (pollExpired) return;
+    pollDeadline.current ??= Date.now() + 20 * 60 * 1000;
+    const timer = window.setInterval(() => {
+      if (Date.now() > (pollDeadline.current ?? 0)) {
+        window.clearInterval(timer);
+        setPollExpired(true);
+        setQueued(null);
+        return;
+      }
+      refreshRef.current();
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [syncActive, mirror?.lastAttemptAt, queued, companyId, pollExpired]);
+
+  useEffect(() => {
+    setQueued(null);
+    setPollExpired(false);
+    pollDeadline.current = null;
+  }, [companyId]);
+
+  if (!mirror?.enabled || mirror.spaceSlug !== spaceSlug) return null;
+
+  async function syncNow() {
+    setBusy(true);
+    try {
+      // The sync runs in the background (a company-scoped plugin event); the banner polls until it is done.
+      await sync({ companyId, force: true });
+      // An explicit request starts a new logical sync: a fresh polling deadline, even after an expired one.
+      pollDeadline.current = Date.now() + 20 * 60 * 1000;
+      setPollExpired(false);
+      setQueued({ since: mirror?.lastAttemptAt ?? null, at: Date.now() });
+      toast({ tone: "success", title: "Git mirror sync started", body: "This banner shows the new commit when it finishes." });
+    } catch (err) {
+      toast({ tone: "error", title: "Git mirror sync could not start", body: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+      status.refresh();
+    }
+  }
+
+  const problem = mirror.configError ?? mirror.lastError;
+  return (
+    <div style={{ padding: "8px 16px", borderBottom: `1px solid ${tokens.border}`, display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: tokens.muted, flexWrap: "wrap" }}>
+      <span>
+        Read-only mirror of <strong style={{ color: tokens.fg }}>{mirror.repository}@{mirror.branch}</strong>
+        {mirror.commitSha ? ` · commit ${mirror.commitSha.slice(0, 7)}` : " · not synced yet"}
+        {mirror.syncedAt ? ` · synced ${formatTimestamp(mirror.syncedAt)}` : ""}
+        {` · ${mirror.fileCount} ${mirror.fileCount === 1 ? "file" : "files"}`}
+      </span>
+      <Button size="sm" loading={busy || (!pollExpired && (syncActive || queued !== null))} disabled={busy || (!pollExpired && (syncActive || queued !== null))} onClick={() => void syncNow()}>Sync now</Button>
+      {problem ? <div style={{ flexBasis: "100%" }}><Callout tone="warn">Last sync failed: {problem}</Callout></div> : null}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Pre-flight: prompt for folder before any tab can be useful.
