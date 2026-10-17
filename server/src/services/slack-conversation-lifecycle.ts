@@ -1,6 +1,23 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export async function latestTaskRun(db: Db, companyId: string, issueId: string) {
+  const contextIssueId = sql`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const contextTaskId = sql`${heartbeatRuns.contextSnapshot}->>'taskId'`;
+  const [run] = await db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), or(
+      sql`${contextIssueId} = ${issueId}`,
+      and(isNull(contextIssueId), sql`${contextTaskId} = ${issueId}`),
+      CANONICAL_UUID.test(issueId)
+        ? and(isNull(contextIssueId), isNull(contextTaskId), eq(heartbeatRuns.nativeIssueId, issueId))
+        : sql`false`,
+    )))
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  return run ?? null;
+}
 
 /** Both run finalization and provider publication can arrive first. Re-read
  * durable evidence under the task lock; never infer completion from prose. */
@@ -29,10 +46,7 @@ export async function settleExternalConversation(db: Db, companyId: string, issu
     const monitor = issue.executionState?.monitor;
     if (monitor && typeof monitor === "object" && "status" in monitor &&
       ["scheduled", "triggered"].includes(String(monitor.status))) return false;
-    const [run] = await tx.select().from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId),
-        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issueId}`))
-      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+    const run = await latestTaskRun(tx as unknown as Db, companyId, issueId);
     if (!run || run.status !== "succeeded" || run.agentId !== issue.assigneeAgentId ||
       !run.finishedAt ||
       run.scheduledRetryAt || ["plan_only", "empty_response"].includes(run.livenessState ?? "")) return false;
