@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { sessionCodec } from "./index.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -538,9 +539,11 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("session [redacted-session-key]");
-    expect(result.sessionId).toBe("[redacted-session-key]");
-    expect(result.sessionDisplayId).toBe("[redacted-session-key]");
-    expect(result.resultJson?.session_id).toBe("[redacted-session-key]");
+    // Guard C: the redaction placeholder is NOT a session id — it must not be
+    // echoed or persisted as sessionId/sessionDisplayId.
+    expect(result.sessionId).toBeNull();
+    expect(result.sessionDisplayId).toBeNull();
+    expect(result.resultJson?.session_id).toBeNull();
     expect(result.sessionParams).toEqual({
       hermesRunId: "run-hermes-1",
       strategy: "agent",
@@ -1106,4 +1109,707 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
   });
+  it("treats only a terminal payload session id as a confirmed tip, preserving the prior tip otherwise", () => {
+    const previous = { hermesRunId: "run-old", hermesSessionId: "tip-old", strategy: "issue" };
+
+    // No session id in the terminal payload: the prior tip is preserved, and
+    // the Paperclip session key fallback must not be recorded as a tip.
+    const noTip = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: { status: "completed" } },
+      outputChunks: [],
+      sessionKey: "paperclip:company:c:agent:a:issue:i",
+      strategy: "issue",
+      existingSessionId: "canon-session",
+      previousSessionParams: previous,
+    });
+    expect(noTip.sessionParams).toEqual({
+      hermesRunId: "run-1",
+      hermesSessionId: "tip-old",
+      hermesCanonicalSessionId: "canon-session",
+      strategy: "issue",
+    });
+
+    // A Hermes-confirmed session id in the terminal payload becomes the tip.
+    const confirmed = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: { status: "completed", session_id: "tip-new" } },
+      outputChunks: [],
+      sessionKey: "paperclip:company:c:agent:a:issue:i",
+      strategy: "issue",
+      existingSessionId: "canon-session",
+      previousSessionParams: previous,
+    });
+    expect(confirmed.sessionParams).toEqual({
+      hermesRunId: "run-1",
+      hermesSessionId: "tip-new",
+      hermesCanonicalSessionId: "canon-session",
+      strategy: "issue",
+    });
+  });
 });
+
+
+describe("sessionCodec", () => {
+  it("round-trips gateway session params including the canonical session id", () => {
+    const params = {
+      hermesRunId: "run-1",
+      hermesSessionId: "20260101_120000_abcd",
+      hermesCanonicalSessionId: "20260101_110000_parent",
+      strategy: "issue",
+    };
+    const serialized = sessionCodec.serialize(params);
+    expect(serialized).toEqual(params);
+    expect(sessionCodec.deserialize(serialized)).toEqual(params);
+    // deserialize also accepts the legacy alias shape.
+    expect(sessionCodec.deserialize({ sessionId: "legacy-id", hermesRunId: "run-1" })).toEqual({
+      hermesRunId: "run-1",
+      hermesSessionId: "legacy-id",
+    });
+  });
+
+  it("keeps unknown keys out while preserving legacy field compatibility", () => {
+    const serialized = sessionCodec.serialize({
+      hermesRunId: "run-1",
+      strategy: "issue",
+      __paperclipConfigCategories: ["adapter"],
+      cwd: "/tmp/workspace",
+    });
+    expect(serialized).toEqual({ hermesRunId: "run-1", strategy: "issue" });
+    expect(sessionCodec.deserialize(serialized)).toEqual(serialized);
+  });
+
+  it("returns null for empty params and keeps canonical-only params", () => {
+    expect(sessionCodec.serialize({})).toBeNull();
+    expect(sessionCodec.deserialize(null)).toBeNull();
+    expect(sessionCodec.deserialize("nope")).toBeNull();
+    expect(sessionCodec.serialize({ hermesCanonicalSessionId: "canon-session" })).toEqual({
+      hermesCanonicalSessionId: "canon-session",
+    });
+  });
+});
+
+describe("execute with existingHermesSessionId", () => {
+  const CANONICAL = "20260101_120000_e2tg";
+
+  function hermesRunMock(): { fetchMock: ReturnType<typeof vi.fn>; runBodies: Array<Record<string, unknown>> } {
+    const runBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        runBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              `data: ${JSON.stringify({ status: "completed", output: "done", session_id: "tip-confirmed" })}`,
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    return { fetchMock, runBodies };
+  }
+
+  it("sends the selected Hermes session id as session_id while keeping Paperclip headers unchanged", async () => {
+    const { fetchMock, runBodies } = hermesRunMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+    });
+    ctx.runtime.sessionParams = {
+      hermesRunId: "run-old",
+      hermesSessionId: "tip-old",
+      strategy: "issue",
+    };
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const createCall = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>).find(([input]) =>
+      String(input).endsWith("/v1/runs"),
+    );
+    const init = createCall?.[1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(JSON.parse(String(init.body)).session_id).toBe(CANONICAL);
+    // The selected id must not become a credential, a header value, or a
+    // Paperclip session key substitute.
+    expect(headers.Authorization).toBe("Bearer secret-key");
+    expect(headers["X-Hermes-Session-Key"]).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(Object.values(headers).join("\n")).not.toContain(CANONICAL);
+    expect(ctx.onMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ hasExistingHermesSessionId: true }),
+      }),
+    );
+
+    // The confirmed tip comes from the terminal payload, not from the id we sent.
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-hermes-1",
+      hermesSessionId: "tip-confirmed",
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "issue",
+    });
+    // The selected id is not echoed into logs.
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+    expect(logText).not.toContain(CANONICAL);
+  });
+
+  it("keeps default Paperclip addressing when existingHermesSessionId is empty or whitespace", async () => {
+    for (const value of [undefined, "", "   "]) {
+      const { fetchMock, runBodies } = hermesRunMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const config: Record<string, unknown> = {
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        timeoutSec: 5,
+      };
+      if (value !== undefined) config.existingHermesSessionId = value;
+      const result = await execute(makeCtx(config));
+
+      expect(result.exitCode).toBe(0);
+      expect(runBodies[0]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+      expect(result.sessionParams).toEqual({
+        hermesRunId: "run-hermes-1",
+        hermesSessionId: "tip-confirmed",
+        strategy: "issue",
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("preserves the last confirmed tip when the terminal payload has no session id", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        // Terminal event WITHOUT a session id: nothing new is confirmed.
+        return new Response(
+          sseStream(["event: run.completed", 'data: {"status":"completed","output":"done"}', ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+    });
+    ctx.runtime.sessionParams = {
+      hermesRunId: "run-old",
+      hermesSessionId: "tip-old",
+      strategy: "issue",
+    };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-hermes-1",
+      hermesSessionId: "tip-old",
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "issue",
+    });
+  });
+
+  it("does not store a redacted echoed session id as the tip", async () => {
+    const agentSessionKey = "paperclip:company:company-1:agent:agent-1";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              `data: ${JSON.stringify({ status: "completed", output: "done", session_id: agentSessionKey })}`,
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      sessionKeyStrategy: "agent",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+    });
+    ctx.runtime.sessionParams = { hermesRunId: "run-old", hermesSessionId: "tip-old", strategy: "agent" };
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-hermes-1",
+      hermesSessionId: "tip-old",
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "agent",
+    });
+  });
+
+  it("rejects a Paperclip session key as existingHermesSessionId before any request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: "paperclip:company:company-1:agent:agent-1",
+      timeoutSec: 5,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_existing_session_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the canonical id and prior tip across a timeout", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-slow", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ status: "cancelled" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 0.001,
+    });
+    ctx.runtime.sessionParams = { hermesRunId: "run-old", hermesSessionId: "tip-old", strategy: "issue" };
+    const result = await execute(ctx);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-slow",
+      hermesSessionId: "tip-old",
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "issue",
+    });
+  });
+
+  it("keeps standard timeout session params unchanged without an explicit session", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-slow", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ status: "cancelled" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    }));
+
+    expect(result.timedOut).toBe(true);
+    expect(result.sessionParams).toEqual({ hermesRunId: "run-slow", strategy: "issue" });
+  });
+
+  it("uses the compact task brief when the task already ran in the selected session", async () => {
+    const description = "Update launch-card.svg and change the CTA to Try Team free.";
+    const fullTaskMarkdown = [
+      "Paperclip task context:",
+      '- Issue: "PAP-1"',
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+    ].join("\n");
+    const compactTaskMarkdown = ["Paperclip task context:", '- Issue: "PAP-1"'].join("\n");
+    const { fetchMock, runBodies } = hermesRunMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+    });
+    ctx.context = {
+      issueId: "issue-1",
+      // A comment wake (not assignment-shaped): assignment-shaped reasons
+      // deliberately receive the full brief even on resumed sessions.
+      wakeReason: "issue_commented",
+      paperclipTaskMarkdown: fullTaskMarkdown,
+      paperclipTaskMarkdownCompact: compactTaskMarkdown,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          title: "Do the thing",
+          description,
+          descriptionTruncated: false,
+          status: "in_progress",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+    };
+    // A recorded prior run in the selected conversation (sessionParams carry
+    // the canonical id): the brief already lives there, so the compact
+    // variant stays correct under the prior-run rule.
+    ctx.runtime.sessionParams = { hermesCanonicalSessionId: CANONICAL, strategy: "issue" };
+    await execute(ctx);
+
+    expect(runBodies).toHaveLength(1);
+    expect(runBodies[0]!.session_id).toBe(CANONICAL);
+    expect(runBodies[0]!.input).toContain("Paperclip task context:");
+    expect(runBodies[0]!.input).not.toContain(description);
+  });
+});
+
+describe("terminal SSE without session_id (authoritative status fill)", () => {
+  const CANONICAL = "20261012_888888_e2par";
+  const TIP = "20261012_888889_e2kid";
+
+  it("fills the confirmed tip from GET /v1/runs when the terminal SSE frame omits session_id", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "k",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+      pollIntervalMs: 250,
+    });
+    let statusGets = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-x", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        // Real-contract shape: terminal SSE frame carries NO session_id.
+        return new Response(
+          sseStream(['event: run.failed', 'data: {"event":"run.failed","run_id":"run-x","error":"Connection error."}', ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (/\/v1\/runs\/run-x$/.test(url)) {
+        statusGets += 1;
+        return new Response(
+          JSON.stringify({ status: "failed", error: "Connection error.", session_id: TIP }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+
+    expect(statusGets).toBe(1);
+    expect(result.exitCode).toBe(1);
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-x",
+      hermesSessionId: TIP,
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "issue",
+    });
+    expect(result.sessionDisplayId).toBe(TIP);
+  });
+
+  it("does not promote a tip when the authoritative status also lacks session_id", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "k",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+      pollIntervalMs: 250,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-y", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(['event: run.failed', 'data: {"event":"run.failed","run_id":"run-y","error":"boom"}', ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (/\/v1\/runs\/run-y$/.test(url)) {
+        return new Response(JSON.stringify({ status: "failed", error: "boom" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    // No confirmed tip anywhere: params carry only the canonical id, no tip.
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-y",
+      hermesCanonicalSessionId: CANONICAL,
+      strategy: "issue",
+    });
+    expect(result.sessionDisplayId).toBeNull();
+  });
+});
+
+describe("greptile review fixes (lineage hardening)", () => {
+  const CANONICAL = "20261012_888888_e2par";
+  const TIP = "20261012_888889_e2kid";
+
+  function makeExistingCtx(extra: Record<string, unknown> = {}) {
+    return makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      existingHermesSessionId: CANONICAL,
+      timeoutSec: 5,
+      pollIntervalMs: 250,
+      ...extra,
+    });
+  }
+
+  it("fills the confirmed tip when the terminal SSE frame carries an empty session_id", async () => {
+    // Finding 4: session_id null and "" in the terminal payload must count as
+    // missing, not as present values that block the authoritative GET value.
+    for (const empty of [null, ""]) {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) {
+          return new Response(JSON.stringify({ run_id: "run-empty", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(['event: run.failed', `data: {"event":"run.failed","run_id":"run-empty","error":"Connection error.","session_id":${empty === null ? "null" : "\"\""}}`, ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        if (/\/v1\/runs\/run-empty$/.test(url)) {
+          return new Response(
+            JSON.stringify({ status: "failed", error: "Connection error.", session_id: TIP }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeExistingCtx();
+      const result = await execute(ctx);
+      expect(result.sessionParams).toMatchObject({ hermesSessionId: TIP, hermesCanonicalSessionId: CANONICAL });
+    }
+  });
+
+  it("does not accept a redaction marker echoed by Hermes as a confirmed tip", async () => {
+    // Finding 5: a terminal payload whose session_id already equals the
+    // redaction marker must be rejected, not stored as a tip.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-marker", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(['event: run.failed', 'data: {"event":"run.failed","run_id":"run-marker","error":"boom"}', ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (/\/v1\/runs\/run-marker$/.test(url)) {
+        return new Response(
+          JSON.stringify({ status: "failed", error: "boom", session_id: "[redacted-session-key]" }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeExistingCtx();
+    ctx.runtime.sessionParams = { hermesRunId: "run-old", hermesSessionId: "tip-old", strategy: "issue" };
+    const result = await execute(ctx);
+    expect(result.sessionParams).toMatchObject({ hermesSessionId: "tip-old", hermesCanonicalSessionId: CANONICAL });
+    expect(JSON.stringify(result.sessionParams)).not.toContain("[redacted-session-key]");
+  });
+
+  it("uses the tip as the display id on a timed-out run instead of the redacted session key", async () => {
+    // Finding 3: the timeout result must not persist [redacted-session-key]
+    // as sessionDisplayId/legacy id when a confirmed tip exists.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-slow", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (/\/v1\/runs\/run-slow$/.test(url)) {
+        return new Response(
+          JSON.stringify({ status: "cancelled", session_id: TIP }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeExistingCtx({ timeoutSec: 0.001 });
+    const result = await execute(ctx);
+    expect(result.timedOut).toBe(true);
+    expect(result.sessionParams).toMatchObject({ hermesSessionId: TIP, hermesCanonicalSessionId: CANONICAL });
+    expect(result.sessionDisplayId).toBe(redactTipDisplay(TIP));
+  });
+
+  it("delivers the full task brief on the first run of a task into an existing session", async () => {
+    // Finding 2: existingHermesSessionId without a recorded prior run must
+    // NOT switch to the compact brief; session_id addressing still applies.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-first", status: "completed" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(['event: run.completed', `data: {"event":"run.completed","run_id":"run-first","status":"completed","session_id":"${TIP}"}`, ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeExistingCtx();
+    // First run: no recorded prior session state for this task.
+    ctx.context = {
+      ...ctx.context,
+      paperclipTaskMarkdown: "Paperclip task context:\n- Issue: \"PAP-1\"\nDo the full task.",
+      paperclipTaskMarkdownCompact: "Compact brief.",
+      paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "PAP-1", title: "Do the thing", status: "in_progress" } },
+    } as typeof ctx.context;
+    const result = await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(runCall?.[1]?.body));
+    expect(body.session_id).toBe(CANONICAL);
+    expect(body.input).toContain("Do the full task.");
+    expect(body.input).not.toContain("Compact brief.");
+  });
+
+  it("keeps the compact brief when the task already ran in the selected session", async () => {
+    // Continuation case: prior-run evidence present, compact stays correct.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-next", status: "completed" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(['event: run.completed', `data: {"event":"run.completed","run_id":"run-next","status":"completed","session_id":"${TIP}"}`, ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeExistingCtx();
+    ctx.runtime.sessionParams = { hermesCanonicalSessionId: CANONICAL, hermesSessionId: "tip-old", strategy: "issue" };
+    ctx.context = {
+      ...ctx.context,
+      paperclipTaskMarkdown: "Paperclip task context:\n- Issue: \"PAP-1\"\nDo the full task.",
+      paperclipTaskMarkdownCompact: "Compact brief.",
+      paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "PAP-1", title: "Do the thing", status: "in_progress" } },
+    } as typeof ctx.context;
+    const result = await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(runCall?.[1]?.body));
+    expect(body.input).toContain("Compact brief.");
+  });
+
+  it("gives up the authoritative status fill when the status endpoint hangs", async () => {
+    // Finding 1: a hung GET must not keep execute() alive past the fill
+    // deadline; the SSE terminal result is returned unchanged.
+    vi.useFakeTimers();
+    try {
+      let statusCallCount = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) {
+          return new Response(JSON.stringify({ run_id: "run-hang", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(['event: run.failed', 'data: {"event":"run.failed","run_id":"run-hang","error":"boom"}', ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        if (/\/v1\/runs\/run-hang$/.test(url)) {
+          statusCallCount += 1;
+          // Hang forever: respond only to the abort signal.
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeExistingCtx();
+      const pending = execute(ctx);
+      // Advance past the SSE consumption and the 5s fill deadline.
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+      expect(statusCallCount).toBeGreaterThanOrEqual(1);
+      expect(result.exitCode).toBe(1);
+      // Unconfirmed: no tip invented; canonical id preserved.
+      expect(result.sessionParams).toEqual({
+        hermesRunId: "run-hang",
+        hermesCanonicalSessionId: CANONICAL,
+        strategy: "issue",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+function redactTipDisplay(tip: string): string {
+  // The adapter redacts the tip only if it collides with configured secrets;
+  // a plain Hermes session id survives redaction unchanged.
+  return tip;
+}

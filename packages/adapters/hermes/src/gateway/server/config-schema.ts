@@ -71,6 +71,12 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "textarea",
         hint: "Optional stable Hermes instructions sent separately from the wake input.",
       },
+      {
+        key: "existingHermesSessionId",
+        label: "Existing Hermes session ID",
+        type: "text",
+        hint: "Optional. Explicitly continue an existing Hermes conversation by its session id (for example a Telegram/CLI session id such as 20260101_120000_abcd). When empty, the adapter keeps its default issue/agent-scoped Paperclip sessions. Never place API keys or Paperclip session keys here.",
+      },
     ],
   };
 }

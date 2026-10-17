@@ -65,6 +65,7 @@ describe("HermesGatewayConfigFields", () => {
     expect(text).toContain("API base URL");
     expect(text).toContain("API key");
     expect(text).toContain("Paperclip API URL");
+    expect(text).toContain("Existing Hermes session ID");
     expect(text).toContain("Session key strategy");
     expect(text).toContain("Timeout seconds");
     expect(text).toContain("Event reconnect ms");
@@ -80,5 +81,66 @@ describe("HermesGatewayConfigFields", () => {
     expect(apiKeyInput).toBeTruthy();
 
     expect(result.container.querySelector('button[aria-label="Show API key"]')).toBeTruthy();
+  });
+
+  it("shows a configured existing Hermes session id and commits edits without touching secrets", async () => {
+    const result = renderFields({
+      config: {
+        apiBaseUrl: "http://127.0.0.1:8642",
+        existingHermesSessionId: "20260101_120000_abcd",
+      },
+    });
+    roots.push(result.root);
+
+    const input = result.container.querySelector<HTMLInputElement>(
+      'input[placeholder="20260101_120000_abcd"]',
+    );
+    expect(input).toBeTruthy();
+    expect(input!.value).toBe("20260101_120000_abcd");
+
+    // Edit-mode commit routes through mark("adapterConfig", key, value).
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "20260101_130000_e2tg");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(result.mark).toHaveBeenCalledWith(
+      "adapterConfig",
+      "existingHermesSessionId",
+      "20260101_130000_e2tg",
+    );
+  });
+
+  it("writes an explicit session id on create and omits it when left empty", async () => {
+    // renderFields defaults set to null; create mode needs an explicit mock.
+    const set = vi.fn();
+    const result = renderFields({ isCreate: true, set });
+    roots.push(result.root);
+
+    const input = result.container.querySelector<HTMLInputElement>(
+      'input[placeholder="20260101_120000_abcd"]',
+    );
+    expect(input).toBeTruthy();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "20260101_120000_e2tg");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(set).toHaveBeenCalledWith({
+      adapterSchemaValues: { existingHermesSessionId: "20260101_120000_e2tg" },
+    });
+
+    // Clearing the field drops the key entirely: old configs without the
+    // field, and emptied ones, keep the default isolated behavior.
+    set.mockClear();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(set).toHaveBeenCalledWith({
+      adapterSchemaValues: { existingHermesSessionId: undefined },
+    });
   });
 });

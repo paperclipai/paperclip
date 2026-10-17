@@ -15,11 +15,13 @@ export const sessionCodec: AdapterSessionCodec = {
     const hermesSessionId = readString(record.hermesSessionId) ?? readString(record.sessionId);
     const sessionKey = readString(record.sessionKey);
     const hermesRunId = readString(record.hermesRunId);
+    const hermesCanonicalSessionId = readString(record.hermesCanonicalSessionId);
     const strategy = readString(record.strategy);
-    if (!hermesSessionId && !sessionKey && !hermesRunId) return null;
+    if (!hermesSessionId && !sessionKey && !hermesRunId && !hermesCanonicalSessionId) return null;
     return {
       ...(hermesRunId ? { hermesRunId } : {}),
       ...(hermesSessionId ? { hermesSessionId } : {}),
+      ...(hermesCanonicalSessionId ? { hermesCanonicalSessionId } : {}),
       ...(sessionKey ? { sessionKey } : {}),
       ...(strategy ? { strategy } : {}),
     };
@@ -29,11 +31,13 @@ export const sessionCodec: AdapterSessionCodec = {
     const hermesSessionId = readString(params.hermesSessionId) ?? readString(params.sessionId);
     const sessionKey = readString(params.sessionKey);
     const hermesRunId = readString(params.hermesRunId);
+    const hermesCanonicalSessionId = readString(params.hermesCanonicalSessionId);
     const strategy = readString(params.strategy);
-    if (!hermesSessionId && !sessionKey && !hermesRunId) return null;
+    if (!hermesSessionId && !sessionKey && !hermesRunId && !hermesCanonicalSessionId) return null;
     return {
       ...(hermesRunId ? { hermesRunId } : {}),
       ...(hermesSessionId ? { hermesSessionId } : {}),
+      ...(hermesCanonicalSessionId ? { hermesCanonicalSessionId } : {}),
       ...(sessionKey ? { sessionKey } : {}),
       ...(strategy ? { strategy } : {}),
     };

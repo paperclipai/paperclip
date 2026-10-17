@@ -930,33 +930,74 @@ export function resolveNextSessionState(input: {
     const shouldUsePrevious =
       !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
 
-    const candidateParams = hasExplicitParams
-      ? explicitParams
-      : hasExplicitSessionId
-        ? explicitSessionId
-          ? { sessionId: explicitSessionId }
-          : null
-        : previousParams;
+    // Hermes gateway sessions carry a canonical id plus a Hermes-confirmed
+    // tip. A failed/cancelled/timed-out run must only adopt explicit params
+    // when BOTH are present and valid (the adapter emits the tip solely from
+    // its Hermes-confirmed terminal payload). Without a confirmed tip — e.g. a
+    // 401 or timeout where nothing was confirmed — keep the previous state.
+    const hermesGatewayFailedWithoutConfirmedTip =
+      adapterType === "hermes_gateway" &&
+      input.outcome !== "succeeded" &&
+      !(
+        readNonEmptyString(
+          (explicitParams as Record<string, unknown> | null | undefined)?.hermesSessionId as string | undefined,
+        ) &&
+        isCanonicalSessionIdForAdapter(
+          adapterType,
+          readNonEmptyString(
+            (explicitParams as Record<string, unknown> | null | undefined)?.hermesSessionId as string | undefined,
+          ),
+        ) &&
+        readNonEmptyString(
+          (explicitParams as Record<string, unknown> | null | undefined)?.hermesCanonicalSessionId as string | undefined,
+        ) &&
+        isCanonicalSessionIdForAdapter(
+          adapterType,
+          readNonEmptyString(
+            (explicitParams as Record<string, unknown> | null | undefined)?.hermesCanonicalSessionId as string | undefined,
+          ),
+        )
+      );
+
+    const candidateParams = hermesGatewayFailedWithoutConfirmedTip
+      ? previousParams
+      : hasExplicitParams
+        ? explicitParams
+        : hasExplicitSessionId
+          ? explicitSessionId
+            ? { sessionId: explicitSessionId }
+            : null
+          : previousParams;
 
     const serialized = normalizeSessionParams(
       codec.serialize(normalizeSessionParams(candidateParams) ?? null),
     );
     const deserialized = normalizeSessionParams(codec.deserialize(serialized));
 
+    // On a failed run without a confirmed tip, the adapter's display/legacy
+    // fields carry the redacted session-key placeholder or the hermes run id —
+    // neither is a session identity. Fall back to the previous state values.
+    const failedWithoutConfirmedTip =
+      hermesGatewayFailedWithoutConfirmedTip && !shouldUsePrevious;
+
     const displayId = truncateDisplayId(
-      explicitDisplayId ??
-        (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
-        readNonEmptyString(deserialized?.sessionId) ??
-        (shouldUsePrevious ? previousDisplayId : null) ??
-        explicitSessionId ??
-        (shouldUsePrevious ? previousLegacySessionId : null),
+      (failedWithoutConfirmedTip ? null : explicitDisplayId) ??
+        (failedWithoutConfirmedTip
+          ? null
+          : codec.getDisplayId
+            ? codec.getDisplayId(deserialized)
+            : null) ??
+        (failedWithoutConfirmedTip ? null : readNonEmptyString(deserialized?.sessionId)) ??
+        (shouldUsePrevious || failedWithoutConfirmedTip ? previousDisplayId : null) ??
+        (failedWithoutConfirmedTip ? null : explicitSessionId) ??
+        (shouldUsePrevious || failedWithoutConfirmedTip ? previousLegacySessionId : null),
     );
 
     const legacySessionId =
-      explicitSessionId ??
-      readNonEmptyString(deserialized?.sessionId) ??
+      (failedWithoutConfirmedTip ? null : explicitSessionId) ??
+      (failedWithoutConfirmedTip ? null : readNonEmptyString(deserialized?.sessionId)) ??
       displayId ??
-      (shouldUsePrevious ? previousLegacySessionId : null);
+      (shouldUsePrevious || failedWithoutConfirmedTip ? previousLegacySessionId : null);
 
     return {
       params: serialized,
@@ -999,7 +1040,65 @@ export function resolveNextSessionState(input: {
     };
   };
 
+  const explicitParamsEarly = adapterResult.sessionParams;
+  const hasExplicitParamsEarly = explicitParamsEarly !== undefined;
+  const validExplicitSessionIdEarly = isCanonicalSessionIdForAdapter(
+    adapterType,
+    readNonEmptyString(adapterResult.sessionId),
+  )
+    ? readNonEmptyString(adapterResult.sessionId)
+    : null;
+  const validExplicitDisplayIdEarly = isCanonicalSessionIdForAdapter(
+    adapterType,
+    readNonEmptyString(adapterResult.sessionDisplayId),
+  )
+    ? readNonEmptyString(adapterResult.sessionDisplayId)
+    : null;
+
   if (input.outcome !== "succeeded") {
+    // Failed/cancelled/timed-out runs must not LOSE valid canonical params the
+    // adapter already built from a Hermes-confirmed terminal payload: the
+    // canonical id and the confirmed tip live in adapterResult.sessionParams
+    // (the adapter only emits them when its confirmedTip guard passed). With
+    // no explicit params — or a params object without a valid canonical id —
+    // keep the previous state exactly as before (401/timeout behavior).
+    const explicitCanonicalId =
+      readNonEmptyString(
+        (explicitParamsEarly as Record<string, unknown> | null | undefined)?.hermesCanonicalSessionId as string | undefined,
+      ) ?? validExplicitSessionIdEarly ?? validExplicitDisplayIdEarly;
+    const explicitTipId = readNonEmptyString(
+      (explicitParamsEarly as Record<string, unknown> | null | undefined)?.hermesSessionId as string | undefined,
+    );
+    if (
+      hasExplicitParamsEarly &&
+      explicitCanonicalId &&
+      isCanonicalSessionIdForAdapter(adapterType, explicitCanonicalId) &&
+      explicitTipId &&
+      isCanonicalSessionIdForAdapter(adapterType, explicitTipId)
+    ) {
+      // Same persisted shape as the succeeded branch: canonical id in the
+      // sessionId slot, codec carries the full fields (hermesRunId, tip,
+      // canonical, strategy).
+      const serialized = normalizeResumeParamsForAdapter(
+        adapterType,
+        codec.serialize({
+          ...normalizeSessionParams(explicitParamsEarly),
+          sessionId: explicitCanonicalId,
+        }),
+      );
+      if (serialized) {
+        const displayId = truncateDisplayId(
+          readNonEmptyString(serialized.sessionId) ??
+            (codec.getDisplayId ? codec.getDisplayId(serialized) : null) ??
+            explicitTipId,
+        );
+        return {
+          params: serialized,
+          displayId,
+          legacySessionId: readNonEmptyString(serialized.sessionId) ?? displayId ?? explicitTipId,
+        };
+      }
+    }
     return previousState();
   }
 

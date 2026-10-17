@@ -43,6 +43,7 @@ Optional fields:
 - timeoutSec (number): defaults to 600.
 - eventReconnectMs (number): defaults to 2000.
 - instructions (string): stable Hermes instructions sent separately from wake input.
+- existingHermesSessionId (string): optional. Explicitly continue an existing Hermes conversation by its session id (for example a Telegram/CLI session id). When set, the adapter sends it as the run's session_id instead of the derived Paperclip session key; the confirmed Hermes tip session id is tracked separately. Leave empty for default isolated Paperclip sessions. This is not a credential; never place API keys or Paperclip session keys here.
 
 Runtime mapping:
 - Creates runs with POST /v1/runs.

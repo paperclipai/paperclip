@@ -131,6 +131,7 @@ export function HermesGatewayConfigFields({
 
   const apiBaseUrl = String(readValue("apiBaseUrl", "") ?? "");
   const paperclipApiUrl = String(readValue("paperclipApiUrl", "") ?? "");
+  const existingHermesSessionId = String(readValue("existingHermesSessionId", "") ?? "");
   const sessionKeyStrategy = String(readValue("sessionKeyStrategy", DEFAULT_SESSION_KEY_STRATEGY) ?? DEFAULT_SESSION_KEY_STRATEGY);
   const timeoutSec = Number(readValue("timeoutSec", DEFAULT_TIMEOUT_SEC) ?? DEFAULT_TIMEOUT_SEC);
   const eventReconnectMs = Number(readValue("eventReconnectMs", DEFAULT_EVENT_RECONNECT_MS) ?? DEFAULT_EVENT_RECONNECT_MS);
@@ -173,6 +174,19 @@ export function HermesGatewayConfigFields({
           immediate
           className={inputClass}
           placeholder="http://127.0.0.1:3100"
+        />
+      </Field>
+
+      <Field
+        label="Existing Hermes session ID"
+        hint="Optional. Continue an existing Hermes conversation by its session id (manual entry, for example a Telegram/CLI session id). Leave empty to keep Paperclip's default isolated sessions."
+      >
+        <DraftInput
+          value={existingHermesSessionId}
+          onCommit={(v) => writeValue("existingHermesSessionId", v || undefined)}
+          immediate
+          className={inputClass}
+          placeholder="20260101_120000_abcd"
         />
       </Field>
 
