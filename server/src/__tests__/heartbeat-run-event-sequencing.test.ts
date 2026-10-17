@@ -165,4 +165,46 @@ describe("P6-11..13 / P6-17 canonical event allocator", () => {
       await temporary.cleanup();
     }
   }, 60_000);
+
+  it("reports the highest contiguous source seq per source instance across gaps and late arrivals", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-cursor-");
+    const db = createDb(temporary.connectionString);
+    const companyId = "20000000-0000-4000-8000-000000000001";
+    const agentId = "20000000-0000-4000-8000-000000000002";
+    const runId = "20000000-0000-4000-8000-000000000003";
+    try {
+      await db.insert(companies).values({ id: companyId, name: "Cursor fixture", issuePrefix: "CUR" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Cursor agent" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running" });
+      const append = async (sourceInstanceId: string, sourceSeq: number) => (await appendHeartbeatRunEvent(db, {
+        companyId,
+        runId,
+        agentId,
+        eventType: "item.delta",
+        payload: { sourceInstanceId, sourceSeq },
+        nativeSource: {
+          sourceInstanceId,
+          sourceEventId: `${sourceInstanceId}:${sourceSeq}`,
+          sourceSeq,
+          protocolSchemaVersion: 1,
+          canonicalPayload: { sourceInstanceId, sourceSeq },
+        },
+      })).highestContiguousSourceSeq;
+
+      expect(await append("runner-a", 2)).toBe(0);
+      expect(await append("runner-a", 1)).toBe(2);
+      expect(await append("runner-a", 3)).toBe(3);
+      expect(await append("runner-a", 5)).toBe(3);
+      expect(await append("runner-a", 6)).toBe(3);
+      expect(await append("runner-b", 1)).toBe(1);
+      expect(await append("runner-a", 4)).toBe(6);
+      for (let sourceSeq = 7; sourceSeq <= 200; sourceSeq += 1) {
+        expect(await append("runner-a", sourceSeq)).toBe(sourceSeq);
+      }
+      expect(await append("runner-b", 3)).toBe(1);
+      expect(await append("runner-b", 2)).toBe(3);
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
 });

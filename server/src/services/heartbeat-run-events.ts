@@ -202,18 +202,36 @@ export async function appendHeartbeatRunEvent(
 }
 
 async function contiguousCursor(db: Db, runId: string, sourceInstanceId: string): Promise<number> {
-  const rows = await db
+  const scope = and(
+    eq(heartbeatRunEvents.runId, runId),
+    eq(heartbeatRunEvents.sourceInstanceId, sourceInstanceId),
+    sql`${heartbeatRunEvents.sourceSeq} >= 1`,
+  );
+  const [range] = await db
+    .select({
+      count: sql<number>`count(*)`.mapWith(Number),
+      max: sql<number | null>`max(${heartbeatRunEvents.sourceSeq})`.mapWith(Number),
+    })
+    .from(heartbeatRunEvents)
+    .where(scope);
+  if (!range || !range.count) return 0;
+  if (range.max === range.count) return range.count;
+  const [first] = await db
     .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
     .from(heartbeatRunEvents)
-    .where(and(
-      eq(heartbeatRunEvents.runId, runId),
-      eq(heartbeatRunEvents.sourceInstanceId, sourceInstanceId),
-    ))
-    .orderBy(asc(heartbeatRunEvents.sourceSeq));
-  let cursor = 0;
-  for (const row of rows) {
-    if (row.sourceSeq === cursor + 1) cursor += 1;
-    else if (row.sourceSeq !== null && row.sourceSeq > cursor + 1) break;
-  }
-  return cursor;
+    .where(and(scope, eq(heartbeatRunEvents.sourceSeq, 1)))
+    .limit(1);
+  if (!first) return 0;
+  const [last] = await db
+    .select({ sourceSeq: heartbeatRunEvents.sourceSeq })
+    .from(heartbeatRunEvents)
+    .where(and(scope, sql`not exists (
+      select 1 from heartbeat_run_events next_event
+      where next_event.run_id = heartbeat_run_events.run_id
+        and next_event.source_instance_id = heartbeat_run_events.source_instance_id
+        and next_event.source_seq = heartbeat_run_events.source_seq + 1
+    )`))
+    .orderBy(asc(heartbeatRunEvents.sourceSeq))
+    .limit(1);
+  return last?.sourceSeq ?? 0;
 }
