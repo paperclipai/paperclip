@@ -1204,6 +1204,24 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("Please review this.\n\n[notes.txt](/attachments/notes.txt)", undefined, undefined, undefined, expect.any(String));
   });
 
+  it("sends a comment on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="plain-http-task" />);
+      typeText("Please continue with the blocked step");
+      flushSync(() => sendButton().click());
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd.mock.calls[0]?.[0]).toBe("Please continue with the blocked step");
+      expect(onAdd.mock.calls[0]?.[4])
+        .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("blocks send while a file upload is pending, then includes the file once it lands", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     let resolveUpload!: (value: {
