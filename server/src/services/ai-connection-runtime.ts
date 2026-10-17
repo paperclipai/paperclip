@@ -116,7 +116,14 @@ export async function assertManagedAiProjectAuth(
         "-c",
         `
 directory=$1; pattern=$2; shift 2
+home=$(cd ~ 2>/dev/null && pwd)
 while :; do
+  # The managed runtime points HOME and CLAUDE_CONFIG_DIR at a fresh temporary
+  # directory, so the operator's own ~/.claude is never read by the run. Ascending
+  # into it guarded a file that cannot affect this execution, and it blocked the
+  # operators whose local Claude configuration this feature imports. Stop here;
+  # workspace-level settings are still inspected below.
+  if [ -n "$home" ] && [ "$directory" = "$home" ]; then break; fi
   for relative in "$@"; do
     file="$directory/$relative"
     if test -f "$file"; then
@@ -152,26 +159,36 @@ done`,
   }
   let directory =
     typeof config.cwd === "string" ? path.resolve(config.cwd) : process.cwd();
+  // The managed runtime replaces HOME and CLAUDE_CONFIG_DIR with a fresh
+  // temporary directory, so the operator's own ~/.claude never reaches the
+  // child process. Walking up into it therefore guarded a file the run cannot
+  // read — and because importing the local Claude configuration requires those
+  // very variables to live there, it blocked exactly the operators this feature
+  // serves. Settings inside the workspace are still read by the CLI, so the walk
+  // keeps ascending and stops when it reaches home.
+  const home = os.homedir();
   for (;;) {
-    for (const relative of files) {
-      try {
-        const content = await readFile(path.join(directory, relative), "utf8");
-        if (
-          /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
-            content,
-          )
-        ) {
-          throw unprocessable(
-            "Project authentication settings conflict with the selected AI connection",
-            { code: "ai_connection_incompatible" },
-          );
+    if (directory !== home) {
+      for (const relative of files) {
+        try {
+          const content = await readFile(path.join(directory, relative), "utf8");
+          if (
+            /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
+              content,
+            )
+          ) {
+            throw unprocessable(
+              "Project authentication settings conflict with the selected AI connection",
+              { code: "ai_connection_incompatible" },
+            );
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
     const parent = path.dirname(directory);
-    if (parent === directory) break;
+    if (parent === directory || directory === home) break;
     directory = parent;
   }
 }
@@ -227,6 +244,36 @@ export async function prepareManagedAiRuntime(
     input.config.env && typeof input.config.env === "object"
       ? (input.config.env as Record<string, unknown>)
       : {};
+  /**
+   * A model this agent already carries, by either of the two keys the adapter
+   * reads. An explicit choice outranks anything the connection holds — otherwise
+   * importing a gateway would quietly repoint an agent its owner had already
+   * configured, and the only trace would be a run on a different model.
+   */
+  const nonEmptyModel = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value.trim() : "";
+  const configuredModel =
+    nonEmptyModel(input.config.model) || nonEmptyModel(configuredEnv.ANTHROPIC_MODEL);
+  const harness = aiRoutingHarness(input.adapterType, input.config.provider, input.config.acpxAgent);
+  await assertManagedAiProjectAuth(input.config, harness === "claude_local" ? "anthropic" : harness === "codex_local" ? "openai" : input.binding.provider);
+  const service = aiConnectionService(db);
+  let selection = await service.select({
+    ...input,
+    userId: input.responsibleUserId,
+    model: input.config.model,
+    runnerProvider: input.config.provider,
+    acpxAgent: input.config.acpxAgent,
+  });
+  /**
+   * Hand-written provider routing is refused whichever connection is selected,
+   * but the sentence that explains where the endpoint does come from is only
+   * true for a connection that carries one. Subscription and official API-key
+   * accounts resolve to the official endpoint, and their operators have always
+   * seen this refusal word for word as it was (PRODUCT #40).
+   */
+  const routingRefusal = selection.attribution.baseUrl
+    ? "The configured provider routing is incompatible with this AI connection, and the endpoint can only come from the selected connection"
+    : "The configured provider routing is incompatible with this AI connection";
   for (const key of [
     "ANTHROPIC_BASE_URL",
     "OPENAI_BASE_URL",
@@ -238,21 +285,8 @@ export async function prepareManagedAiRuntime(
     "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GOOGLE_GEMINI_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL",
   ]) {
     if (configuredEnv[key])
-      throw unprocessable(
-        "The configured provider routing is incompatible with this AI connection",
-        { code: "ai_connection_incompatible" },
-      );
+      throw unprocessable(routingRefusal, { code: "ai_connection_incompatible" });
   }
-  const harness = aiRoutingHarness(input.adapterType, input.config.provider, input.config.acpxAgent);
-  await assertManagedAiProjectAuth(input.config, harness === "claude_local" ? "anthropic" : harness === "codex_local" ? "openai" : input.binding.provider);
-  const service = aiConnectionService(db);
-  let selection = await service.select({
-    ...input,
-    userId: input.responsibleUserId,
-    model: input.config.model,
-    runnerProvider: input.config.provider,
-    acpxAgent: input.config.acpxAgent,
-  });
   const subscriptionFile =
     selection.attribution.method === "subscription" &&
     input.binding.provider !== "anthropic";
@@ -325,6 +359,31 @@ export async function prepareManagedAiRuntime(
       );
     if (!routing && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing) env[capability.envKey] = value;
+    // A connection that imported a gateway endpoint overrides the official one,
+    // and its key has to travel under the variable it was imported from: the
+    // two Anthropic credential variables authenticate with different headers,
+    // so the unused one must stay blanked out above. A routing projection owns
+    // the endpoint itself, so this injection stays out of its way.
+    if (!routing && selection.attribution.baseUrl) {
+      env.ANTHROPIC_BASE_URL = selection.attribution.baseUrl;
+      const keyVariable = selection.attribution.keyVariable ?? capability.envKey;
+      if (keyVariable !== capability.envKey) env[capability.envKey] = "";
+      env[keyVariable] = value;
+      // The ladder the import resolved is the model an agent with none of its own
+      // runs on that gateway. `ANTHROPIC_MODEL` is the one lever that reaches the
+      // adapter without writing anything into the agent's own configuration:
+      // the adapter reads `config.model` first, this variable second, and its own
+      // default last, so a tier injected here loses to an explicit choice and
+      // wins over the built-in default — which is an official-endpoint model a
+      // gateway connection has no reason to serve. The blanking pass above
+      // emptied this key along with the credential keys, so an explicit choice
+      // that lives in the environment is written back rather than left blank.
+      if (configuredModel) {
+        if (configuredEnv.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = configuredEnv.ANTHROPIC_MODEL;
+        else delete env.ANTHROPIC_MODEL;
+      } else if (selection.attribution.models?.default)
+        env.ANTHROPIC_MODEL = selection.attribution.models.default;
+    }
     if (
       !routing && input.binding.provider === "openai" &&
       selection.attribution.method === "api_key"
@@ -370,8 +429,19 @@ export async function prepareManagedAiRuntime(
       .update(value)
       .digest("hex")
       .slice(0, 16);
-    const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
-    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
+    // The endpoint is part of both fingerprints, otherwise the same key pointed
+    // at a new gateway would keep resuming sessions that ran against the old
+    // one. The model ladder follows it for the same reason: a re-import that
+    // moved the tier must not let an open session keep running the old model.
+    // Accounts on the official endpoint keep their historical shape.
+    const endpoint = selection.attribution.baseUrl
+      ? `:${selection.attribution.baseUrl}`
+      : "";
+    const modelTier = selection.attribution.models?.default
+      ? `@${selection.attribution.models.default}`
+      : "";
+    const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}${endpoint}${modelTier}`;
+    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}${endpoint}${modelTier}`;
     return {
       sessionIdentity,
       config: {

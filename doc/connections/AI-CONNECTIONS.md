@@ -429,6 +429,82 @@ A failed verification creates no healthy connection. Preview-era Codex/Grok mana
 isolated-subscription marker require reconnect before another managed execution;
 unmanaged legacy agents retain their existing authentication paths.
 
+## Importing the operator's Claude configuration
+
+A third credential mode reads the operator's own Claude Code settings file and
+turns what it finds into a normal managed AI connection. An operator who already
+points Claude Code at a gateway should not have to retype the address, hunt
+through a model list, and paste the key. Onboarding, the new-agent wizard, the
+agent configuration page, and the Apps catalog flow all offer it beside the
+subscription and API-key modes, and it appears only for Claude providers on a
+local-trusted instance. Two board routes implement it:
+
+- `POST /api/companies/:companyId/ai-connections/local-claude-config` reads the
+  file and returns the summary the confirmation card shows: the gateway address,
+  which credential variable held the key, the masked key, the model tiers, and a
+  suggested connection name. Every failure comes back as
+  `status: "unavailable"` with a reason (`settings_unreadable`, `env_block_missing`,
+  `base_url_missing`, `models_missing`, `key_missing`) and a message that names the
+  file and the variable to set.
+- `POST /api/companies/:companyId/ai-connections/local-claude-config/import`
+  re-reads the file, compares the address, credential variable, and masked key
+  against the card the operator confirmed, probes the gateway, and then saves.
+  Supplying `connectionId` re-imports onto that connection. An import whose probe
+  fails leaves no connection behind.
+
+Only seven keys are ever lifted out of the `env` block: `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and the four `ANTHROPIC_DEFAULT_*_MODEL`
+tiers. `ANTHROPIC_API_KEY` wins when both credential variables are set. Timeouts,
+subagent limits, and traffic switches are dropped, because none of them belong in
+an agent's run environment. The file is derived from the current user's home
+directory and nothing else — no caller can point this feature at another path, and
+`~/.claude.json` is never read. The plaintext key stays in server memory until the
+connection is saved; every response, including the confirmation card, carries only
+the masked value.
+
+### The endpoint becomes a field on the connection
+
+`config.ai` gains two optional fields, `baseUrl` and `keyVariable`, both scoped to
+Anthropic connections. No new provider value is added, so every existing
+compatibility check, provider default, and application-gallery row keeps working
+unchanged. `keyVariable` has to be stored rather than inferred: the two Anthropic
+credential variables authenticate with different headers, so a gateway that
+accepts one rejects the other.
+
+The stored address is canonical and carries no `/v1`. It is written into the
+child's `ANTHROPIC_BASE_URL` and the Claude CLI appends `/v1/messages` itself, so
+keeping the segment would make every run request `/v1/v1/messages`. A trailing
+slash, a missing segment, and a doubled one all normalize to the same value, and
+the probe appends `/v1/models` rather than baking an API path into the stored
+address.
+
+When a run selects such a connection, the runtime overrides the official endpoint
+with the connection's own, injects the credential under the variable it was
+imported from with the other left blank, and hands an agent with no model of its
+own the tier the import resolved. Writing a provider endpoint by hand in the
+agent configuration stays rejected: the endpoint has exactly one source, whichever
+connection is selected. The probe and the runtime injection both use the
+connection's endpoint, with `redirect: "error"` and a 15-second ceiling matching
+the official API-key check. Usage queries on a connection with a `baseUrl` return
+`unsupported` without contacting any endpoint.
+
+### Two gates, and neither is optional
+
+The instance gate is the shared server-host boundary: an instance that cannot
+offer local subscription sign-in cannot offer this either, and the refusal names
+the settings file rather than the other sign-in methods. The operator gate is
+stricter — only an actor whose source is `local_implicit` may call either route,
+the same boundary the local subscription sign-in path already applies to the
+operator's own credentials. Both are enforced server-side; the four surfaces hide
+the mode as well, so nobody is shown a button they cannot press.
+
+A green probe only proves the Paperclip server can reach the gateway. An agent
+that executes in a sandbox, over SSH, or on Kubernetes has its own verdict, and an
+egress allowlist that omits the gateway host is the same class of unreachability.
+Importing for such an agent is refused with a message naming which of the two
+applies; a re-import that changes nothing skips the credential rotation, so an
+in-flight run is not asked to restart.
+
 ## Verification
 
 `server/src/__tests__/ai-connections.test.ts` exercises storage, isolation,

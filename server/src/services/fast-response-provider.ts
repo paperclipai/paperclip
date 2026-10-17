@@ -137,6 +137,15 @@ export function fastResponseModel(
 ): Extract<LanguageModel, { specificationVersion: "v4" }> {
   const { metadata, credential, model } = input,
     route = metadata.routing;
+  // An imported account keeps its endpoint and the variable its key came from
+  // on the connection itself rather than in a routing projection. A fast reply
+  // reads the same two facts from there: without them it would send the gateway
+  // key to the provider's official endpoint, under an auth header that gateway
+  // may not even read.
+  const effectiveBaseUrl = route?.baseUrl ?? metadata.baseUrl;
+  const effectiveAuth =
+    route?.auth ??
+    (metadata.keyVariable === "ANTHROPIC_AUTH_TOKEN" ? ("bearer" as const) : undefined);
   const guardedFetch: typeof fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
     if (route?.auth === "none") {
@@ -152,7 +161,7 @@ export function fastResponseModel(
   const baseURL =
     route?.kind === "openrouter"
       ? "https://openrouter.ai/api/v1"
-      : route?.baseUrl?.replace(/\/+$/, "");
+      : effectiveBaseUrl?.replace(/\/+$/, "");
   const common = { fetch: guardedFetch, ...(baseURL ? { baseURL } : {}) };
   if (route?.kind === "bedrock")
     return createAmazonBedrock({
@@ -175,7 +184,7 @@ export function fastResponseModel(
   ) {
     return createAnthropic({
       ...common,
-      ...(route?.auth === "bearer"
+      ...(effectiveAuth === "bearer"
         ? { authToken: credential }
         : { apiKey: route?.auth === "none" ? "" : credential }),
     })(model);

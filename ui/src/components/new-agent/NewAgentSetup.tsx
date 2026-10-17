@@ -364,12 +364,17 @@ function Setup({
     nextConnection = connection,
     binding = selectedBinding,
   ): Record<string, unknown> {
+    // A connection that carries a model — the one an import was confirmed with —
+    // outranks the field's current state. The model lands on the connection
+    // before the environment test runs, so the test has to send the model the
+    // agent will actually use, not the one the field still holds.
+    const effectiveModel = nextConnection?.model || model;
     const values = {
       ...defaultCreateValues,
       adapterType,
       runner,
       model:
-        model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
+        effectiveModel || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
       dangerouslyBypassSandbox: adapterType === "codex_local" && runner === "legacy",
       envBindings: nextConnection?.env ?? {},
@@ -391,7 +396,7 @@ function Setup({
       Object.assign(config, {
         provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
         ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
-        ...(model ? { model } : {}),
+        ...(effectiveModel ? { model: effectiveModel } : {}),
       });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
       if (adapterType === "hermes_gateway") config.apiKey = binding;
@@ -809,8 +814,21 @@ function Setup({
                         )?.message
                       }
                       onConnected={(next) => {
-                        setConnection(next);
                         setRuntimeAiBinding(undefined);
+                        // An import chose this agent's model on the card it was
+                        // confirmed on, so it lands in the field the hire reads,
+                        // and the stale test result goes with it: the run that
+                        // passed ran on the previous model. The model then
+                        // belongs to the field — carrying it on the connection
+                        // would freeze it against every later edit, because the
+                        // config builder prefers a connection's model over the
+                        // field while one is present.
+                        if (next.model) {
+                          setModel(next.model);
+                          resetTest();
+                          next = { ...next, model: undefined };
+                        }
+                        setConnection(next);
                         setScreen("runtime");
                       }}
                     /> : <p role="status" className="text-sm text-muted-foreground">Loading connection settings…</p>}

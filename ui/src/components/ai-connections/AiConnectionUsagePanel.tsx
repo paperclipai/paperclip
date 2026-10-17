@@ -67,7 +67,10 @@ function usageError(usage: AiConnectionUsage) {
     case "provider_unavailable": return "Provider unavailable. Try again.";
     case "invalid_response": return "Couldn’t read usage. Try again.";
     case "connection_unavailable": return "Reconnect to check usage.";
-    case "unsupported": return "Usage unavailable.";
+    // A custom gateway reports no Paperclip-readable allowance, and the route
+    // says so with its own reason; only fall back to the generic copy when the
+    // response carried none.
+    case "unsupported": return usage.message ?? "Usage unavailable.";
     default: return usage.message ?? "Usage unavailable.";
   }
 }
@@ -77,6 +80,11 @@ export function AiConnectionUsagePanel({ account, observation, cachedOnly = fals
     mutationFn: () => aiConnectionsApi.probeUsage(account.companyId, account.id, account.grantId),
   });
   const supported = supportsAiConnectionUsage(account.provider, account.method);
+  // A connection on its own gateway has no usage contract to read, and the
+  // sign-in method is not the reason: name the endpoint instead (PRODUCT #38).
+  const unsupportedMessage = account.baseUrl
+    ? "This endpoint does not support usage queries."
+    : "Unavailable for this sign-in method.";
   const usage = cachedOnly ? observation : probe.isSuccess ? probe.data : undefined;
   return (
     <section aria-label="Account usage limits" className="space-y-3">
@@ -87,7 +95,7 @@ export function AiConnectionUsagePanel({ account, observation, cachedOnly = fals
         </Button>}
       </div>
       {cachedOnly && !usage && <p className="text-xs text-muted-foreground">Usage not observed.</p>}
-      {!supported && <p className="text-xs text-muted-foreground">Unavailable for this sign-in method.</p>}
+      {!supported && <p className="text-xs text-muted-foreground">{unsupportedMessage}</p>}
       {probe.error && <p role="alert" className="text-sm text-destructive">{probe.error.message}</p>}
       {usage && usage.status !== "ok" && <p role={usage.status === "unsupported" ? "status" : "alert"} className="text-sm text-muted-foreground">{usageError(usage)}</p>}
       {usage?.status === "ok" && (

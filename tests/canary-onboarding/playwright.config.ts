@@ -33,6 +33,8 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+const smokeHome = process.env.PAPERCLIP_CANARY_SMOKE_HOME?.trim() || undefined;
+
 const command = [
   shellQuote(process.execPath),
   shellQuote(path.resolve("tests/canary-onboarding/start-published-canary.mjs")),
@@ -82,6 +84,12 @@ export default defineConfig({
       PAPERCLIP_NO_BROWSER: "1",
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       npm_config_cache: npmCache,
+      // The import credential mode reads the operator's own
+      // `~/.claude/settings.json`, so the case that exercises it needs a home
+      // directory it may write a fixture into. Point this at a scratch directory
+      // to give the published server that home; unset, the server keeps the home
+      // a real install gets, so the walkthrough above is untouched.
+      ...(smokeHome ? { HOME: smokeHome } : {}),
     },
   },
   outputDir: "./test-results",

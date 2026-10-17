@@ -19,8 +19,15 @@ import {
  * by a checkbox that sits below it, and the selection drives the step's CTA.
  */
 
-/** How a source gets authenticated. Every tile is in the same mode at once. */
-export type CredentialMode = "subscription" | "api";
+/**
+ * How a source gets authenticated. Every tile is in the same mode at once.
+ *
+ * `import` reads the operator's own `~/.claude/settings.json` server-side and
+ * turns it into a managed connection. It is offered beside the other two rather
+ * than behind them, and it is only ever rendered where the adapter resolves to
+ * the Anthropic provider on a locally trusted instance (PRODUCT #3, #4).
+ */
+export type CredentialMode = "subscription" | "api" | "import";
 export type ModelConnectionMode = CredentialMode | "advanced";
 
 export type ModelSource = {
@@ -35,6 +42,7 @@ export type ModelSource = {
 const CREDENTIAL_TAG_LABEL: Record<ModelConnectionMode, string> = {
   subscription: "Subscription",
   api: "API key",
+  import: "Import",
   advanced: "Custom Gateway",
 };
 

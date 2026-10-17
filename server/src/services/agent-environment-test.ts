@@ -12,6 +12,7 @@ import { resolveEnvironmentExecutionTarget } from "./environment-execution-targe
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
+import { ANTHROPIC_KEY_VARIABLES, verifyGatewayEndpoint } from "./local-claude-config.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -502,11 +503,21 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
     if (resolvedMethod === "api_key" && !context.config.managedAiRouting) {
-      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
+      const managed = (context.config as { managedAiConnection?: { baseUrl?: string; keyVariable?: string } }).managedAiConnection;
+      // The selected connection is the only source of an endpoint, so a
+      // connection that imported a gateway is verified on that gateway: the
+      // official endpoint knows nothing about its key and would reject it.
+      const customBaseUrl = typeof managed?.baseUrl === "string" ? managed.baseUrl : "";
+      // Its key is injected under the variable the connection recorded, which
+      // is not the capability's default key slot for a token-based import.
+      const keyVariable = ANTHROPIC_KEY_VARIABLES.find((variable) => variable === managed?.keyVariable);
+      const envKey = keyVariable ?? AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
       try {
         if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
+        if (customBaseUrl)
+          await verifyGatewayEndpoint(customBaseUrl, key, keyVariable ?? "ANTHROPIC_API_KEY");
+        else await validateAiApiKey(binding.provider, key);
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";

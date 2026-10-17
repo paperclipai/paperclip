@@ -13,7 +13,7 @@ import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/Saved
 import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
 import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
-import type { ComponentType, CSSProperties } from "react";
+import type { ComponentType, CSSProperties, ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
@@ -22,6 +22,7 @@ import type {
   ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
+  LocalClaudeConfigReadResult,
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
@@ -69,6 +70,7 @@ import { companiesApi } from "../api/companies";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
+import type { AdapterModel } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -108,6 +110,11 @@ import {
   selectReusableOnboardingProject,
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
+import {
+  IMPORT_READ_GUIDANCE,
+  canOfferClaudeConfigImport,
+  resolveImportModel,
+} from "../lib/claude-config-import";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -203,6 +210,27 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
 }
 
 /**
+ * Where the import credential mode's read is.
+ *
+ * `idle` rather than a nullable snapshot, because "nothing read yet" and "read
+ * failed" ask different things of the card: the first opens by reading, the
+ * second has already been answered and is waiting to be dismissed.
+ */
+type ImportReadState =
+  | { status: "idle" }
+  | { status: "reading" }
+  | { status: "ready"; result: Extract<LocalClaudeConfigReadResult, { status: "ok" }> }
+  | {
+      status: "unavailable";
+      message: string;
+      /**
+       * What to do about it, when there is something specific to do. A refusal
+       * from the server carries its own answer, so it arrives without one.
+       */
+      guidance?: string;
+    };
+
+/**
  * Full-colour brand marks for the sources this step offers.
  *
  * The registry's own icons are monochrome, drawn to sit in dense config UI
@@ -257,6 +285,224 @@ const API_KEY_ENV_KEYS: Record<string, string> = {
 
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+/**
+ * Which of the three probe failures this was (PRODUCT #25).
+ *
+ * The classes are the gateway's answer, so they are read off the status before
+ * anything else. The rejected case carries the second half of its own copy —
+ * both Claude credential variables authenticate differently, so a gateway that
+ * only accepts one of them reads as a rejected key — and the fix is in the file
+ * the import just read, which is the only place it can be.
+ *
+ * A 4xx that is not a gateway answer is the server refusing this import for a
+ * reason of its own — an untrusted instance, a settings file that moved under the
+ * customer, an execution environment that cannot reach the gateway — and its
+ * message is the better copy. Everything left is the residual class.
+ */
+function importFailureMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) {
+    // The probe runs on the server, so a request that never got an answer was
+    // never about the gateway.
+    return "Could not reach Paperclip to import this connection. Try again.";
+  }
+  if (err.status === 401 || err.status === 403) {
+    return "The gateway rejected this key. If this machine's Claude settings hold both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, the wrong variable was imported — fix the settings file and import again.";
+  }
+  if (err.status === 408 || err.status === 502 || err.status === 503 || err.status === 504) {
+    return "Could not reach the gateway. Check the address and try again.";
+  }
+  if (err.status >= 400 && err.status < 500 && err.message) return err.message;
+  return "The gateway returned a response we could not read. Check the address and try again.";
+}
+
+/** The value that turns the model row from a list into a free-text field. */
+const IMPORT_MODEL_OTHER = "__other__";
+
+/** A labelled row of the confirmation card's summary. */
+function ImportSummaryRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-(length:--text-micro) text-muted-foreground">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The import mode's card: what was read, what it will become, and whether to do it.
+ *
+ * Four states, because the customer can meet this card in four ways — it is still
+ * reading, the read said no, the read succeeded and nothing has been confirmed yet,
+ * and a probe failed and the same card is being offered again. The last is why none
+ * of this is unmounted on failure (PRODUCT #25): a retry costs one press, and
+ * re-reading the file to get back here would be the long way round.
+ *
+ * The key is on this card as a variable name and a masked value and nothing else
+ * (PRODUCT #17, #41). The card never holds the value — the read did not return it —
+ * so there is nothing here to leak.
+ */
+function ImportClaudeConfigCard({
+  read,
+  name,
+  model,
+  modelEditing,
+  modelOptions,
+  importing,
+  error,
+  onNameChange,
+  onModelChange,
+  onModelEditingChange,
+  onImport,
+  onCancel,
+}: {
+  read: ImportReadState;
+  name: string;
+  model: string;
+  modelEditing: boolean;
+  modelOptions: AdapterModel[];
+  importing: boolean;
+  error: string | null;
+  onNameChange: (value: string) => void;
+  onModelChange: (value: string) => void;
+  onModelEditingChange: (editing: boolean) => void;
+  onImport: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-xl bg-muted/40 p-4">
+      {read.status === "reading" && (
+        // `role="status"` rather than a bare paragraph: the read is a wait the
+        // customer did not ask for, and a screen reader has to be told something
+        // is happening behind the spinner (PRODUCT #13, #47).
+        <p role="status" className="flex min-h-(--sz-108px) items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Reading this machine&rsquo;s Claude config…
+        </p>
+      )}
+
+      {read.status === "unavailable" && (
+        <div className="flex flex-col gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {read.message}
+          </p>
+          {read.guidance && (
+            <p className="text-(length:--text-micro) leading-relaxed text-muted-foreground">
+              {read.guidance}
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {read.status === "ready" && (
+        <>
+          <ImportSummaryRow label="Gateway">
+            {/* Plain, and plainly an address: the operator is being asked to
+                confirm where their key is about to be sent, and the protocol is
+                part of that answer (PRODUCT #17). */}
+            <span className="font-mono text-xs break-all text-foreground">
+              {read.result.baseUrl}
+            </span>
+          </ImportSummaryRow>
+
+          <ImportSummaryRow label="Key">
+            <span className="font-mono text-xs text-foreground">
+              {read.result.keyVariable} · {read.result.maskedKey}
+            </span>
+          </ImportSummaryRow>
+
+          <ImportSummaryRow label="Model">
+            {modelEditing ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  aria-label="Model"
+                  autoFocus
+                  value={model}
+                  placeholder="Model id"
+                  onChange={(event) => onModelChange(event.target.value)}
+                  className="h-8 rounded-md border-transparent bg-background text-xs shadow-none"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 shrink-0 px-2 text-xs"
+                  onClick={() => onModelEditingChange(false)}
+                >
+                  Use the list
+                </Button>
+              </div>
+            ) : (
+              <Select value={model} onValueChange={(value) => {
+                if (value === IMPORT_MODEL_OTHER) {
+                  onModelEditingChange(true);
+                  return;
+                }
+                onModelChange(value);
+              }}>
+                <SelectTrigger aria-label="Model" className="h-8 w-full text-xs">
+                  <SelectValue placeholder="Model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                  {/* A gateway can serve a model no curated list carries, and the
+                      model field here is the same field it is everywhere else —
+                      not stricter for having arrived by import (PRODUCT #19). */}
+                  <SelectItem value={IMPORT_MODEL_OTHER}>Other…</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            {read.result.models.alternatives.length > 0 && (
+              <span className="text-(length:--text-micro) text-muted-foreground">
+                Also configured: {read.result.models.alternatives.join(", ")}
+              </span>
+            )}
+          </ImportSummaryRow>
+
+          <ImportSummaryRow label="Connection name">
+            <Input
+              aria-label="Connection name"
+              // The card is the answer to the mode just chosen, so what it is
+              // about to create is the first thing to land on (PRODUCT #48).
+              autoFocus
+              value={name}
+              onChange={(event) => onNameChange(event.target.value)}
+              className="h-8 rounded-md border-transparent bg-background text-xs shadow-none"
+            />
+          </ImportSummaryRow>
+
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+
+          <div className="flex justify-end gap-2">
+            {/* Live through the probe, unlike Import beside it: the probe is a
+                round trip to someone else's gateway with a fifteen-second ceiling
+                on it, the server writes nothing when it fails, and a customer who
+                has changed their mind must not be held on the card for the rest of
+                it. Only Import is one press at a time (PRODUCT #22). */}
+            <Button variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button
+              onClick={onImport}
+              // One press at a time: the probe is a round trip to someone else's
+              // gateway and a second submission would either race it or create
+              // the connection twice (PRODUCT #22).
+              disabled={importing || name.trim().length === 0}
+            >
+              {importing ? "Importing…" : "Import"}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function ModelSourceMark({
@@ -713,6 +959,20 @@ function OnboardingWizardInner({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
       ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
+  /**
+   * Whether an import has already produced a connection for this company.
+   *
+   * State rather than the ref the typed-key path uses: nothing reads it in the
+   * same breath as the write. The import finishes, the card reports it, and the
+   * binding is picked up by the next `Connect` — which is a fresh call, not the
+   * continuation of the one that stored it.
+   */
+  const [importedConnection, setImportedConnection] = useState<{
+    companyId: string;
+    connectionId: string;
+    grantId: string;
+    binding: AiConnectionBinding;
+  } | null>(null);
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -764,7 +1024,60 @@ function OnboardingWizardInner({
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
   const managedProvider = aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
+
+  /**
+   * The import credential mode's state: what the read found, and what the
+   * customer has since edited on the confirmation card.
+   *
+   * Held apart from the two modes that were already here for two reasons. It
+   * carries no credential — the read only ever returns a masked key, and the
+   * route re-reads the file itself (PRODUCT #8, #41), so there is nothing here
+   * worth protecting. And it is per-company, like the binding it produces: a
+   * connection belongs to the company it was created in.
+   */
+  const [importRead, setImportRead] = useState<ImportReadState>({ status: "idle" });
+  /**
+   * The import's read is in flight.
+   *
+   * While it is, the mode switch is inert (PRODUCT #13): the read belongs to the
+   * mode it was started for, and switching would leave it running for a mode
+   * nobody is on.
+   */
+  const importReading = credentialMode === "import" && importRead.status === "reading";
+  const [importName, setImportName] = useState("");
+  const [importModel, setImportModel] = useState("");
+  /** Set when the model row is showing its free-text field rather than a list. */
+  const [importModelEditing, setImportModelEditing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  /** Bumped by every cancel, so a read that was in flight cannot land in the card. */
+  const importRunRef = useRef(0);
+  /** Focus the mode link once an unwind has put it back on screen (#48). */
+  const returnFocusToModeLinkRef = useRef(false);
+  /** The link row's wrapper, so focus can be handed back to it (#48). */
+  const credentialModeLinkRef = useRef<HTMLDivElement | null>(null);
+
+  /** Drop everything the import card was holding, without touching the mode. */
+  function resetImportState(options: { keepConnection?: boolean } = {}) {
+    importRunRef.current++;
+    setImportRead({ status: "idle" });
+    setImportName("");
+    setImportModel("");
+    setImportModelEditing(false);
+    setImporting(false);
+    setImportError(null);
+    // A cancel during the probe is the one case that keeps the reference: the
+    // server may already have committed the connection, and forgetting its id
+    // would make the next import build a second one for the same gateway.
+    if (!options.keepConnection) setImportedConnection(null);
+  }
+
   function managedBindingForStep(): AiConnectionBinding | undefined {
+    if (credentialMode === "import") {
+      return importedConnection?.companyId === createdCompanyId
+        ? importedConnection.binding
+        : undefined;
+    }
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
         ? apiKeySecretRef.current.aiConnection : undefined);
@@ -1037,11 +1350,29 @@ function OnboardingWizardInner({
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  /**
+   * Whether the import credential mode may be offered at all.
+   *
+   * The one gate, shared with the other three surfaces (`canOfferClaudeConfigImport`):
+   * the instance has to be the kind that reads local credentials and `local_trusted`
+   * — which is also what makes the caller the operator whose home directory the
+   * file sits in (PRODUCT #4, #49) — and the source has to be a Claude adapter so
+   * the endpoint fields mean something (PRODUCT #3). Whether the gateway is
+   * reachable from where this agent will run is the server's judgement
+   * (PRODUCT #51, #53), not this step's.
+   *
+   * The server enforces all of it again on both routes. This only decides whether
+   * a control nobody could complete is drawn.
+   */
+  const canOfferImportCredential = canOfferClaudeConfigImport({
+    provider: managedProvider,
+    health: localLoginHealth.data,
+  });
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" && credentialMode !== "import" &&
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
   );
   // A result from a previous selection must not hire or advance this wizard.
@@ -1204,9 +1535,13 @@ function OnboardingWizardInner({
    * footer button and the card cannot disagree about whether a login is
    * happening. When it is false — an API key, a source already signed in on the
    * sandbox, or a local CLI account — Connect verifies credentials before the hire.
+   *
+   * The import mode is in that list for the same reason an API key is: its
+   * credential arrives as a connection rather than as a sign-in, so there is no
+   * session to run and nothing for the step to wait on.
    */
   const connectStepNeedsLogin = Boolean(
-    credentialMode !== "api" &&
+    credentialMode !== "api" && credentialMode !== "import" &&
       // Connection-list invalidation can arrive before the login's completion
       // poll. Keep its controller mounted until it reports success; otherwise
       // the saved account replaces the panel and "Connecting" never finishes.
@@ -1235,7 +1570,7 @@ function OnboardingWizardInner({
 
   /** Without browser login, show instructions for the selected execution environment. */
   const connectStepHasNoSandbox =
-    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+    credentialMode !== "api" && credentialMode !== "import" && !canShowAdapterLogin && !authSignalUndecided;
 
   /*
     The sequence's derived state. Space and visibility are separate throughout:
@@ -1248,7 +1583,7 @@ function OnboardingWizardInner({
   const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
     (credentialMode !== "api" && managedBindingForStep()));
-  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
+  const connectHasCard = credentialMode === "api" || credentialMode === "import" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
     connectHasCard &&
     (connectPhase === "loading" ||
@@ -1406,7 +1741,12 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady ||
+                  (credentialMode === "api" && !apiKey.trim() && !selectedApiKey) ||
+                  // The import card's own button is what creates the connection;
+                  // until it has, this button would hire an agent with nothing to
+                  // run on. Same shape as the API key's condition, one line over.
+                  (credentialMode === "import" && !importedConnection),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1439,6 +1779,62 @@ function OnboardingWizardInner({
     // With no card open, the row is the whole of the unwind.
     setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
   }
+
+  /**
+   * Read on entering the import mode, however the mode was entered.
+   *
+   * Pressing the link reads on the press (see `changeCredentialMode`). This is
+   * the other way in: a draft that restored the mode, or a tile pressed while it
+   * was already set, opens a card with nothing in it. Both want the same read,
+   * and reading here rather than on load is what keeps a file read off the
+   * critical path of the step (PRODUCT #9).
+   */
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || step !== 4) return;
+    if (credentialMode !== "import" || !canOfferImportCredential) return;
+    if (importRead.status !== "idle") return;
+    // The card is the thing that shows the answer, so it has to be open — or on
+    // its way, which the collapsing beat is.
+    if (connectPhase !== "ready" && connectPhase !== "collapsing") return;
+    readLocalClaudeConfigSnapshot();
+  }, [
+    effectiveOnboardingOpen, step, credentialMode, canOfferImportCredential,
+    importRead.status, connectPhase,
+  ]);
+
+  /**
+   * Esc closes the confirmation card, and closing it is cancelling it (#48).
+   *
+   * Bound while the card is live rather than on the card itself: the card is an
+   * inline canvas, so focus can sit on the step behind it, and a keypress there
+   * still means "get me out of this".
+   */
+  useEffect(() => {
+    if (step !== 4 || credentialMode !== "import") return;
+    if (importRead.status !== "ready" && importRead.status !== "unavailable") return;
+    if (!connectCardLive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelImport();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [step, credentialMode, importRead.status, connectCardLive]);
+
+  /**
+   * Hand focus back to the mode link once an unwind has put it back (#48).
+   *
+   * The link is clipped and inert while the row is collapsed, so focusing it any
+   * earlier would be focusing something nobody can see. `idle` is when it is
+   * neither.
+   */
+  useEffect(() => {
+    if (connectPhase !== "idle" || !returnFocusToModeLinkRef.current) return;
+    returnFocusToModeLinkRef.current = false;
+    const link = credentialModeLinkRef.current?.querySelector("button");
+    if (link instanceof HTMLButtonElement) link.focus();
+  }, [connectPhase]);
 
   /**
    * What the step's primary action does, for both the button and Cmd+Enter.
@@ -1590,6 +1986,31 @@ function OnboardingWizardInner({
   }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
+  /**
+   * The model picker's options for the import card.
+   *
+   * The imported ladder first — the folded default, then the rest in the order
+   * the settings file had them — and the adapter's own list after it, which is
+   * the same list every other surface picks from (PRODUCT #19). Order matters
+   * here in a way it does not elsewhere: the tiers are what the operator actually
+   * configured on their gateway, and burying them under a curated list would make
+   * the card look like it had invented them.
+   */
+  const importModelOptions = useMemo(() => {
+    if (importRead.status !== "ready") return [] as AdapterModel[];
+    const result = importRead.result;
+    const options: AdapterModel[] = [];
+    const seen = new Set<string>();
+    const push = (id: string, label?: string) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      options.push({ id, label: label ?? id });
+    };
+    push(result.models.default);
+    for (const alternative of result.models.alternatives) push(alternative);
+    for (const entry of adapterModels ?? []) push(entry.id, entry.label);
+    return options;
+  }, [importRead, adapterModels]);
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
       (check) =>
@@ -1836,6 +2257,175 @@ function OnboardingWizardInner({
       );
       return false;
     }
+  }
+
+  /**
+   * Switch the credential mode, and let the import mode do what entering it does.
+   *
+   * The two modes that were already here need nothing on the way in: a key field
+   * appears, and whatever was typed in the other one is simply not read. The
+   * import mode is different in that entering it *is* the action — the read goes
+   * out on entry and again on every return (PRODUCT #9), because the file is the
+   * only source and it may have been edited since the last look.
+   *
+   * What was typed before is discarded either way (PRODUCT #7). There is nothing
+   * else it could mean: those are unsubmitted form values, and asking whether to
+   * throw them away would be asking about a draft nobody wrote.
+   */
+  function changeCredentialMode(next: CredentialMode) {
+    setCredentialMode(next);
+    setSelectedSavedKey(null);
+    setApiKey("");
+    setError(null);
+    if (next === "import") {
+      // Leaving the mode abandons the card; entering it starts over, so that a
+      // second visit re-reads rather than showing what the first found.
+      resetImportState();
+      readLocalClaudeConfigSnapshot();
+    } else if (credentialMode === "import") {
+      resetImportState();
+    }
+  }
+
+  /**
+   * Read the operator's own Claude settings from the machine running Paperclip.
+   *
+   * No arguments, and that is the point (PRODUCT #8): the route takes no path and
+   * no credential, so there is nothing here to pass and nothing for a caller to
+   * point it at. The response carries a masked key and never the value.
+   */
+  function readLocalClaudeConfigSnapshot() {
+    if (!createdCompanyId) return;
+    const run = ++importRunRef.current;
+    setImportRead({ status: "reading" });
+    setImportError(null);
+    void aiConnectionsApi
+      .readLocalClaudeConfig(createdCompanyId)
+      .then((result) => {
+        // A mode switch or a cancel has already moved this card on.
+        if (run !== importRunRef.current) return;
+        if (result.status === "ok") {
+          setImportRead({ status: "ready", result });
+          setImportName(result.suggestedName);
+          setImportModel(result.models.default);
+          setImportModelEditing(false);
+          return;
+        }
+        setImportRead({
+          status: "unavailable",
+          message: result.message,
+          // Keyed by the reason the route reports rather than by its message: the
+          // sentence has to name the missing variable and the file it belongs in,
+          // and the server is free to reword its own copy.
+          guidance: IMPORT_READ_GUIDANCE[result.reason],
+        });
+      })
+      .catch((err: unknown) => {
+        if (run !== importRunRef.current) return;
+        // A refusal is the server's own answer — an untrusted instance, a caller
+        // who is not the operator — and it knows what it refused. Pointing at the
+        // settings file on top of that would be guessing at a cause it did not
+        // give.
+        const refused = err instanceof ApiError && err.status >= 400 && err.status < 500;
+        setImportRead({
+          status: "unavailable",
+          message:
+            err instanceof Error && err.message
+              ? err.message
+              : "Could not read this machine's Claude config.",
+          ...(refused ? {} : { guidance: IMPORT_READ_GUIDANCE.settings_unreadable }),
+        });
+      });
+  }
+
+  /**
+   * Turn the snapshot the customer confirmed into a connection.
+   *
+   * Everything this sends is either a summary the server will re-read and
+   * field-compare for itself, or nothing at all — the key never travels here
+   * (PRODUCT #11, #41). `confirm` carries the values as they were *read*, not as
+   * they were edited: it exists so the server can tell "the file moved under the
+   * customer" from "the customer changed their mind", and echoing an edit would
+   * make the first look like the second. `model` is the edit, and it travels as
+   * itself — the model chosen on the card — because that is the one the agent is
+   * about to run on; the write into the model field is below.
+   */
+  async function importLocalClaudeConfig() {
+    if (!createdCompanyId || importRead.status !== "ready" || importing) return;
+    const snapshot = importRead.result;
+    const model = resolveImportModel(importModel, snapshot);
+    // Bumped by a cancel, so an answer that lands after the customer walked away
+    // is dropped rather than applied to a step nobody is on any more.
+    const run = importRunRef.current;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const saved = await aiConnectionsApi.importLocalClaudeConfig(createdCompanyId, {
+        provider: "anthropic",
+        method: "api_key",
+        name: importName.trim() || snapshot.suggestedName,
+        ownership: "personal",
+        agentIds: [],
+        allAgents: true,
+        // A press that already built the connection reconnects it instead of
+        // creating a second account and secret for the same gateway. The
+        // reference survives a cancel during the probe for the same reason.
+        ...(importedConnection ? { connectionId: importedConnection.connectionId } : {}),
+        // The environment this run resolves to, so the reachability judgement
+        // matches where the first agent will actually execute. Null means the
+        // surface resolved nothing, which is the same as not naming one.
+        ...(resolvedLoginEnvironmentId ? { environmentId: resolvedLoginEnvironmentId } : {}),
+        baseUrl: snapshot.baseUrl,
+        keyVariable: snapshot.keyVariable,
+        model,
+        confirm: {
+          keyVariable: snapshot.keyVariable,
+          maskedKey: snapshot.maskedKey,
+          defaultModel: snapshot.models.default,
+          alternativeModels: snapshot.models.alternatives,
+        },
+      });
+      if (run !== importRunRef.current) return;
+      setImportedConnection({
+        companyId: createdCompanyId,
+        connectionId: saved.connectionId,
+        grantId: saved.grantId,
+        // Responsible-user, the same as a typed key: the connection belongs to
+        // whoever imported it, which on this surface is the operator.
+        binding: { provider: "anthropic", method: "api_key", mode: "responsible_user" },
+      });
+      // The folded default tier is what the agent runs on. The connection keeps
+      // the whole ladder for later.
+      setModel(model);
+      // A cached probe belonged to a configuration this one is not: the model
+      // is part of what is sent.
+      setAdapterEnvResult(null);
+      adapterEnvResultAppliedStoredLoginRef.current = false;
+    } catch (err) {
+      // The card stays exactly as it is. Retrying must not mean reading the file
+      // again — the customer has already seen and confirmed this snapshot
+      // (PRODUCT #25).
+      setImportError(importFailureMessage(err));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  /**
+   * Abandon the import and put the step back to the mode question.
+   *
+   * Cancel is available while the read is running too (PRODUCT #13): waiting on a
+   * file the operator may not have is not a commitment, and the way out has to be
+   * as easy as the way in. Neither case leaves anything behind — a cancelled read
+   * creates no connection and writes nothing.
+   */
+  function cancelImport() {
+    resetImportState({ keepConnection: true });
+    // Unwind the whole sequence rather than just hiding the card, so the customer
+    // lands on the mode chooser they used to get here. The card is inert while
+    // closed, so a cancel can only come from a card that is live.
+    returnFocusToModeLinkRef.current = true;
+    unwindConnectStep();
   }
 
   function buildAdapterConfig(bindApiKey = false): Record<string, unknown> {
@@ -2156,7 +2746,16 @@ function OnboardingWizardInner({
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored || !isCurrent()) return;
       }
-      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
+      // The import mode hires against a connection the card already created.
+      // Nothing is stored here — there is no key in this step to store — but the
+      // button and the keyboard both have to agree that the import is what
+      // happened, or a hire would go out with no credential behind it.
+      if (credentialMode === "import") {
+        if (!importedConnection || importedConnection.companyId !== createdCompanyId) {
+          setError("Import your Claude config to connect this agent.");
+          return;
+        }
+      } else if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         await localLogin.connect();
         if (!isCurrent()) return;
         managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
@@ -2777,8 +3376,13 @@ function OnboardingWizardInner({
                         focusable — a control that has stopped applying, still
                         answering to a keyboard and still able to change the
                         credential mode out from under a running sign-in.
+
+                        Inert while the import's read is out as well: the mode is
+                        the thing the read belongs to, and switching it mid-read
+                        would leave a read in flight for a mode nobody is on
+                        (PRODUCT #13).
                       */
-                      inert={!connectLinkVisible}
+                      inert={!connectLinkVisible || importReading}
                       initial={false}
                       animate={{
                         opacity: connectLinkVisible ? 1 : 0,
@@ -2786,8 +3390,19 @@ function OnboardingWizardInner({
                       }}
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
-                      <div className="-ml-3 mt-1">
-                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                      <div className="-ml-3 mt-1" ref={credentialModeLinkRef}>
+                        <CredentialModeLink
+                          mode={credentialMode}
+                          onChange={changeCredentialMode}
+                          /* The ring holds only what this step can actually draw,
+                             so an untrusted instance or a non-Claude adapter keeps
+                             the two-way switch it has always had. */
+                          availableModes={
+                            canOfferImportCredential
+                              ? ["subscription", "api", "import"]
+                              : ["subscription", "api"]
+                          }
+                        />
                         {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
@@ -2835,6 +3450,21 @@ function OnboardingWizardInner({
                         <Loader2 className="size-4 animate-spin" />
                         {connectProgress}
                       </p>
+                    ) : credentialMode === "import" ? (
+                      <ImportClaudeConfigCard
+                        read={importRead}
+                        name={importName}
+                        model={importModel}
+                        modelEditing={importModelEditing}
+                        modelOptions={importModelOptions}
+                        importing={importing}
+                        error={importError}
+                        onNameChange={setImportName}
+                        onModelChange={setImportModel}
+                        onModelEditingChange={setImportModelEditing}
+                        onImport={() => void importLocalClaudeConfig()}
+                        onCancel={cancelImport}
+                      />
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
                         instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${

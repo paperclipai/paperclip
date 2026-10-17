@@ -19,6 +19,8 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   browserCodeSchema,
+  localClaudeConfigImportInputSchema,
+  localClaudeConfigReadResultSchema,
   emailEndpointSetupSchema,
   emailConnectionSchema,
   emailAddressCheckSchema,
@@ -1396,6 +1398,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/ai-connections/local/check",
   "POST /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
   "DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
+  "POST /api/companies/{companyId}/ai-connections/local-claude-config",
+  "POST /api/companies/{companyId}/ai-connections/local-claude-config/import",
   "PUT /api/companies/{companyId}/ai-connections/default",
   "GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
   "GET /api/companies/{companyId}/ai-connections/{connectionId}/usage",
@@ -12445,6 +12449,24 @@ registerCurrentRoute({
   tags: ["ai-connections"], summary: "Check an owned local subscription sign-in without saving a connection",
   body: localAiConnectionSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+// Both local-Claude-config routes take no path and no credential of their own:
+// the server reads the operator's own settings file, so the read answers with a
+// masked key and the import carries only the non-confidential summary the
+// operator confirmed. They stay board-only like the local sign-in they sit
+// beside, and only the local operator may call them.
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local-claude-config",
+  tags: ["ai-connections"], summary: "Read this machine's Claude configuration for import",
+  responses: { 200: r.ok(localClaudeConfigReadResultSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local-claude-config/import",
+  tags: ["ai-connections"], summary: "Import this machine's Claude configuration as a managed AI connection",
+  body: localClaudeConfigImportInputSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registerCurrentRoute({

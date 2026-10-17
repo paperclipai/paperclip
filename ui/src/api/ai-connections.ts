@@ -1,4 +1,4 @@
-import type { AiConnectionList, AiConnectionUsage, CreateAiConnection, AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
+import type { AiConnectionList, AiConnectionUsage, CreateAiConnection, AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus, LocalClaudeConfigImportInput, LocalClaudeConfigReadResult } from "@paperclipai/shared";
 import { api } from "./client";
 export const aiConnectionsApi = {
   probeUsage: (companyId: string, connectionId: string, grantId?: string) => api.get<AiConnectionUsage>(`/companies/${companyId}/ai-connections/${connectionId}/usage${grantId ? `?grantId=${encodeURIComponent(grantId)}` : ""}`),
@@ -12,4 +12,11 @@ export const aiConnectionsApi = {
   create: (companyId: string, input: CreateAiConnection) => api.post<{ connectionId: string; grantId: string }>(`/companies/${companyId}/ai-connections`, input),
   setDefault: (companyId: string, grantId: string) => api.put(`/companies/${companyId}/ai-connections/default`, { grantId }),
   loginResult: (companyId: string, sessionId: string) => api.get<{ connectionId: string; grantId: string }>(`/companies/${companyId}/ai-connections/login/${encodeURIComponent(sessionId)}`),
+  // Both local-Claude-config routes take no path and no credential: the server
+  // reads the operator's own settings file itself, so a browser can neither
+  // point it at another file nor send a key of its own. The read answers with a
+  // masked key only, and the import carries the non-confidential summary the
+  // reader confirmed.
+  readLocalClaudeConfig: (companyId: string) => api.post<LocalClaudeConfigReadResult>(`/companies/${companyId}/ai-connections/local-claude-config`, {}),
+  importLocalClaudeConfig: (companyId: string, input: LocalClaudeConfigImportInput) => api.post<{ connectionId: string; grantId: string }>(`/companies/${companyId}/ai-connections/local-claude-config/import`, input),
 };

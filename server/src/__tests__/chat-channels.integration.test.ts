@@ -2685,7 +2685,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       try {
         await registerChatQueueWork(coordinator, { queue: DELIVERY_QUEUES.chatGitHubPublications,
           run: restarted.processPending, next: restarted.nextPendingAt }, () => true).ready;
-        expect(coordinator.nextWakeAt()).toBe(due.getTime());
+        // The retry time makes a round trip through timestamptz, and the text
+        // form carries the millisecond it was written with: under CI load the
+        // comparison can land a millisecond either side of it. The wake time is
+        // the retry time, so the round trip gets its millisecond.
+        expect(Math.abs(coordinator.nextWakeAt() - due.getTime())).toBeLessThanOrEqual(1);
         expect(attempts).toBe(1);
         await expect.poll(async () => (await f.action()).status, { timeout: 10_000 }).toBe("processed");
         expect(attempts).toBe(2);

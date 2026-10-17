@@ -47,6 +47,7 @@ export function AiConnectionField({
   model,
   value,
   onChange,
+  onModelSelect,
   environmentId,
   legacy = false,
   readOnly = false,
@@ -60,6 +61,13 @@ export function AiConnectionField({
   model?: string;
   value?: AiRuntimeConnectionBinding;
   onChange: (binding: AiRuntimeConnectionBinding) => void;
+  /**
+   * Called with the model an import was confirmed with, for the surface to put
+   * in the agent's own model field. An agent whose stored model predates the
+   * gateway would keep running on it, and a gateway that does not serve that
+   * model rejects every run.
+   */
+  onModelSelect?: (model: string) => void;
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
@@ -70,15 +78,21 @@ export function AiConnectionField({
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
-  const [pendingAdoption, setPendingAdoption] = useState<AiRuntimeConnectionBinding>();
   const [connecting, setConnecting] = useState(false);
   const [advancedSetup, setAdvancedSetup] = useState(false);
   const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
   const [allAgents, setAllAgents] = useState(true);
-  const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
-  const changeBinding = (next: AiRuntimeConnectionBinding) => {
-    if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
-    else onChange(next);
+  const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod; model?: string }>();
+  const [pendingAdoption, setPendingAdoption] = useState<AiRuntimeConnectionBinding>();
+  /** The model an import confirmed, held until the binding it came with is accepted. */
+  const [pendingAdoptionModel, setPendingAdoptionModel] = useState<string>();
+  const changeBinding = (next: AiRuntimeConnectionBinding, model?: string) => {
+    // The model travels with the binding it was imported for: a legacy agent
+    // confirms the binding in a second dialog, and cancelling that dialog must
+    // leave the agent's model as it was, not running on a model its kept
+    // credentials do not support.
+    if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); setPendingAdoptionModel(model); }
+    else { onChange(next); if (model) onModelSelect?.(model); }
   };
   const client = useQueryClient();
   const accounts = useQuery({
@@ -96,7 +110,7 @@ export function AiConnectionField({
     },
     onSuccess: async (result) => {
       await client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
-      changeBinding({ provider: provider!, method: result.method, mode: "responsible_user" });
+      changeBinding({ provider: provider!, method: result.method, mode: "responsible_user" }, result.model);
       setConnecting(false);
     },
   });
@@ -162,7 +176,7 @@ export function AiConnectionField({
       <Dialog
         open={Boolean(pendingAdoption)}
         onOpenChange={(open) => {
-          if (!open) setPendingAdoption(undefined);
+          if (!open) { setPendingAdoption(undefined); setPendingAdoptionModel(undefined); }
         }}
       >
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
@@ -186,14 +200,19 @@ export function AiConnectionField({
           <DialogFooter>
             <Button
               variant="ghost"
-              onClick={() => setPendingAdoption(undefined)}
+              onClick={() => { setPendingAdoption(undefined); setPendingAdoptionModel(undefined); }}
             >
               Cancel
             </Button>
             <Button
               onClick={() => {
                 if (pendingAdoption) onChange(pendingAdoption);
+                // The model lands with the binding it was imported for: the
+                // adoption is the moment the agent commits to this account, so
+                // it is also the moment it commits to that account's model.
+                if (pendingAdoptionModel) onModelSelect?.(pendingAdoptionModel);
                 setPendingAdoption(undefined);
+                setPendingAdoptionModel(undefined);
               }}
             >
               {pendingAdoption?.mode === "router" ? "Use pool" : "Use this binding when saved"}
@@ -234,7 +253,12 @@ export function AiConnectionField({
             companyId={companyId}
             provider={provider}
             initialMethod={reconnecting?.method ?? method}
-            fixedMethod={Boolean(reconnecting)}
+            // An imported connection was made from this machine's Claude config, so
+            // re-importing it is how it gets repaired. Pinning the method here would
+            // hide the mode switch and leave the operator no way back to it; the
+            // api_key method is unchanged either way, so only a switch to a
+            // subscription starts a different account.
+            fixedMethod={Boolean(reconnecting?.baseUrl === undefined && reconnecting)}
             connectionId={reconnecting?.id}
             name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
@@ -243,7 +267,10 @@ export function AiConnectionField({
             environmentId={environmentId}
             onCancel={() => setConnecting(false)}
             onComplete={(result) => {
-              setSavedAccount(result);
+              // The model rides with the account until the binding that uses it
+              // is accepted, so a cancelled adoption leaves the agent's model
+              // untouched.
+              setSavedAccount({ ...result, model: result.model });
               selectDefault.mutate(result);
             }}
           />}

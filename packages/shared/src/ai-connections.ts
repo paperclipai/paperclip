@@ -66,7 +66,69 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
-export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
+/**
+ * Anthropic's two credential variables authenticate with different headers, so a
+ * connection has to remember which one its key came from to inject it correctly.
+ */
+const aiKeyVariableSchema = z.enum(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
+/**
+ * The model ladder an import resolved: the tier it folded down to the default,
+ * and the rest of the ladder the operator may still pick from. Only an import
+ * carries one, because only an import reads a tier ladder at all.
+ */
+export const aiConnectionModelTiersSchema = z
+  .object({
+    default: z.string().min(1),
+    alternatives: z.array(z.string()).default([]),
+  })
+  .strict();
+export type AiConnectionModelTiers = z.infer<typeof aiConnectionModelTiersSchema>;
+export const aiConnectionMetadataSchema = z
+  .object({
+    ...requirement,
+    routing: aiProviderRoutingSchema.optional(),
+    baseUrl: z.string().url().optional(),
+    keyVariable: aiKeyVariableSchema.optional(),
+    models: aiConnectionModelTiersSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const { baseUrl, keyVariable } = value;
+    // Endpoint fields are only meaningful for direct API-key access: a subscription
+    // login always drives the official endpoint, and no other provider reads them.
+    if (
+      (baseUrl || keyVariable) &&
+      (value.provider !== "anthropic" || value.method !== "api_key")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: [baseUrl ? "baseUrl" : "keyVariable"],
+        message: "A custom endpoint requires an Anthropic API-key connection",
+      });
+    }
+    // Runtime injection and probing both need the endpoint together with the
+    // variable its key belongs to, so neither may travel alone.
+    if (Boolean(baseUrl) !== Boolean(keyVariable)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [baseUrl ? "keyVariable" : "baseUrl"],
+        message:
+          "A custom endpoint requires both a base URL and the key variable it authenticates with",
+      });
+    }
+    // The ladder decides which model an agent with none of its own runs on that
+    // gateway, so it cannot outlive the endpoint it was read from: a connection
+    // that re-imports onto another gateway overwrites it wholesale rather than
+    // keeping tiers that belong to the previous one.
+    if (value.models && !(baseUrl && keyVariable)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["models"],
+        message:
+          "Model tiers require the custom endpoint they were imported with",
+      });
+    }
+  });
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
 /** Existing integrations only. This table describes compatibility, never routing. */
@@ -152,6 +214,12 @@ export interface AiConnectionAttribution {
   method: AiAuthMethod;
   mode: AiConnectionBinding["mode"];
   responsibleUserId: string | null;
+  /** Custom gateway endpoint, present on imported Anthropic API-key connections. */
+  baseUrl?: string;
+  /** Which credential variable the connection's key was imported from. */
+  keyVariable?: "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN";
+  /** Model ladder the import resolved, for an agent that names no model. */
+  models?: AiConnectionModelTiers;
 }
 export type AiConnectionResolution =
   | { ok: true; attribution: AiConnectionAttribution }
@@ -173,6 +241,10 @@ export interface AiManagedConnectionSummary {
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
   usageProbeSupported?: boolean;
+  baseUrl?: string;
+  keyVariable?: "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN";
+  /** Model ladder the import resolved, shown beside the endpoint it came from. */
+  models?: AiConnectionModelTiers;
 }
 export interface AiConnectionList {
   currentUserId: string;
@@ -257,3 +329,80 @@ export function aiSubscriptionNeedsIsolatedLogin(config: Record<string, unknown>
     (metadata.data.provider === "openai" || metadata.data.provider === "xai") &&
     config?.aiIsolatedSubscription !== true;
 }
+
+/**
+ * Import input for the dedicated local-Claude-config route. `CreateAiConnection`
+ * deliberately stays free of endpoint fields: a client-submitted endpoint is never
+ * trusted, so this route re-reads the file server-side and the `confirm` block only
+ * carries the non-confidential summary the user saw, for a field-by-field diff. The
+ * credential itself is never part of this payload.
+ */
+export const localClaudeConfigImportInputSchema = z
+  .object({
+    provider: z.literal("anthropic"),
+    method: z.literal("api_key"),
+    name: z.string().trim().min(1).max(160),
+    /**
+     * The model the operator confirmed on the card: the tier the read folded,
+     * or their own edit of it (PRODUCT #19). The alternatives beside it are not
+     * taken from here — the route assembles the ladder from the file it just
+     * read, so a caller cannot name models the connection never saw.
+     */
+    model: z.string().trim().min(1),
+    ownership: z.enum(["personal", "shared"]),
+    agentIds: z.array(z.string().uuid()).max(1000).default([]),
+    allAgents: z.boolean().default(false),
+    connectionId: z.string().uuid().optional(),
+    /**
+     * The execution environment the importing surface selected, when it has
+     * one. A surface with no agent yet — onboarding, the new-agent wizard —
+     * judges reachability against the environment the run will actually use,
+     * not against the instance default, which can point somewhere the operator
+     * never chose for this agent.
+     */
+    environmentId: z.string().uuid().nullish(),
+    baseUrl: z.string().url(),
+    keyVariable: aiKeyVariableSchema,
+    confirm: z
+      .object({
+        keyVariable: aiKeyVariableSchema,
+        maskedKey: z.string().min(1),
+        defaultModel: z.string().min(1),
+        alternativeModels: z.array(z.string()),
+      })
+      .strict(),
+  })
+  .strict();
+export type LocalClaudeConfigImportInput = z.infer<
+  typeof localClaudeConfigImportInputSchema
+>;
+
+/** What the server reads from the operator's own Claude settings file. */
+export const localClaudeConfigReadResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("ok"),
+      baseUrl: z.string(),
+      keyVariable: aiKeyVariableSchema,
+      maskedKey: z.string(),
+      models: z.object({ default: z.string(), alternatives: z.array(z.string()) }),
+      suggestedName: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("unavailable"),
+      reason: z.enum([
+        "settings_unreadable",
+        "env_block_missing",
+        "base_url_missing",
+        "key_missing",
+        "models_missing",
+      ]),
+      message: z.string(),
+    })
+    .strict(),
+]);
+export type LocalClaudeConfigReadResult = z.infer<
+  typeof localClaudeConfigReadResultSchema
+>;

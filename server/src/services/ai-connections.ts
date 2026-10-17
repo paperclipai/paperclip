@@ -35,8 +35,10 @@ import {
   type AiConnectionMetadata,
   type AiManagedConnectionSummary,
   type AiConnectionUsage,
+  type AiConnectionModelTiers,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
+  type LocalClaudeConfigImportInput,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
@@ -57,6 +59,49 @@ function canUseCredential(
   return grant.kind === "organization" && (
     audience.length === 0 || audience.some((member) => member.subjectType === "user" && member.subjectId === userId)
   );
+}
+
+/** Every sign-in method that can create or reconnect a managed AI connection. */
+type SaveInput =
+  | CreateAiConnection
+  | AiConnectionLoginIntent
+  | LocalClaudeConfigImportInput
+  | ImportedAiConnectionInput;
+
+/**
+ * What the import route hands `save()`: the import payload plus the model ladder
+ * the route assembled from the file it just read.
+ *
+ * The ladder is not part of the request schema. `model` is what the operator
+ * confirmed on the card, and the alternatives beside it have to be the ones the
+ * operator's own settings file actually held — a caller that could name them
+ * itself would be choosing models the connection never saw, and the ladder is
+ * what an agent with no model of its own ends up running.
+ */
+export type ImportedAiConnectionInput = LocalClaudeConfigImportInput & {
+  models: AiConnectionModelTiers;
+};
+
+/**
+ * Only the dedicated local-Claude-config import carries an endpoint. Every
+ * other input keeps the official endpoint implied by its provider: a
+ * client-submitted endpoint is never trusted, so the import route is the sole
+ * place one can enter the system.
+ */
+function importedEndpoint(
+  input: SaveInput,
+): { baseUrl: string; keyVariable: string; models?: AiConnectionModelTiers } | undefined {
+  if (!("baseUrl" in input) || !input.baseUrl || !("keyVariable" in input) || !input.keyVariable)
+    return undefined;
+  const endpoint = { baseUrl: input.baseUrl, keyVariable: input.keyVariable };
+  const models = "models" in input && input.models?.default
+    ? { default: input.models.default, alternatives: input.models.alternatives }
+    : undefined;
+  // The ladder travels with the endpoint it was read from, so the two are
+  // either both stored or neither: an endpoint with no ladder would leave the
+  // agent on the adapter's own default, and a ladder with no endpoint points at
+  // a gateway nobody configured.
+  return models ? { ...endpoint, models } : endpoint;
 }
 
 export function aiConnectionService(db: Db) {
@@ -238,6 +283,17 @@ export function aiConnectionService(db: Db) {
       row.connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(row.connection.config)) {
       return { ...empty, status: "unavailable", errorCode: "connection_unavailable", message: "Reconnect or enable this AI connection before checking usage." };
     }
+    // A custom gateway is not a Paperclip usage contract, and its key means
+    // nothing to the official endpoint: report the capability instead of
+    // falling back to a probe that would only produce a rejection.
+    if (metadata.data.baseUrl) {
+      return {
+        ...empty,
+        status: "unsupported",
+        errorCode: "unsupported",
+        message: "This endpoint does not support usage queries.",
+      };
+    }
     if (!supportsAiConnectionUsage(metadata.data.provider, metadata.data.method)) {
       return { ...identity, ...await probeAiConnectionUsage(metadata.data, "") };
     }
@@ -392,6 +448,17 @@ export function aiConnectionService(db: Db) {
         method: metadata.data.method,
         mode: binding.mode,
         responsibleUserId: userId,
+        // The endpoint travels with the connection, so a runtime selected on
+        // this account sends its run there instead of to the official API. The
+        // model ladder comes with it: it is the model an agent that names none
+        // runs on that gateway.
+        ...(metadata.data.baseUrl
+          ? {
+              baseUrl: metadata.data.baseUrl,
+              keyVariable: metadata.data.keyVariable,
+              ...(metadata.data.models ? { models: metadata.data.models } : {}),
+            }
+          : {}),
       } satisfies AiConnectionAttribution,
     };
   }
@@ -534,7 +601,7 @@ export function aiConnectionService(db: Db) {
   async function save(
     companyId: string,
     userId: string,
-    input: CreateAiConnection | AiConnectionLoginIntent,
+    input: SaveInput,
     verifiedCredential: string,
     sessionId?: string,
     attemptStartedAt = new Date(),
@@ -575,6 +642,18 @@ export function aiConnectionService(db: Db) {
       );
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
+    const endpoint = importedEndpoint(input);
+    // A reconnect that carries no endpoint information cannot serve an account
+    // that has one. The key it brings was verified against the official
+    // endpoint, and the old endpoint would be kept, so the next run would send
+    // a credential nobody proved on that gateway. Replacing the key of an
+    // imported account goes through the import route, which re-reads the file
+    // and probes the gateway the key actually belongs to.
+    if (reconnect && (reconnect.connection.config.ai as AiConnectionMetadata).baseUrl && !endpoint)
+      throw unprocessable(
+        "This account connects through a custom gateway. Re-import it from the local Claude configuration to replace its key.",
+        { code: "ai_connection_gateway_reconnect_requires_import" },
+      );
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
       const secrets = secretService(tx);
       if (sessionId) {
@@ -649,41 +728,62 @@ export function aiConnectionService(db: Db) {
         if (!privateSlot) secretId = undefined;
       }
       if (!verifiedCredential) { secretId = undefined; }
-      else if (secretId)
-        await secrets.rotate(
-          secretId,
-          { value: verifiedCredential },
-          { userId },
-        );
-      else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
-          companyId,
-          {
-            key: `ai_${grantId.replaceAll("-", "_")}`,
-            name: input.name,
-            provider: "local_encrypted",
-          },
-          { userId },
-        );
-        const secret = await secrets.createCurrentUserSecretValue(
-          companyId,
-          userId,
-          { definitionId: definition.id, value: verifiedCredential },
-          { userId },
-        );
-        secretId = secret.id;
-      } else
-        secretId = (
-          await secrets.create(
+      // A re-import that read the same credential must not mint a new secret
+      // version: the version feeds the run's session identity, so rotating it
+      // aborts runs that are already in flight. Only the import route compares,
+      // because the comparison resolves the stored credential and therefore
+      // records a secret access event on every reconnect.
+      let credentialUnchanged = false;
+      if (secretId && endpoint && reconnect) {
+        try {
+          credentialUnchanged =
+            (await credential({
+              connection: reconnect.connection,
+              grant: reconnect.grant,
+            })) === verifiedCredential;
+        } catch {
+          // A credential that cannot be read counts as changed, so the
+          // reconnect repairs the slot instead of leaving the old value.
+        }
+      }
+      if (verifiedCredential) {
+        if (secretId) {
+          if (!credentialUnchanged)
+            await secrets.rotate(
+              secretId,
+              { value: verifiedCredential },
+              { userId },
+            );
+        } else if (input.ownership === "personal") {
+          const definition = await secrets.createUserSecretDefinition(
             companyId,
             {
-              name: `ai-${grantId}`,
+              key: `ai_${grantId.replaceAll("-", "_")}`,
+              name: input.name,
               provider: "local_encrypted",
-              value: verifiedCredential,
             },
             { userId },
-          )
-        ).id;
+          );
+          const secret = await secrets.createCurrentUserSecretValue(
+            companyId,
+            userId,
+            { definitionId: definition.id, value: verifiedCredential },
+            { userId },
+          );
+          secretId = secret.id;
+        } else
+          secretId = (
+            await secrets.create(
+              companyId,
+              {
+                name: `ai-${grantId}`,
+                provider: "local_encrypted",
+                value: verifiedCredential,
+              },
+              { userId },
+            )
+          ).id;
+      }
       if (input.agentIds.length) {
         const targets = await tx
           .select({ id: agents.id })
@@ -735,7 +835,17 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: {
+              ...reconnect.connection.config,
+              // Spreading the old config would leave a previous gateway in
+              // place, so the endpoint is written out every time. The model
+              // ladder rides with it for the same reason: a re-import onto
+              // another gateway must not keep the tiers the previous one read.
+              ai: endpoint
+                ? { provider: input.provider, method: input.method, ...endpoint }
+                : reconnect.connection.config.ai,
+              aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
+            },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -758,7 +868,7 @@ export function aiConnectionService(db: Db) {
             healthStatus: "ok",
             config: {
               sourceTemplateKey: source,
-              ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
+              ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}), ...endpoint },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
             },
             createdByUserId: userId,
@@ -999,7 +1109,12 @@ export function aiConnectionService(db: Db) {
         )).for("update");
         const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
         const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
-        if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
+        // Keep in step with the identity string prepareManagedAiRuntime builds:
+        // the endpoint is the last segment only for a connection that has one,
+        // and the model ladder follows it.
+        const endpoint = attribution.baseUrl ? `:${attribution.baseUrl}` : "";
+        const modelTier = attribution.models?.default ? `@${attribution.models.default}` : "";
+        if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}${endpoint}${modelTier}`) return;
         // A quota exchange may have consumed this run's token before a failed
         // database commit. Save its working replacement instead of revoking it.
         recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;

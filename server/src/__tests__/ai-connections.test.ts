@@ -33,7 +33,7 @@ import { execute as executeGemini, testEnvironment as testGeminiEnvironment } fr
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionMetadataSchema, connectionPurposeTransportSchema, createAiConnectionSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -1954,6 +1954,418 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally {
       await db.execute(sql`DROP TRIGGER reject_test_ai_install ON tool_connection_installs`);
       await db.execute(sql`DROP FUNCTION reject_test_ai_install()`);
+    }
+  }, 30000);
+
+  /** The shape the dedicated import route saves with: it is the only source of an endpoint. */
+  const importConnection = (
+    userId: string,
+    name: string,
+    baseUrl: string,
+    keyVariable: "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN",
+    key: string,
+    connectionId?: string,
+    /** What the import route resolves from the card it confirmed. */
+    models?: { default: string; alternatives: string[] },
+  ) => service.save(companyId, userId, {
+    provider: "anthropic",
+    method: "api_key",
+    ownership: "personal",
+    name,
+    agentIds: [],
+    allAgents: true,
+    ...(connectionId ? { connectionId } : {}),
+    baseUrl,
+    keyVariable,
+    ...(models ? { models } : {}),
+  }, key);
+
+  it("keeps an imported endpoint on the connection through a reconnect, and only on Anthropic API keys", async () => {
+    const userId = "imported-endpoint-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Imported gateway one", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-imported-one");
+    const [created] = await db.select().from(toolConnections).where(eq(toolConnections.id, imported.connectionId));
+    // The provider stays "anthropic": an endpoint is a field on the connection,
+    // not a provider of its own, so every existing compatibility rule holds.
+    expect(created.config.ai).toEqual({ provider: "anthropic", method: "api_key", baseUrl: "http://127.0.0.1:4318/v1", keyVariable: "ANTHROPIC_API_KEY" });
+    await importConnection(userId, "Imported gateway two", "https://gw.example.com/v1", "ANTHROPIC_AUTH_TOKEN", "fixture-imported-two", imported.connectionId);
+    const [reconnected] = await db.select().from(toolConnections).where(eq(toolConnections.id, imported.connectionId));
+    // Spreading the old config would leave the previous gateway in place.
+    expect(reconnected.config.ai).toEqual({ provider: "anthropic", method: "api_key", baseUrl: "https://gw.example.com/v1", keyVariable: "ANTHROPIC_AUTH_TOKEN" });
+    const endpoint = { baseUrl: "https://gw.example.com/v1", keyVariable: "ANTHROPIC_API_KEY" as const };
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "api_key", ...endpoint }).success).toBe(true);
+    for (const provider of ["openai", "openrouter", "xai"] as const)
+      expect(aiConnectionMetadataSchema.safeParse({ provider, method: "api_key", ...endpoint }).success).toBe(false);
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "subscription", ...endpoint }).success).toBe(false);
+    // Injection and probing need the endpoint together with the variable its key belongs to.
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "api_key", baseUrl: endpoint.baseUrl }).success).toBe(false);
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "api_key", keyVariable: endpoint.keyVariable }).success).toBe(false);
+    // The public create contract stays free of an endpoint: a client-submitted
+    // one is never trusted, so the import route is the only way in.
+    expect(createAiConnectionSchema.safeParse({ provider: "anthropic", method: "api_key", ownership: "personal", name: "Typed key", apiKey: "fixture", allAgents: false, agentIds: [], baseUrl: endpoint.baseUrl }).success).toBe(false);
+  });
+
+  it("refuses a reconnect that would send a key verified against the official endpoint to the old gateway", async () => {
+    const userId = "imported-reconnect-guard-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Guarded gateway", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-guarded");
+    // The ordinary API-key path: no endpoint in the request, so the old gateway
+    // would be kept while the new key was verified against the official one.
+    await expect(service.save(companyId, userId, {
+      provider: "anthropic",
+      method: "api_key",
+      ownership: "personal",
+      name: "Guarded gateway",
+      agentIds: [],
+      allAgents: true,
+      connectionId: imported.connectionId,
+    }, "fixture-replacement-key")).rejects.toThrow(/Re-import it from the local Claude configuration/);
+    // The refused attempt leaves the connection on the gateway it imported.
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, imported.connectionId));
+    expect((row.config.ai as { baseUrl?: string }).baseUrl).toBe("http://127.0.0.1:4318/v1");
+  });
+
+  it("carries the imported endpoint into the runtime selection and the account list", async () => {
+    const userId = "imported-attribution-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Imported gateway attribution", "http://127.0.0.1:4318/v1", "ANTHROPIC_AUTH_TOKEN", "fixture-imported-attribution");
+    const official = await create(userId, "Official endpoint account");
+    const selected = await service.select({ ...input, userId });
+    expect(selected.attribution).toMatchObject({ baseUrl: "http://127.0.0.1:4318/v1", keyVariable: "ANTHROPIC_AUTH_TOKEN" });
+    // A gateway connection and an official one must stay distinguishable in the list.
+    const listed = await service.list(companyId, userId);
+    expect(listed.find(account => account.grantId === imported.grantId)).toMatchObject({ baseUrl: "http://127.0.0.1:4318/v1", keyVariable: "ANTHROPIC_AUTH_TOKEN" });
+    expect(listed.find(account => account.grantId === official.grantId)?.baseUrl).toBeUndefined();
+  });
+
+  it("carries the imported model ladder onto the connection, and only on an imported one", async () => {
+    const userId = "imported-models-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(
+      userId,
+      "Imported gateway models",
+      "http://127.0.0.1:4318/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-imported-models",
+      undefined,
+      { default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] },
+    );
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, imported.connectionId));
+    expect(stored.config.ai).toEqual({
+      provider: "anthropic",
+      method: "api_key",
+      baseUrl: "http://127.0.0.1:4318/v1",
+      keyVariable: "ANTHROPIC_API_KEY",
+      models: { default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] },
+    });
+    // A re-import rewrites the ladder outright: keeping the previous one would
+    // leave an agent running a model the new gateway was never asked to serve.
+    await importConnection(
+      userId,
+      "Imported gateway models",
+      "https://gw.example.com/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-imported-models",
+      imported.connectionId,
+      { default: "claude-fable-5", alternatives: [] },
+    );
+    const [reconnected] = await db.select().from(toolConnections).where(eq(toolConnections.id, imported.connectionId));
+    expect(reconnected.config.ai).toMatchObject({
+      models: { default: "claude-fable-5", alternatives: [] },
+    });
+    // The ladder only means anything with the endpoint it was read from.
+    const endpoint = { baseUrl: "https://gw.example.com/v1", keyVariable: "ANTHROPIC_API_KEY" as const };
+    const ladder = { models: { default: "claude-opus-4-6", alternatives: [] } };
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "api_key", ...endpoint, ...ladder }).success).toBe(true);
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "api_key", ...ladder }).success).toBe(false);
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "openai", method: "api_key", ...endpoint, ...ladder }).success).toBe(false);
+    expect(aiConnectionMetadataSchema.safeParse({ provider: "anthropic", method: "subscription", ...endpoint, ...ladder }).success).toBe(false);
+    // Every other way of connecting keeps the official endpoint and no ladder.
+    const official = await create(userId, "Official models account");
+    expect((await service.list(companyId, userId)).find(a => a.grantId === official.grantId)?.models).toBeUndefined();
+    expect(createAiConnectionSchema.safeParse({ provider: "anthropic", method: "api_key", ownership: "personal", name: "Typed key", apiKey: "fixture", allAgents: false, agentIds: [], models: ladder.models }).success).toBe(false);
+  });
+
+  it("carries the imported model ladder into the runtime selection and the account list", async () => {
+    const userId = "imported-ladder-attribution-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(
+      userId,
+      "Imported gateway ladder",
+      "http://127.0.0.1:4318/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-imported-ladder",
+      undefined,
+      { default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] },
+    );
+    const selected = await service.select({ ...input, userId });
+    expect(selected.attribution.models).toEqual({ default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] });
+    expect((await service.list(companyId, userId)).find(a => a.grantId === imported.grantId)?.models)
+      .toEqual({ default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] });
+  });
+
+  it.each([
+    // An agent that names no model gets the folded tier: the adapter reads
+    // config.model first, ANTHROPIC_MODEL second, and its own default — an
+    // official-endpoint model — last.
+    ["nothing configured", {}, "claude-opus-4-6"],
+    // An explicit choice on the agent outranks the connection's ladder.
+    ["a model of its own", { model: "claude-sonnet-4-6" }, undefined],
+    ["a model written into its environment", { env: { ANTHROPIC_MODEL: "claude-haiku-4-5" } }, "claude-haiku-4-5"],
+  ])("runs an agent on the imported tier when it has %s", async (_label, config, expected) => {
+    const userId = `imported-tier-${_label.replace(/\W+/g, "-")}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await importConnection(
+      userId,
+      "Imported gateway tier",
+      "http://127.0.0.1:4318/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-imported-tier",
+      undefined,
+      { default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] },
+    );
+    // cwd keeps the project-auth scan off this machine's own Claude settings.
+    const run = await prepareManagedAiRuntime(db, { ...input, userId, responsibleUserId: userId, config: { cwd: home, ...config } });
+    try {
+      const env = run.config.env as Record<string, string>;
+      expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4318/v1");
+      expect(env.ANTHROPIC_MODEL).toBe(expected);
+    } finally { await run.cleanup(); }
+  });
+
+  it("folds the model tier into the session identity, so a re-imported ladder cannot resume an old session", async () => {
+    const userId = "imported-tier-identity-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const connection = await importConnection(
+      userId,
+      "Imported gateway tier identity",
+      "http://127.0.0.1:4318/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-tier-identity-key",
+      undefined,
+      { default: "claude-opus-4-6", alternatives: [] },
+    );
+    const runInput = { ...input, userId, responsibleUserId: userId, config: { cwd: home } };
+    const first = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(first.identity.endsWith(":http://127.0.0.1:4318/v1@claude-opus-4-6")).toBe(true);
+      expect(first.sessionIdentity.endsWith(":http://127.0.0.1:4318/v1@claude-opus-4-6")).toBe(true);
+    } finally { await first.cleanup(); }
+    await importConnection(
+      userId,
+      "Imported gateway tier identity",
+      "http://127.0.0.1:4318/v1",
+      "ANTHROPIC_API_KEY",
+      "fixture-tier-identity-key",
+      connection.connectionId,
+      { default: "claude-sonnet-4-6", alternatives: [] },
+    );
+    const second = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(second.identity).not.toBe(first.identity);
+      expect(second.identity.endsWith("@claude-sonnet-4-6")).toBe(true);
+    } finally { await second.cleanup(); }
+  });
+
+  it("sends a run on the imported connection to its own endpoint and leaves the other key variable blank", async () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.anthropic.com");
+    const userId = "imported-runtime-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await importConnection(userId, "Imported gateway runtime", "http://127.0.0.1:4318/v1", "ANTHROPIC_AUTH_TOKEN", "fixture-imported-token");
+    try {
+      // cwd keeps the project-auth scan off this machine's own Claude settings.
+      const run = await prepareManagedAiRuntime(db, { ...input, userId, responsibleUserId: userId, config: { model: "same-model", cwd: home } });
+      try {
+        const env = run.config.env as Record<string, string>;
+        expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4318/v1");
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBe("fixture-imported-token");
+        // The two variables authenticate with different headers, so the one this
+        // connection did not import from must stay blank, not inherited.
+        expect(env.ANTHROPIC_API_KEY).toBe("");
+      } finally { await run.cleanup(); }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("folds the endpoint into the session identity, so a new gateway cannot resume an old session", async () => {
+    const userId = "imported-identity-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const connection = await importConnection(userId, "Imported gateway identity", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-identity-key");
+    const runInput = { ...input, userId, responsibleUserId: userId, config: { model: "same-model", cwd: home } };
+    const first = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(first.identity.endsWith(":http://127.0.0.1:4318/v1")).toBe(true);
+      expect(first.sessionIdentity.endsWith(":http://127.0.0.1:4318/v1")).toBe(true);
+    } finally { await first.cleanup(); }
+    // Same credential, different gateway: without the endpoint in the
+    // fingerprint a suspended run would resume against the wrong address.
+    await importConnection(userId, "Imported gateway identity", "https://gw.example.com/v1", "ANTHROPIC_API_KEY", "fixture-identity-key", connection.connectionId);
+    const second = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(second.identity).not.toBe(first.identity);
+      expect(second.identity.endsWith(":https://gw.example.com/v1")).toBe(true);
+    } finally { await second.cleanup(); }
+  });
+
+  it("still refuses a hand-written endpoint in the agent configuration", async () => {
+    const userId = "imported-handwritten-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    await importConnection(userId, "Imported gateway handwritten", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-handwritten");
+    // An imported endpoint does not relax the rule: the endpoint has exactly
+    // one source, whichever connection is selected.
+    await expect(prepareManagedAiRuntime(db, { ...input, userId, responsibleUserId: userId, config: { model: "same-model", cwd: home, env: { ANTHROPIC_BASE_URL: "https://gateway.invalid/v1" } } }))
+      .rejects.toMatchObject({ status: 422, details: { code: "ai_connection_incompatible" } });
+    await expect(prepareManagedAiRuntime(db, { ...input, userId, responsibleUserId: userId, config: { model: "same-model", cwd: home, env: { ANTHROPIC_BASE_URL: "https://gateway.invalid/v1" } } }))
+      .rejects.toThrow("endpoint can only come from the selected connection");
+  });
+
+  it("reports a custom endpoint as unsupported for usage queries without touching the network", async () => {
+    const userId = "imported-usage-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Imported gateway usage", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-usage-key", undefined, { default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] });
+    const official = await create(userId, "Official usage account");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    try {
+      const usage = await service.probeUsage(companyId, userId, imported.connectionId);
+      // The key means nothing to the official endpoint, so the answer is the
+      // capability itself rather than a probe that could only reject it.
+      expect(usage).toMatchObject({ status: "unsupported", errorCode: "unsupported", baseUrl: "http://127.0.0.1:4318/v1" });
+      expect(usage.message).toBe("This endpoint does not support usage queries.");
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // The answer is built from the stored metadata, so the endpoint fields a
+      // client reads off an official account's response have to be declared:
+      // the probe answer already carries them, it was only the type that lagged.
+      expect(usage.keyVariable).toBe("ANTHROPIC_API_KEY");
+      expect(usage.models).toEqual({ default: "claude-opus-4-6", alternatives: ["claude-sonnet-4-6"] });
+      // An official account keeps the pre-existing wording, so the endpoint
+      // check did not silently widen the unsupported path for everyone.
+      const officialUsage = await service.probeUsage(companyId, userId, official.connectionId);
+      expect(officialUsage).toMatchObject({ status: "unsupported" });
+      expect(officialUsage.message).toBe("This provider does not expose usage limits through this sign-in method.");
+      expect(officialUsage.baseUrl).toBeUndefined();
+      expect(officialUsage.models).toBeUndefined();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect((await service.list(companyId, userId)).find(account => account.grantId === imported.grantId)).toMatchObject({ usageProbeSupported: false });
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("keeps an imported connection out of every response body, and skips a rotation when a re-import reads the same key", async () => {
+    const userId = "imported-secret-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Imported gateway secret", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-imported-secret-value");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId, companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    try {
+      const listed = await request(app).get(`/api/companies/${companyId}/ai-connections`);
+      expect(listed.status).toBe(200);
+      expect(listed.body.connections.some(account => account.baseUrl === "http://127.0.0.1:4318/v1")).toBe(true);
+      expect(JSON.stringify(listed.body)).not.toContain("fixture-imported-secret-value");
+      const usage = await request(app).get(`/api/companies/${companyId}/ai-connections/${imported.connectionId}/usage?grantId=${imported.grantId}`);
+      expect(usage.status).toBe(200);
+      expect(JSON.stringify(usage.body)).not.toContain("fixture-imported-secret-value");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, imported.grantId));
+    const ref = grant.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+    const version = async () => (await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId)))[0].latestVersion;
+    const before = await version();
+    // A re-import that read the same key must not mint a secret version: the
+    // version feeds the run's session identity, so rotating it aborts runs
+    // that are already in flight.
+    expect(await importConnection(userId, "Imported gateway secret", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-imported-secret-value", imported.connectionId)).toEqual(imported);
+    expect(await version()).toBe(before);
+    // A different key has to advance it, or the run would keep the old credential.
+    const rotated = await importConnection(userId, "Imported gateway secret", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-imported-rotated-value", imported.connectionId);
+    expect(rotated.grantId).toBe(imported.grantId);
+    expect(await version()).toBeGreaterThan(before);
+    expect(await service.credential(await service.select({ ...input, userId }))).toBe("fixture-imported-rotated-value");
+  });
+
+  it("gives an imported connection the whole life of any other managed connection", async () => {
+    const userId = "imported-lifecycle-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const imported = await importConnection(userId, "Imported gateway lifecycle", "http://127.0.0.1:4318/v1", "ANTHROPIC_API_KEY", "fixture-imported-lifecycle");
+    // Default-account status, agent authorization and removal all go through
+    // the existing mechanism; the import adds no concept of its own.
+    await service.setDefault(companyId, userId, imported.grantId);
+    expect((await service.select({ ...input, userId })).grant.id).toBe(imported.grantId);
+    const sharedAgentId = randomUUID();
+    await db.insert(agents).values({ id: sharedAgentId, companyId, name: "Shared target", adapterType: "claude_local" });
+    await db.insert(toolConnectionInstalls).values({ companyId, connectionId: imported.connectionId, targetType: "agent", targetId: sharedAgentId, createdByUserId: userId });
+    await toolAccessService(db).archiveConnection(imported.connectionId, companyId, { actorType: "user", actorId: userId });
+    const [removed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, imported.grantId));
+    expect(removed.status).toBe("revoked");
+    expect(removed.isDefault).toBe(false);
+    expect(await db.select().from(connectionGrantDelegations).where(eq(connectionGrantDelegations.grantId, imported.grantId))).toEqual([]);
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, imported.connectionId))).toEqual([]);
+    // The removed account can no longer be chosen, and no other account is
+    // silently promoted into its place.
+    await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
+    await expect(service.setDefault(companyId, userId, imported.grantId)).rejects.toThrow();
+  });
+
+  it("verifies an adopted custom-endpoint connection against its own gateway", async () => {
+    const userId = "imported-adoption-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    // A token import is the sharper case: its key is injected under a variable
+    // the capability does not name, so a probe that read the default slot would
+    // find nothing and fail adoption.
+    const imported = await importConnection(userId, "Imported gateway adoption", "http://127.0.0.1:4318/v1", "ANTHROPIC_AUTH_TOKEN", "fixture-adoption-gateway-key");
+    await service.setDefault(companyId, userId, imported.grantId);
+    const id = randomUUID();
+    await db.insert(agents).values({ id, companyId, name: "Gateway adoption", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const targetModule = await import("../services/environment-execution-target.js");
+    const settings = instanceSettingsService(db);
+    const previous = await settings.get();
+    const [environment] = await db.insert(environments).values({ name: "Gateway adoption environment", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    await settings.update({ defaultEnvironmentId: environment.id });
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const release = vi.fn(async () => undefined);
+    const acquire = vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} }));
+    const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
+    const runtime = vi.spyOn((await import("../services/environment-runtime.js")), "environmentRuntimeService").mockReturnValue({ acquireRunLease: acquire, realizeWorkspace: vi.fn(async () => ({ cwd: "/workspace" })), getDriver: () => ({ releaseRunLease: release }) } as never);
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment").mockImplementation(async () => ({ adapterType: "claude_local", status: "pass", testedAt: new Date().toISOString(), checks: [] }));
+    const { agentRoutes } = await import("../routes/agents.js");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId, companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string; details?: unknown }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message, checks: (error.details as { checks?: unknown[] } | undefined)?.checks }); });
+    const selected = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+    try {
+      const gatewayRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify({ data: [] }), { status: Number(String(url).includes("4318") ? 200 : 401) }));
+      try {
+        // cwd keeps the pre-adoption project-auth scan off this machine's own
+        // Claude settings, which would reject the request before the probe runs.
+        const adopted = await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: { model: "claude-sonnet-4-6", cwd: home }, runtimeConfig: { aiConnection: selected } });
+        expect(adopted.status, JSON.stringify(adopted.body)).toBe(200);
+        // The official endpoint knows nothing about this key, so a probe sent
+        // there is what used to make every adoption of a gateway fail.
+        expect(gatewayRequest).toHaveBeenCalledWith("http://127.0.0.1:4318/v1/models", expect.objectContaining({
+          headers: { Authorization: "Bearer fixture-adoption-gateway-key" },
+          redirect: "error",
+        }));
+        expect(gatewayRequest.mock.calls.some(([url]) => String(url).startsWith("https://api.anthropic.com"))).toBe(false);
+        expect(JSON.stringify(adopted.body)).not.toContain("fixture-adoption-gateway-key");
+        gatewayRequest.mockImplementation(async (url) => new Response(String(url).includes("4318") ? "rejected" : "{}", { status: Number(String(url).includes("4318") ? 401 : 200) }));
+        const rejected = await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: { model: "claude-sonnet-4-6", cwd: home }, runtimeConfig: { aiConnection: selected } });
+        expect(rejected.status).toBe(422);
+        // The check code stays the one the front end already knows, so a
+        // gateway rejection needs no special-casing on the surface.
+        expect(rejected.body.checks).toEqual([expect.objectContaining({ code: "ai_connection_api_key_rejected", level: "error" })]);
+        expect(JSON.stringify(rejected.body)).not.toContain("fixture-adoption-gateway-key");
+      } finally { gatewayRequest.mockRestore(); }
+    } finally {
+      probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
   }, 30000);
 

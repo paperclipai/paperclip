@@ -1,4 +1,4 @@
-import type { AiAuthMethod, AiProvider } from "./ai-connections.js";
+import type { AiAuthMethod, AiConnectionModelTiers, AiProvider } from "./ai-connections.js";
 
 /** A provider observation, never an estimate from Paperclip's run costs. */
 export interface AiConnectionUsageLimit {
@@ -46,6 +46,16 @@ export interface AiConnectionUsage {
   overage: AiConnectionUsageOverage | null;
   errorCode?: "unsupported" | "connection_unavailable" | "authentication_required" | "permission_denied" | "rate_limited" | "provider_unavailable" | "invalid_response";
   message?: string;
+  /**
+   * The connection's own endpoint, when it imported one. The usage answer is
+   * built from the stored metadata, so these three ride along on every response
+   * for such a connection — official-endpoint accounts simply have none.
+   */
+  baseUrl?: string;
+  /** Which credential variable the connection's key was imported from. */
+  keyVariable?: string;
+  /** Model ladder the import resolved. */
+  models?: AiConnectionModelTiers;
 }
 
 export function supportsAiConnectionUsage(provider: AiProvider, method: AiAuthMethod): boolean {

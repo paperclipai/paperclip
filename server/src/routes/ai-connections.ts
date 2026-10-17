@@ -1,6 +1,14 @@
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
+import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
+import {
+  assertImportedGatewayReachable,
+  localClaudeSettingsPath,
+  readLocalClaudeConfig,
+  readLocalClaudeConfigSnapshot,
+  verifyGatewayEndpoint,
+} from "../services/local-claude-config.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { z } from "zod";
 import { Router, type Request } from "express";
@@ -25,6 +33,7 @@ import {
   type AiConnectionBinding,
   type AiConnectionList,
   aiConnectionPoolConfigSchema,
+  localClaudeConfigImportInputSchema,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -140,6 +149,20 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   function assertLocalLoginAvailable() {
     if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
   }
+  /**
+   * The import routes read the operator's own settings file, so what a hosted
+   * instance is missing is that file, not a sign-in method. Reusing the shared
+   * gate's message answered an operator who pressed Import with a paragraph
+   * about subscription sign-in and API keys, and never named the file they have
+   * to look at (PRODUCT #14, #43).
+   */
+  function assertLocalClaudeConfigAvailable() {
+    if (!supportsLocalAiLogin(options))
+      throw unprocessable(
+        `Importing this machine's Claude configuration is unavailable on this hosted instance. It reads ${localClaudeSettingsPath()} for the user running Paperclip, so only a local trusted instance can import it.`,
+        { code: "local_claude_config_unavailable" },
+      );
+  }
   const router = Router();
   const service = aiConnectionService(db);
   const localLogin = localAiLoginService(db);
@@ -158,6 +181,98 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     res.setHeader("Cache-Control", "no-store");
     res.json(await pools.inspect(companyId, z.string().uuid().parse(req.params.poolId), getActorInfo(req).actorId));
   });
+  router.post(
+    "/companies/:companyId/ai-connections/local-claude-config",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertLocalClaudeConfigAvailable();
+      assertLocalOperator(req);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await readLocalClaudeConfig());
+    },
+  );
+  router.post(
+    "/companies/:companyId/ai-connections/local-claude-config/import",
+    validate(localClaudeConfigImportInputSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const input = localClaudeConfigImportInputSchema.parse(req.body);
+      assertLocalClaudeConfigAvailable();
+      assertLocalOperator(req);
+      const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
+      const attemptStartedAt = new Date();
+      const read = await readLocalClaudeConfigSnapshot();
+      // The card the operator confirmed came from an earlier read. A file that
+      // moved under it means that confirmation no longer describes reality, so
+      // the import stops instead of saving an address nobody agreed to.
+      if (!read.ok)
+        throw unprocessable(read.result.message, {
+          code: `local_claude_config_${read.result.reason}`,
+        });
+      // What the confirmation guards is the credential and the address — the
+      // two things a moved file would silently redirect. The model is not part
+      // of it: PRODUCT #19 lets the operator pick a different model on the card
+      // than the tier ladder resolved, and that is a choice, not a drift.
+      const confirms =
+        read.result.baseUrl === input.baseUrl &&
+        read.result.keyVariable === input.keyVariable &&
+        read.result.maskedKey === input.confirm.maskedKey;
+      if (!confirms)
+        throw unprocessable(
+          "This machine's Claude configuration changed since it was read. Import again.",
+          { code: "local_claude_config_changed" },
+        );
+      // The gateway has to be reachable from where the agent actually runs, not
+      // only from the server that probed it.
+      await assertImportedGatewayReachable(db, companyId, input, read.snapshot.baseUrl);
+      // A gateway rejection happens before any row is written, so a failed
+      // import never leaves a half-built connection behind.
+      await verifyGatewayEndpoint(
+        read.snapshot.baseUrl,
+        read.snapshot.key,
+        read.snapshot.keyVariable,
+      );
+      res.setHeader("Cache-Control", "no-store");
+      const saved = await service.save(
+        companyId,
+        userId,
+        {
+          provider: "anthropic",
+          method: "api_key",
+          ownership: input.ownership,
+          name: input.name,
+          agentIds: input.agentIds,
+          allAgents: input.allAgents,
+          connectionId: input.connectionId,
+          baseUrl: read.snapshot.baseUrl,
+          keyVariable: read.snapshot.keyVariable,
+          // The ladder is assembled here rather than taken from the payload:
+          // `model` is what the operator confirmed on the card, and the
+          // alternatives are the ones the file they confirmed actually holds.
+          // A caller that named them itself would be choosing models this
+          // machine never configured.
+          models: {
+            default: input.model,
+            alternatives: read.snapshot.models.alternatives,
+          },
+        },
+        read.snapshot.key,
+        undefined,
+        attemptStartedAt,
+      );
+      // The import is the account this surface means to use, so a first import
+      // becomes the operator's default for Anthropic API keys. Without this, a
+      // user who already holds an older default keeps testing and running
+      // against that account: the gateway they just confirmed is never the one
+      // a run reaches. A re-import keeps the default as it stands — the
+      // operator chose that default on purpose, and repairing one account's
+      // endpoint is not a reason to overrule it (PRODUCT #34). A shared import
+      // names no personal default either way.
+      if (input.ownership === "personal" && !input.connectionId)
+        await service.setDefault(companyId, userId, saved.grantId);
+      res.status(201).json(saved);
+    },
+  );
   router.post("/companies/:companyId/ai-connection-pools", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoard(req); assertCompanyAccess(req, companyId);

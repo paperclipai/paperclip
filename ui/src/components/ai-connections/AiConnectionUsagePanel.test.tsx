@@ -72,6 +72,23 @@ it("explains unsupported methods and disables checks for a revoked grant", () =>
   expect(host.querySelector("button")?.disabled).toBe(true);
   expect(api.probeUsage).not.toHaveBeenCalled();
 });
+
+it("blames the endpoint, not the sign-in method, for a custom gateway's usage", () => {
+  const imported: AiManagedConnectionSummary = { ...account, method: "api_key", baseUrl: "https://gateway.example.test/v1" };
+  render(imported);
+  expect(host.textContent).toContain("This endpoint does not support usage queries.");
+  expect(host.textContent).not.toContain("Unavailable for this sign-in method");
+  expect(host.querySelector("button")).toBeNull();
+  expect(api.probeUsage).not.toHaveBeenCalled();
+});
+
+it("keeps the route's reason when a cached probe reports the endpoint as unsupported", () => {
+  const observation: AiConnectionUsage = { connectionId: account.id, grantId: account.grantId, provider: account.provider, method: account.method, status: "unsupported", checkedAt: "2026-10-02T12:00:00Z", source: null, planType: null, limits: [], overage: null, errorCode: "unsupported", message: "This endpoint does not support usage queries." };
+  const imported: AiManagedConnectionSummary = { ...account, method: "api_key", baseUrl: "https://gateway.example.test/v1" };
+  flushSync(() => root.render(<QueryClientProvider client={client}><AiConnectionUsagePanel account={imported} observation={observation} cachedOnly /></QueryClientProvider>));
+  expect(host.textContent).toContain("This endpoint does not support usage queries.");
+  expect(host.textContent).not.toContain("Usage unavailable.");
+});
 it("keeps provider admission and unknown overage availability distinct from exhaustion", async () => {
   api.probeUsage.mockResolvedValue({ status: "ok", checkedAt: "2026-10-02T12:00:00Z",
     overage: { enabled: true, available: null, unlimited: null, balance: null, remaining: null },

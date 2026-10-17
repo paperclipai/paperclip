@@ -21,6 +21,8 @@ const managedApi = vi.hoisted(() => ({
   checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as "ready" | "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+  readLocalClaudeConfig: vi.fn(),
+  importLocalClaudeConfig: vi.fn(),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({
@@ -103,6 +105,15 @@ async function mount(
     mocks.personal.mockResolvedValue([]);
     mocks.organization.mockResolvedValue([]);
   }
+  // Entering the import mode reads this machine's Claude configuration, so the
+  // call has to exist even for surfaces these tests never take that far. The
+  // unavailable answer keeps the mode inert; the import suite covers the rest.
+  managedApi.readLocalClaudeConfig.mockResolvedValue({
+    status: "unavailable",
+    reason: "settings_unreadable",
+    message: "No Claude configuration found on this machine.",
+  });
+  managedApi.importLocalClaudeConfig.mockResolvedValue({ connectionId: "imported-connection", grantId: "imported-grant" });
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedClaudeLogin) {
     client.setQueryData(["claude-oauth-token-status", "c1"], { secretId: "cached-claude", latestVersion: 1 });
@@ -547,6 +558,9 @@ describe("AgentProviderConnection reuse", () => {
   });
   it("does not treat an environment credential as a stored Claude login", async () => {
     const { test } = await mount();
+    // A surface that offers the third mode walks subscription → API key → import,
+    // so reaching the subscription from the API-key form takes two presses.
+    click("Use import from Claude config instead");
     click("Use subscription instead");
     openProvider();
     click("Connect");

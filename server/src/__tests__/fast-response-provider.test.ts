@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AiConnectionMetadata } from "@paperclipai/shared";
 import {
   fastResponsePrompt,
@@ -36,8 +36,7 @@ const input = (metadata: AiConnectionMetadata) => ({
   prompt: fastResponsePrompt({ agentName: "Alex", message: "Fix the border" }),
   signal: AbortSignal.timeout(3000),
 });
-const connections: AiConnectionMetadata[] = [
-  ...(["openrouter", "openai", "anthropic", "google", "xai"] as const).map(
+const connections: AiConnectionMetadata[] = [  ...(["openrouter", "openai", "anthropic", "google", "xai"] as const).map(
     (provider) => ({ provider, method: "api_key" as const }),
   ),
   {
@@ -84,6 +83,18 @@ const connections: AiConnectionMetadata[] = [
     },
   })),
 ];
+// The Anthropic SDK falls back to ANTHROPIC_BASE_URL when a call names no
+// endpoint, and a developer who runs Claude against a gateway has that variable
+// set — the exact operator this product serves. The official-endpoint cases pin
+// the provider's own URL, so the ambient value must not reach them.
+const ambientAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+beforeAll(() => {
+  delete process.env.ANTHROPIC_BASE_URL;
+});
+afterAll(() => {
+  if (ambientAnthropicBaseUrl !== undefined)
+    process.env.ANTHROPIC_BASE_URL = ambientAnthropicBaseUrl;
+});
 describe("fast response provider", () => {
   it("rejects copied JSON output while retaining the provider charge", async () => {
     const body = chatResponse();
@@ -333,6 +344,58 @@ describe("fast response provider", () => {
       model: "test-model",
       max_tokens: 256,
     });
+  });
+  it.each([
+    // An imported account keeps its endpoint and the variable its key came from
+    // on the connection itself. A fast reply reads the same two facts from
+    // there: without them it sends the gateway key to the official endpoint,
+    // under an auth header that gateway may not even read.
+    [
+      {
+        provider: "anthropic",
+        method: "api_key",
+        baseUrl: "https://gateway.example/v1",
+        keyVariable: "ANTHROPIC_API_KEY",
+      } as AiConnectionMetadata,
+      "https://gateway.example/v1/messages",
+      "x-api-key",
+      "fixture-key",
+    ],
+    [
+      {
+        provider: "anthropic",
+        method: "api_key",
+        baseUrl: "https://gateway.example/v1",
+        keyVariable: "ANTHROPIC_AUTH_TOKEN",
+      } as AiConnectionMetadata,
+      "https://gateway.example/v1/messages",
+      "authorization",
+      "Bearer fixture-key",
+    ],
+  ])("sends an imported account's fast reply to its own gateway", async (metadata, url, header, key) => {
+    const fetch = vi.fn(async () =>
+      response({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "test-model",
+        content: [{ type: "text", text: ack }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 100, output_tokens: 15 },
+      }),
+    );
+    const result = await runFastResponseProvider(
+      input(metadata),
+      { fetch },
+    );
+    expect(result.text).toBe(ack);
+    const [actual, init] = fetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(actual).toBe(url);
+    expect(new Headers(init.headers).get(header)).toBe(key);
   });
   it("supports Google generation and auth", async () => {
     const fetch = vi.fn(async () =>

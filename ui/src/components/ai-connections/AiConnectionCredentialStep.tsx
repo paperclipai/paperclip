@@ -8,10 +8,12 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { environmentsApi } from "@/api/environments";
+import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { resolveAdapterTestEnvironmentId, resolveLocalDefaultEnvironmentId, resolveManagedSandboxEnvironmentId } from "@/lib/adapter-test-environment";
 import { resolveForcedKubernetesEnvironment } from "@/lib/forced-kubernetes-environment";
+import { canOfferClaudeConfigImport } from "@/lib/claude-config-import";
 
 type Props = {
   companyId: string;
@@ -28,7 +30,12 @@ type Props = {
   environmentId?: string;
   defaults?: ReactNode;
   disabled?: boolean;
-  onComplete: (result: { connectionId: string; grantId: string; method: AiAuthMethod }) => void;
+  /**
+   * Completed. `model` is the one an import was confirmed with, and it is the
+   * surface's to put in the agent's model field — the import chose it on the
+   * operator's behalf, and the connection keeps the whole tier ladder besides.
+   */
+  onComplete: (result: { connectionId: string; grantId: string; method: AiAuthMethod; model?: string }) => void;
   onCancel: () => void;
 };
 
@@ -47,6 +54,32 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const settings = useQuery({ queryKey: queryKeys.instance.settings, queryFn: instanceSettingsApi.get });
   const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: instanceSettingsApi.getExperimental });
   const general = useQuery({ queryKey: queryKeys.instance.generalSettings, queryFn: instanceSettingsApi.getGeneral });
+  // Read here rather than left to the provider step: this is the surface that knows
+  // which provider the connection will be, and the import mode is only offered
+  // where the endpoint fields mean something (PRODUCT #3).
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  /**
+   * Whether this surface may offer the import credential mode — the third mode
+   * beside subscription and API key, which reads the operator's own
+   * `~/.claude/settings.json` on the machine running the server and turns it into
+   * a managed API-key connection.
+   *
+   * The one gate, shared with the other three surfaces
+   * (`canOfferClaudeConfigImport`): the instance has to be the kind that reads
+   * local credentials and `local_trusted` — which is also what makes the caller
+   * the operator whose home directory holds the file (PRODUCT #4, #49) — and the
+   * provider has to be Anthropic, because endpoint fields are meaningless on any
+   * other (PRODUCT #3).
+   *
+   * Deliberately absent: anything about the execution environment this agent
+   * resolves to. Whether the gateway is reachable from there is the server's
+   * judgement (PRODUCT #51, #53) — it knows the agent's driver and its network
+   * allowlist, and it answers with the reason when it refuses.
+   *
+   * The server enforces all of it again on both new routes. This only decides
+   * whether a control nobody could complete is drawn.
+   */
+  const importCapable = canOfferClaudeConfigImport({ provider, health: health.data });
   const forced = resolveForcedKubernetesEnvironment(general.data?.executionMode, envs.data ?? []);
   let environmentId: string | null = null;
   let environmentError: string | undefined;
@@ -95,7 +128,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       onBack={onCancel}
       onConnected={() => {}}
       testConnection={async () => false}
-      managedAccount={{ intent, nameForMethod, initialMethod, fixedMethod: fixedMethod ?? Boolean(connectionId), disabled: disabled || loading || Boolean(error) || !name.trim(), onComplete: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); void client.invalidateQueries({ queryKey: ["tools"] }); onComplete(result); } }}
+      managedAccount={{ intent, nameForMethod, initialMethod, fixedMethod: fixedMethod ?? Boolean(connectionId), disabled: disabled || loading || Boolean(error) || !name.trim(), importCapable, onComplete: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); void client.invalidateQueries({ queryKey: ["tools"] }); onComplete(result); } }}
     />}
   </div>;
 }

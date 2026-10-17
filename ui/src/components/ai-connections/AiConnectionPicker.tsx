@@ -2,6 +2,7 @@ import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { aiEndpointLabel } from "./ManagedAiConnectionDetails";
 import {
   AI_PROVIDERS,
   aiConnectionProblem,
@@ -110,13 +111,17 @@ export function AiConnectionPicker({
             selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
             choices={[
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
-                <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
+                <span className="block">For you: {personalDefault?.name ?? "Not connected"}{personalDefault?.baseUrl ? ` · ${aiEndpointLabel(personalDefault.baseUrl)}` : ""}</span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
-                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+                // Two Anthropic connections in one company can differ in nothing
+                // but the endpoint, so the row says which is which — the same
+                // wording the connection list uses, so the two cannot drift
+                // (PRODUCT #30).
+                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{connection.baseUrl ? ` · ${aiEndpointLabel(connection.baseUrl)}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
               })),
             ]}
             onSelect={(id) => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { RuntimeTestCard, type TestState } from "@/components/RuntimeTestCard";
-import { ModelSourceTiles } from "@/components/onboarding/ModelSourceTiles";
+import { ModelSourceTiles, type CredentialMode } from "@/components/onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "@/components/onboarding/CredentialModeLink";
 import { AdapterMark } from "@/components/AdapterMark";
 import {
@@ -455,7 +455,7 @@ export function Onboarding({
   savedConnection?: boolean;
 }) {
   const [stage, setStage] = useState(initialAlternate ? "other" : "default");
-  const [mode, setMode] = useState<"subscription" | "api">("subscription");
+  const [mode, setMode] = useState<CredentialMode>("subscription");
   const [key, setKey] = useState("");
   const [connection, setConnection] = useState<Connection>();
   if (stage === "other")

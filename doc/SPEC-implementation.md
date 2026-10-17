@@ -1898,6 +1898,17 @@ explicitly adopts Connections; another user's onboarding key is never reused.
 Acceptance resumes only the matching configuration-blocked task through durable
 continuation delivery. Unrelated configuration gaps retain operator recovery.
 
+A Claude connection can also be created by importing the operator's own Claude
+Code settings file, through the two `local-claude-config` routes. The import makes
+the gateway endpoint a field on the connection rather than something the provider
+implies, so a run against it uses that endpoint for the probe, the runtime
+injection, and nothing else. Only the local operator may import, on a local-trusted
+instance, and only for an agent whose execution environment can reach the gateway.
+The imported connection is an ordinary managed connection afterwards: selectable as
+a default, grantable to agents, reconnectable, and deletable. See
+[Importing the operator's Claude configuration](connections/AI-CONNECTIONS.md#importing-the-operators-claude-configuration)
+for the routes, the scoped keys, and the reachability judgement.
+
 The selected AI connection supports an on-demand usage probe through the common
 connection service, independent of legacy/native execution. The board usage
 endpoint rechecks company membership and the credential's human audience before
