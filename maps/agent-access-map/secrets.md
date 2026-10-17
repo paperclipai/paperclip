@@ -143,6 +143,13 @@ for their values. Source: [native secret coordinator](../../server/src/services/
 and [scope/denial tests](../../server/src/__tests__/agent-instance-secrets.test.ts).
 No live agent execution is claimed for this exclusion.
 
+Fixed-command service processes: the persistent key of a `process` agent with
+`fixedCommand: true` cannot read secret values. The temporary JWT of its active run keeps the
+existing binding-scoped access, and a finished run loses it. A watchdog run can read only the secret
+bound to the agent at `env.DOKPLOY_KEY` through `POST /api/agents/me/secrets/{key}/value` with an
+empty body (`assertWatchdogSecret`); other bindings of the same agent do not extend this access.
+Source: [watchdog requests](../../server/src/middleware/watchdog-service-request.ts).
+
 Gaps: Values remain restricted to the bound agent and active run. Credential
 responses stay inline and use encrypted mutation receipts; they are not saved as
 plaintext response assets. Dedicated scenario read_secret_value remains unbound.

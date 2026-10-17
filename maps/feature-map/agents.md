@@ -20,6 +20,7 @@ Agent access: [companion](../agent-access-map/agents.md).
 - `primary-agent`: choose a personal primary agent for the company, confirm replacement, and inspect its roster/sidebar and task/chat defaults.
 - `lifecycle`: pause/resume or retire an agent while preserving history.
 - `built-in`: configure required agents without treating them as ordinary removable hires.
+- `fixed-process-service`: pin a `process` agent to its saved command and environment so its persistent key can only check status and trigger its own run; optional watchdog signals.
 
 ## How to get to it (user POV)
 

@@ -232,3 +232,34 @@ Evidence: `source-only` — [routes](../../server/src/routes/grok-bot.ts), [shar
 Verification: `not-run` — deployed acceptance pending; focused protocol/authorization and actual Rust backend tests; run fresh/saved setup, assigned and proactive tasks, duplicate calls, stale sessions, restart, ambiguous delivery, stop and recovery through the real client on the serving managed candidate.
 
 Gaps: deployed two-way work and unattended first-time onboarding remain unqualified; remote termination, provider transcript streaming and usage accounting are unavailable.
+
+## `fixed-process-service`
+
+Review: `baseline`.
+
+API: `present` — representative operation IDs:
+
+- `GET /api/agents/{agentId}` (own agent only, no query).
+- `POST /api/agents/{agentId}/wakeup` and `POST /api/agents/{agentId}/heartbeat/invoke` (own agent only, body limited to `idempotencyKey`).
+- Watchdog runs: `GET /api/companies/{companyId}/issues`, `GET /api/issues/{issueId}`, `GET /api/issues/{issueId}/comments`, `POST /api/companies/{companyId}/issues`, `POST /api/issues/{issueId}/comments`.
+
+Agent access: `partial` — A `process` agent with `adapterConfig.fixedCommand: true` runs only
+its saved `command`, `args`, `cwd` and environment.
+
+Policy: The persistent key of a fixed-command agent can only read its own agent record and
+trigger its own run without execution parameters; every other request is denied
+(`assertFixedProcessKeyRequest`). A run with `watchdogService` configuration can only read its
+bound secret and report configured signals (`assertWatchdogServiceRequest`). Signal reads and
+comments require an open issue of the configured assignee with a verified watchdog origin, and
+the signal list also applies the caller's private-issue access (`issueReadSqlCondition`).
+Rejected watchdog requests are recorded as `watchdog.service_action_rejected`. The agent itself,
+another agent or an agent-approved request cannot change this configuration.
+
+Evidence: `source-only` — [fixed-process key](../../server/src/middleware/fixed-process-key.ts),
+[watchdog requests](../../server/src/middleware/watchdog-service-request.ts) and
+[configuration guard](../../server/src/middleware/fixed-process-configuration.ts) at `69eb3b6eff4ef00453b623f89abc8a34c8172a9f`.
+
+Verification: `not-run` — run `fixed-process-secret-http.test.ts`, `fixed-process-execution.test.ts`,
+`fixed-process-configuration.test.ts` and `watchdog-service-request.test.ts` on an isolated database.
+
+Gaps: No live agent execution is claimed. Ordinary `process` agents keep their existing access.
