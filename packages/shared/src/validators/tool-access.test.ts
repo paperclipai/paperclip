@@ -118,6 +118,23 @@ describe("tool access validators", () => {
     }).success).toBe(true);
   });
 
+  it("requires a client secret and token URL for client credentials", () => {
+    const oauthClient = {
+      clientId: "client-abc",
+      clientSecret: "shhh",
+      tokenUrl: "https://auth.example.test/oauth/token",
+      scope: "tools.read",
+      audience: "https://mcp.example.test",
+    };
+    const parse = (input: Record<string, unknown>) =>
+      connectToolAppSchema.safeParse({ link: "https://mcp.example.test/mcp", ...input });
+    expect(parse({ authMode: "oauth_client_credentials", oauthClient }).success).toBe(true);
+    expect(parse({ authMode: "oauth_client_credentials", oauthClient: { ...oauthClient, clientSecret: undefined } }).success).toBe(false);
+    expect(parse({ authMode: "oauth_client_credentials", oauthClient: { ...oauthClient, tokenUrl: undefined } }).success).toBe(false);
+    expect(parse({ authMode: "oauth_client_credentials" }).success).toBe(false);
+    expect(parse({ authMode: "oauth", oauthClient }).success).toBe(false);
+  });
+
   it("rejects header credentials Paperclip refuses to send", () => {
     for (const configPath of ["headers.Host", "headers.Cookie", "headers.Transfer-Encoding", "headers.Sec-Fetch-Mode"]) {
       const parsed = connectToolAppSchema.safeParse({

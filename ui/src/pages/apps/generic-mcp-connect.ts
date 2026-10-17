@@ -1,4 +1,4 @@
-import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
+import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, checkOAuthEndpointUrl, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
 import type { GenericMcpAuthMode } from "@paperclipai/shared";
 
 /**
@@ -140,6 +140,12 @@ export function genericConnectGuidance(
         body: "It asked us to authenticate but didn't offer a sign-in Paperclip can complete on its own. Add the key or headers its docs list under Advanced authentication.",
         focus: "credentials",
       };
+    case "oauth_client_credentials_rejected":
+      return {
+        title: "The server rejected the token",
+        body: "Paperclip got a token from the token URL, but the server didn't accept it. Check the scope and audience its docs list.",
+        focus: "none",
+      };
     case "oauth_manual_client_required":
     case "oauth_manual_client_rebinding_required":
       return {
@@ -191,6 +197,14 @@ export function customHeaderError(rows: CustomHeaderRow[]): string | null {
   return null;
 }
 
+export interface GenericClientCredentialsFields {
+  tokenUrl: string;
+  scope: string;
+  audience: string;
+}
+
+export const EMPTY_CLIENT_CREDENTIALS_FIELDS: GenericClientCredentialsFields = { tokenUrl: "", scope: "", audience: "" };
+
 export interface GenericConnectDraft {
   link: string;
   name: string;
@@ -201,6 +215,7 @@ export interface GenericConnectDraft {
   headers: CustomHeaderRow[];
   oauthClientId: string;
   oauthClientSecret: string;
+  clientCredentials: GenericClientCredentialsFields;
 }
 
 export interface GenericConnectPayload {
@@ -208,7 +223,7 @@ export interface GenericConnectPayload {
   name?: string;
   authMode?: GenericMcpAuthMode;
   credentialValues?: Record<string, string>;
-  oauthClient?: { clientId: string; clientSecret?: string };
+  oauthClient?: { clientId: string; clientSecret?: string; tokenUrl?: string; scope?: string; audience?: string };
 }
 
 /**
@@ -234,6 +249,9 @@ export function genericConnectPayload(draft: GenericConnectDraft): GenericConnec
   const trimmedName = draft.name.trim();
   const clientId = draft.oauthClientId.trim();
   const clientSecret = draft.oauthClientSecret.trim();
+  const tokenUrl = draft.clientCredentials.tokenUrl.trim();
+  const scope = draft.clientCredentials.scope.trim();
+  const audience = draft.clientCredentials.audience.trim();
   return {
     link: draft.link,
     ...(trimmedName ? { name: trimmedName } : {}),
@@ -242,7 +260,28 @@ export function genericConnectPayload(draft: GenericConnectDraft): GenericConnec
     ...(draft.authMode === "oauth" && clientId
       ? { oauthClient: { clientId, ...(clientSecret ? { clientSecret } : {}) } }
       : {}),
+    ...(draft.authMode === "oauth_client_credentials"
+      ? {
+          oauthClient: {
+            clientId,
+            clientSecret,
+            tokenUrl,
+            ...(scope ? { scope } : {}),
+            ...(audience ? { audience } : {}),
+          },
+        }
+      : {}),
   };
+}
+
+/** Catches a mistyped URL; whether plain http is allowed depends on the deployment, so the server decides that. */
+export function clientCredentialsTokenUrlError(tokenUrl: string): string | null {
+  const trimmedTokenUrl = tokenUrl.trim();
+  if (!trimmedTokenUrl) return null;
+  // Exempting the URL's own origin skips only the http rule, so every other part is still checked
+  return checkOAuthEndpointUrl(trimmedTokenUrl, { allowInsecureOrigins: [trimmedTokenUrl] }).ok
+    ? null
+    : "Enter a full token URL, such as https://auth.example.com/oauth/token.";
 }
 
 /** Can "Check link" be pressed? */
@@ -253,6 +292,11 @@ export function canSubmitGenericConnect(draft: GenericConnectDraft): boolean {
   if (draft.authMode === "custom_headers") {
     const filled = draft.headers.filter((row) => row.name.trim() && row.value.trim());
     return filled.length > 0 && customHeaderError(draft.headers) === null;
+  }
+  if (draft.authMode === "oauth_client_credentials") {
+    const { tokenUrl } = draft.clientCredentials;
+    return Boolean(draft.oauthClientId.trim() && draft.oauthClientSecret.trim() && tokenUrl.trim())
+      && clientCredentialsTokenUrlError(tokenUrl) === null;
   }
   // "oauth" here means the operator is supplying a preregistered client, and
   // "none" means they are asserting the server is public — neither needs a value.
