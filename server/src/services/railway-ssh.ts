@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +9,22 @@ import { RailwayError, type RailwaySshInput } from "./railway.js";
 import { redactSensitiveText } from "../redaction.js";
 
 export const RAILWAY_SSH_SECRET_PATH = "railway.ssh_private_key";
+
+async function systemOpenSshCommand(command: "ssh" | "ssh-keygen"): Promise<string> {
+  // Credential-bearing commands must not search an ambient or workspace PATH.
+  // NixOS exposes its administrator-selected packages through the system profile.
+  for (const directory of ["/usr/bin", "/bin", "/run/current-system/sw/bin"]) {
+    const executable = path.join(directory, command);
+    try {
+      await access(executable, constants.X_OK);
+      return executable;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES") throw error;
+    }
+  }
+  throw new RailwayError("railway_ssh_unavailable", `System OpenSSH (${command}) is unavailable on this Paperclip runtime.`, 422);
+}
 
 export function validateRailwayKnownHosts(value: string): string {
   if (value.length > 8192) throw new RailwayError("railway_ssh_host_key_invalid", "The Railway host key is too long.", 400);
@@ -22,7 +39,7 @@ export async function generateRailwaySshKey(): Promise<{ publicKey: string; priv
   const directory = await mkdtemp(path.join(tmpdir(), "paperclip-railway-key-"));
   try {
     const keyPath = path.join(directory, "identity");
-    await promisify(execFile)("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "paperclip-railway", "-f", keyPath], { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } });
+    await promisify(execFile)(await systemOpenSshCommand("ssh-keygen"), ["-q", "-t", "ed25519", "-N", "", "-C", "paperclip-railway", "-f", keyPath], { timeout: 10_000, env: { PATH: "/usr/bin:/bin" } });
     return { publicKey: (await readFile(`${keyPath}.pub`, "utf8")).trim(), privateKey: await readFile(keyPath, "utf8") };
   } catch {
     throw new RailwayError("railway_ssh_unavailable", "Generating a Railway key requires system OpenSSH (ssh-keygen) on the Paperclip runtime.", 422);
@@ -48,12 +65,13 @@ export async function runRailwaySshCommand(input: RailwaySshInput & { privateKey
   if (!input.privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----")) throw new RailwayError("railway_ssh_key_invalid", "Regenerate the Railway connection's SSH key.", 422);
   const directory = await mkdtemp(path.join(tmpdir(), "paperclip-railway-command-"));
   try {
+    const sshCommand = await systemOpenSshCommand("ssh");
     await writeFile(path.join(directory, "identity"), input.privateKey, { mode: 0o600 });
     await writeFile(path.join(directory, "known_hosts"), knownHosts, { mode: 0o600 });
     input.signal.throwIfAborted();
     return await new Promise<{ exitCode: number | null; stdout: string; stderr: string; truncated: boolean; timedOut: boolean }>((resolve, reject) => {
       // No developer SSH config/agent, CLI login, provider token or ambient env.
-      const child = spawn("/usr/bin/ssh", railwaySshArguments(directory, input.deploymentInstanceId), { env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(sshCommand, railwaySshArguments(directory, input.deploymentInstanceId), { env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"] });
       let stdout = "", stderr = "", bytes = 0, truncated = false, timedOut = false, deliveryFailed = false;
       const marker = `paperclip_railway_completed_${randomBytes(16).toString("hex")}`;
       const stop = () => { child.kill("SIGKILL"); };

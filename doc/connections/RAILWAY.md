@@ -95,11 +95,15 @@ The connection's Permissions page includes Container access:
 The private key stays in the instance vault, attached to one exact grant.
 Personal keys retain their owner binding. Each command resolves that grant's key
 after normal company/run/grant/policy checks. It uses a fresh temporary directory,
-0600 key files, a fixed system OpenSSH executable, a minimal environment, and no
+0600 key files, a system OpenSSH executable, a minimal environment, and no
 ambient SSH agent, user configuration, host directory, forwarding, or shared
 control socket. Files are removed on success, error, timeout and cancellation.
 The process must confirm remote command completion; SSH exit code zero alone is
 insufficient. Noninteractive commands receive no stdin.
+
+OpenSSH is resolved from `/usr/bin`, `/bin`, then the NixOS system profile at
+`/run/current-system/sw/bin`. Ambient PATH entries, including user-selected Nix
+store paths, are not searched. Install OpenSSH in one of these system locations.
 
 SSH connects to a deployed service **container**, not the underlying Railway host.
 The SSH username is a deployment **instance** ID, checked against that deployment.
