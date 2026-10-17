@@ -23,6 +23,7 @@ import {
 } from "./bridge.js";
 import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import * as ReactJsxRuntimeModule from "react/jsx-runtime";
+import * as ReactDOMClientModule from "react-dom/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { User } from "lucide-react";
 import {
@@ -82,6 +83,8 @@ export interface PluginBridgeRegistry {
    */
   reactJsxRuntime: unknown;
   reactDom: unknown;
+  /** The host's real `react-dom/client` module for createRoot/hydrateRoot. */
+  reactDomClient?: unknown;
   sdkUi: Record<string, unknown>;
 }
 
@@ -675,15 +678,18 @@ class PluginSdkErrorBoundary extends Component<{ children: ReactNode; fallback?:
  *
  * @param react - The host's React module
  * @param reactDom - The host's ReactDOM module
+ * @param reactDomClient - The host's ReactDOM client module
  */
 export function initPluginBridge(
   react: typeof import("react"),
   reactDom: typeof import("react-dom"),
+  reactDomClient: typeof import("react-dom/client") = ReactDOMClientModule,
 ): void {
   globalThis.__paperclipPluginBridge__ = {
     react,
     reactJsxRuntime: ReactJsxRuntimeModule,
     reactDom,
+    reactDomClient,
     sdkUi: {
       usePluginData,
       usePluginAction,
