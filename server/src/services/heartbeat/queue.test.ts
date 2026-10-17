@@ -250,6 +250,25 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.canStartNewExternalBotWork).not.toHaveBeenCalled();
   });
 
+  it("drains parked wakes when the stale gate cancels a queued run", async () => {
+    const { run, agent, issue } = await fixture("queued");
+    // The task finished after this run was queued, so the run is now stale.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    // claimQueuedRun runs under the agent start lock on the batch path, so the
+    // promoted dispatch must be deferred to the caller's post-lock effects.
+    const deferredPostCommitEffects: Parameters<HeartbeatQueueDependencies["applyWakeQueuePostCommitEffects"]>[0] = [];
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(run, undefined, deferredPostCommitEffects)).toBeNull();
+    const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(cancelled.status).toBe("cancelled");
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(
+      expect.objectContaining({ id: run.id }),
+      { suppressImmediateRecovery: true, deferredPostCommitEffects },
+    );
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("cancels at the daily run cap before claiming or dispatching", async () => {
     const { run, agent } = await fixture("queued");
     const cappedAgent = { ...agent, runtimeConfig: { heartbeat: { maxDailyRuns: 0 } } };
