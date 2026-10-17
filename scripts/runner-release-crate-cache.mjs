@@ -24,7 +24,7 @@
 //                 discard an incomplete one so cargo rebuilds instead
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, rmSync, statSync, utimesSync, lstatSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,7 @@ export const CACHED_PATHS = [
   `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
   `${RELEASE_DIR}/paperclip-runnerd`,
   `${RELEASE_DIR}/paperclip-runnerd.d`,
+  `${RELEASE_DIR}/verified-artifact.json`,
 ];
 
 // Every file the release build of the crate reads, as hashFiles() patterns:
@@ -60,6 +61,16 @@ export const HASHED_INPUTS = [
   `${RUNNER_PACKAGE}/test-fixtures/**`,
   `${RUNNER_PACKAGE}/test/fixtures/**`,
   "tests/runner-e2e/fixtures/**",
+  ".cargo/**",
+  "packages/.cargo/**",
+  `${RUNNER_PACKAGE}/.cargo/**`,
+  `${RUNNER_PACKAGE}/runner/.cargo/**`,
+  `${RUNNER_PACKAGE}/package.json`,
+  "scripts/verified-runner-release.mjs",
+  "scripts/runner-release-build-witness.mjs",
+  "scripts/runner-release-crate-cache.mjs",
+  `${RUNNER_PACKAGE}/scripts/stage-runner-binary.mjs`,
+  `${RUNNER_PACKAGE}/scripts/build-release-binary.mjs`,
 ];
 
 // A restored set is usable only when both units are complete: everything
@@ -96,7 +107,7 @@ function keySafe(value) {
  * /home/runner/work). Hashing the root into the key turns that into a plain
  * miss instead of a restore cargo then throws away.
  */
-export function computeScope({ workspace = process.env.GITHUB_WORKSPACE ?? process.cwd(), rustcVersion = readRustcVersion() } = {}) {
+export function computeScope({ workspace = process.env.GITHUB_WORKSPACE ?? process.cwd(), env = process.env, rustcVersion = readRustcVersion(env) } = {}) {
   const root = createHash("sha256").update(path.resolve(workspace)).digest("hex").slice(0, 12);
   return `${keySafe(os.platform())}-${keySafe(os.arch())}-${keySafe(rustcVersion)}-${root}`;
 }
@@ -182,7 +193,16 @@ export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd
   return { schema: SCHEMA, action: "marked", files, bytes };
 }
 
-function main(argv) {
+export function discardRestoredCrate(root) {
+  root=realpathSync(root);
+  for (const directory of [RELEASE_DIR, `${RELEASE_DIR}/deps`, `${RELEASE_DIR}/.fingerprint`]) {
+    const target=path.join(root,directory);
+    if (existsSync(target) && realpathSync(target)!==target) throw new Error("Refusing to discard cached artifacts through a symlink");
+  }
+  for (const target of CACHED_PATHS.flatMap(pattern=>expandGlob(root,pattern))) rmSync(target,{recursive:true,force:true});
+}
+
+async function main(argv) {
   const [command] = argv;
   switch (command) {
     case "paths":
@@ -199,12 +219,36 @@ function main(argv) {
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return 0;
     }
+    case "record-artifact": {
+      const {recordReleaseArtifact}=await import('./verified-runner-release.mjs');
+      const result=recordReleaseArtifact({root:process.env.GITHUB_WORKSPACE ?? process.cwd()});
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,`recorded=${result.recorded}\n`);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
+    case "prepare-artifact": {
+      const {prepareReleaseArtifact}=await import('./verified-runner-release.mjs');
+      const root=process.env.GITHUB_WORKSPACE ?? process.cwd();
+      let result;
+      try { result=prepareReleaseArtifact({root,temporaryDirectory:process.env.RUNNER_TEMP,
+        matchedKey:process.env.RUNNER_ARTIFACT_MATCHED_KEY,expectedKey:process.env.RUNNER_ARTIFACT_EXPECTED_KEY}); }
+      catch { result={ready:false,reason:'Restored artifact evidence failed verification'}; }
+      if (!result.ready) discardRestoredCrate(root);
+      if (result.ready && /[\r\n]/.test(result.receiptPath)) throw new Error('Invalid release receipt path');
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,`ready=${result.ready}\n`);
+      if (result.ready && process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV,`PAPERCLIP_RUNNER_RELEASE_CACHE_RECEIPT=${result.receiptPath}\n`);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
     default:
-      process.stderr.write("usage: runner-release-crate-cache.mjs <paths|hashed-inputs|scope|mark-current>\n");
+      process.stderr.write("usage: runner-release-crate-cache.mjs <paths|hashed-inputs|scope|mark-current|record-artifact|prepare-artifact>\n");
       return 2;
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main(process.argv.slice(2));
+  main(process.argv.slice(2)).then(code => { process.exitCode = code; }, error => {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  });
 }

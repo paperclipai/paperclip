@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -405,4 +405,49 @@ test("every publish job budgets for build time and four delayed packages", () =>
     const timeoutMinutes = Number(body.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
     assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build and polling`);
   }
+});
+
+
+test("release fetch imports every release channel without downloading unrelated branches or moving tags", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "paperclip-release-fetch-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const remote = join(root, "remote.git"), writer = join(root, "writer"), reader = join(root, "reader");
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git(root, "init", "--bare", remote);
+  git(root, "init", "-b", "master", writer);
+  git(writer, "config", "user.name", "Release fixture");
+  git(writer, "config", "user.email", "release@example.invalid");
+  writeFileSync(join(writer, "source"), "release source");
+  git(writer, "add", ".");
+  git(writer, "commit", "-m", "release");
+  const source = git(writer, "rev-parse", "HEAD");
+  const tags = ["v2026.1015.0", "canary/v2026.1015.0-canary.1", "nightly/v2026.1015.0-nightly.1", "beta/v2026.1015.0-beta.1"];
+  for (const tag of [...tags, "preview/unrelated"]) git(writer, "tag", "-a", tag, "-m", tag);
+  git(writer, "checkout", "-b", "unrelated");
+  writeFileSync(join(writer, "unrelated"), "unrelated branch payload");
+  git(writer, "add", ".");
+  git(writer, "commit", "-m", "unrelated");
+  const unrelated = git(writer, "rev-parse", "HEAD");
+  git(writer, "remote", "add", "origin", remote);
+  git(writer, "push", "origin", "--all");
+  git(writer, "push", "origin", "--tags");
+  git(root, "init", reader);
+  git(reader, "remote", "add", "origin", remote);
+  git(reader, "fetch", "--depth=1", "--no-tags", "origin", "master");
+  git(reader, "checkout", "-b", "master", "FETCH_HEAD");
+  const fetch = () => spawnSync("bash", ["-euc", 'source "$1"; fetch_release_remote origin', "release-fetch", join(repoRoot, "scripts/release-lib.sh")], {
+    encoding: "utf8", env: { ...process.env, REPO_ROOT: reader },
+  });
+  const result = fetch();
+  assert.equal(result.status, 0, result.stderr);
+  for (const tag of tags) assert.equal(git(reader, "rev-parse", `${tag}^{commit}`), source);
+  assert.equal(git(reader, "tag", "--list", "preview/*"), "");
+  assert.equal(git(reader, "branch", "-r"), "origin/master");
+  assert.notEqual(spawnSync("git", ["cat-file", "-e", unrelated], { cwd: reader }).status, 0);
+  assert.equal(git(reader, "rev-parse", "HEAD"), source);
+  git(writer, "tag", "-fa", tags[0], "-m", "conflicting release");
+  git(writer, "push", "--force", "origin", `refs/tags/${tags[0]}`);
+  const conflict = fetch();
+  assert.notEqual(conflict.status, 0, "a moved release tag must fail closed");
+  assert.equal(git(reader, "rev-parse", `${tags[0]}^{commit}`), source);
 });

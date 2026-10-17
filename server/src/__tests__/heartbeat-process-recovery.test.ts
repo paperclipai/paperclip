@@ -660,9 +660,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       model: "test-model",
     }));
     await stopRegisteredProcessesForCleanup();
-    for (const child of childProcesses) {
-      child.kill("SIGKILL");
-    }
+    await Promise.all([...childProcesses].map(async (child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      await new Promise<void>((resolve) => {
+        child.once("close", () => resolve());
+        child.kill("SIGKILL");
+      });
+    }));
     childProcesses.clear();
     for (const pid of cleanupPids) {
       try {
@@ -671,36 +675,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         // Ignore already-dead cleanup targets.
       }
     }
+    for (const pid of cleanupPids) {
+      expect(await waitForPidExit(pid), `cleanup process ${pid} must exit`).toBe(true);
+    }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({
-          status: heartbeatRuns.status,
-          processPid: heartbeatRuns.processPid,
-          processGroupId: heartbeatRuns.processGroupId,
-        })
-        .from(heartbeatRuns);
-      const managedExecutionStillActive = runs.some(
-        (run) =>
-          (run.status === "queued" || run.status === "running") &&
-          !run.processPid &&
-          !run.processGroupId,
-      );
-      if (!managedExecutionStillActive) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await waitForHeartbeatIdle(db, 5_000);
-    // Terminal rows do not mean their background finalizers have returned.
-    // Drain tracked wakeups too: one can still create a run after the row poll.
     await heartbeatService(db).drainActiveRunExecutions();
+    await waitForHeartbeatIdle(db, 5_000);
+    const remainingActiveRuns = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+    expect(remainingActiveRuns).toEqual([]);
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);

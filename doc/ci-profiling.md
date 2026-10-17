@@ -174,8 +174,15 @@ populate master's caches. Normal PR lanes restore only; the exact canonical
 master push in release verification is the normal cache writer.
 
 Materialized dependency keys include every tracked package manifest, lockfile,
-workspace configuration, patches, repository scripts, Node version/ABI, platform,
+workspace configuration, patches, the cache planner and audited root installer, Node version/ABI, platform,
 architecture, libc, pnpm version, store location, and physical checkout path.
+The current root installer only links the excluded plugins to the workspace SDK.
+Its exact reviewed source hash permits unrelated repository scripts to change
+without discarding installed dependencies. A changed or missing installer
+restores the conservative key that includes every repository script. Review its
+complete inputs before updating that source hash. A new workspace lifecycle hook
+still disables reuse. The v2 dependency key requires a new canonical master entry;
+an older v1 entry is never restored under the narrower contract.
 There are no prefix restores. An input change takes the normal install path.
 A stale lockfile uses the existing resolution fallback but cannot publish an
 entry. An additional workspace install/prepare hook disables materialized reuse
@@ -183,6 +190,66 @@ until its inputs are modeled. Shared/SDK build outputs have a separate key that 
 packages' source/configuration and the build verifier. The existing verifier
 checks source and output fingerprints and rebuilds incomplete or changed output.
 Tests and their results are never cached or omitted by this mechanism.
+
+For a local experiment with an oversized Runner test file, first run the unchanged
+file with Vitest's JSON reporter. Then, from `packages/paperclip-runner`, run:
+
+```sh
+node ../../scripts/run-vitest-case-shards.mjs src/live/runnerd-codex-transport-settlement.test.ts 4 /tmp/runner-settlement-profile
+```
+
+The launcher dynamically collects the expanded parameterized cases, distributes
+literal full names across isolated Vitest processes, and retains each log and
+JSON report. Cases within each process remain serial. Duplicate titles stay
+together. Every assigned case must actually pass; missing, extra or skipped
+cases fail qualification. This is only suitable for files whose cases already
+own their fixtures and clean up their state. It does not change timeouts, use fake
+timers, or edit assertions. The receipt includes collection and process startup
+time. It does not measure CI setup, scheduling or the complete workflow.
+Run baseline and candidate without another benchmark competing for the same host.
+
+The CI case partition applies to transport, deadline, and OpenCode driver files.
+Settlement remains in the ordinary whole-file partition. Its release-binary
+qualification passed all 19 cases serially but exposed failures with both grouped
+and per-case parallel processes; neither grouping is accepted as a CI speedup.
+Keep the complete serial regression until a narrower change proves it safe.
+
+The `general-workspaces-b` lane overlaps at most two project invocations. Each
+keeps its own temporary home, configuration and instance identity. Their combined
+Vitest worker limit stays within the detected CPU capacity or the explicit
+`VITEST_MAX_WORKERS` budget. A configured shared test database or a single worker
+keeps project execution serial. All projects finish before a failure is returned.
+The UI/CLI and database lanes retain their existing scheduling.
+
+The PR and canonical release-verification workflows set `CARGO_PROFILE_DEV_DEBUG=0`
+before restoring the shared Rust cache. This omits debug symbols from the debug
+helpers used by TypeScript integration tests. It preserves development-profile
+optimization, debug assertions, overflow checks and every test. Developer builds
+keep their normal defaults. Both cache readers and the writer use the same
+setting; the pinned Rust cache action hashes all `CARGO*` environment variables,
+so the first run uses a separate cache entry and builds normally on a miss.
+Release-profile optimization and checks are unchanged. Both workflows also set
+`CARGO_INCREMENTAL=0`, matching the pinned Rust cache action before any restore.
+
+Build, Canary, and Typecheck first restore the small, exact-key Runner release
+artifact. A v2 entry includes a producer receipt written only after the canonical
+master Rust lane cleans and builds the workspace crate. The receipt binds the
+executable checksum to the compiler, checkout, all modeled inputs, compiler
+dep-info, and declared build-script environment dependencies. Changed inputs,
+custom Cargo/compiler configuration, unsupported build inputs, incomplete
+entries, or failed verification use normal dependency restoration and compilation.
+Failed verification removes only the restored workspace-crate artifacts so Cargo
+cannot accidentally retain the rejected executable.
+
+On a verified hit, the reader copies the executable into a private temporary
+snapshot. Each `build:binary` invocation rechecks its source/environment/compiler
+and checksum before using the usual atomic staging and macOS signing path. These
+three jobs can then omit the large mixed debug/release dependency cache: they
+only consume the self-contained executable. Rust and protocol test lanes retain
+their dependency caches, normal compilation, and every test. Readers never save
+an entry, use a prefix match, or accept a v1 entry under this stronger contract.
+The first canonical master run must populate v2. `record-artifact` and
+`prepare-artifact` expose their decisions in the job log; a miss is not a speedup.
 
 Serialized shards share one Vitest controller with `forks`, `isolate`, one
 worker, and file parallelism disabled. Each file gets a separate process and
@@ -221,3 +288,33 @@ unique verifier-owned name and is removed on early failure as well as completion
 `pi_setup_prefetch_ms` measures setup wall time; `pi_setup_wait_ms` measures only
 the remaining wait after the other probes. These overlapping durations must not
 be added when interpreting total verification time.
+
+The PR Runner matrix has eight file shards. When
+`PAPERCLIP_RUNNER_CASE_SHARDS=true`, each shard excludes the four files listed in
+`packages/paperclip-runner/scripts/run-pr-case-shard.mjs` from its ordinary file
+run and then runs its assigned cases from those files. Every lane dynamically
+collects the same inventory, keeps duplicate titles together, and checks actual
+results against its assignment. A missing, failed, or skipped assigned case
+fails the lane. All eight lanes are required. The server native-runner group
+still runs only on the final lane. Without the opt-in, the wrapper retains its
+complete ordinary file run, including on older PR heads that lack the new
+helper. This preserves coverage while trusted workflows advance on master.
+
+Each case file uses one Vitest process per lane, with up to four files active
+within the CPU budget. Cases remain serial within that process. The OpenCode
+fixture is made executable before each case because filtered runs cannot rely
+on an earlier case setting its permissions. Its file must not run in multiple
+processes sharing one checkout: its final cleanup resets the shared fixture's
+permissions. CI lanes have separate checkouts. Deadline cases retain their
+real lease expiry waits. This adds six Runner jobs; include their setup,
+collection, and runner-minutes when measuring the whole workflow. A shorter
+case phase alone does not establish a faster complete workflow.
+
+Release planning fetches only stable, canary, nightly, and beta tags. It does
+not need the remote's development branches or preview tags. Existing release
+tags are never overwritten or removed, and the exact remote-tag existence
+check still runs before a release. A paired shallow-checkout experiment against
+the same public remote took 15.35 seconds for all branches and tags, versus
+7.72 seconds for release tags only. All 1,781 release tag object IDs matched;
+repository data was 424 MB versus 248 MB. These are local fetch measurements,
+not a measured reduction in complete CI wall time.

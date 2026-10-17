@@ -18,6 +18,10 @@ on:
       native_consumer_matrix:
         value: ${{ jobs.runner_binary_targets.outputs.native_consumers }}
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
 # Caller-provided refs may name unmerged PR code. AWS is eligible only when
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
@@ -469,7 +473,8 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
 
       - name: Build the Runner release crate for its cache
         if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' }}
@@ -479,8 +484,13 @@ jobs:
           cargo clean --release --manifest-path runner/Cargo.toml -p paperclip-runner-core
           pnpm build:binary
 
+      - name: Record the built Runner release executable
+        id: runner_release_artifact
+        if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' && hashFiles('scripts/verified-runner-release.mjs') != '' }}
+        run: node scripts/runner-release-crate-cache.mjs record-artifact
+
       - name: Save the Runner release crate
-        if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' }}
+        if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' && steps.runner_release_artifact.outputs.recorded == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -490,7 +500,8 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
 
   build:
     if: ${{ !inputs.runner_binaries_only }}

@@ -6,12 +6,17 @@ import { fileURLToPath } from "node:url";
 import { readPluginsUnder } from "./link-plugin-dev-sdk.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const linkerPath = 'scripts/link-plugin-dev-sdk.mjs';
+const reviewedLinkerHash = '165ac41d761fbad7f03e9b9f1252b0a43871933a55d5a8bbf0c7227371d97779';
 
 export function cachePlan({ files, read, scope, packageDirs }) {
+  const linker = files.includes(linkerPath) ? read(linkerPath) : null;
+  const knownLinker = linker !== null && createHash('sha256').update(linker).digest('hex') === reviewedLinkerHash;
   const dependencyInputs = files.filter((file) =>
     /(^|\/)package\.json$/.test(file)
     || ["pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", "pnpmfile.cjs"].includes(file)
-    || file.startsWith("scripts/")
+    || file === linkerPath || file === 'scripts/ci-dependency-cache.mjs'
+    || (!knownLinker && file.startsWith("scripts/"))
     || file.startsWith("patches/"));
   const digest = (inputs, salt) => {
     const hash = createHash("sha256").update(JSON.stringify(salt));
@@ -22,7 +27,7 @@ export function cachePlan({ files, read, scope, packageDirs }) {
     }
     return hash.digest("hex");
   };
-  const dependencyKey = `ci-dependencies-v1-${digest(dependencyInputs, scope)}`;
+  const dependencyKey = `ci-dependencies-v2-${digest(dependencyInputs, scope)}`;
   const cacheable = packageDirs.every((directory) => {
     const manifest = read(path.posix.join(directory, 'package.json'));
     if (manifest === null) return false;

@@ -78,7 +78,11 @@ resolve_release_remote() {
 }
 
 fetch_release_remote() {
-  git -C "$REPO_ROOT" fetch "$1" --prune --tags
+  git -C "$REPO_ROOT" fetch --no-tags "$1" \
+    'refs/tags/v*:refs/tags/v*' \
+    'refs/tags/canary/v*:refs/tags/canary/v*' \
+    'refs/tags/nightly/v*:refs/tags/nightly/v*' \
+    'refs/tags/beta/v*:refs/tags/beta/v*'
 }
 
 git_current_branch() {

@@ -12,7 +12,7 @@ const entries = {
   "pnpm-workspace.yaml": 'workspace',
   ".npmrc": 'auto-install-peers=false',
   "patches/external.patch": 'patch',
-  "scripts/link-plugin-dev-sdk.mjs": 'postinstall',
+  "scripts/link-plugin-dev-sdk.mjs": readFileSync(new URL('../../../scripts/link-plugin-dev-sdk.mjs', import.meta.url), 'utf8'),
   "scripts/ci-dependency-cache.mjs": 'cache schema',
   "scripts/ensure-plugin-build-deps.mjs": 'build verifier',
   "tsconfig.base.json": '{}',
@@ -66,8 +66,27 @@ test('unmodelled workspace lifecycle scripts disable materialized reuse', () => 
     assert.equal(plan({ ...entries, 'server/package.json': JSON.stringify({ scripts: { [hook]: 'node custom.mjs' } }) }).cacheable, false);
   }
   assert.equal(plan({ ...entries, 'package.json': '{"scripts":{"postinstall":"node other.mjs"}}' }).cacheable, false);
-  for (const file of ['scripts/ensure-plugin-build-deps.mjs', 'scripts/new-install-helper.mjs', '.pnpmfile.cjs']) {
-    assert.notEqual(plan({ ...entries, [file]: 'changed' }).dependencyKey, plan().dependencyKey);
+  assert.notEqual(plan({ ...entries, '.pnpmfile.cjs': 'changed' }).dependencyKey, plan().dependencyKey);
+});
+
+test('unrelated scripts preserve dependencies while build verifier changes invalidate builds', () => {
+  const original = plan();
+  for (const file of ['scripts/new-test-helper.mjs', 'scripts/warm-public-install-npm-cache.mjs', 'scripts/__tests__/cache.test.mjs']) {
+    assert.deepEqual(plan({ ...entries, [file]: 'changed' }), original);
+  }
+  const changedBuild = plan({ ...entries, 'scripts/ensure-plugin-build-deps.mjs': 'changed' });
+  assert.equal(changedBuild.dependencyKey, original.dependencyKey);
+  assert.notEqual(changedBuild.buildKey, original.buildKey);
+});
+
+test('changing the audited linker restores conservative script invalidation', () => {
+  for (const linker of ['import "./new-install-helper.mjs";', null]) {
+    const modified = { ...entries, 'scripts/link-plugin-dev-sdk.mjs': linker };
+    const original = plan(modified);
+    assert.notEqual(original.dependencyKey, plan().dependencyKey);
+    for (const file of ['scripts/new-install-helper.mjs', 'scripts/ensure-plugin-build-deps.mjs']) {
+      assert.notEqual(plan({ ...modified, [file]: 'changed' }).dependencyKey, original.dependencyKey);
+    }
   }
 });
 

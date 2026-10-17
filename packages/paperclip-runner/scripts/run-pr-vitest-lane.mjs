@@ -24,16 +24,20 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RUNNER_CASE_FILES } from "./run-pr-case-shard.mjs";
 import { invocationEnv } from "../../../scripts/ci-profile/record.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
-const args = process.argv.slice(2).filter((value) => value !== "--dry-run");
+const caseShards = process.argv.includes("--case-shards") || process.env.PAPERCLIP_RUNNER_CASE_SHARDS === "true";
+const args = process.argv.slice(2).filter((value) => value !== "--dry-run" && value !== "--case-shards");
 const dryRun = process.argv.includes("--dry-run");
 
 const shardArg = args.find((value) => value.startsWith("--shard="));
 const shardMatch = shardArg ? /^--shard=(\d+)\/(\d+)$/.exec(shardArg) : null;
-if (shardArg && !shardMatch) {
+if ((shardArg && !shardMatch) || (caseShards && !shardMatch)
+  || (shardMatch && (!Number.isSafeInteger(Number(shardMatch[1])) || !Number.isSafeInteger(Number(shardMatch[2]))
+    || Number(shardMatch[1]) < 1 || Number(shardMatch[1]) > Number(shardMatch[2])))) {
   console.error(`[pr-vitest-lane] unrecognized shard argument: ${shardArg}`);
   process.exit(1);
 }
@@ -44,7 +48,9 @@ const runNativeRunnerGroup = isPrWorkflow && isFinalShard;
 const plannedCommands = [
   { command: "pnpm", args: ["run", "ensure:eval-build-deps"], cwd: packageRoot },
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
-  { command: "pnpm", args: ["exec", "vitest", "run", ...args], cwd: packageRoot },
+  { command: "pnpm", args: ["exec", "vitest", "run", ...args,
+    ...(caseShards ? RUNNER_CASE_FILES.flatMap(file => ["--exclude", file]) : [])], cwd: packageRoot },
+  ...(caseShards ? [{ command: process.execPath, args: [resolve(packageRoot, "scripts/run-pr-case-shard.mjs"), shardArg], cwd: packageRoot }] : []),
   ...(runNativeRunnerGroup
     ? [{
         command: "pnpm",

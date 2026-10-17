@@ -377,7 +377,7 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-async function runVitest(args, label, testShard = null) {
+async function runVitest(args, label, testShard = null, environment = {}) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -387,6 +387,7 @@ async function runVitest(args, label, testShard = null) {
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {
     ...process.env,
+    ...environment,
     NODE_ENV: "test",
     PAPERCLIP_TEST_HOST_HOME: process.env.PAPERCLIP_TEST_HOST_HOME
       ?? (process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip")),
@@ -462,9 +463,24 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
   const shardArgs =
     shardCount !== null && shardCount > 1 ? [`--shard=${shardIndex + 1}/${shardCount}`] : [];
   const shardSuffix = shardArgs.length > 0 ? ` shard ${shardIndex + 1}/${shardCount}` : "";
-  for (const project of projects) {
-    await runVitest(["--project", project, ...shardArgs], `${groupName} project ${project}${shardSuffix}`);
-  }
+  const capacity = process.env.VITEST_MAX_WORKERS === undefined
+    ? os.availableParallelism() : Number(process.env.VITEST_MAX_WORKERS);
+  const concurrency = groupName === generalWorkspacesBGroupName && projects.length > 1
+    && Number.isSafeInteger(capacity) && capacity >= 2 && !process.env.PAPERCLIP_TEST_DATABASE_URL ? 2 : 1;
+  const environment = concurrency > 1 ? { VITEST_MAX_WORKERS: String(Math.floor(capacity / concurrency)) } : {};
+  let cursor = 0;
+  const failures = [];
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (cursor < projects.length) {
+      const project = projects[cursor++];
+      try {
+        await runVitest(["--project", project, ...shardArgs], `${groupName} project ${project}${shardSuffix}`, null, environment);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }));
+  if (failures.length > 0) throw new AggregateError(failures, failures.map(error => error.message).join('; '));
 }
 
 function chatShardWorkers(index, count) {

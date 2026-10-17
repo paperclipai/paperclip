@@ -17,7 +17,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCACertificates } from "node:tls";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -117,6 +117,10 @@ async function makeWritable(root: string): Promise<void> {
     await chmod(root, 0o600);
   }
 }
+
+beforeEach(async () => {
+  await chmod(fixture, 0o755);
+});
 
 afterEach(async () => {
   await Promise.all(

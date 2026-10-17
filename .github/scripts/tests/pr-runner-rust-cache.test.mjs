@@ -72,8 +72,11 @@ test("every PR reader pins the compiler before the key is computed", () => {
     const cache = pr.indexOf(READ_STEP);
     assert.ok(select >= 0 && cache > select, `${name}: the toolchain must be selected before the cache step`);
     const setup = pr.slice(select, cache);
-    // Nothing may sit between the pin and the restore that could change the key.
-    assert.equal(setup.match(/^      - name: /gm).length, 1, `${name}: no step between the toolchain pin and the restore`);
+    assert.deepEqual([...setup.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
+      name === "verify_paperclip_runner" ? ["Select the pinned Runner Rust toolchain"] : [
+        "Select the pinned Runner Rust toolchain", "Compute the Runner release crate cache key",
+        "Restore the Runner release crate (read only)", "Prepare the verified Runner release executable"],
+      `${name}: only exact artifact verification may precede the dependency restore`);
     assert.match(setup, /working-directory: packages\/paperclip-runner/, name);
     assert.match(setup, /rustup show active-toolchain/, name);
     assert.match(setup, /echo "RUSTUP_TOOLCHAIN=\$toolchain" >> "\$GITHUB_ENV"/, name);
@@ -90,7 +93,9 @@ test("a pull request never writes to or evicts the master cache entry", () => {
     const nextStep = after.search(/\n      - name: /);
     const step = nextStep === -1 ? after : after.slice(0, nextStep);
     assert.equal(step.match(/^\s*save-if: (.+)$/m)?.[1], "false", `${name}: the restore must set save-if: false`);
-    assert.doesNotMatch(step, /^\s*if:/m, `${name}: the restore must not be conditional; a miss is already free`);
+    if (name === "verify_paperclip_runner") assert.doesNotMatch(step, /^\s*if:/m, `${name}: Rust tests always need their dependencies`);
+    else assert.match(step, /if: \$\{\{ steps\.runner_release_artifact\.outputs\.ready != 'true' \}\}/,
+      `${name}: skip dependencies only for an already verified executable`);
   }
   assert.doesNotMatch(prWorkflow, /uses: Swatinem\/rust-cache@[0-9a-f]{40}[\s\S]*?save-if: (?!false)/);
 });

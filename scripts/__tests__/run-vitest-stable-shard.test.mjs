@@ -586,3 +586,29 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test("case-sharded Runner lanes exclude only the files the isolated case runner owns", () => {
+  const caseScript = readFileSync(path.join(repoRoot, "packages/paperclip-runner/scripts/run-pr-case-shard.mjs"), "utf8");
+  const workflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
+  const runnerJob = workflow.split("\n  verify_paperclip_runner:\n")[1].split("\n  build:\n")[0];
+  assert.match(runnerJob, /PAPERCLIP_RUNNER_CASE_SHARDS: "true"/);
+  let nativeGroups = 0;
+  for (let index = 1; index <= 8; index++) {
+    const plan = wrapperPlan([`--shard=${index}/8`], { GITHUB_WORKFLOW: "PR", PAPERCLIP_RUNNER_CASE_SHARDS: "true" });
+    const vitest = plan.plannedCommands.find(command => command.args[0] === "exec");
+    assert.ok(!vitest.args.includes("--case-shards"));
+    const exclusions = vitest.args.flatMap((arg, offset) => arg === "--exclude" ? [vitest.args[offset + 1]] : []);
+    assert.equal(exclusions.length, 3);
+    assert.ok(!exclusions.includes("src/live/runnerd-codex-transport-settlement.test.ts"),
+      "real settlement timing cases stay together in their ordinary serial file");
+    for (const file of exclusions) assert.ok(caseScript.includes(`'${file}'`), file);
+    const distributed = plan.plannedCommands.filter(command => command.args[0].endsWith("run-pr-case-shard.mjs"));
+    assert.equal(distributed.length, 1);
+    assert.equal(distributed[0].args[1], `--shard=${index}/8`);
+    nativeGroups += Number(plan.runNativeRunnerGroup);
+  }
+  assert.equal(nativeGroups, 1);
+  const legacy = wrapperPlan(["--shard=1/2"], { GITHUB_WORKFLOW: "PR" });
+  assert.ok(!legacy.plannedCommands.some(command => command.args.includes("--exclude")));
+});

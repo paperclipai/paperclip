@@ -15,6 +15,8 @@ permissions:
 # the Honeycomb credential, so fork PRs cannot execute with it.
 env:
   PAPERCLIP_CI_PROFILE_DIR: ${{ github.workspace }}/.ci-profile
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -280,32 +282,7 @@ jobs:
           fi
           rustup toolchain list
 
-      - name: Restore Runner Rust dependencies (read only)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
-          # Mirror the master writer: these also feed the cache key.
-          cache-workspace-crates: false
-          cache-bin: false
-          # Restore only. Never let a pull request evict master's entry.
-          save-if: false
 
-      # The Runner's own crate is the one thing the entry above leaves out:
-      # rust-cache drops workspace crates when it saves, and a fresh checkout
-      # would invalidate cargo's mtime fingerprints for them anyway. So this
-      # job compiled paperclip-runner-core in release mode on every run,
-      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
-      # the 239 master commits of the preceding week left its inputs alone.
-      # The master Rust lane in release-verify.yml saves that crate's release
-      # artifacts (about 70 MB) under a key made from the compiler, the
-      # checkout root and a hash of every input the build reads. A pull
-      # request whose merge tree carries byte-identical inputs restores them
-      # and marks them newer than the checkout, so cargo keeps them; any
-      # other pull request misses and compiles exactly as before. Exact key
-      # only: a prefix match would hand cargo another revision's output. The
-      # path list and the key live in scripts/runner-release-crate-cache.mjs
-      # and must match the writer's; a guard test holds them together.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
@@ -321,10 +298,31 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
+
+      - name: Prepare the verified Runner release executable
+        id: runner_release_artifact
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && hashFiles('scripts/verified-runner-release.mjs') != '' }}
+        env:
+          RUNNER_ARTIFACT_EXPECTED_KEY: ${{ steps.runner_release_crate.outputs.cache-primary-key }}
+          RUNNER_ARTIFACT_MATCHED_KEY: ${{ steps.runner_release_crate.outputs.cache-matched-key }}
+        run: node scripts/runner-release-crate-cache.mjs prepare-artifact
+
+      - name: Restore Runner Rust dependencies (read only)
+        if: ${{ steps.runner_release_artifact.outputs.ready != 'true' }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Mark the restored Runner release crate current
-        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && steps.runner_release_artifact.outputs.ready != 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
@@ -635,31 +633,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # check:all spent ~380s of its ~600s cache-warm step inside the
-          # runner package's vitest suite (run 35036001734, 2026-09-15); the
-          # Rust tests took ~160s and every remaining check ~60s combined,
-          # which made this single job the PR critical path once the test
-          # lanes were rebalanced. Split the vitest suite across two runners
-          # with Vitest's native --shard, the ~160s Rust tests into their own
-          # lane, and the remaining static checks into a fourth. The four
-          # lanes union to exactly check:all: check:static covers
-          # check:eval-kernel, check:protocol-without-vitest, and
-          # check:api-authority; check:runner covers the Rust half; and the
-          # two vitest shards cover the package vitest file list.
           - lane_label: static checks
             command: check:static
           - lane_label: rust
             command: check:runner
             release_crate: true
-          - lane_label: vitest 1/2
-            command: test:typescript:vitest --shard=1/2
-          - lane_label: vitest 2/2
-            command: test:typescript:vitest --shard=2/2
+          - lane_label: vitest 1/8
+            command: test:typescript:vitest --shard=1/8
+          - lane_label: vitest 2/8
+            command: test:typescript:vitest --shard=2/8
+          - lane_label: vitest 3/8
+            command: test:typescript:vitest --shard=3/8
+          - lane_label: vitest 4/8
+            command: test:typescript:vitest --shard=4/8
+          - lane_label: vitest 5/8
+            command: test:typescript:vitest --shard=5/8
+          - lane_label: vitest 6/8
+            command: test:typescript:vitest --shard=6/8
+          - lane_label: vitest 7/8
+            command: test:typescript:vitest --shard=7/8
+          - lane_label: vitest 8/8
+            command: test:typescript:vitest --shard=8/8
             release_crate: true
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Verify Paperclip Runner (${{ matrix.lane_label }})
+      PAPERCLIP_RUNNER_CASE_SHARDS: "true"
 
     steps:
       - name: Checkout repository
@@ -834,7 +834,8 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -1010,32 +1011,7 @@ jobs:
           fi
           rustup toolchain list
 
-      - name: Restore Runner Rust dependencies (read only)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
-          # Mirror the master writer: these also feed the cache key.
-          cache-workspace-crates: false
-          cache-bin: false
-          # Restore only. Never let a pull request evict master's entry.
-          save-if: false
 
-      # The Runner's own crate is the one thing the entry above leaves out:
-      # rust-cache drops workspace crates when it saves, and a fresh checkout
-      # would invalidate cargo's mtime fingerprints for them anyway. So this
-      # job compiled paperclip-runner-core in release mode on every run,
-      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
-      # the 239 master commits of the preceding week left its inputs alone.
-      # The master Rust lane in release-verify.yml saves that crate's release
-      # artifacts (about 70 MB) under a key made from the compiler, the
-      # checkout root and a hash of every input the build reads. A pull
-      # request whose merge tree carries byte-identical inputs restores them
-      # and marks them newer than the checkout, so cargo keeps them; any
-      # other pull request misses and compiles exactly as before. Exact key
-      # only: a prefix match would hand cargo another revision's output. The
-      # path list and the key live in scripts/runner-release-crate-cache.mjs
-      # and must match the writer's; a guard test holds them together.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
@@ -1051,10 +1027,31 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
+
+      - name: Prepare the verified Runner release executable
+        id: runner_release_artifact
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && hashFiles('scripts/verified-runner-release.mjs') != '' }}
+        env:
+          RUNNER_ARTIFACT_EXPECTED_KEY: ${{ steps.runner_release_crate.outputs.cache-primary-key }}
+          RUNNER_ARTIFACT_MATCHED_KEY: ${{ steps.runner_release_crate.outputs.cache-matched-key }}
+        run: node scripts/runner-release-crate-cache.mjs prepare-artifact
+
+      - name: Restore Runner Rust dependencies (read only)
+        if: ${{ steps.runner_release_artifact.outputs.ready != 'true' }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Mark the restored Runner release crate current
-        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && steps.runner_release_artifact.outputs.ready != 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Build Runner Evalbook viewer
@@ -1359,32 +1356,7 @@ jobs:
           fi
           rustup toolchain list
 
-      - name: Restore Runner Rust dependencies (read only)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
-          # Mirror the master writer: these also feed the cache key.
-          cache-workspace-crates: false
-          cache-bin: false
-          # Restore only. Never let a pull request evict master's entry.
-          save-if: false
 
-      # The Runner's own crate is the one thing the entry above leaves out:
-      # rust-cache drops workspace crates when it saves, and a fresh checkout
-      # would invalidate cargo's mtime fingerprints for them anyway. So this
-      # job compiled paperclip-runner-core in release mode on every run,
-      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
-      # the 239 master commits of the preceding week left its inputs alone.
-      # The master Rust lane in release-verify.yml saves that crate's release
-      # artifacts (about 70 MB) under a key made from the compiler, the
-      # checkout root and a hash of every input the build reads. A pull
-      # request whose merge tree carries byte-identical inputs restores them
-      # and marks them newer than the checkout, so cargo keeps them; any
-      # other pull request misses and compiles exactly as before. Exact key
-      # only: a prefix match would hand cargo another revision's output. The
-      # path list and the key live in scripts/runner-release-crate-cache.mjs
-      # and must match the writer's; a guard test holds them together.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
@@ -1400,10 +1372,31 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+            packages/paperclip-runner/runner/target/release/verified-artifact.json
+          key: runner-release-crate-v2-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**', '.cargo/**', 'packages/.cargo/**', 'packages/paperclip-runner/.cargo/**', 'packages/paperclip-runner/runner/.cargo/**', 'packages/paperclip-runner/package.json', 'scripts/verified-runner-release.mjs', 'scripts/runner-release-build-witness.mjs', 'scripts/runner-release-crate-cache.mjs', 'packages/paperclip-runner/scripts/stage-runner-binary.mjs', 'packages/paperclip-runner/scripts/build-release-binary.mjs') }}
+
+      - name: Prepare the verified Runner release executable
+        id: runner_release_artifact
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && hashFiles('scripts/verified-runner-release.mjs') != '' }}
+        env:
+          RUNNER_ARTIFACT_EXPECTED_KEY: ${{ steps.runner_release_crate.outputs.cache-primary-key }}
+          RUNNER_ARTIFACT_MATCHED_KEY: ${{ steps.runner_release_crate.outputs.cache-matched-key }}
+        run: node scripts/runner-release-crate-cache.mjs prepare-artifact
+
+      - name: Restore Runner Rust dependencies (read only)
+        if: ${{ steps.runner_release_artifact.outputs.ready != 'true' }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Mark the restored Runner release crate current
-        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' && steps.runner_release_artifact.outputs.ready != 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
       # `release.sh` always executes its Step 2/7 workspace build, even when

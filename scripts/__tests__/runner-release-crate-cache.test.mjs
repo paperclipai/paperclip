@@ -14,6 +14,15 @@ const readWorkflow = (name) => readFileSync(path.join(repoRoot, ".github/workflo
 const prWorkflow = readWorkflow("pr-trusted.yml");
 const releaseWorkflow = readWorkflow("release-verify.yml");
 
+test('shared Rust cache readers and writer omit only development debug symbols', () => {
+  for (const workflow of [prWorkflow, releaseWorkflow]) {
+    const globals = workflow.slice(0, workflow.indexOf('\njobs:\n'));
+    assert.match(globals, /^env:\n(?: {2}.+\n)* {2}CARGO_PROFILE_DEV_DEBUG: '0'\n/m);
+    assert.equal(workflow.match(/CARGO_PROFILE_DEV_DEBUG:/g)?.length, 1);
+    assert.doesNotMatch(workflow, /CARGO_PROFILE_(?:DEV|TEST)_(?:DEBUG_ASSERTIONS|OVERFLOW_CHECKS|OPT_LEVEL)/);
+  }
+});
+
 // Slice one job out of a workflow, from its two-space-indented key to the next.
 function job(workflow, name) {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -55,7 +64,7 @@ const READERS = [
 const WRITER_GATE = "matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha";
 
 const expectedPathBlock = `          path: |\n${CACHED_PATHS.map((entry) => `            ${entry}\n`).join("")}`;
-const expectedKey = `key: runner-release-crate-v1-\${{ steps.runner_release_crate_key.outputs.scope }}-\${{ hashFiles(${HASHED_INPUTS.map((entry) => `'${entry}'`).join(", ")}) }}`;
+const expectedKey = `key: runner-release-crate-v2-\${{ steps.runner_release_crate_key.outputs.scope }}-\${{ hashFiles(${HASHED_INPUTS.map((entry) => `'${entry}'`).join(", ")}) }}`;
 
 function assertCacheStep(body, name, { lookupOnly = false } = {}) {
   assert.match(body, /uses: actions\/cache\/(restore|save)@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6\.1\.0/, name);
@@ -76,6 +85,7 @@ test("the script's path list and key inputs cover what the release build of the 
     `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
     `${RELEASE_DIR}/paperclip-runnerd`,
     `${RELEASE_DIR}/paperclip-runnerd.d`,
+    `${RELEASE_DIR}/verified-artifact.json`,
   ]);
   assert.deepEqual(HASHED_INPUTS, [
     `${RUNNER_PACKAGE}/rust-toolchain.toml`,
@@ -86,9 +96,20 @@ test("the script's path list and key inputs cover what the release build of the 
     `${RUNNER_PACKAGE}/test-fixtures/**`,
     `${RUNNER_PACKAGE}/test/fixtures/**`,
     "tests/runner-e2e/fixtures/**",
+    ".cargo/**",
+    "packages/.cargo/**",
+    `${RUNNER_PACKAGE}/.cargo/**`,
+    `${RUNNER_PACKAGE}/runner/.cargo/**`,
+    `${RUNNER_PACKAGE}/package.json`,
+    "scripts/verified-runner-release.mjs",
+    "scripts/runner-release-build-witness.mjs",
+    "scripts/runner-release-crate-cache.mjs",
+    `${RUNNER_PACKAGE}/scripts/stage-runner-binary.mjs`,
+    `${RUNNER_PACKAGE}/scripts/build-release-binary.mjs`,
   ]);
   for (const input of HASHED_INPUTS) {
     const fixed = input.replace(/\/\*\*$/, "");
+    if (fixed.endsWith(".cargo")) continue;
     assert.ok(statSync(path.join(repoRoot, fixed)), `${input} must exist in the repository`);
   }
   // The stage step copies the uplifted binary; it has to be in the set.
@@ -279,12 +300,15 @@ test("every file the crate includes by path sits under a hashed input, so an edi
   assert.deepEqual([...forms].sort(), ["concat-manifest-dir", "concat-metavariable", "literal"]);
 });
 
-test("every PR reader restores the crate after the dependency cache and marks it before building", () => {
+test("each PR reader validates the release artifact before building and retains Cargo fallback", () => {
   for (const [name, buildCommand] of READERS) {
     const body = job(prWorkflow, name);
-    const positions = [RUST_RESTORE_STEP, KEY_STEP, RESTORE_STEP, MARK_STEP].map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
+    const names = name === "verify_paperclip_runner"
+      ? [RUST_RESTORE_STEP, KEY_STEP, RESTORE_STEP, MARK_STEP]
+      : [KEY_STEP, RESTORE_STEP, "Prepare the verified Runner release executable", RUST_RESTORE_STEP, MARK_STEP];
+    const positions = names.map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
     assert.ok(positions.every((position) => position >= 0), `${name}: a crate cache step is missing`);
-    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${name}: the crate steps must follow the dependency restore in order`);
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${name}: artifact validation and Cargo fallback must remain ordered`);
     const build = body.indexOf(buildCommand);
     assert.ok(build > positions.at(-1), `${name}: the crate must be marked before ${buildCommand}`);
 
@@ -298,7 +322,21 @@ test("every PR reader restores the crate after the dependency cache and marks it
     assert.doesNotMatch(restore, /actions\/cache\/save/, name);
 
     const mark = step(body, MARK_STEP);
-    assert.match(mark, /if: \$\{\{ steps\.runner_release_crate\.outputs\.cache-hit == 'true' \}\}/, name);
+    assert.match(mark, /steps\.runner_release_crate\.outputs\.cache-hit == 'true'/, name);
+    const dependencies = step(body, RUST_RESTORE_STEP);
+    if (name === "verify_paperclip_runner") {
+      assert.doesNotMatch(dependencies, /runner_release_artifact/, "Rust test lanes always restore their dependencies");
+      assert.doesNotMatch(body, /Prepare the verified Runner release executable/);
+    } else {
+      const prepare = step(body, "Prepare the verified Runner release executable");
+      assert.match(prepare, /if: \$\{\{ steps\.runner_release_crate\.outputs\.cache-hit == 'true' && hashFiles\('scripts\/verified-runner-release\.mjs'\) != '' \}\}/);
+      assert.match(prepare, /RUNNER_ARTIFACT_EXPECTED_KEY: \$\{\{ steps\.runner_release_crate\.outputs\.cache-primary-key \}\}/);
+      assert.match(prepare, /RUNNER_ARTIFACT_MATCHED_KEY: \$\{\{ steps\.runner_release_crate\.outputs\.cache-matched-key \}\}/);
+      assert.match(prepare, /run: node scripts\/runner-release-crate-cache\.mjs prepare-artifact/);
+      for (const guarded of [dependencies, mark]) {
+        assert.match(guarded, /steps\.runner_release_artifact\.outputs\.ready != 'true'/);
+      }
+    }
     assert.match(mark, /run: node scripts\/runner-release-crate-cache\.mjs mark-current/, name);
   }
   // No other job restores or saves the crate.
@@ -313,8 +351,7 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],
-    ["vitest 1/2", false],
-    ["vitest 2/2", true],
+    ...Array.from({ length: 8 }, (_, index) => [`vitest ${index + 1}/8`, index === 7]),
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);
@@ -331,14 +368,14 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
 
 test("only the master Rust lane writes the crate, after a lookup, with the readers' exact path list and key", () => {
   const body = job(releaseWorkflow, "verify_paperclip_runner");
-  const positions = ["Verify Paperclip Runner", "Warm debug dependencies for the shared Runner cache", KEY_STEP, LOOKUP_STEP, BUILD_STEP, SAVE_STEP].map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
+  const positions = ["Verify Paperclip Runner", "Warm debug dependencies for the shared Runner cache", KEY_STEP, LOOKUP_STEP, BUILD_STEP, "Record the built Runner release executable", SAVE_STEP].map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
   assert.ok(positions.every((position) => position >= 0), "a writer step is missing");
   assert.deepEqual([...positions].sort((a, b) => a - b), positions, "the writer steps must follow the checks and the debug warm-up, in order");
 
   for (const stepName of [KEY_STEP, LOOKUP_STEP]) {
     assert.match(step(body, stepName), new RegExp(`if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`), stepName);
   }
-  for (const stepName of [BUILD_STEP, SAVE_STEP]) {
+  for (const stepName of [BUILD_STEP]) {
     assert.match(
       step(body, stepName),
       new RegExp(`if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && steps\\.runner_release_crate\\.outputs\\.cache-hit != 'true' \\}\\}`),
@@ -357,10 +394,19 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
   const build = step(body, BUILD_STEP);
   assert.match(build, /working-directory: packages\/paperclip-runner\n/);
   assert.match(build, /set -euo pipefail\n\s+cargo clean --release --manifest-path runner\/Cargo\.toml -p paperclip-runner-core\n\s+pnpm build:binary\n/);
-  const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, RUNNER_PACKAGE, "package.json"), "utf8")).scripts;
-  assert.match(runnerScripts["build:binary"], /^cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && /);
-
+  const record = step(body, "Record the built Runner release executable");
+  assert.match(record, /id: runner_release_artifact/);
+  assert.ok(record.includes(WRITER_GATE));
+  assert.match(record, /steps\.runner_release_crate\.outputs\.cache-hit != 'true'/);
+  assert.match(record, /hashFiles\('scripts\/verified-runner-release\.mjs'\) != ''/);
+  assert.match(record, /run: node scripts\/runner-release-crate-cache\.mjs record-artifact/);
   const save = step(body, SAVE_STEP);
+  assert.ok(save.includes(WRITER_GATE));
+  assert.match(save, /steps\.runner_release_crate\.outputs\.cache-hit != 'true'/);
+  assert.match(save, /steps\.runner_release_artifact\.outputs\.recorded == 'true'/);
+  const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, RUNNER_PACKAGE, "package.json"), "utf8")).scripts;
+  assert.equal(runnerScripts["build:binary"], "node scripts/build-release-binary.mjs");
+
   assert.match(save, /uses: actions\/cache\/save@/);
   assertCacheStep(save, "writer save");
 
@@ -388,6 +434,8 @@ test("the scope names the platform, the compiler and the checkout root, and surv
     chmodSync(stub, 0o755);
     const withStub = execFileSync(process.execPath, [script, "scope"], { encoding: "utf8", env: { ...process.env, PATH: bin, GITHUB_WORKSPACE: "/home/runner/_work/paperclip/paperclip" } }).trim();
     assert.equal(withStub, computeScope({ workspace: "/home/runner/_work/paperclip/paperclip", rustcVersion: "1.97.1-8bab26f4f-x86_64-unknown-linux-gnu" }));
+    assert.equal(computeScope({workspace:"/home/runner/_work/paperclip/paperclip",env:{...process.env,PATH:bin}}),withStub,
+      "verification uses the same compiler environment as the build");
     const without = execFileSync(process.execPath, [script, "scope"], { encoding: "utf8", env: { ...process.env, PATH: mkdtempSync(path.join(os.tmpdir(), "empty-path-")), GITHUB_WORKSPACE: "/home/runner/_work/paperclip/paperclip" } }).trim();
     assert.match(without, /-no-rustc-/);
   } finally {

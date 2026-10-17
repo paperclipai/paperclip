@@ -778,8 +778,11 @@ test("release daemon production uses exact-source native hosts and no publisher 
   assert.match(producer, /process.platform \+ "-" \+ process.arch/);
   assert.match(producer, /\['native', \['build:binary'\]/);
   const runner = JSON.parse(readFileSync(path.join(repoRoot, 'packages/paperclip-runner/package.json'), 'utf8'));
-  assert.match(runner.scripts['build:binary'], /cargo build --release --manifest-path runner\/Cargo.toml --locked/);
-  assert.match(runner.scripts['build:binary'], /&& node scripts\/stage-runner-binary.mjs$/);
+  assert.equal(runner.scripts['build:binary'], 'node scripts/build-release-binary.mjs');
+  const builder = readFileSync(path.join(repoRoot, 'packages/paperclip-runner/scripts/build-release-binary.mjs'), 'utf8');
+  assert.match(builder, /RELEASE_BUILD_ARGS=\['build','--release','--manifest-path','runner\/Cargo.toml','--locked','-p','paperclip-runner-core','--bin','paperclip-runnerd'\]/);
+  assert.match(builder, /compile\('cargo',RELEASE_BUILD_ARGS/);
+  assert.match(builder, /stage\(source,join\(pkg,'dist\/bin',executable\)\)/);
   assert.match(producer, /stage-release-runner-binaries.mjs record/);
   for (const job of ["runner_chaos_evals", "typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
     assert.ok(workflow.includes(`${job}:\n    if: \${{ !inputs.runner_binaries_only }}`));
