@@ -265,16 +265,32 @@ async function ensureRemoteWorkspace(sandbox: Sandbox, remoteCwd: string): Promi
       `Failed to create remote workspace directory '${remoteCwd}': mkdir exited with code ${exitCode}`,
     );
   }
+  await markGitSafeDirectory(sandbox, remoteCwd);
+}
+
+async function markGitSafeDirectory(sandbox: Sandbox, remoteCwd: string): Promise<void> {
+  // Registry images such as `node:24` execute as root, while the synced workspace keeps the host uid.
+  // Git then refuses the repo ("detected dubious ownership") and the post-run `git bundle` export fails,
+  // so commits made in the sandbox never reach the host. Trust only this workspace path. Best effort:
+  // images without git (or without root for --system) fall back or skip without failing the lease.
+  const dir = shellQuote(remoteCwd);
+  const script =
+    `git config --system --get-all safe.directory 2>/dev/null | grep -qxF ${dir} ` +
+    `|| git config --system --add safe.directory ${dir} 2>/dev/null ` +
+    `|| git config --global --add safe.directory ${dir} 2>/dev/null || true`;
+  try {
+    const proc = await sandbox.exec(["sh", "-lc", script]);
+    await proc.wait();
+  } catch {
+    // ignore: missing git or shell must not block workspace setup
+  }
 }
 
 async function stageStdin(sandbox: Sandbox, stdin: string, remotePath: string): Promise<void> {
-  const file = await sandbox.open(remotePath, "w");
-  try {
-    await file.write(new TextEncoder().encode(stdin));
-    await file.flush();
-  } finally {
-    await file.close().catch(() => undefined);
-  }
+  // Modal retired the handle-based `sandbox.open()` API server-side ("The legacy Sandbox filesystem API
+  // is no longer supported"). The path-oriented API (modal SDK >= 0.7.6) writes the whole file in one
+  // call and creates parent directories, so there is no handle to flush or close.
+  await sandbox.filesystem.writeText(stdin, remotePath);
 }
 
 async function deleteStdinPath(sandbox: Sandbox, remotePath: string): Promise<void> {
