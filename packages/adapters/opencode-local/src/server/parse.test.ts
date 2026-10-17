@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import {
+  parseOpenCodeJsonl,
+  isOpenCodeUnknownSessionError,
+  stripDcpSystemReminders,
+} from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -43,6 +47,29 @@ describe("parseOpenCodeJsonl", () => {
     expect(parsed.toolErrors).toEqual([]);
   });
 
+  it("removes DCP system reminders from the run summary but keeps @N@ ids", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "text",
+        sessionID: "session_123",
+        part: { text: "Working on the task" },
+      }),
+      JSON.stringify({
+        type: "text",
+        sessionID: "session_123",
+        part: {
+          text:
+            "note @42@ <dcp-system-reminder>CRITICAL WARNING: MAX CONTEXT LIMIT REACHED</dcp-system-reminder>",
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Working on the task\n\nnote @42@");
+    expect(parsed.summary).not.toContain("dcp-system-reminder");
+    expect(parsed.summary).not.toContain("MAX CONTEXT LIMIT");
+  });
+
   it("keeps failed tool calls separate from fatal run errors", () => {
     const stdout = [
       JSON.stringify({
@@ -73,6 +100,16 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+});
+
+describe("stripDcpSystemReminders", () => {
+  it("removes whole blocks and dangling container tokens but keeps @N@ ids", () => {
+    expect(
+      stripDcpSystemReminders("a <dcp-system-reminder>x</dcp-system-reminder> b"),
+    ).toBe("a  b");
+    expect(stripDcpSystemReminders("a </dcp-system-reminder> b")).toBe("a  b");
+    expect(stripDcpSystemReminders("keep @42@")).toBe("keep @42@");
   });
 });
 

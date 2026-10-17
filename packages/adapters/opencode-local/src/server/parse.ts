@@ -19,6 +19,19 @@ function errorText(value: unknown): string {
   }
 }
 
+// The DCP (dynamic context pruning) plugin injects <dcp-system-reminder>
+// blocks into the model transcript. They are harness bookkeeping, not
+// assistant output, and must never reach a persisted run summary or a board
+// comment. Remove the whole block, then any dangling container token left when
+// an opening or closing tag is split across JSONL events. The bare @N@
+// message-id annotation is left alone: OpenCode uses it as a real message id.
+export function stripDcpSystemReminders(text: string): string {
+  return text
+    .replace(/<dcp-system-reminder>[\s\S]*?<\/dcp-system-reminder>/g, "")
+    .replace(/<\/?dcp-system-reminder>/g, "")
+    .trim();
+}
+
 export function parseOpenCodeJsonl(stdout: string) {
   return createOpenCodeJsonlParser()(stdout);
 }
@@ -95,7 +108,7 @@ export function createOpenCodeJsonlParser() {
 
     return {
       sessionId,
-      summary: messages.join("\n\n").trim(),
+      summary: stripDcpSystemReminders(messages.join("\n\n")),
       usage: { ...usage },
       usageReported,
       usageComplete: usageReported && !missingUsage,

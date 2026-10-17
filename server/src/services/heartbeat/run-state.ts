@@ -39,6 +39,10 @@ import {
   asNumber,
 } from "../../adapters/utils.js";
 import {
+  isContextOverflowRun,
+  sumSessionRawInputTokens,
+} from "./context-overflow.js";
+import {
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
@@ -1265,14 +1269,8 @@ export function createHeartbeatRunState(db: Db) {
     }
 
     const policy = parseSessionCompactionPolicy(agent);
-    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
-      return {
-        rotate: false,
-        reason: null,
-        handoffMarkdown: null,
-        previousRunId: null,
-      };
-    }
+    const policyActive =
+      policy.enabled && hasSessionCompactionThresholds(policy);
 
     const fetchLimit = Math.max(
       policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0,
@@ -1284,6 +1282,7 @@ export function createHeartbeatRunState(db: Db) {
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
         terminalFailureCategory: sql<string | null>`case
           when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
           then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
@@ -1314,10 +1313,12 @@ export function createHeartbeatRunState(db: Db) {
         ? await getOldestRunForSession(agent.id, sessionId)
         : (runs[runs.length - 1] ?? latestRun);
     const latestRawUsage = readRawUsageTotals(latestRun?.usageJson);
-    // Historical Codex/Gemini raw input includes cache reads. Only add the
-    // separate cache counter when the writer explicitly saved exclusive input.
-    const latestRawInputTokens = (latestRawUsage?.inputTokens ?? 0) +
-      (latestRun?.usageJson?.rawInputIncludesCached === false ? latestRawUsage?.cachedInputTokens ?? 0 : 0);
+    // Historical Codex/Gemini raw input includes cache reads, so the gate must
+    // not add the cache counter twice. See sumSessionRawInputTokens.
+    const latestRawInputTokens = sumSessionRawInputTokens(
+      latestRawUsage,
+      latestRun?.usageJson,
+    );
     const sessionAgeHours =
       latestRun && oldestRun
         ? Math.max(
@@ -1329,21 +1330,30 @@ export function createHeartbeatRunState(db: Db) {
         : 0;
 
     let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawInputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawInputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (
-      policy.maxSessionAgeHours > 0 &&
-      sessionAgeHours >= policy.maxSessionAgeHours
-    ) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    if (latestRun && isContextOverflowRun(latestRun)) {
+      // A run on this session already failed with a provider context-overflow
+      // error. Resuming the poisoned session would fail the same way, and the
+      // bounded-retry path never sees these failures (a fresh wake dispatched
+      // them), so the rotation must be armed here, on the dispatch path, and
+      // independently of the compaction policy.
+      reason = "the previous run failed with a context-overflow error";
+    } else if (policyActive) {
+      if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
+        reason = `session exceeded ${policy.maxSessionRuns} runs`;
+      } else if (
+        policy.maxRawInputTokens > 0 &&
+        latestRawUsage &&
+        latestRawInputTokens >= policy.maxRawInputTokens
+      ) {
+        reason =
+          `session raw input reached ${formatCount(latestRawInputTokens)} tokens ` +
+          `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+      } else if (
+        policy.maxSessionAgeHours > 0 &&
+        sessionAgeHours >= policy.maxSessionAgeHours
+      ) {
+        reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+      }
     }
 
     if (!reason || !latestRun) {

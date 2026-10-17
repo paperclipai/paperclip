@@ -1618,7 +1618,11 @@ changes in this module and its tests.
 
 Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
 It owns bounded run projections, database encoding checks, task session reads and
-writes, explicit resumes, session compaction, and usage/billing helpers.
+writes, explicit resumes, session compaction, and usage/billing helpers. Session
+compaction also rotates the session when the latest run failed with a provider
+context-overflow error, independently of the compaction policy, so a fresh wake
+does not resume an oversized session. The shared context-overflow helpers live in
+`server/src/services/heartbeat/context-overflow.ts`.
 `createHeartbeatRunState(db)` binds these operations without doing database work
 during construction. The encoding-check cache belongs to each factory instance.
 `heartbeat.ts` keeps run execution and re-exports the
