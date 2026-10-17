@@ -676,6 +676,10 @@ Plugins that need filesystem, git, terminal, or process operations handle those 
 
 Trusted orchestration plugins can create and update Paperclip issues through `ctx.issues` instead of importing server internals. The public issue contract includes parent/project/goal links, board or agent assignees, blocker IDs, labels, billing code, request depth, execution workspace inheritance, and plugin origin metadata.
 
+`ctx.issues.list({ companyId, assigneeUserId, status })` filters issues assigned
+to a board user under the existing `issues.read` capability. The user filter
+combines with the other list filters and runs before `limit` and `offset`.
+
 Plugins that perform durable work should declare managed Paperclip resources rather than using private plugin state:
 
 - `agents` + `ctx.agents.managed.*` for named, invokable operators (`agents.managed` required)
