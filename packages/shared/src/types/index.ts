@@ -687,6 +687,7 @@ export type {
   IssueAccessGrantSource,
   IssueLockedStub,
   IssueBlockerAttention,
+  IssueBlockerAttentionEdgeKind,
   IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
