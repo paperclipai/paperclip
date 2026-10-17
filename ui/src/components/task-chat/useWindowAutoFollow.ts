@@ -1,5 +1,6 @@
 import { readThreadScrollAnchor, threadScrollAnchorDelta, type ThreadScrollAnchor } from "./scroll-anchor";
 import { useEffect, useLayoutEffect, useRef } from "react";
+import type { IssueChatThreadOrder } from "@/lib/issue-chat-messages";
 import { useTaskChatScrollNavigation } from "./scroll-navigation";
 
 const PIN_THRESHOLD_PX = 48;
@@ -8,16 +9,17 @@ function scrollingElement(): Element | null {
   return document.scrollingElement ?? document.documentElement;
 }
 
-function windowPinned(): boolean {
+function windowPinned(newestFirst: boolean): boolean {
   const el = scrollingElement();
   if (!el) return true;
+  if (newestFirst) return window.scrollY <= PIN_THRESHOLD_PX;
   return el.scrollHeight - window.scrollY - window.innerHeight <= PIN_THRESHOLD_PX;
 }
 
-function scrollWindowToBottom(): void {
+function scrollWindowToLiveEdge(newestFirst: boolean): void {
   const el = scrollingElement();
   if (!el) return;
-  window.scrollTo({ top: el.scrollHeight, left: 0, behavior: "auto" });
+  window.scrollTo({ top: newestFirst ? 0 : el.scrollHeight, left: 0, behavior: "auto" });
 }
 
 /**
@@ -29,8 +31,16 @@ function scrollWindowToBottom(): void {
  *
  * The conversation enables this hook after navigation has settled and before
  * its coordinated reveal, so initial positioning happens before paint.
+ *
+ * With `newest_first` the live edge is the TOP of the document: pinning and
+ * content follow target scrollY 0 instead of the bottom.
  */
-export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void {
+export function useWindowAutoFollow(
+  contentKey: unknown,
+  enabled: boolean,
+  threadOrder: IssueChatThreadOrder = "oldest_first",
+): void {
+  const newestFirst = threadOrder === "newest_first";
   const pinnedRef = useRef(true);
   const lastScrollYRef = useRef(window.scrollY);
   const navigation = useTaskChatScrollNavigation();
@@ -44,7 +54,7 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
     if (initialPositionApplied.current) navigation.remember(window.scrollY, anchorRef.current);
   };
   const reconcile = () => {
-    if (pinnedRef.current) scrollWindowToBottom();
+    if (pinnedRef.current) scrollWindowToLiveEdge(newestFirst);
     else {
       const root = document.querySelector('[data-testid="task-chat-thread"]');
       if (root) {
@@ -58,10 +68,14 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
   useEffect(() => {
     if (!enabled) return;
     const onScroll = () => {
-      // Content or viewport growth can leave a gap below the old bottom before
-      // ResizeObserver runs. Only an upward scroll gives up existing follow
-      // intent; a scroll event at the same position must not strand the output.
-      pinnedRef.current = windowPinned() || (pinnedRef.current && window.scrollY >= lastScrollYRef.current);
+      // Content or viewport growth can leave a gap at the old live edge before
+      // ResizeObserver runs. Only a scroll away from the live edge gives up
+      // existing follow intent; a scroll event at the same position must not
+      // strand the output.
+      const towardLiveEdge = newestFirst
+        ? window.scrollY <= lastScrollYRef.current
+        : window.scrollY >= lastScrollYRef.current;
+      pinnedRef.current = windowPinned(newestFirst) || (pinnedRef.current && towardLiveEdge);
       rememberAnchor();
     };
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -70,7 +84,7 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", reconcile);
     };
-  }, [enabled, navigation.key, navigation.hash, navigation.ready]);
+  }, [enabled, newestFirst, navigation.key, navigation.hash, navigation.ready]);
 
   useLayoutEffect(() => {
     if (!enabled || typeof ResizeObserver === "undefined") return;
@@ -107,13 +121,13 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
       const top = root ? navigation.initialPosition(root, 0, window.scrollY) : null;
       if (top !== null) {
         window.scrollTo({ top, behavior: "auto" });
-        pinnedRef.current = windowPinned();
+        pinnedRef.current = windowPinned(newestFirst);
         rememberAnchor();
       }
       initialPositionApplied.current = true;
     }
     reconcile();
-  }, [contentKey, enabled, navigation.key, navigation.hash, navigation.ready]);
+  }, [contentKey, enabled, newestFirst, navigation.key, navigation.hash, navigation.ready]);
 
   useLayoutEffect(() => {
     if (!enabled) return;
@@ -130,7 +144,15 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
 
 /** Mount below TaskChatScrollReady so mobile navigation also waits for targets
  * fetched after the conversation's first reveal. */
-export function TaskChatWindowScroll({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
-  useWindowAutoFollow(contentKey, enabled);
+export function TaskChatWindowScroll({
+  contentKey,
+  enabled,
+  threadOrder,
+}: {
+  contentKey: unknown;
+  enabled: boolean;
+  threadOrder?: IssueChatThreadOrder;
+}) {
+  useWindowAutoFollow(contentKey, enabled, threadOrder);
   return null;
 }
