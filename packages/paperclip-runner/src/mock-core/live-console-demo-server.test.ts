@@ -14,7 +14,7 @@ import type {
   PersistedHarnessSession,
 } from "../contracts/harness-driver.js";
 import type { PrpEvent } from "../protocol/replay-contract.js";
-import { LiveConsoleDemoServer } from "./live-console-demo-server.js";
+import { LiveConsoleDemoServer, MAX_BROWSER_EVENTS } from "./live-console-demo-server.js";
 
 const OPAQUE_BROWSER_CREDENTIALS = {
   clientSecret: "opaque-client-secret-value",
@@ -171,6 +171,10 @@ class StubSession implements HarnessSession {
     }, { turnId: input.turnId, itemId: "steer-demo" });
   }
 
+  pushDiagnostic(message: string): void {
+    this.emit("harness.diagnostic", { message });
+  }
+
   async interrupt(input: { turnId?: string }): Promise<void> {
     this.emit("item.completed", {
       kind: "interrupt_acknowledgement",
@@ -280,6 +284,7 @@ class StubSession implements HarnessSession {
 
 class StubDriver implements HarnessDriver {
   openInputs: OpenHarnessSessionInput[] = [];
+  sessions: StubSession[] = [];
 
   constructor(
     readonly requestId = "request-demo",
@@ -306,11 +311,13 @@ class StubDriver implements HarnessDriver {
 
   async openSession(input: OpenHarnessSessionInput): Promise<HarnessSession> {
     this.openInputs.push(structuredClone(input));
-    return new StubSession({
+    const session = new StubSession({
       ...input,
       requestId: this.requestId,
       requestKind: this.requestKind,
     });
+    this.sessions.push(session);
+    return session;
   }
 
   async recoverSession(snapshot: PersistedHarnessSession): Promise<HarnessSessionRecoveryResult> {
@@ -924,4 +931,163 @@ describe("Live console package-local demo server", () => {
     );
     expect(events.some(({ eventType }) => eventType === "session.resumed")).toBe(true);
   });
+
+  // Filling the ring takes a few thousand events, and the session-state
+  // request reduces all of them into a snapshot, so this runs past the default timeout.
+  it("keeps the replay cursor absolute after the browser ring drops old events", async () => {
+    const driver = new StubDriver();
+    const server = new LiveConsoleDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => driver,
+    });
+    servers.push(server);
+    const { url } = await server.start();
+    const created = await jsonBrowserRequest(url, "/api/liveConsole/sessions", { startTurn: false })
+      .then((response) => response.json()) as { sessionId: string };
+    const session = driver.sessions[0];
+    if (session === undefined) throw new Error("missing stub session");
+    await waitForCursor(url, created.sessionId, 1);
+
+    for (let index = 0; index < MAX_BROWSER_EVENTS; index += 1) {
+      session.pushDiagnostic(`ring-${index}`);
+    }
+    const cursor = 1 + MAX_BROWSER_EVENTS;
+    await waitForCursor(url, created.sessionId, cursor);
+
+    const tail = await readEvents(url, created.sessionId, MAX_BROWSER_EVENTS);
+    expect(tail.cursor).toBe(cursor);
+    const state = await browserRequest(url, `/api/liveConsole/sessions/${created.sessionId}`)
+      .then((response) => response.json()) as { cursor: number };
+    expect(state.cursor).toBe(tail.cursor);
+    expect(tail.events.map((event) => event.sourceSeq)).toEqual([cursor]);
+
+    const caughtUp = await readEvents(url, created.sessionId, tail.cursor);
+    expect(caughtUp.events).toEqual([]);
+    expect(caughtUp.cursor).toBe(cursor);
+
+    const retained = await readEvents(url, created.sessionId, 0);
+    // The JSON page redacts arrays to 256 entries. The cursor stays absolute,
+    // and the dropped prefix is not served again as index 0.
+    expect(retained.events[0]?.sourceSeq).toBe(2);
+    expect(retained.cursor).toBe(cursor);
+
+    const stream = await readEventStreamUntil(
+      url,
+      created.sessionId,
+      `"sourceSeq":${cursor}`,
+      MAX_BROWSER_EVENTS,
+    );
+    expect(stream.split(`"sourceSeq":${cursor}`)).toHaveLength(2);
+  }, 30_000);
+
+  it("delivers an event published while a subscriber is joining exactly once", async () => {
+    const server = new LiveConsoleDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+    const created = await jsonBrowserRequest(url, "/api/liveConsole/sessions", { startTurn: false })
+      .then((response) => response.json()) as { sessionId: string };
+    await waitForCursor(url, created.sessionId, 1);
+    const existing = await readEvents(url, created.sessionId, 0);
+    const template = existing.events[0];
+    if (template === undefined) throw new Error("missing template event");
+    const sourceEventId = `gap:${created.sessionId}`;
+    const injected = {
+      ...structuredClone(template),
+      sourceEventId,
+      sourceSeq: template.sourceSeq + 10_000,
+      eventType: "harness.diagnostic" as const,
+      payload: { message: "published in the subscribe gap" },
+    };
+    server.setStreamReplayProbeForTests(() => {
+      server.injectBrowserEventForTests(created.sessionId, injected);
+    });
+    try {
+      const body = await readEventStreamUntil(url, created.sessionId, sourceEventId);
+      expect(body.split(sourceEventId)).toHaveLength(2);
+    } finally {
+      server.setStreamReplayProbeForTests(null);
+    }
+  });
 });
+
+async function readEvents(
+  url: string,
+  sessionId: string,
+  after: number,
+): Promise<{ events: PrpEvent[]; cursor: number }> {
+  const response = await browserRequest(
+    url,
+    `/api/liveConsole/sessions/${sessionId}/events?after=${after}`,
+  );
+  expect(response.status).toBe(200);
+  return response.json() as Promise<{ events: PrpEvent[]; cursor: number }>;
+}
+
+async function waitForCursor(url: string, sessionId: string, minimum: number): Promise<void> {
+  const started = Date.now();
+  for (;;) {
+    const page = await readEvents(url, sessionId, 2_000_000_000);
+    if (page.cursor >= minimum) return;
+    if (Date.now() - started > 20_000) {
+      throw new Error(`live console cursor stuck at ${page.cursor}, wanted ${minimum}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+
+function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  needle: string,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`stream never included ${needle}`));
+    }, timeoutMs);
+    reader.read().then(
+      (chunk) => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve(chunk);
+      },
+      (cause: unknown) => {
+        if (timer !== undefined) clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+}
+
+async function readEventStreamUntil(
+  url: string,
+  sessionId: string,
+  needle: string,
+  after = 0,
+): Promise<string> {
+  const response = await browserRequest(
+    url,
+    `/api/liveConsole/sessions/${sessionId}/stream?after=${after}`,
+  );
+  expect(response.status).toBe(200);
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new Error("event stream response did not include a body");
+  let result = "";
+  try {
+    const started = Date.now();
+    while (!result.includes(needle)) {
+      const remaining = 10_000 - (Date.now() - started);
+      if (remaining <= 0) throw new Error(`stream never included ${needle}`);
+      const chunk = await readStreamChunk(reader, remaining, needle);
+      if (chunk.done) break;
+      result += new TextDecoder().decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return result;
+}
+
