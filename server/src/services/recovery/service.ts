@@ -1,3 +1,4 @@
+import { activeRecoveryActionCompanyCondition } from "./active-recovery-scope.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
@@ -3456,7 +3457,11 @@ export function recoveryService(
           eq(issues.companyId, issueRecoveryActions.companyId),
         ),
       )
-      .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      .innerJoin(
+        companies,
+        eq(companies.id, issueRecoveryActions.companyId),
+      )
+      .where(activeRecoveryActionCompanyCondition());
 
     const result = {
       requeued: 0,
