@@ -3,6 +3,8 @@ import {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
+  countRuntimeServicesActiveAfterStop,
+  resolveRuntimeServiceStopTarget,
 } from "./workspace-commands.js";
 
 describe("workspace command helpers", () => {
@@ -175,5 +177,289 @@ describe("workspace command helpers", () => {
     }, "service:web");
 
     expect(command).toEqual(expect.objectContaining({ port: null }));
+  });
+});
+
+describe("resolveRuntimeServiceStopTarget", () => {
+  const workspaceRuntime = {
+    services: [
+      { name: "web", command: "pnpm dev" },
+      { name: "worker", command: "pnpm worker" },
+    ],
+  };
+  const runtimeServices = [
+    { id: "runtime-web", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: null, configIndex: 0 },
+    { id: "runtime-worker", serviceName: "worker", command: "pnpm worker", cwd: "/repo", port: null, configIndex: 1 },
+  ];
+
+  it("stops every service when the request names no target", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: null,
+      runtimeServices,
+    })).toEqual({ scope: "all" });
+  });
+
+  it("stops only the named runtime service", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: "runtime-worker",
+      serviceIndex: null,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-worker" });
+  });
+
+  it("stops only the running instance of the service at the given index", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-worker" });
+  });
+
+  it("stops nothing when the service at the given index is not running", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [runtimeServices[0]!],
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("does not stop another service that only shares the command", () => {
+    const sharedCommandRuntime = {
+      services: [
+        { name: "api", command: "node server.js", cwd: "api" },
+        { name: "admin", command: "node server.js", cwd: "admin" },
+      ],
+    };
+
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedCommandRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [
+        { id: "runtime-api", serviceName: "api", command: "node server.js", cwd: "/repo/api", port: null },
+      ],
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("stops an unnamed service by the name the start path gives it", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: { services: [{ command: "pnpm dev" }] },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        { id: "runtime-dev", serviceName: "service", command: "pnpm dev", cwd: "/repo", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-dev" });
+  });
+
+  it("does not stop an unnamed service in a subfolder for an unnamed service at the workspace root", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { command: "node server.js", cwd: "api" },
+          { command: "node server.js" },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [
+        { id: "runtime-api", serviceName: "service", command: "node server.js", cwd: "/repo/api", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("stops an unnamed service whose configured cwd resolves to its running folder", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: { services: [{ command: "node server.js", cwd: "./api/" }] },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        { id: "runtime-api", serviceName: "service", command: "node server.js", cwd: "/repo/api", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-api" });
+  });
+
+  it("does not stop another unnamed service that runs in a different cwd", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { command: "node server.js", cwd: "api" },
+          { command: "node server.js", cwd: "admin" },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [
+        { id: "runtime-api", serviceName: "service", command: "node server.js", cwd: "/repo/api", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("stops nothing when another service with the same name could have started the instance", () => {
+    for (const serviceIndex of [0, 1]) {
+      expect(resolveRuntimeServiceStopTarget({
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev", cwd: "site", env: { MODE: "a" } },
+            { name: "web", command: "pnpm dev", cwd: "site", env: { MODE: "b" } },
+          ],
+        },
+        runtimeServiceId: null,
+        serviceIndex,
+        runtimeServices: [
+          { id: "runtime-site", serviceName: "web", command: "pnpm dev", cwd: "/repo/site", port: null },
+        ],
+        workspaceCwd: "/repo",
+      })).toEqual({ scope: "one", runtimeServiceId: null });
+    }
+  });
+
+  it("stops a lone unnamed service without needing the workspace cwd", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }, { command: "pnpm worker" }] },
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [
+        { id: "runtime-worker", serviceName: "service", command: "pnpm worker", cwd: "/repo", port: null },
+      ],
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-worker" });
+  });
+
+  it("does not stop a service whose name only equals another service's fallback label", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { name: "Service 2", command: "node server.js" },
+          { command: "node server.js" },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [
+        { id: "runtime-named", serviceName: "Service 2", command: "node server.js", cwd: "/repo", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("tells apart services that share an explicit name by their cwd", () => {
+    const sharedNameRuntime = {
+      services: [
+        { name: "web", command: "pnpm dev", cwd: "site" },
+        { name: "web", command: "pnpm dev", cwd: "docs" },
+      ],
+    };
+    const runtimeServices = [
+      { id: "runtime-site", serviceName: "web", command: "pnpm dev", cwd: "/repo/site", port: null },
+    ];
+
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedNameRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices,
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedNameRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices,
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-site" });
+  });
+
+  it("compares cwds with the caller's resolver when one is given", () => {
+    const sharedNameRuntime = {
+      services: [
+        { name: "web", command: "pnpm dev", cwd: "~/site" },
+        { name: "web", command: "pnpm dev", cwd: "~/docs" },
+      ],
+    };
+    const runtimeServices = [
+      { id: "runtime-site", serviceName: "web", command: "pnpm dev", cwd: "/home/dev/site", port: null },
+    ];
+    const resolveServiceCwd = (command: { cwd: string | null }) => command.cwd?.replace("~", "/home/dev") ?? null;
+
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedNameRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices,
+      resolveServiceCwd,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-site" });
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedNameRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices,
+      resolveServiceCwd,
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("does not trust an inferred config index that names another service", () => {
+    // Read models infer configIndex with a matcher that accepts a shared
+    // command, so the running `admin` instance can carry the index of `api`.
+    const sharedCommandRuntime = {
+      services: [
+        { name: "api", command: "node server.js" },
+        { name: "admin", command: "node server.js" },
+      ],
+    };
+    const runtimeServices = [
+      { id: "runtime-admin", serviceName: "admin", command: "node server.js", cwd: "/repo", port: null, configIndex: 0 },
+    ];
+
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedCommandRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: sharedCommandRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-admin" });
+  });
+
+  it("stops nothing when the given index has no configured service", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 5,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+});
+
+describe("countRuntimeServicesActiveAfterStop", () => {
+  const runtimeServices = [
+    { id: "runtime-web", status: "running" },
+    { id: "runtime-worker", status: "stopped" },
+    { id: "runtime-docs", status: "starting" },
+    { id: "runtime-old", status: "failed" },
+  ];
+
+  it("counts nothing after every service is stopped", () => {
+    expect(countRuntimeServicesActiveAfterStop(runtimeServices, { scope: "all" })).toBe(0);
+  });
+
+  it("counts the active services other than the stopped one", () => {
+    expect(countRuntimeServicesActiveAfterStop(runtimeServices, { scope: "one", runtimeServiceId: "runtime-web" })).toBe(1);
+  });
+
+  it("counts every active service when nothing was stopped", () => {
+    expect(countRuntimeServicesActiveAfterStop(runtimeServices, { scope: "one", runtimeServiceId: null })).toBe(2);
   });
 });

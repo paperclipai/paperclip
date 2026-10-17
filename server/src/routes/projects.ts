@@ -21,6 +21,8 @@ import {
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  resolveRuntimeServiceStopTarget,
+  countRuntimeServicesActiveAfterStop,
   normalizeProjectUrlKey,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
@@ -38,6 +40,7 @@ import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
+  resolveRuntimeServiceCwdForControl,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForProjectWorkspace,
@@ -780,6 +783,32 @@ export function projectRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
+    const stopTarget = resolveRuntimeServiceStopTarget({
+      workspaceRuntime: runtimeConfig,
+      runtimeServiceId: selectedRuntimeServiceId,
+      serviceIndex: selectedServiceIndex,
+      runtimeServices: workspace.runtimeServices,
+      workspaceCwd,
+      // Resolve each service cwd with the same inputs the start below uses.
+      resolveServiceCwd: (command, runtimeService) => resolveRuntimeServiceCwdForControl({
+        service: command.rawConfig,
+        runningPort: runtimeService.port ?? null,
+        workspace: {
+          cwd: workspaceCwd,
+          branchName: workspace.defaultRef ?? workspace.repoRef ?? null,
+          worktreePath: null,
+          repoUrl: workspace.repoUrl,
+          repoRef: workspace.repoRef,
+        },
+        agent: {
+          id: actor.agentId ?? null,
+          name: actor.actorType === "user" ? "Board" : "Agent",
+          companyId: project.companyId,
+        },
+        issue: null,
+      }),
+    });
+
     const recorder = workspaceOperations.createRecorder({ companyId: project.companyId });
     let runtimeServiceCount = workspace.runtimeServices?.length ?? 0;
     let stdout = "";
@@ -850,11 +879,13 @@ export function projectRoutes(db: Db) {
           else stderr = appendWithCap(stderr, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
         };
 
-        if (action === "stop" || action === "restart") {
+        // A targeted stop or restart must leave the other services running. When
+        // the target has no running instance there is nothing to stop.
+        if ((action === "stop" || action === "restart") && (stopTarget.scope === "all" || stopTarget.runtimeServiceId)) {
           await stopRuntimeServicesForProjectWorkspace({
             db,
             projectWorkspaceId: workspace.id,
-            runtimeServiceId: selectedRuntimeServiceId,
+            runtimeServiceId: stopTarget.scope === "one" ? stopTarget.runtimeServiceId : null,
           });
         }
 
@@ -890,7 +921,7 @@ export function projectRoutes(db: Db) {
           });
           runtimeServiceCount = startedServices.length;
         } else {
-          runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (workspace.runtimeServices?.length ?? 1) - 1) : 0;
+          runtimeServiceCount = countRuntimeServicesActiveAfterStop(workspace.runtimeServices, stopTarget);
         }
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
