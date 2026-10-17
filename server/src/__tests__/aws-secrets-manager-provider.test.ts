@@ -231,6 +231,102 @@ describe("awsSecretsManagerProvider", () => {
     expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("preserves classified AWS create errors returned by the JSON gateway", async () => {
+    delete process.env.AWS_PROFILE;
+    delete process.env.AWS_DEFAULT_PROFILE;
+    delete process.env.AWS_CONFIG_FILE;
+    delete process.env.AWS_SHARED_CREDENTIALS_FILE;
+    delete process.env.AWS_SDK_LOAD_CONFIG;
+    process.env.AWS_ACCESS_KEY_ID = "AKIA_CREATE_ERROR_TEST";
+    process.env.AWS_SECRET_ACCESS_KEY = "test-secret-key";
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          __type: "AccessDeniedException",
+          message:
+            "User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:CreateSecret",
+        }),
+        { status: 400 },
+      ),
+    );
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-west-1",
+        endpoint: "https://secretsmanager.us-west-1.amazonaws.com",
+        deploymentId: "prod",
+        prefix: "paperclip",
+        kmsKeyId: null,
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+    });
+
+    await expect(
+      provider.createSecret({
+        value: "super-secret-value",
+        context: {
+          companyId: "company-1",
+          secretKey: "openai-api-key",
+          secretName: "OpenAI API Key",
+          version: 1,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "access_denied",
+      status: 403,
+      operation: "CreateSecret",
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      rawMessage: expect.stringContaining("AccessDeniedException"),
+    });
+  });
+
+  it("classifies missing runtime AWS credentials as access denied", async () => {
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: null,
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+      gateway: {
+        async createSecret() {
+          throw new Error("CredentialsProviderError: Could not load credentials from any providers");
+        },
+        async putSecretValue() {
+          throw new Error("not used");
+        },
+        async getSecretValue() {
+          throw new Error("not used");
+        },
+        async deleteSecret() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    await expect(
+      provider.createSecret({
+        value: "super-secret-value",
+        context: {
+          companyId: "company-1",
+          secretKey: "openai-api-key",
+          secretName: "OpenAI API Key",
+          version: 1,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "access_denied",
+      status: 403,
+      rawMessage: "CredentialsProviderError: Could not load credentials from any providers",
+    });
+  });
+
   it("creates new AWS secret versions against a namespace-valid existing secret reference", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
