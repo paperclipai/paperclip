@@ -151,6 +151,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  // Label discovery so an agent can set labels on the issues it updates.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/labels$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 
