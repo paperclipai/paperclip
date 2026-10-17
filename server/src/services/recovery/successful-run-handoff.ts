@@ -459,6 +459,30 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   ].join("\n");
 }
 
+function readSelfOwnedRunSkipReason(run: HeartbeatRunRow): string | null {
+  if (isCorrectiveHandoffRun(run)) return "source run is already a corrective handoff run";
+  if (isRecoveryActionDrivenRun(run)) return "recovery action run owns its own follow-up path";
+  if (isIssueMonitorMaintenanceRun(run)) return "issue monitor run owns its own recovery path";
+  if (isCommentDrivenWake(run)) return "comment-driven wake already owns the next action";
+  return null;
+}
+
+function readConfirmedContinuationPathReason(input: Parameters<typeof decideSuccessfulRunHandoff>[0]): string | null {
+  const { run, issue } = input;
+  if (!issue || issue.companyId !== run.companyId || issue.assigneeAgentId !== run.agentId) return null;
+  if (issue.assigneeUserId || issue.status !== "in_progress") return null;
+  if (issue.executionState) return "issue has execution policy state";
+  if (input.hasActiveRoutineContinuation) return "active routine continuation owns the next action";
+  if (input.hasActiveExecutionPath) return "issue already has an active execution path";
+  if (input.hasQueuedWake) return "issue already has a queued or deferred wake";
+  if (input.hasPendingInteractionOrApproval) return "pending interaction or approval owns the next action";
+  if (input.hasPersistedMonitor) return "persisted issue monitor owns the next action";
+  if (input.hasExplicitBlockerPath) return "explicit blocker path owns the next action";
+  if (input.hasOpenRecoveryIssue) return "open recovery issue owns the ambiguity";
+  if (input.hasPauseHold) return "issue is under an active pause hold";
+  return null;
+}
+
 export function decideSuccessfulRunHandoff(input: {
   run: HeartbeatRunRow;
   issue: IssueRow | null;
@@ -485,10 +509,12 @@ export function decideSuccessfulRunHandoff(input: {
   if (run.runtimeMode === "native" && (run.nativePhase !== null || run.completionContractId !== null)) {
     return { kind: "skip", reason: "native semantic finalization owns the issue disposition" };
   }
-  if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
-  if (isRecoveryActionDrivenRun(run)) return { kind: "skip", reason: "recovery action run owns its own follow-up path" };
-  if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
-  if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
+  const selfOwnedSkipReason = readSelfOwnedRunSkipReason(run);
+  if (selfOwnedSkipReason) {
+    // A run that owns its follow-up must not queue another handoff, but when it leaves the
+    // issue on a valid path, report that path so an earlier required handoff gets resolved.
+    return { kind: "skip", reason: readConfirmedContinuationPathReason(input) ?? selfOwnedSkipReason };
+  }
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }

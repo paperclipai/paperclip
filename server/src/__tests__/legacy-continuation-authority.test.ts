@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -233,6 +233,17 @@ describe("legacy continuation persisted authority", () => {
     await db.update(issues).set({ monitorNextCheckAt: new Date(0) }).where(eq(issues.id, f.issueId));
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("skipped");
     expect(await f.runs()).toHaveLength(1);
+  });
+  it("resolves an earlier required handoff once a legacy run leaves a monitor", async () => {
+    const f = await fixture({ wakeReason: "issue_commented" });
+    const handoff = () => db.select({ action: activityLog.action }).from(activityLog)
+      .where(eq(activityLog.entityId, f.issueId)).then(rows => rows.map(row => row.action));
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "heartbeat", action: "issue.successful_run_handoff_required", entityType: "issue", entityId: f.issueId, details: { sourceRunId: randomUUID() }, createdAt: new Date(Date.now() - 60_000) });
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    expect(await handoff()).toEqual(["issue.successful_run_handoff_required"]);
+    await db.update(issues).set({ monitorNextCheckAt: new Date(Date.now() + 86_400_000) }).where(eq(issues.id, f.issueId));
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    expect(await handoff()).toContain("issue.successful_run_handoff_resolved");
   });
   it("honors pause and changed ownership without spending a repair attempt", async () => {
     const f = await fixture();
