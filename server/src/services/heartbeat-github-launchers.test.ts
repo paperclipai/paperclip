@@ -7,6 +7,7 @@ import { cleanupGitHubOperationLaunchers } from "@paperclipai/adapter-utils/exec
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js";
+import { createSandboxToolPath } from "../__tests__/helpers/sandbox-tool-path.js";
 
 const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: "/workspace" };
 
@@ -81,6 +82,12 @@ describe("heartbeat GitHub launcher lifetime", () => {
 it("keeps anonymous wrappers usable after run cleanup and excludes sandbox image credentials", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "native-anonymous-github-"));
   try {
+    const controllerBin = path.join(root, "controller-bin");
+    await mkdir(controllerBin);
+    await writeFile(path.join(controllerBin, "paperclip-controller-only-fixture"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    vi.stubEnv("PATH", `${controllerBin}:${process.env.PATH ?? ""}`);
+    const hostLookup = await promisify(execFile)("sh", ["-c", "command -v paperclip-controller-only-fixture"]);
+    expect(hostLookup.stdout.trim()).toBe(path.join(controllerBin, "paperclip-controller-only-fixture"));
     const bin = path.join(root, "bin");
     await mkdir(bin);
     await mkdir(path.join(root, ".config", "gh"), { recursive: true });
@@ -88,7 +95,8 @@ it("keeps anonymous wrappers usable after run cleanup and excludes sandbox image
     await writeFile(path.join(bin, "gh"), `#!${process.execPath}
 const fs = require('node:fs');
 process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubToken:process.env.GITHUB_TOKEN || '', ssh:process.env.SSH_AUTH_SOCK, global:process.env.GIT_CONFIG_GLOBAL, imageConfig:fs.existsSync(process.env.GH_CONFIG_DIR + '/hosts.yml')}));`, { mode: 0o700 });
-    const imageEnv = { HOME: root, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, GH_TOKEN: "ambient-token", GITHUB_TOKEN: "ambient-other-token", SSH_AUTH_SOCK: "/ambient/socket" };
+    const sandboxPath = await createSandboxToolPath(root);
+    const imageEnv = { HOME: root, PATH: `${bin}:${sandboxPath}`, GH_TOKEN: "ambient-token", GITHUB_TOKEN: "ambient-other-token", SSH_AUTH_SOCK: "/ambient/socket" };
     const execute: CommandManagedRuntimeRunner["execute"] = async (input) => {
       const startedAt = new Date().toISOString();
       const child = promisify(execFile)(input.command, input.args ?? [], { cwd: input.cwd ?? root, env: { ...imageEnv, ...input.env }, timeout: 15_000 });
@@ -97,6 +105,8 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
       const result = await child;
       return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt };
     };
+    const lookup = await execute({ command: "sh", args: ["-c", "if command -v paperclip-controller-only-fixture >/dev/null 2>&1; then printf found; else printf absent; fi"] });
+    expect(lookup).toMatchObject({ exitCode: 0, stdout: "absent", stderr: "" });
     const sandboxTarget = { ...target, remoteCwd: root, runner: { execute } };
     const base = { native: true, githubConfigured: false, agentId: "agent-a", target: sandboxTarget,
       cwd: root, env: imageEnv, brokerUrl: "https://unused.invalid", createBrokerToken: () => { throw new Error("must not mint a capability"); } };
@@ -111,6 +121,7 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
     const changedPath = await prepareHeartbeatGitHubLaunchers({ ...base, runId: "run-three", env: { ...imageEnv, PATH: `${imageEnv.PATH}:/extra` } });
     expect(changedPath.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
   } finally {
+    vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   }
 }, 20_000);
