@@ -7416,13 +7416,14 @@ export function issueService(db: Db) {
     }));
   }
 
-  async function assertNoBlockingCycles(
+  async function findCycleFormingBlockerIds(
     companyId: string,
     issueId: string,
-    blockerIssueIds: string[],
+    candidateIssueIds: string[],
     dbOrTx: DbReader = db,
   ) {
-    if (blockerIssueIds.length === 0) return;
+    const candidates = new Set(candidateIssueIds);
+    if (candidates.size === 0) return [];
 
     const rows = await dbOrTx
       .select({
@@ -7444,18 +7445,34 @@ export function issueService(db: Db) {
       adjacency.set(row.blockerIssueId, list);
     }
 
-    for (const blockerIssueId of blockerIssueIds) {
-      const queue = [...(adjacency.get(issueId) ?? [])];
-      const visited = new Set<string>([issueId]);
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
-        }
-        if (visited.has(current)) continue;
-        visited.add(current);
-        queue.push(...(adjacency.get(current) ?? []));
-      }
+    const cycleForming: string[] = [];
+    const queue = [...(adjacency.get(issueId) ?? [])];
+    const visited = new Set<string>([issueId]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (candidates.has(current)) cycleForming.push(current);
+      queue.push(...(adjacency.get(current) ?? []));
+    }
+    return cycleForming;
+  }
+
+  async function assertNoBlockingCycles(
+    companyId: string,
+    issueId: string,
+    blockerIssueIds: string[],
+    dbOrTx: DbReader = db,
+  ) {
+    if (blockerIssueIds.length === 0) return;
+    const cycleForming = await findCycleFormingBlockerIds(
+      companyId,
+      issueId,
+      blockerIssueIds,
+      dbOrTx,
+    );
+    if (cycleForming.length > 0) {
+      throw unprocessable("Blocking relations cannot contain cycles");
     }
   }
 
@@ -8615,6 +8632,12 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
+
+    findCycleFormingBlockerIds: async (
+      companyId: string,
+      issueId: string,
+      candidateIssueIds: string[],
+    ) => findCycleFormingBlockerIds(companyId, issueId, candidateIssueIds),
 
     getRelationSummaries: async (issueId: string) => {
       const issue = await db

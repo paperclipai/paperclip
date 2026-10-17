@@ -38,7 +38,9 @@ import { deliverReconciledExecutions } from "../services/execution-recovery-reso
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import * as issuesModule from "../services/issues.js";
 import { issueService } from "../services/issues.js";
+import { unprocessable } from "../errors.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
@@ -3008,5 +3010,98 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  async function seedDispositionRepairWithChild(input: { childMonitoredUntil?: Date; parentBlocksChild?: boolean }) {
+    const fixture = await seedCompany();
+    const childId = randomUUID();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.sourceIssueId));
+    await db.insert(issues).values({
+      id: childId,
+      companyId: fixture.companyId,
+      parentId: fixture.sourceIssueId,
+      title: "Follow-up child",
+      status: "todo",
+      priority: "medium",
+      monitorNextCheckAt: input.childMonitoredUntil ?? null,
+      issueNumber: 2,
+      identifier: `${fixture.prefix}-2`,
+    });
+    if (input.parentBlocksChild) {
+      await db.insert(issueRelations).values({
+        companyId: fixture.companyId,
+        issueId: fixture.sourceIssueId,
+        relatedIssueId: childId,
+        type: "blocks",
+      });
+    }
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId: fixture.companyId,
+      sourceIssueId: fixture.sourceIssueId,
+      kind: "deliberate_wait_without_target",
+      ownerType: "agent",
+      ownerAgentId: fixture.coderId,
+      cause: "deliberate_wait_without_target",
+      fingerprint: `deliberate-wait:${fixture.sourceIssueId}`,
+      nextAction: "Choose a durable wait target.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", attempt: 1 },
+      maxAttempts: 3,
+    });
+    return { ...fixture, childId, action };
+  }
+
+  async function blocksRelations(companyId: string) {
+    return db
+      .select({ issueId: issueRelations.issueId, relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.type, "blocks")));
+  }
+
+  it("does not wait on a child that the source already blocks", async () => {
+    const { companyId, sourceIssueId, childId } = await seedDispositionRepairWithChild({
+      parentBlocksChild: true,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileActiveRecoveryActions();
+
+    expect(result.failed).toBe(0);
+    expect(await blocksRelations(companyId)).toEqual([
+      { issueId: sourceIssueId, relatedIssueId: childId },
+    ]);
+  });
+
+  it("keeps reconciling other recovery actions when one issue update is rejected", async () => {
+    const monitoredUntil = new Date(Date.now() + 60 * 60 * 1000);
+    const failing = await seedDispositionRepairWithChild({ childMonitoredUntil: monitoredUntil });
+    const healthy = await seedDispositionRepairWithChild({ childMonitoredUntil: monitoredUntil });
+    const realIssueService = issuesModule.issueService;
+    const issueServiceSpy = vi.spyOn(issuesModule, "issueService").mockImplementation((...args) => {
+      const real = realIssueService(...args);
+      return {
+        ...real,
+        update: async (issueId: string, ...rest: any[]) => {
+          if (issueId === failing.sourceIssueId) throw unprocessable("Blocking relations cannot contain cycles");
+          return (real.update as any)(issueId, ...rest);
+        },
+      } as typeof real;
+    });
+    try {
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      const result = await recovery.reconcileActiveRecoveryActions();
+
+      expect(result).toMatchObject({ failed: 1, resolved: 1, issueIds: [healthy.sourceIssueId] });
+    } finally {
+      issueServiceSpy.mockRestore();
+    }
+
+    const [failingAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, failing.action.id));
+    expect(failingAction?.status).toBe("active");
+    const [healthyAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, healthy.action.id));
+    expect(healthyAction).toMatchObject({ status: "resolved", resolutionNote: "durable_path_restored:healthy_child" });
+    expect(await blocksRelations(healthy.companyId)).toEqual([
+      { issueId: healthy.childId, relatedIssueId: healthy.sourceIssueId },
+    ]);
   });
 });

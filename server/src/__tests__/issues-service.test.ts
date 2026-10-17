@@ -2800,6 +2800,92 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.findCycleFormingBlockerIds", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blocking-cycle-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedBlockingChain() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Cycle Co",
+      issuePrefix: `CY${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    const unrelatedId = randomUUID();
+    await db.insert(issues).values(
+      [
+        [parentId, "Parent", null, 1],
+        [childId, "Child", parentId, 2],
+        [grandchildId, "Grandchild", childId, 3],
+        [unrelatedId, "Unrelated", null, 4],
+      ].map(([id, title, parent, issueNumber]) => ({
+        id: id as string,
+        companyId,
+        title: title as string,
+        status: "todo" as const,
+        priority: "medium" as const,
+        parentId: parent as string | null,
+        issueNumber: issueNumber as number,
+        identifier: `CYCLE-${issueNumber}`,
+      })),
+    );
+    await db.insert(issueRelations).values([
+      { companyId, issueId: parentId, relatedIssueId: childId, type: "blocks" },
+      { companyId, issueId: childId, relatedIssueId: grandchildId, type: "blocks" },
+    ]);
+    return { companyId, parentId, childId, grandchildId, unrelatedId };
+  }
+
+  it("returns the candidates the issue already blocks, directly or transitively", async () => {
+    const { companyId, parentId, childId, grandchildId, unrelatedId } = await seedBlockingChain();
+
+    const cycleForming = await svc.findCycleFormingBlockerIds(companyId, parentId, [
+      unrelatedId,
+      grandchildId,
+      childId,
+    ]);
+
+    expect([...cycleForming].sort()).toEqual([childId, grandchildId].sort());
+  });
+
+  it("returns nothing when no candidate is downstream of the issue", async () => {
+    const { companyId, parentId, childId, unrelatedId } = await seedBlockingChain();
+
+    expect(await svc.findCycleFormingBlockerIds(companyId, childId, [parentId, unrelatedId])).toEqual([]);
+    expect(await svc.findCycleFormingBlockerIds(companyId, parentId, [])).toEqual([]);
+  });
+
+  it("still rejects a blocked-by update that would close a cycle", async () => {
+    const { parentId, grandchildId } = await seedBlockingChain();
+
+    await expect(
+      svc.update(parentId, { blockedByIssueIds: [grandchildId] }),
+    ).rejects.toMatchObject({ status: 422, message: "Blocking relations cannot contain cycles" });
+  });
+});
+
 describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
