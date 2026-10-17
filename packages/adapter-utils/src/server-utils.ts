@@ -3529,11 +3529,15 @@ export function sanitizeInheritedPaperclipEnv(
   return env;
 }
 
-export function defaultPathForPlatform() {
+export function defaultPathForPlatform(env: NodeJS.ProcessEnv = process.env) {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
   }
-  return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
+  const home = env.HOME ?? "";
+  const bunBin = home ? `${home}/.bun/bin` : "";
+  return [bunBin, "/usr/local/bin", "/opt/homebrew/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    .filter(Boolean)
+    .join(":");
 }
 
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
@@ -3706,9 +3710,23 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  // Spawned agent processes often inherit a minimal PATH from the parent
+  // Paperclip service (e.g. launchd-started, no login shell), which contains
+  // a non-empty but incomplete PATH (missing /usr/local/bin, /opt/homebrew/bin,
+  // ~/.bun/bin, etc). A non-empty PATH used to short-circuit this function
+  // entirely, silently dropping tools like bun from agent environments. Merge
+  // the platform defaults in (appended, so anything already set wins) instead
+  // of only filling in a PATH that's completely absent.
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const key = typeof env.Path === "string" && typeof env.PATH !== "string" ? "Path" : "PATH";
+  const existingDirs = (env[key] ?? "").split(delimiter).filter(Boolean);
+  const defaultDirs = defaultPathForPlatform(env).split(delimiter).filter(Boolean);
+  const mergedDirs = [...existingDirs];
+  for (const dir of defaultDirs) {
+    if (!mergedDirs.includes(dir)) mergedDirs.push(dir);
+  }
+  if (mergedDirs.length === existingDirs.length && key in env) return env;
+  return { ...env, [key]: mergedDirs.join(delimiter) };
 }
 
 export async function ensureAbsoluteDirectory(
