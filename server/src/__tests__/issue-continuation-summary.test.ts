@@ -131,4 +131,127 @@ describe("issue continuation summaries", () => {
 
     expect(continuationSummaryParksExecutor(body)).toBe(false);
   });
+
+  it("honours explicit issue.workMode over status-based inference", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-plan",
+        identifier: "PAP-2001",
+        title: "Draft architecture plan",
+        description: "Plan the new feature architecture",
+        status: "in_progress",
+        priority: "high",
+        workMode: "planning",
+      },
+      run: {
+        id: "run-plan-1",
+        status: "succeeded",
+        error: null,
+      },
+      agent: {
+        id: "agent-1",
+        name: "ArchitectAgent",
+        adapterType: "codex_local",
+      },
+    });
+
+    expect(body).toContain("- Current mode: planning");
+    expect(body).toContain("Resume planning from the acceptance criteria, latest comments, and this summary.");
+  });
+
+  it("honours explicit issue.workMode even when the last run failed", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-plan-failed",
+        identifier: "PAP-2002",
+        title: "Draft architecture plan with failure",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        workMode: "planning",
+      },
+      run: {
+        id: "run-plan-failed-1",
+        status: "failed",
+        error: "timeout reached",
+        errorCode: "timed_out",
+      },
+      agent: {
+        id: "agent-1",
+        name: "ArchitectAgent",
+        adapterType: "codex_local",
+      },
+    });
+
+    expect(body).toContain("- Current mode: planning");
+  });
+
+  it("replaces stale generic implementation next action on planning issues while preserving custom actions", () => {
+    const staleGenericBody = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Resume implementation from the acceptance criteria, latest comments, and this summary.",
+    ].join("\n");
+
+    const upgraded = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-plan-2",
+        identifier: "PAP-2003",
+        title: "Draft architecture plan",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        workMode: "planning",
+      },
+      run: {
+        id: "run-plan-2",
+        status: "succeeded",
+        error: null,
+      },
+      agent: {
+        id: "agent-1",
+        name: "ArchitectAgent",
+        adapterType: "codex_local",
+      },
+      previousSummaryBody: staleGenericBody,
+    });
+
+    expect(upgraded).toContain("- Resume planning from the acceptance criteria, latest comments, and this summary.");
+    expect(upgraded).not.toContain("Resume implementation");
+
+    const customActionBody = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Review RFC draft with security team before proceeding.",
+    ].join("\n");
+
+    const preserved = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-plan-3",
+        identifier: "PAP-2004",
+        title: "Draft architecture plan",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        workMode: "planning",
+      },
+      run: {
+        id: "run-plan-3",
+        status: "succeeded",
+        error: null,
+      },
+      agent: {
+        id: "agent-1",
+        name: "ArchitectAgent",
+        adapterType: "codex_local",
+      },
+      previousSummaryBody: customActionBody,
+    });
+
+    expect(preserved).toContain("- Review RFC draft with security team before proceeding.");
+  });
 });
