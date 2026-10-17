@@ -6,10 +6,17 @@ import type { AgentDetail, GrokConnection } from "@paperclipai/shared";
 import { ConfigurationTab } from "@/pages/AgentDetail";
 import { storybookAgents } from "../../../fixtures/paperclipData";
 
+const grokAgentBase = storybookAgents[0]!;
+const grokAdapterConfig = { provider: "grok_bot", allowUnmeteredProvider: true };
 const agent: AgentDetail = {
-  ...storybookAgents[0]!, id: "grok-config-agent", name: "Night Shift", urlKey: "night-shift",
-  adapterType: "paperclip_runner", adapterConfig: { provider: "grok_bot", allowUnmeteredProvider: true },
+  ...grokAgentBase, id: "grok-config-agent", name: "Night Shift", urlKey: "night-shift",
+  adapterType: "paperclip_runner", adapterConfig: grokAdapterConfig,
   chainOfCommand: [], access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+  // Config-visibility marker; keys are derived from the configs the record holds
+  // so the marker cannot drift from the config it describes.
+  configurationAccess: "full",
+  adapterConfigKeys: Object.keys(grokAdapterConfig),
+  runtimeConfigKeys: Object.keys(grokAgentBase.runtimeConfig ?? {}),
 };
 const bindingId = "11111111-1111-4111-8111-111111111111";
 const at = "2026-10-13T12:00:00Z";

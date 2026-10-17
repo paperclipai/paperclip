@@ -1,12 +1,30 @@
 import type { StorageProvider as StorageProviderId } from "@paperclipai/shared";
 import type { Readable } from "node:stream";
 
+/**
+ * Upload body. A `Buffer` is used for small in-memory payloads (images, logos,
+ * manifests); a `Readable` is used for large binaries that must never be fully
+ * buffered in the Node heap (video masters, archives).
+ *
+ * The two are behaviourally identical to every provider: `contentLength` is
+ * always supplied, so the backend never has to buffer to discover the length.
+ */
+export type UploadBody = Buffer | Readable;
+
 export interface PutObjectInput {
   objectKey: string;
   // Readable bodies stream straight to the backend (contentLength must be the
   // exact byte size); Buffer stays supported for small payloads.
   body: Buffer | Readable;
   contentType: string;
+  /**
+   * Exact declared object length. Required for every body, including streamed
+   * ones: the storage service is the single place that knows a stream's size, and
+   * S3 uses this both to choose between a single `PutObject` and multipart and
+   * to size the multipart parts. Making it optional would let a caller start an
+   * upload that no provider can size, so it stays required until the providers
+   * grow real unknown-length support.
+   */
   contentLength: number;
 }
 

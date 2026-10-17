@@ -81,6 +81,19 @@ export const library = [
   currentVersionId: null,
 })) as CompanySkillListItem[];
 
+const fixtureAdapterConfig = {
+  "access.MODEL_API": { type: "secret_ref" as const, secretId: "secret-openai" },
+};
+
+const fixtureRuntimeConfig = {
+  heartbeat: {
+    enabled: true,
+    intervalSec: 3600,
+    wakeOnDemand: true,
+    maxConcurrentRuns: 1,
+  },
+};
+
 export function createSettingsFixtures(
   adapterType = "claude_local",
   outcome: TestOutcome = "pass",
@@ -96,17 +109,13 @@ export function createSettingsFixtures(
     capabilities:
       "Build thoughtful product interfaces, investigate bugs, and verify changes in the browser.",
     adapterType: adapterType as AgentDetail["adapterType"],
-    adapterConfig: {
-      "access.MODEL_API": { type: "secret_ref", secretId: "secret-openai" },
-    },
-    runtimeConfig: {
-      heartbeat: {
-        enabled: true,
-        intervalSec: 3600,
-        wakeOnDemand: true,
-        maxConcurrentRuns: 1,
-      },
-    },
+    adapterConfig: fixtureAdapterConfig,
+    runtimeConfig: fixtureRuntimeConfig,
+    // Derived from the configs above so the fixture cannot describe a different
+    // config than the one it holds.
+    configurationAccess: "full",
+    adapterConfigKeys: Object.keys(fixtureAdapterConfig),
+    runtimeConfigKeys: Object.keys(fixtureRuntimeConfig),
     permissions: { canCreateAgents: false, canCreateSkills: true },
     chainOfCommand: [],
     access: {
