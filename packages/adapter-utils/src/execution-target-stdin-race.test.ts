@@ -1020,17 +1020,45 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
             `const mode = process.env.PAPERCLIP_TEST_PROBE_SWAP_MODE;`,
             `const seq = process.env.PAPERCLIP_TEST_PROBE_SWAP_SEQ;`,
             `const symlinkTarget = process.env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET;`,
+            `const reuseIdentity = process.env.PAPERCLIP_TEST_PROBE_SWAP_REUSE_IDENTITY === "1";`,
             `if (mode && seq) {`,
             `  const expectedName = ".paperclip-birthtime-probe-" + process.pid + "-" + seq;`,
             `  let swapped = false;`,
+            `  let openProbeDescriptors = 0;`,
+            `  const originalOpen = fs.promises.open.bind(fs.promises);`,
+            `  fs.promises.open = async (targetPath, flags, openMode) => {`,
+            `    const handle = await originalOpen(targetPath, flags, openMode);`,
+            `    if (path.basename(String(targetPath)) === expectedName) {`,
+            `      openProbeDescriptors += 1;`,
+            `      let counted = true;`,
+            `      const originalClose = handle.close.bind(handle);`,
+            `      handle.close = async () => {`,
+            `        if (counted) { counted = false; openProbeDescriptors -= 1; }`,
+            `        return originalClose();`,
+            `      };`,
+            `    }`,
+            `    return handle;`,
+            `  };`,
             `  const originalLstat = fs.promises.lstat.bind(fs.promises);`,
             `  fs.promises.lstat = async (candidatePath, opts) => {`,
             `    if (!swapped && path.basename(String(candidatePath)) === expectedName) {`,
             `      swapped = true;`,
+            `      let own = null;`,
+            `      try { own = fs.lstatSync(candidatePath); } catch {}`,
+            `      const ownInodeFreedByUnlink = openProbeDescriptors === 0;`,
             `      try { fs.unlinkSync(candidatePath); } catch {}`,
             `      if (mode === "file") fs.writeFileSync(candidatePath, "peer-owned-content");`,
             `      else if (mode === "dir") fs.mkdirSync(candidatePath);`,
             `      else if (mode === "symlink") fs.symlinkSync(symlinkTarget, candidatePath);`,
+            `      if (reuseIdentity && own !== null) {`,
+            `        const stats = await originalLstat(candidatePath, opts);`,
+            `        stats.ctimeMs = own.ctimeMs;`,
+            `        if (ownInodeFreedByUnlink) {`,
+            `          stats.dev = own.dev;`,
+            `          stats.ino = own.ino;`,
+            `        }`,
+            `        return stats;`,
+            `      }`,
             `    }`,
             `    return originalLstat(candidatePath, opts);`,
             `  };`,
@@ -1115,7 +1143,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     // Makes the wrapper's own process observe a same-sandbox peer replacing
     // its birth-time probe file, through the preload above (PAP-5355). seq 1
     // is sessionDir's probe (the first one captureSessionIdentity() runs).
-    probeSwap?: { seq: 1 | 2; mode: "file" | "dir" | "symlink"; symlinkTarget?: string };
+    probeSwap?: { seq: 1 | 2; mode: "file" | "dir" | "symlink"; symlinkTarget?: string; reuseIdentity?: boolean };
     // Makes the wrapper's own process observe an fstat() failure on the open
     // descriptor for its own birth-time probe file, through the preload above
     // (PAP-5374). seq 1 is sessionDir's probe (the first one
@@ -1153,6 +1181,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       env.PAPERCLIP_TEST_PROBE_SWAP_SEQ = String(options.probeSwap.seq);
       env.PAPERCLIP_TEST_PROBE_SWAP_MODE = options.probeSwap.mode;
       if (options.probeSwap.symlinkTarget) env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET = options.probeSwap.symlinkTarget;
+      if (options.probeSwap.reuseIdentity) env.PAPERCLIP_TEST_PROBE_SWAP_REUSE_IDENTITY = "1";
       execArgv.push("--require", await getProbeSwapPreloadPath());
     }
     if (options?.fstatFailure) {
@@ -2290,7 +2319,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       outputToStdout: false,
       command: process.execPath,
       args: [childPath],
-      probeSwap: { seq: 1, mode: "file" },
+      probeSwap: { seq: 1, mode: "file", reuseIdentity: true },
     });
     await waitForTrackedChildPid(pidFile);
 
@@ -2339,7 +2368,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       outputToStdout: false,
       command: process.execPath,
       args: [childPath],
-      probeSwap: { seq: 1, mode: "symlink", symlinkTarget: linkTarget },
+      probeSwap: { seq: 1, mode: "symlink", symlinkTarget: linkTarget, reuseIdentity: true },
     });
     await waitForTrackedChildPid(pidFile);
 

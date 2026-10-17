@@ -2895,12 +2895,7 @@ function nextProbeFileName() {
 // so this wrapper leaves that entry untouched instead of removing it. This
 // covers a peer's replacement file, a peer's replacement directory, and a
 // peer's replacement symbolic link alike, because all three change the
-// identity this wrapper reads back. The identity check includes ctimeMs,
-// not only (dev, ino): a filesystem can hand this call's freed inode number
-// straight back out to a peer's very next create at the same path, so
-// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
-// on every create, so a peer's replacement carries a different one even when
-// the inode number repeats. Node's filesystem API has no call that removes a
+// identity this wrapper reads back. Node's filesystem API has no call that removes a
 // path only when its identity still matches an earlier read as one atomic
 // step, so a gap remains between this wrapper's final identity read and the
 // removal call itself. A peer that wins this gap can put any entry at the
@@ -2933,14 +2928,12 @@ async function birthtimeSurvivesProbe(dirPath) {
   let ownedIdentity = null;
   try {
     const createdStats = await handle.stat();
-    // ctimeMs guards against inode reuse; see the function comment above.
     ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
   } catch {
     ownedIdentity = null;
-  } finally {
-    await handle.close().catch(() => undefined);
   }
   if (!ownedIdentity) {
+    await handle.close().catch(() => undefined);
     // fstat on this call's own just-opened descriptor failed. This call then
     // has no verified identity for the probe file it created, so it must not
     // check or remove that file by path: a peer could already own the entry
@@ -2965,6 +2958,7 @@ async function birthtimeSurvivesProbe(dirPath) {
   if (stillOwned) {
     await fs.rm(probePath, { force: true }).catch(() => undefined);
   }
+  await handle.close().catch(() => undefined);
   let after;
   try {
     after = (await fs.lstat(dirPath)).birthtimeMs;
