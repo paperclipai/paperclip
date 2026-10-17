@@ -3845,6 +3845,8 @@ rl.on("line", (line) => {
       });
       const rateToolName = (await gateway.listToolsForSession(session.token))
         .find((tool) => tool.connectionId === rateTool.connection.id)!.name;
+      // Keep both calls in one policy window without faking HTTP timers.
+      vi.useFakeTimers({ toFake: ["Date"] });
       await expect(gateway.executeTool({
         sessionToken: session.token,
         tool: rateToolName,
@@ -3905,6 +3907,7 @@ rl.on("line", (line) => {
       expect(persisted).toContain("shopify");
       expect(persisted).toContain("kv_set");
     } finally {
+      vi.useRealTimers();
       releaseApprovedExecution();
       await fake.close();
     }
