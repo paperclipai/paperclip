@@ -12,6 +12,7 @@ export interface SidePanelTabProps {
   active: boolean;
   closable?: boolean;
   disabled?: boolean;
+  suppressTooltip?: boolean;
   tabRef?: Ref<HTMLButtonElement>;
   dragHandleProps?: ButtonHTMLAttributes<HTMLButtonElement>;
   onSelect: () => void;
@@ -31,6 +32,7 @@ export function SidePanelTab({
   active,
   closable = true,
   disabled = false,
+  suppressTooltip = false,
   tabRef,
   dragHandleProps,
   onSelect,
@@ -44,6 +46,7 @@ export function SidePanelTab({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
   const [labelIsTruncated, setLabelIsTruncated] = useState(false);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
   const sizingKey = `${appearance}:${label}:${icon ? "icon" : "no-icon"}:${status ? "status" : "no-status"}:${closable ? "closable" : "fixed"}`;
   const [stableWidth, setStableWidth] = useState<{ key: string; width: number } | null>(null);
   const hasStableWidth = stableWidth?.key === sizingKey;
@@ -69,6 +72,10 @@ export function SidePanelTab({
     return () => observer.disconnect();
   }, [label]);
 
+  useEffect(() => {
+    if (suppressTooltip || !labelIsTruncated) setTooltipOpen(false);
+  }, [labelIsTruncated, suppressTooltip]);
+
   return (
     <div
       ref={wrapperRef}
@@ -78,21 +85,24 @@ export function SidePanelTab({
       style={appearance === "default" && hasStableWidth ? { width: stableWidth.width } : undefined}
       className={cn(
         appearance === "streamlined-task"
-          ? "group/side-panel-tab relative mx-1.5 flex h-7 min-w-0 flex-1 basis-0 items-center rounded-md border border-transparent"
+          ? "group/side-panel-tab relative flex h-7 w-full min-w-0 items-center rounded-md border border-transparent"
           : "group/side-panel-tab relative flex h-(--side-panel-tab-height) min-w-0 shrink-0 items-center rounded-(--side-panel-tab-radius) border border-transparent",
         "side-panel-tab-motion",
         active
           ? appearance === "streamlined-task"
-            ? "text-foreground hover:bg-accent/50"
+            ? "bg-(--side-panel-streamlined-tab-active-bg) text-foreground"
             : "bg-(--side-panel-tab-active-bg) text-accent-foreground"
           : appearance === "streamlined-task"
-            ? "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            ? "text-muted-foreground hover:bg-(--side-panel-streamlined-tab-hover-bg) hover:text-foreground"
             : "text-muted-foreground hover:bg-(--side-panel-tab-hover-bg) hover:text-foreground",
         disabled && "opacity-50",
         className,
       )}
     >
-      <Tooltip open={labelIsTruncated ? undefined : false}>
+      <Tooltip
+        open={labelIsTruncated && !suppressTooltip && tooltipOpen}
+        onOpenChange={(open) => setTooltipOpen(open && labelIsTruncated && !suppressTooltip)}
+      >
         <TooltipTrigger asChild>
           <button
             {...dragHandleProps}
@@ -112,7 +122,10 @@ export function SidePanelTab({
             onKeyDown={onKeyDown}
             className={cn(
               appearance === "streamlined-task"
-                ? "flex h-full w-full min-w-0 items-center justify-start rounded-md px-3 text-sm font-medium outline-none"
+                ? cn(
+                    "flex h-full w-full min-w-0 items-center rounded-md pl-1.5 text-sm font-medium outline-none",
+                    closable ? "pr-6" : "pr-1.5",
+                  )
                 : "flex h-full w-full min-w-0 items-center gap-1.5 rounded-(--side-panel-tab-radius) py-1.5 pl-2 text-xs font-medium outline-none",
               appearance === "default" && (closable && (!hasStableWidth || active) ? "pr-7" : "pr-2.5"),
               "focus-visible:ring-2 focus-visible:ring-ring/60",
@@ -125,14 +138,14 @@ export function SidePanelTab({
               data-truncated={labelIsTruncated ? "true" : undefined}
               className={cn(
                 appearance === "streamlined-task"
-                  ? "side-panel-tab-label-close-fade task-detail-pane-tab-label min-w-0 flex-1 overflow-hidden whitespace-nowrap text-center"
+                  ? "min-w-0 flex-auto overflow-hidden whitespace-nowrap text-left"
                   : "overflow-hidden whitespace-nowrap",
                 appearance === "default" && (
                   closable && hasStableWidth && !active
                     ? "max-w-(--side-panel-tab-label-expanded-max-width)"
                     : "max-w-(--side-panel-tab-label-max-width)"
                 ),
-                appearance === "default" && labelIsTruncated && "side-panel-tab-label-fade",
+                labelIsTruncated && "side-panel-tab-label-fade",
               )}
             >
               {label}
@@ -147,7 +160,7 @@ export function SidePanelTab({
             ) : null}
           </button>
         </TooltipTrigger>
-        {labelIsTruncated ? <TooltipContent side="bottom">{label}</TooltipContent> : null}
+        {labelIsTruncated && !suppressTooltip ? <TooltipContent side="bottom">{label}</TooltipContent> : null}
       </Tooltip>
       {closable && onClose && (appearance === "streamlined-task" || active) ? (
         <button
@@ -166,7 +179,10 @@ export function SidePanelTab({
           className={cn(
             "side-panel-tab-close-motion absolute flex items-center justify-center text-muted-foreground outline-none hover:text-foreground",
             appearance === "streamlined-task"
-              ? "right-0 top-1/2 z-20 size-5 -translate-y-1/2 rounded-sm opacity-0 hover:bg-accent focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60 group-hover/side-panel-tab:opacity-100"
+              ? cn(
+                  "right-0.5 top-1/2 z-20 size-5 -translate-y-1/2 rounded-full hover:bg-accent focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60",
+                  active ? "opacity-100" : "opacity-0 group-hover/side-panel-tab:opacity-100",
+                )
               : "right-1 size-6 rounded-lg hover:bg-background/70 focus-visible:ring-2 focus-visible:ring-ring/60",
           )}
         >
