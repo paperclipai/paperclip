@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import {
   asString,
   parseObject,
@@ -66,7 +67,7 @@ function commandLooksLike(command: string, expected: string): boolean {
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
   const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
-  const clean = raw.replace(/\s+/g, " ").trim();
+  const clean = redactDiagnosticText(raw).replace(/\s+/g, " ").trim();
   const max = 240;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
