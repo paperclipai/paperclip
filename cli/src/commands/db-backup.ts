@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -8,6 +9,7 @@ import {
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
+import type { PaperclipConfig } from "../config/schema.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 
 type DbBackupOptions = {
@@ -18,16 +20,37 @@ type DbBackupOptions = {
   json?: boolean;
 };
 
-function resolveConnectionString(configPath?: string): { value: string; source: string } {
+function resolveConnectionString(input: {
+  configPath: string;
+  config: PaperclipConfig | null;
+}): { value: string; source: string } {
   const envUrl = process.env.DATABASE_URL?.trim();
   if (envUrl) return { value: envUrl, source: "DATABASE_URL" };
 
-  const config = readConfig(configPath);
-  if (config?.database.mode === "postgres" && config.database.connectionString?.trim()) {
-    return { value: config.database.connectionString.trim(), source: "config.database.connectionString" };
+  if (!input.config) {
+    throw new Error(
+      `Cannot resolve database connection for db:backup: no config found at ${input.configPath}. ` +
+        `Refusing to fall back to embedded-postgres@54329 — that would silently dump the default ` +
+        `instance's database under whatever filename you requested. ` +
+        `Pass --config <path/to/config.json> for a specific instance, or use ` +
+        `--data-dir <PAPERCLIP_HOME> --instance <id> for the default per-instance layout, ` +
+        `or set DATABASE_URL to target a specific database explicitly.`,
+    );
   }
 
-  const port = config?.database.embeddedPostgresPort ?? 54329;
+  const config = input.config;
+  if (config.database.mode === "postgres") {
+    const connectionString = config.database.connectionString?.trim();
+    if (!connectionString) {
+      throw new Error(
+        `Cannot resolve database connection for db:backup: config at ${input.configPath} ` +
+          `uses database.mode="postgres" but has no connectionString set.`,
+      );
+    }
+    return { value: connectionString, source: "config.database.connectionString" };
+  }
+
+  const port = config.database.embeddedPostgresPort ?? 54329;
   return {
     value: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
     source: `embedded-postgres@${port}`,
@@ -51,8 +74,8 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
 
   const configPath = resolveConfigPath(opts.config);
-  const config = readConfig(opts.config);
-  const connection = resolveConnectionString(opts.config);
+  const config = fs.existsSync(configPath) ? readConfig(opts.config) : null;
+  const connection = resolveConnectionString({ configPath, config });
   const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
