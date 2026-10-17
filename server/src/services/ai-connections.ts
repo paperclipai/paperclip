@@ -30,6 +30,7 @@ import {
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
   supportsAiConnectionUsage,
+  isClaudeSetupToken,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
@@ -649,13 +650,28 @@ export function aiConnectionService(db: Db) {
         if (!privateSlot) secretId = undefined;
       }
       if (!verifiedCredential) { secretId = undefined; }
-      else if (secretId)
+      else if (secretId) {
+        // A reconnect through the ordinary sign-in flow must not silently
+        // downgrade a durable pasted setup token to a short-lived credential:
+        // that would reintroduce the outage this setup-token support fixes,
+        // just through a different door. Replacing it needs an explicit
+        // setup-token paste, not an incidental "Sign in" click.
+        if (
+          reconnect &&
+          isClaudeSetupToken(
+            await aiConnectionService(tx as unknown as Db).credential(reconnect),
+          ) &&
+          !isClaudeSetupToken(verifiedCredential)
+        )
+          throw unprocessable(
+            "This connection uses a long-lived setup token. Use a setup token to replace it, or remove it first.",
+          );
         await secrets.rotate(
           secretId,
           { value: verifiedCredential },
           { userId },
         );
-      else if (input.ownership === "personal") {
+      } else if (input.ownership === "personal") {
         const definition = await secrets.createUserSecretDefinition(
           companyId,
           {
