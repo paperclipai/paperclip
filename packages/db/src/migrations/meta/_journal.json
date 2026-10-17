@@ -2472,6 +2472,13 @@
       "when": 1792187602372,
       "tag": "0354_agent_connection_assignment_hooks",
       "breakpoints": true
+    },
+    {
+      "idx": 355,
+      "version": "7",
+      "when": 1792188236099,
+      "tag": "0355_agent_tool_definition_hooks",
+      "breakpoints": true
     }
   ]
 }

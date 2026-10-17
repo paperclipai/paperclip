@@ -777,13 +777,14 @@ export function toolAccessPolicyService(db: Db) {
 
     return db.transaction(async (tx) => {
       const rows = await tx
-        .update(toolPolicies)
-        .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
+        .select()
+        .from(toolPolicies)
         .where(and(
           eq(toolPolicies.companyId, companyId),
           ne(toolPolicies.policyType, "trust_rule"),
         ))
-        .returning();
+        .orderBy(toolPolicies.id)
+        .for("no key update");
       const byId = new Map(rows.map((row) => [row.id, row]));
       const missingIds = uniquePolicyIds.filter((id) => !byId.has(id));
       if (missingIds.length > 0) {
