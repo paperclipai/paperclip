@@ -21,6 +21,7 @@ import type {
   Agent,
   Goal,
   Approval,
+  ApprovalComment,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -118,6 +119,7 @@ export interface TestHarness {
     issueInteractions?: IssueThreadInteraction[];
     issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
     approvals?: Approval[];
+    approvalComments?: ApprovalComment[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -515,6 +517,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueAttachments = new Map<string, IssueAttachment[]>();
   const attachmentContentById = new Map<string, string>();
   const approvals = new Map<string, Approval>();
+  const approvalComments = new Map<string, ApprovalComment[]>();
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -2060,6 +2063,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!approval || approval.companyId !== companyId) return null;
         return approval;
       },
+      async listComments(approvalId, companyId) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        const approval = approvals.get(approvalId);
+        if (!approval || approval.companyId !== companyId) return [];
+        return [...(approvalComments.get(approvalId) ?? [])];
+      },
       async decide(approvalId, input, companyId) {
         requireCapability(manifest, capabilitySet, "approvals.respond");
         const approval = approvals.get(approvalId);
@@ -2596,6 +2605,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const list = issueComments.get(row.issueId) ?? [];
         list.push(row);
         issueComments.set(row.issueId, list);
+      }
+      for (const row of input.approvalComments ?? []) {
+        const list = approvalComments.get(row.approvalId) ?? [];
+        list.push(row);
+        approvalComments.set(row.approvalId, list);
       }
       for (const row of input.issueInteractions ?? []) {
         const list = issueInteractions.get(row.issueId) ?? [];
