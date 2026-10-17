@@ -19,6 +19,21 @@ export interface DirectorySnapshot {
   ignoredPaths?: WorkspacePaths;
 }
 
+/** Typed cancellation for a run stopped during SSH workspace copy-back. */
+export const WORKSPACE_RESTORE_CANCELLED = "workspace_restore_cancelled";
+
+export function workspaceRestoreCancelledError(): Error {
+  return new Error(WORKSPACE_RESTORE_CANCELLED);
+}
+
+export function isWorkspaceRestoreCancelled(error: unknown): boolean {
+  return error instanceof Error && error.message === WORKSPACE_RESTORE_CANCELLED;
+}
+
+export function throwIfWorkspaceRestoreAborted(signal: AbortSignal | null | undefined): void {
+  if (signal?.aborted) throw workspaceRestoreCancelledError();
+}
+
 export interface LegacySerializedDirectorySnapshot {
   version: 1;
   exclude: string[];
@@ -134,25 +149,32 @@ export function directorySnapshotSha256(snapshot: DirectorySnapshot): string {
   return digest.digest("hex");
 }
 
-async function hashFile(filePath: string): Promise<string> {
+async function hashFile(filePath: string, signal?: AbortSignal | null): Promise<string> {
+  throwIfWorkspaceRestoreAborted(signal);
   return await new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = createReadStream(filePath);
+    const onAbort = () => stream.destroy(workspaceRestoreCancelledError());
+    signal?.addEventListener("abort", onAbort, { once: true });
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("close", () => signal?.removeEventListener("abort", onAbort));
   });
 }
 
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
+  signal?: AbortSignal | null,
 ): AsyncGenerator<[string, SnapshotEntry]> {
+  throwIfWorkspaceRestoreAborted(signal);
   const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
+    throwIfWorkspaceRestoreAborted(signal);
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
     if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
     if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-    if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath, signal) }];
     return [nextRelative, null];
   };
   const visitBatch = async function* (paths: string[]): AsyncGenerator<[string, SnapshotEntry]> {
@@ -163,12 +185,13 @@ async function* walkDirectory(
       const [nextRelative, entry] = result.value;
       if (!entry) continue;
       yield [nextRelative, entry];
-      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative);
+      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative, signal);
     }
   };
   const current = relative ? path.join(root, relative) : root;
   let batch: string[] = [];
   for await (const entry of await fs.opendir(current)) {
+    throwIfWorkspaceRestoreAborted(signal);
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     batch.push(nextRelative);
@@ -583,7 +606,8 @@ async function withCanonicalDirectoryMergeLock<T>(
   }
 }
 
-async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry): Promise<void> {
+async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry, signal?: AbortSignal | null): Promise<void> {
+  throwIfWorkspaceRestoreAborted(signal);
   const sourcePath = path.join(sourceDir, relative);
   const targetPath = path.join(targetDir, relative);
 
@@ -624,15 +648,16 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
 
 export async function captureDirectorySnapshot(
   rootDir: string,
-  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
 ): Promise<DirectorySnapshot> {
+  throwIfWorkspaceRestoreAborted(options.signal);
   const exclude = [...new Set(options.exclude ?? [])];
   const ignored = workspacePathMatcher(options.ignoredPaths);
   let writer: WorkspaceManifestWriter | null = null;
   try {
     writer = options.diskBacked ? await createWorkspaceManifest("paperclip-workspace-baseline-") : null;
     const memory = new Map<string, SnapshotEntry>();
-    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored)) {
+    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored, "", options.signal)) {
       if (writer) writer.add("baseline", relative, JSON.stringify(entry));
       else memory.set(relative, entry);
     }
@@ -749,13 +774,18 @@ export async function mergeDirectoryWithBaseline(input: {
   /** Caller holds the target's writer lock and validated an immutable sparse
    * source. Unchanged entries need no payload and are never copied. */
   snapshots?: { source: DirectorySnapshot; current?: DirectorySnapshot };
+  /** Run-scoped operator cancellation during restore snapshotting and apply. */
+  signal?: AbortSignal | null;
 }): Promise<void> {
-  const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
-  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
+  throwIfWorkspaceRestoreAborted(input.signal);
+  const capture = input.workspaceSnapshotIsolation === "worker" && !input.signal ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
+  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true, signal: input.signal };
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      throwIfWorkspaceRestoreAborted(input.signal);
       await input.beforeApply?.();
+      throwIfWorkspaceRestoreAborted(input.signal);
       if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
         await input.afterApply?.();
         return;
@@ -770,19 +800,22 @@ export async function mergeDirectoryWithBaseline(input: {
           if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
         }
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
           await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true });
         }
         // Reverse path order visits descendants before their parent directory.
         for (const [relative, entry] of orderedEntries(input.baseline, true)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (entry.kind === "dir" && !source.entries.has(relative)) await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "ENOTDIR") throw error;
           });
         }
         for (const [relative, entry] of orderedEntries(source)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
-              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry, input.signal);
         }
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }

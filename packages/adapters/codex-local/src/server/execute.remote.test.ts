@@ -74,6 +74,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
+import {
+  WORKSPACE_RESTORE_CANCELLED,
+  workspaceRestoreCancelledError,
+} from "@paperclipai/adapter-utils/ssh";
 import { execute } from "./execute.js";
 
 describe("codex remote execution", () => {
@@ -693,6 +697,84 @@ describe("codex remote execution", () => {
     expect(retry).not.toContain("## Compact assignment");
     expect(retry.indexOf("comment-first")).toBeLessThan(retry.indexOf("comment-second"));
     expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
+  });
+
+  it("propagates a cancelled workspace restore instead of returning the provider success (TOG-25014)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-restore-cancel-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(rootDir, "instructions.md"), "Use the remote workspace.\n", "utf8");
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    // Provider succeeds, then Stop lands during the SSH copy-back. Pre-fix
+    // the restore catch swallowed the cancellation and execute() returned
+    // the saved success, so the heartbeat recorded workspace_finalize as
+    // succeeded against an incomplete checkout.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "thread.started", thread_id: "session-cancel" }),
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+      ].join("\n"),
+      stderr: "",
+      pid: 125,
+      startedAt: new Date().toISOString(),
+    });
+    restoreWorkspaceFromSshExecution.mockRejectedValueOnce(workspaceRestoreCancelledError());
+
+    await expect(execute({
+      runId: "run-codex-restore-cancel",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Codex Coder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+          strategy: "git_worktree",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "main",
+          branchName: "feature/remote-codex",
+          worktreePath: workspaceDir,
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    })).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
   });
 
 });
