@@ -3612,6 +3612,7 @@ Duplicate headings receive stable suffixes.
     ]);
 
     harness.simulateSessionEvent(result.sessionId, {
+      companyId: COMPANY_ID,
       runId: result.runId,
       seq: 1,
       eventType: "chunk",
@@ -3620,6 +3621,7 @@ Duplicate headings receive stable suffixes.
       payload: null,
     });
     harness.simulateSessionEvent(result.sessionId, {
+      companyId: COMPANY_ID,
       runId: result.runId,
       seq: 2,
       eventType: "done",
