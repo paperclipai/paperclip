@@ -316,9 +316,13 @@ function parseCaseEventsQuery(query: Request["query"]) {
   const requestedLimit = parseOptionalNonNegativeInteger(query.limit, "limit");
   const offset = parseOptionalNonNegativeInteger(query.offset, "offset") ?? 0;
   if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
+  if (query.order !== undefined && query.order !== "asc" && query.order !== "desc") {
+    throw badRequest("order must be asc or desc");
+  }
   return {
     limit: Math.min(requestedLimit ?? PIPELINE_CASE_EVENTS_DEFAULT_LIMIT, PIPELINE_CASE_EVENTS_MAX_LIMIT),
     offset,
+    order: query.order as "asc" | "desc" | undefined,
   };
 }
 
