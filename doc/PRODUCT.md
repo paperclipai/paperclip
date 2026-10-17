@@ -83,14 +83,25 @@ ancestors and expandable subtasks as context without promoting unrelated automat
 work to independent results. Agent profiles, routine histories, and task-detail
 subtasks retain their full history.
 
-Inbox membership continues to follow human creation, assignment, comments, and
-existing qualifying participation actions, including manually running a routine.
-Routine ownership or responsibility alone does not subscribe a person to scheduled
-runs; opening or reading a task is not participation. Inbox discovery searches and
-Blocked hide unrelated automated tasks unless the checkbox is checked, while
-preserving tasks admitted by the existing participation rules. Checking it does
-not subscribe the user to all automation. Approvals and other non-task items keep
-their existing rules.
+Mine contains personal work. Channel tasks, routine tasks, and agent-created tasks
+stay outside Mine by default. This includes routines that a person starts manually.
+Linked accounts, creator IDs, responsible-user IDs, synchronized provider comments,
+and read markers do not establish participation in automatic work. Direct board or
+human API comments, human assignment, and deliberate user mutations do establish
+participation. Open requests addressed to the person also admit the task until
+resolution. Ordinary human-created tasks keep their creator's participation.
+These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
+Approvals retain their existing recipient and permission rules.
+
+New inbound comments retain their provider in `metadata.sourceChannel`. Historical
+imports use inbound message links or the stored provider-sender metadata. These
+checks preserve direct board comments on channel tasks. If both historical
+records are absent, the comment remains unclassified and keeps its previous
+behavior. A task origin alone cannot prove the source of an old comment.
+
+Inbox discovery searches and Blocked hide unrelated automatic tasks unless the
+checkbox is checked. The checkbox does not subscribe a person to automatic work.
+Source feeds and project task lists retain their existing access rules.
 
 ### Company Skills and Policy
 

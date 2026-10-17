@@ -6,12 +6,14 @@ mode (`local-board`). Access to a task does not subscribe someone to notificatio
 
 ## Which tasks qualify
 
-A task qualifies when the viewer created it, is its current human assignee,
-authored a comment, or performed a deliberate action included in the existing
+A task qualifies when the viewer creates an ordinary human task, is its current
+human assignee, comments directly in Paperclip, receives an open addressed request,
+or performs a deliberate action included in the existing
 Mine participation allowlist in
 [`issue-participation.ts`](../server/src/services/issue-participation.ts).
 Read receipts, denied requests, and automatic read-time recovery cleanup do not
-count. Comment authorship follows Mine's existing historical participation rule.
+count. Automatic creator attribution, synchronized comments, and manual routine
+runs also do not count. Comment source checks apply to historical imports.
 
 A task also qualifies when its current description or a non-deleted comment
 contains an explicit mention of the viewer: `[Name](user://USER_ID)`. The shared

@@ -32,7 +32,12 @@ Agent access: `partial` — REST / native call_api; MCP inbox/task search.
 Policy: Own agent context; responsible-user inbox policy and explicit opt-in/grants for
 cross-user archive; decision policy separately. Automatic read cleanup does not
 count as user participation, including historical reader-attributed rows.
-Explicit user recovery decisions still count.
+Explicit user recovery decisions still count. Automatic creator attribution,
+synchronized comments, and manual routine runs do not count. Direct board/API
+comments, human assignment, and open addressed requests qualify. These admission
+rules do not grant task access.
+Historical questions and requests on closed tasks do not qualify. Request unread
+state uses the person's read or reply time, independent of automatic task updates.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L3952) at
 the reviewed commit above. The cleanup exclusion in

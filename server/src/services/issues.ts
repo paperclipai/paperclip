@@ -2,6 +2,7 @@ import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, touchedByUserCondition } from "./issue-participation.js";
 import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
+import { directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
@@ -119,6 +120,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  isAgentCreatedIssue,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -1898,6 +1900,7 @@ type IssueWithLabelsAndRun = IssueWithLabels & {
 };
 type IssueUserCommentStats = {
   issueId: string;
+  isUnreadForMe: boolean;
   myLastCommentAt: Date | null;
   lastExternalCommentAt: Date | null;
 };
@@ -1937,6 +1940,8 @@ function serializeAcceptedPlanDecomposition(
   };
 }
 type IssueUserContextInput = {
+  createdByAgentId?: string | null;
+  originKind?: string | null;
   createdByUserId: string | null;
   assigneeUserId: string | null;
   createdAt: Date | string;
@@ -2826,6 +2831,7 @@ function myLastCommentAtExpr(companyId: string, userId: string) {
       WHERE ${issueComments.issueId} = ${issues.id}
         AND ${issueComments.companyId} = ${companyId}
         AND ${issueComments.authorUserId} = ${userId}
+        AND ${directHumanCommentCondition()}
     )
   `;
 }
@@ -2849,7 +2855,7 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
     GREATEST(
       COALESCE(${myLastCommentAt}, to_timestamp(0)),
       COALESCE(${myLastReadAt}, to_timestamp(0)),
-      COALESCE(CASE WHEN ${issues.createdByUserId} = ${userId} THEN ${issues.createdAt} ELSE NULL END, to_timestamp(0)),
+      COALESCE(CASE WHEN ${issues.createdByUserId} = ${userId} AND ${humanCreatedIssueCondition()} THEN ${issues.createdAt} ELSE NULL END, to_timestamp(0)),
       COALESCE(CASE WHEN ${issues.assigneeUserId} = ${userId} THEN ${issues.updatedAt} ELSE NULL END, to_timestamp(0))
     )
   `;
@@ -2905,10 +2911,14 @@ function issueCanonicalLastActivityAtExpr(companyId: string) {
 function unreadForUserCondition(companyId: string, userId: string) {
   const touchedCondition = touchedByUserCondition(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
+  const myLastRequestReadAt = sql`GREATEST(
+    COALESCE(${myLastCommentAtExpr(companyId, userId)}, to_timestamp(0)),
+    COALESCE(${myLastReadAtExpr(companyId, userId)}, to_timestamp(0))
+  )`;
   return sql<boolean>`
     (
       ${touchedCondition}
-      AND EXISTS (
+      AND (EXISTS (
         SELECT 1
         FROM ${issueComments}
         WHERE ${issueComments.issueId} = ${issues.id}
@@ -2918,7 +2928,7 @@ function unreadForUserCondition(companyId: string, userId: string) {
             OR ${issueComments.authorUserId} <> ${userId}
           )
           AND ${issueComments.createdAt} > ${myLastTouchAt}
-      )
+      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
 }
@@ -2944,6 +2954,7 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
               )
               AND ${issueThreadInteractions.createdAt} > ${issueInboxArchives.archivedAt}
           )
+          OR ${pendingUserRequestCondition(companyId, userId, sql`${issueInboxArchives.archivedAt}`)}
           OR EXISTS (
             SELECT 1
             FROM ${activityLog}
@@ -3012,6 +3023,7 @@ export function deriveIssueUserContext(
   userId: string,
   stats:
     | {
+        isUnreadForMe?: boolean;
         myLastCommentAt: Date | string | null;
         myLastReadAt: Date | string | null;
         lastExternalCommentAt: Date | string | null;
@@ -3030,7 +3042,9 @@ export function deriveIssueUserContext(
   const myLastCommentAt = normalizeDate(stats?.myLastCommentAt);
   const myLastReadAt = normalizeDate(stats?.myLastReadAt);
   const createdTouchAt =
-    issue.createdByUserId === userId ? normalizeDate(issue.createdAt) : null;
+    issue.createdByUserId === userId && !isAgentCreatedIssue(issue)
+      ? normalizeDate(issue.createdAt)
+      : null;
   const assignedTouchAt =
     issue.assigneeUserId === userId ? normalizeDate(issue.updatedAt) : null;
   const myLastTouchAt =
@@ -3038,7 +3052,7 @@ export function deriveIssueUserContext(
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
   const lastExternalCommentAt = normalizeDate(stats?.lastExternalCommentAt);
-  const isUnreadForMe = Boolean(
+  const isUnreadForMe = stats?.isUnreadForMe ?? Boolean(
     myLastTouchAt &&
     lastExternalCommentAt &&
     lastExternalCommentAt.getTime() > myLastTouchAt.getTime(),
@@ -4972,7 +4986,8 @@ async function userCommentStatsForIssues(
       .select({
         issueId: issueComments.issueId,
         myLastCommentAt: sql<Date | null>`
-          MAX(CASE WHEN ${issueComments.authorUserId} = ${userId} THEN ${issueComments.createdAt} END)
+          MAX(CASE WHEN ${issueComments.authorUserId} = ${userId} AND ${directHumanCommentCondition()}
+            THEN ${issueComments.createdAt} END)
         `,
         lastExternalCommentAt: sql<Date | null>`
           MAX(
@@ -4991,7 +5006,21 @@ async function userCommentStatsForIssues(
         ),
       )
       .groupBy(issueComments.issueId);
-    stats.push(...rows);
+    const unreadRows = await dbOrTx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId),
+      inArray(issues.id, issueIdChunk),
+      unreadForUserCondition(companyId, userId),
+    ));
+    const unreadIds = new Set(unreadRows.map((row: { id: string }) => row.id));
+    const commentsByIssueId = new Map<string, { myLastCommentAt: Date | null; lastExternalCommentAt: Date | null }>(
+      rows.map((row: { issueId: string; myLastCommentAt: Date | null; lastExternalCommentAt: Date | null }) => [row.issueId, row]),
+    );
+    for (const issueId of issueIdChunk) stats.push({
+      issueId,
+      myLastCommentAt: commentsByIssueId.get(issueId)?.myLastCommentAt ?? null,
+      lastExternalCommentAt: commentsByIssueId.get(issueId)?.lastExternalCommentAt ?? null,
+      isUnreadForMe: unreadIds.has(issueId),
+    });
   }
   return stats;
 }
@@ -6205,14 +6234,6 @@ function assertValidAssigneeAgentFilter(
   }
 }
 
-function humanCreatedIssueCondition() {
-  return and(
-    isNull(issues.createdByAgentId),
-    isNotNull(issues.createdByUserId),
-    inArray(issues.originKind, [...HUMAN_TASK_ORIGIN_KINDS]),
-  )!;
-}
-
 function creationVisibilityCondition(companyId: string, filters?: IssueFilters) {
   if (filters?.includeAgentCreatedTasks !== false) return undefined;
   return filters.creationVisibilityUserId
@@ -6507,6 +6528,7 @@ async function listBlockedInboxIssues(
             : {}),
           ...(contextUserId
             ? deriveIssueUserContext(row, contextUserId, {
+                isUnreadForMe: statsByIssueId.get(row.id)?.isUnreadForMe ?? false,
                 myLastCommentAt:
                   statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
                 myLastReadAt: readByIssueId.get(row.id) ?? null,
@@ -8309,6 +8331,7 @@ export function issueService(db: Db) {
               }
             : {}),
           ...deriveIssueUserContext(row, contextUserId, {
+            isUnreadForMe: statsByIssueId.get(row.id)?.isUnreadForMe ?? false,
             myLastCommentAt:
               statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
             myLastReadAt: readByIssueId.get(row.id) ?? null,
@@ -12667,7 +12690,7 @@ export function issueService(db: Db) {
           // instead of returning early and letting the generic completion
           // milestone win the provider reply slot.
           const shouldUpgradeExternalAuthorization =
-            authorType === "agent" &&
+            ***REDACTED*** === "agent" &&
             metadata?.authorizationReason ===
               CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON &&
             existing.metadata?.authorizationReason !==
@@ -12675,7 +12698,7 @@ export function issueService(db: Db) {
           const shouldBindAttachments =
             (options?.attachmentIds?.length ?? 0) > 0;
           const shouldUpgradeAttachmentAuthorization =
-            shouldBindAttachments &&
+            ***REDACTED*** &&
             isExplicitExternalAgentComment(metadata) &&
             !isExplicitExternalAgentComment(existing.metadata);
           if (

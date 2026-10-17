@@ -1121,7 +1121,7 @@ Core authorization follows these rules:
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - Concurrent archives keep the newest archive time and its actor attribution. An earlier request must not undo an archive written by human completion while it waited. Unarchive removes that state so a later archive starts fresh.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
-- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
+- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with direct human creation of an ordinary task, human assignment, a direct board/API comment, or another deliberate audited user mutation. Open requests addressed to the person also admit the task until resolution. Channel and routine creator attribution, imported comments, and manual routine runs do not establish participation.
 
 Failed-run rows in Mine and the inbox badge use the run's `responsibleUserId`.
 Another user's run does not appear there, even for a shared agent. Select the
@@ -2257,9 +2257,14 @@ pagination, and retrieve hierarchy context separately under existing access chec
 Context does not count as independent results or board cards. Bounded context
 reads retain loaded rows while users reveal more of the tree.
 
-Inbox membership, archives, unread state, and badges retain existing participation
-rules, including assignment, comments, and manual routine runs. Responsibility and
-read-only activity do not admit scheduled work. Inbox discovery/Blocked preserve
+Mine, unread counts, badges, and task toasts use the same personal participation
+rules. Automatic creator attribution, synchronized provider comments, manual routine
+runs, responsibility, and read-only activity do not admit automatic work. Human
+assignment, direct board/API participation, and open addressed requests still qualify.
+Only current requests on open tasks qualify. Historical questions remain answerable
+without adding tasks to Mine. A request stays unread until the person reads or
+replies; automatic task updates do not mark requests as read.
+Existing archive behavior and access checks remain in force. Inbox discovery/Blocked preserve
 participated automation and hide unrelated automation by default. Agent profile
 history, routine history, and task-detail subtasks remain complete. API consumers
 that omit the optional creation filter retain their existing list behavior.
