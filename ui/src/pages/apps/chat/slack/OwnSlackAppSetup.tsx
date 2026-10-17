@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
+import { createUuid } from "@/lib/uuid";
 import { SlackSetupAdvanced } from "../SlackAppDetails";
 
 /** Uses ordinary request-local state: configuration tokens never enter a query/mutation cache. */
@@ -27,7 +28,7 @@ export function OwnSlackAppSetup({ endpoint, stage, disabled, saveDetails, onSav
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkedNoApp, setCheckedNoApp] = useState(false);
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(createUuid());
   const inFlight = useRef(false);
   const pendingWindow = useRef<Window | null>(null);
   const mounted = useRef(true);
@@ -76,7 +77,7 @@ export function OwnSlackAppSetup({ endpoint, stage, disabled, saveDetails, onSav
       let next: ChatEndpoint;
       try {
         if (!created) await saveDetails();
-        if (registration?.status === "failed" || checkedNoApp) requestId.current = crypto.randomUUID();
+        if (registration?.status === "failed" || checkedNoApp) requestId.current = createUuid();
         setCheckedNoApp(false);
         next = await chatEndpointsApi.createSlackApp(endpoint.id, {
           requestId: requestId.current,
