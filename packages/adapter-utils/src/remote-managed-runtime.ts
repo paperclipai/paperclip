@@ -112,6 +112,8 @@ export async function prepareRemoteManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  runtimeRootDir?: string;
+  removeRuntimeRootOnRestore?: boolean;
   syncWorkspace?: boolean;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
@@ -133,7 +135,8 @@ export async function prepareRemoteManagedRuntime(input: {
         "workspace",
       )
     : baseWorkspaceRemoteDir;
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const runtimeRootDir =
+    input.runtimeRootDir ?? path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -268,6 +271,16 @@ export async function prepareRemoteManagedRuntime(input: {
           assetDir: path.posix.join(runtimeRootDir, asset.key),
           readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
         });
+      }
+      if (input.removeRuntimeRootOnRestore) {
+        try {
+          await runSshCommand(
+            input.spec,
+            `rm -rf -- ${shellQuote(runtimeRootDir)} && rmdir -- ${shellQuote(path.posix.dirname(runtimeRootDir))} 2>/dev/null || true`,
+          );
+        } catch (error) {
+          console.warn(`[paperclip] Failed to remove remote runtime directory ${runtimeRootDir}. ${String(error)}`);
+        }
       }
     },
   };

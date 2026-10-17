@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ const {
   resolveCommandForLogs,
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
+  runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const {
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: claude"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
+  runSshCommand: vi.fn(async () => ({ stdout: "", stderr: "" })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
@@ -63,6 +65,7 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
     ...actual,
     prepareWorkspaceForSshExecution,
     restoreWorkspaceFromSshExecution,
+    runSshCommand,
     syncDirectoryToSsh,
   };
 });
@@ -78,7 +81,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
-import { execute } from "./execute.js";
+import { execute, resolveClaudeRunScopedRuntimeRoot } from "./execute.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 describe("claude remote execution", () => {
@@ -228,6 +231,134 @@ describe("claude remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
+    }));
+  });
+
+  it("runs in place at the authoritative root without archive prepare or restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-in-place-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-in-place",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude" },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "task_session",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/copied/workspace",
+        workspaceRealization: {
+          mode: "in_place",
+          authoritativeRoot: "/app",
+          pathAliases: [],
+          outboundRestorePaths: [],
+        },
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/app",
+          remoteCwd: "/app",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/runs/run-in-place/claude/skills",
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/runs/run-in-place/claude/mcp-config",
+    }));
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("rm -rf -- '/app/.paperclip-runtime/runs/run-in-place/claude'"),
+    );
+    const call = runChildProcess.mock.calls.find((c) => !(c[2] as string[]).includes("--version")) as unknown as
+      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | undefined;
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/app");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_REALIZATION_MODE).toBe("in_place");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT).toBe("/app");
+    expect(call?.[3].remoteExecution?.remoteCwd).toBe("/app");
+  });
+
+  it("scopes the runtime root per run only for in-place SSH targets", () => {
+    const realization = {
+      mode: "in_place" as const,
+      authoritativeRoot: "/app",
+      pathAliases: [],
+      outboundRestorePaths: [],
+    };
+    type Target = Parameters<typeof resolveClaudeRunScopedRuntimeRoot>[0];
+    const sshInPlace = { kind: "remote", transport: "ssh", remoteCwd: "/app", workspaceRealization: realization } as unknown as Target;
+    const sshCopy = { kind: "remote", transport: "ssh", remoteCwd: "/app" } as unknown as Target;
+    const sandboxInPlace = { kind: "remote", transport: "sandbox", remoteCwd: "/app", workspaceRealization: realization } as unknown as Target;
+
+    expect(resolveClaudeRunScopedRuntimeRoot(sshInPlace, "run-a")).toEqual({
+      runtimeRootDir: "/app/.paperclip-runtime/runs/run-a/claude",
+      removeRuntimeRootOnRestore: true,
+    });
+    expect(resolveClaudeRunScopedRuntimeRoot(sshCopy, "run-a")).toEqual({});
+    expect(resolveClaudeRunScopedRuntimeRoot(sandboxInPlace, "run-a")).toEqual({});
+    expect(resolveClaudeRunScopedRuntimeRoot(null, "run-a")).toEqual({});
+  });
+
+  it("creates a missing local workspace before it copies the workspace to the SSH host", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-new-cwd-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "new-workspace");
+
+    await execute({
+      runId: "run-new-cwd",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude", cwd: workspaceDir },
+      context: {},
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect((await stat(workspaceDir)).isDirectory()).toBe(true);
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: workspaceDir,
     }));
   });
 

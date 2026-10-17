@@ -41,6 +41,36 @@ describe("claude engine availability", () => {
     expect(result.engine).toBe("acp");
     expect(result.unavailableReason).toContain("not available");
   });
+
+  it("rejects ACP for an in-place workspace realization and points to the CLI engine", async () => {
+    Object.defineProperty(process, "version", { value: "v24.11.0" });
+    const result = await resolveClaudeExecutionEngineForRun({
+      config: { engine: "acp" },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/app",
+        workspaceRealization: {
+          mode: "in_place",
+          authoritativeRoot: "/app",
+          pathAliases: [],
+          outboundRestorePaths: [],
+        },
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/app",
+          remoteCwd: "/app",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+    });
+    expect(result.engine).toBe("acp");
+    expect(result.unavailableReason).toContain("In-place workspace realization requires the Claude CLI engine");
+  });
 });
 
 

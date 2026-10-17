@@ -110,6 +110,9 @@ describe("remote managed runtime", () => {
       localDir: homeDir,
       remoteDir: "/app/.paperclip-runtime/codex/home",
     }));
+    expect(syncDirectoryToSsh).not.toHaveBeenCalledWith(expect.objectContaining({
+      replaceRemoteDir: expect.anything(),
+    }));
 
     await prepared.restoreWorkspace();
 
@@ -120,6 +123,53 @@ describe("remote managed runtime", () => {
       { maxBuffer: 1024 * 1024 },
     );
     expect(restoredAuth).toBe('{"token":"remote"}\n');
+    expect(runSshCommand).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("rm -rf"));
+  });
+
+  it("stages assets under a run-scoped runtime root and removes it after restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-run-scoped-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const skillsDir = path.join(rootDir, "skills");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(skillsDir, { recursive: true });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-a",
+      adapterKey: "claude",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      runtimeRootDir: "/app/.paperclip-runtime/runs/run-a/claude",
+      removeRuntimeRootOnRestore: true,
+      syncWorkspace: false,
+      assets: [{ key: "skills", localDir: skillsDir }],
+    });
+
+    expect(prepared.runtimeRootDir).toBe("/app/.paperclip-runtime/runs/run-a/claude");
+    expect(prepared.assetDirs.skills).toBe("/app/.paperclip-runtime/runs/run-a/claude/skills");
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: skillsDir,
+      remoteDir: "/app/.paperclip-runtime/runs/run-a/claude/skills",
+    }));
+    expect(runSshCommand).not.toHaveBeenCalled();
+
+    await prepared.restoreWorkspace();
+
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      "rm -rf -- '/app/.paperclip-runtime/runs/run-a/claude' && rmdir -- '/app/.paperclip-runtime/runs/run-a' 2>/dev/null || true",
+    );
   });
 
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {

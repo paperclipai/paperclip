@@ -102,6 +102,13 @@ export async function resolveClaudeExecutionEngineForRun(
     ...selection,
     unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
   });
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    return unavailable("In-place workspace realization requires the Claude CLI engine; ACP archive staging is not supported.");
+  }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {

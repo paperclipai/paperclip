@@ -1438,6 +1438,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceRemoteDir?: string;
   /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
   runtimeRootDir?: string;
+  removeRuntimeRootOnRestore?: boolean;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
@@ -1496,6 +1497,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      runtimeRootDir: input.runtimeRootDir,
+      removeRuntimeRootOnRestore: input.removeRuntimeRootOnRestore,
       syncWorkspace: input.syncWorkspace,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,
