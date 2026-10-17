@@ -262,6 +262,7 @@ export function evaluateIssueThreadInteractionResolverAudience(
       status: 403,
       code: "interaction_addressee_mismatch",
       message: "This issue-thread interaction is addressed to a specific user",
+      details: { addresseeUserId: input.interaction.addresseeUserId },
     };
   }
 
@@ -275,6 +276,7 @@ export function evaluateIssueThreadInteractionResolverAudience(
       status: 403,
       code: "interaction_addressee_mismatch",
       message: "Only the addressed agent or an authorized human may resolve this issue-thread interaction",
+      details: { addresseeAgentId: input.interaction.addresseeAgentId },
     };
   }
 
