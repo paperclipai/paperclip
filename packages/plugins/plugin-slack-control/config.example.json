@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "workspaceId": "TEXAMPLE",
+  "appToken": { "type": "secret_ref", "secretId": "00000000-0000-0000-0000-000000000001" },
+  "botToken": { "type": "secret_ref", "secretId": "00000000-0000-0000-0000-000000000002" },
+  "users": [{ "slackUserId": "UEXAMPLE", "boardUserId": "replace-with-an-active-paperclip-user-id" }],
+  "projects": [{ "alias": "demo", "projectId": "00000000-0000-0000-0000-000000000003", "agentId": "00000000-0000-0000-0000-000000000004" }]
+}
