@@ -9,6 +9,18 @@ For the adapter-author guide see
 [`docs/adapters/creating-an-adapter.md`](../../docs/adapters/creating-an-adapter.md)
 and the in-repo notes at [`packages/adapters/AUTHORING.md`](../adapters/AUTHORING.md).
 
+## Skill invocation hints
+
+The skill-library manifest includes an invocation hint for each enabled skill
+whose source is not marked missing and whose runtime name is valid. Adapters
+must preserve that exact name when invoking the skill; its display name is not
+an invocation alias. A valid runtime name contains 1–255 characters and no
+whitespace or backticks. The manifest omits the invocation hint for an unsafe or
+longer name instead of truncating it into a name the runtime cannot invoke.
+Disabled skills and entries already marked missing receive no hint. The
+manifest can be built before mounting, so a later mount failure does not remove
+a previously rendered hint; the hint is not proof of a successful mount.
+
 ## Sandbox bridge deadlines
 
 Command-managed bridge control operations (queue reads, input delivery, setup,
