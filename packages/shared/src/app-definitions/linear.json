@@ -23,7 +23,7 @@
         "dcr",
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Authorize Linear through OAuth for workspace issue tools.",
       "defaults": {
         "serverUrl": "https://mcp.linear.app/mcp",
         "authorizationEndpoint": "https://linear.app/oauth/authorize",

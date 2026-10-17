@@ -52,7 +52,7 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Use a fine-grained GitHub personal access token for repository tools through GitHub's MCP server.",
       "defaults": {
         "serverUrl": "https://api.githubcopilot.com/mcp/"
       },

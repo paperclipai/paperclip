@@ -208,12 +208,12 @@ const apps = [
     ),
   ],
   ...[
-    ["arcade", "Arcade", "https://api.arcade.dev/*", "https://docs.arcade.dev/en/operate/governance/mcp-gateways"],
-    ["executor", "Executor", "https://executor.sh/*", "https://executor.sh/docs/mcp-proxy"],
-  ].map(([slug, name, pattern, docsUrl]) => [
+    ["arcade", "Arcade", "https://api.arcade.dev/*", "https://docs.arcade.dev/en/operate/governance/mcp-gateways", "Paste your Arcade MCP gateway URL to use the tools selected for that gateway."],
+    ["executor", "Executor", "https://executor.sh/*", "https://executor.sh/docs/mcp-proxy", "Paste your Executor MCP URL to use the integrations configured in Executor."],
+  ].map(([slug, name, pattern, docsUrl, whenToUse]) => [
     slug, name, `Use the tools exposed by your ${name} MCP connection.`, "productivity", new URL(pattern).hostname, [pattern],
     method("mcp", "mcp_remote", "none", {}, "S3", `Paste your ${name} MCP URL. Sign in if required, or add a token or headers under Advanced authentication.`, {
-      label: "Connect MCP server", ownershipModes: ["dcr", "customer"], consoleLinks: { docs: docsUrl },
+      label: "Connect MCP server", whenToUse, ownershipModes: ["dcr", "customer"], consoleLinks: { docs: docsUrl },
     }),
     { featured: true, docsUrl },
   ]),
@@ -294,6 +294,7 @@ const apps = [
         "Create a fine-grained token limited to the repositories agents should use.",
         {
           label: "Personal access token (advanced)",
+          whenToUse: "Use a fine-grained GitHub personal access token for repository tools through GitHub's MCP server.",
           purpose: "tool",
           credentialFields: [
             field("authorization", "GitHub token", "github_pat_..."),
@@ -363,6 +364,7 @@ const apps = [
         "Connect a Slack workspace and limit access to the channels agents need.",
         {
           label: "Use this connection as an agent tool",
+          whenToUse: "Authorize your Slack app through OAuth to give agents Slack workspace tools.",
           purpose: "tool",
           ownershipModes: ["customer"],
           requiredResourceFilters: ["workspace", "channel"],
@@ -496,6 +498,7 @@ const apps = [
       "S3",
       "Connect Notion for workspace content. Share only the pages and databases agents should use.",
       {
+        whenToUse: "Sign in to Notion to read and update workspace pages through its hosted MCP server.",
         requiredResourceFilters: ["workspace", "page", "database"],
         ...vercelConnect("notion", "user", ["*"]),
       },
@@ -561,6 +564,7 @@ const apps = [
       "S2",
       "Register a Linear OAuth app and add Paperclip's redirect URI before connecting.",
       {
+        whenToUse: "Authorize Linear through OAuth for workspace issue tools.",
         ownershipModes: ["customer"],
         requiredResourceFilters: ["workspace", "team", "project"],
         ...vercelConnect("linear", "user", ["read", "write"]),
@@ -716,7 +720,7 @@ const apps = [
     "productivity",
     "composio.dev",
     ["https://backend.composio.dev/*", "https://connect.composio.dev/*", "https://mcp.composio.dev/*", "https://*.composio.dev/*"],
-    [method("mcp", "mcp_remote", "none", { serverUrl: "https://connect.composio.dev/mcp" }, "S3", "Sign in to Composio Connect, or paste an externally configured MCP session URL and headers.", { label: "Composio Connect", ownershipModes: ["dcr", "customer"] })],
+    [method("mcp", "mcp_remote", "none", { serverUrl: "https://connect.composio.dev/mcp" }, "S3", "Sign in to Composio Connect, or paste an externally configured MCP session URL and headers.", { label: "Composio Connect", whenToUse: "Sign in to Composio Connect, or use an MCP session URL you configured in Composio.", ownershipModes: ["dcr", "customer"] })],
     { featured: true, docsUrl: "https://docs.composio.dev/docs/composio-connect" },
   ],
   [
@@ -787,7 +791,10 @@ const apps = [
       },
       "S2",
       "Connect the Sentry organization and projects agents need for incident work.",
-      { requiredResourceFilters: ["organization", "project", "environment"] },
+      {
+        whenToUse: "Sign in to Sentry to investigate errors and issues through its hosted MCP server.",
+        requiredResourceFilters: ["organization", "project", "environment"],
+      },
     ),
   ],
   [
