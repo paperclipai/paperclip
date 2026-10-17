@@ -4298,6 +4298,13 @@ export function recoveryService(
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId)
       return null;
 
+    const monitorState = parseIssueExecutionState(input.issue.executionState)?.monitor;
+    if (monitorState?.status === "cleared" && monitorState.clearReason === "manual") {
+      const clearedAt = monitorState.clearedAt ? Date.parse(monitorState.clearedAt) : NaN;
+      if (Number.isFinite(clearedAt) && clearedAt > input.latestRun.createdAt.getTime())
+        return null;
+    }
+
     const previousPolicy = normalizeIssueExecutionPolicy(
       input.issue.executionPolicy ?? null,
     );
