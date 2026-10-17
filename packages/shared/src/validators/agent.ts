@@ -69,7 +69,9 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
-  aiConnection: aiConnectionBindingSchema.optional(),
+  // An explicit null clears a previously set pin (the agent PATCH route
+  // distinguishes it from an omitted field, which leaves the pin in place).
+  aiConnection: aiConnectionBindingSchema.nullable().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
