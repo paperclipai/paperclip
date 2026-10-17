@@ -7,7 +7,7 @@ import {
   getQuotaWindows,
   parseClaudeCliUsageText,
   readClaudeAuthStatus,
-  readClaudeToken,
+  readClaudeQuotaToken,
 } from "../server/quota.js";
 
 interface ProbeArgs {
@@ -37,7 +37,7 @@ async function main() {
   }
 
   const authStatus = await readClaudeAuthStatus();
-  const token = await readClaudeToken();
+  const token = await readClaudeQuotaToken();
 
   const result: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
@@ -49,7 +49,7 @@ async function main() {
     if (!token) {
       result.oauth = {
         ok: false,
-        error: "No Claude OAuth access token found in local credentials files.",
+        error: "No Claude OAuth access token found in local credentials files or the macOS Keychain.",
         windows: [],
       };
     } else {

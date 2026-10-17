@@ -259,6 +259,13 @@ vi.mock("../services/skill-source-sync.js", () => ({
   skillSourceSyncService: () => ({ tick: vi.fn(async () => ({ imported: 0, checked: 0 })), stop: vi.fn(async () => {}) }),
 }));
 
+// The pacing controller is replaced, so a test can hold its first quota poll.
+const quotaPacingMock = vi.hoisted(() => ({ ready: Promise.resolve() as Promise<void>, stop: () => undefined }));
+vi.mock("../services/quota-pacing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/quota-pacing.js")>()),
+  startQuotaPacing: () => quotaPacingMock,
+}));
+
 vi.mock("../services/native-runtime/native-session-executor.js", () => ({
   verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
 }));
@@ -458,6 +465,7 @@ async function settleStartupHousekeeping() {
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    quotaPacingMock.ready = Promise.resolve();
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
@@ -947,6 +955,28 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the first quota pacing poll before the orphan reaper can start queued runs", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let finishFirstPoll!: () => void;
+    quotaPacingMock.ready = new Promise<void>((resolve) => {
+      finishFirstPoll = resolve;
+    });
+
+    const started = startServer();
+    await vi.waitFor(() => expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+
+    finishFirstPoll();
+    await started;
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalled();
   });
 
   it("closes the bound listener when native startup recovery fails", async () => {

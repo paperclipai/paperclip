@@ -1,6 +1,7 @@
 import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils";
 import { listServerAdapters } from "../adapters/registry.js";
+import type { ServerAdapterModule } from "../adapters/types.js";
 import { logger } from "../middleware/logger.js";
 import { createHash } from "node:crypto";
 import { eq, inArray, and } from "drizzle-orm";
@@ -136,7 +137,35 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
 
 const QUOTA_PROVIDER_TIMEOUT_MS = 20_000;
 
-function providerSlugForAdapterType(type: string): string {
+/**
+ * How long a successful quota result is reused. Every caller of
+ * fetchAllQuotaWindows() (today the pacing controller) shares it, so each
+ * provider gets about one request per minute at most, however many callers
+ * there are. Provider usage endpoints rate limit fast polling
+ * (https://github.com/paperclipai/paperclip/issues/14096).
+ */
+export const QUOTA_WINDOWS_CACHE_TTL_MS = 60_000;
+
+/**
+ * How long a failed quota result is reused. A failure is often transient (a
+ * timeout or a 429), so it is kept only long enough to absorb a burst of
+ * callers. A full TTL would pin the failure and keep fresh data from pacing
+ * for a minute after the provider recovers.
+ */
+export const QUOTA_WINDOWS_ERROR_CACHE_TTL_MS = 10_000;
+
+interface CachedQuotaResult {
+  result: ProviderQuotaResult;
+  fetchedAtMs: number;
+}
+
+// Keyed by adapter type. Module scope, so every route and the pacing
+// controller in this process share one cache and one in-flight request.
+const cachedResults = new Map<string, CachedQuotaResult>();
+const inFlightFetches = new Map<string, Promise<CachedQuotaResult>>();
+
+/** Provider slug that quota results use for an adapter type. */
+export function providerSlugForAdapterType(type: string): string {
   switch (type) {
     case "claude_local":
       return "anthropic";
@@ -148,34 +177,81 @@ function providerSlugForAdapterType(type: string): string {
 }
 
 /**
- * Asks each registered adapter for its provider quota windows and aggregates the results.
- * Adapters that don't implement getQuotaWindows() are silently skipped.
- * Individual adapter failures are caught and returned as error results rather than
- * letting one provider's outage block the entire response.
+ * Returns the quota windows of each registered adapter that implements
+ * getQuotaWindows(); other adapters are skipped. This is the only path to
+ * live provider quota data. Concurrent callers share one in-flight request
+ * per adapter, and a result fetched less than QUOTA_WINDOWS_CACHE_TTL_MS ago
+ * (QUOTA_WINDOWS_ERROR_CACHE_TTL_MS for a failure) is served from the cache.
+ * Each result carries `fetchedAt`, the time its provider answered.
+ * A failing or slow adapter yields an error result rather than blocking the
+ * other providers. With `providers`, only the adapters of those provider
+ * slugs are read.
  */
-export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
-  const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
+export async function fetchAllQuotaWindows(
+  options: { providers?: readonly string[] } = {},
+): Promise<ProviderQuotaResult[]> {
+  const { providers } = options;
+  const adapters = listServerAdapters().filter((adapter) =>
+    adapter.getQuotaWindows != null
+    && (!providers || providers.includes(providerSlugForAdapterType(adapter.type))));
+  const entries = await Promise.all(adapters.map((adapter) => sharedAdapterQuota(adapter)));
+  return entries.map((entry) => entry.result);
+}
 
-  const settled = await Promise.allSettled(
-    adapters.map((adapter) => withQuotaTimeout(adapter.type, Promise.resolve().then(() => adapter.getQuotaWindows!()))),
-  );
+/** Clears the shared quota cache. Tests only. */
+export function resetQuotaWindowsCacheForTests(): void {
+  cachedResults.clear();
+  inFlightFetches.clear();
+}
 
-  return settled.map((result, i) => {
-    const adapterType = adapters[i]!.type;
-    const quota: ProviderQuotaResult = result.status === "fulfilled" ? result.value : {
-      provider: providerSlugForAdapterType(adapterType),
+function isFresh(entry: CachedQuotaResult, nowMs: number): boolean {
+  const ttlMs = entry.result.ok ? QUOTA_WINDOWS_CACHE_TTL_MS : QUOTA_WINDOWS_ERROR_CACHE_TTL_MS;
+  return nowMs - entry.fetchedAtMs < ttlMs;
+}
+
+function sharedAdapterQuota(adapter: ServerAdapterModule): Promise<CachedQuotaResult> {
+  const cached = cachedResults.get(adapter.type);
+  if (cached && isFresh(cached, Date.now())) return Promise.resolve(cached);
+  const pending = inFlightFetches.get(adapter.type);
+  if (pending) return pending;
+
+  const request = fetchAdapterQuota(adapter)
+    .then((result): CachedQuotaResult => {
+      const fetchedAtMs = Date.now();
+      const entry = { result: { ...result, fetchedAt: new Date(fetchedAtMs).toISOString() }, fetchedAtMs };
+      cachedResults.set(adapter.type, entry);
+      return entry;
+    })
+    .finally(() => {
+      inFlightFetches.delete(adapter.type);
+    });
+  inFlightFetches.set(adapter.type, request);
+  return request;
+}
+
+/**
+ * One adapter's quota result. Never rejects: a failure becomes an error result
+ * with a public message; the redacted provider diagnostic goes only to the log.
+ */
+async function fetchAdapterQuota(adapter: ServerAdapterModule): Promise<ProviderQuotaResult> {
+  let quota: ProviderQuotaResult;
+  try {
+    quota = await withQuotaTimeout(adapter.type, Promise.resolve().then(() => adapter.getQuotaWindows!()));
+  } catch (err) {
+    quota = {
+      provider: providerSlugForAdapterType(adapter.type),
       ok: false,
-      error: String(result.reason),
+      error: String(err),
       windows: [],
     };
-    if (quota.ok) return { ...quota, error: undefined };
-    logger.warn({
-      adapterType,
-      errorFamily: quota.errorFamily,
-      diagnostic: redactDiagnosticText(quota.error ?? "Quota probe failed").slice(0, 2_000),
-    }, "Provider subscription quota unavailable");
-    return { ...quota, error: "Subscription quota is currently unavailable. Check usage with your provider." };
-  });
+  }
+  if (quota.ok) return { ...quota, error: undefined };
+  logger.warn({
+    adapterType: adapter.type,
+    errorFamily: quota.errorFamily,
+    diagnostic: redactDiagnosticText(quota.error ?? "Quota probe failed").slice(0, 2_000),
+  }, "Provider subscription quota unavailable");
+  return { ...quota, error: publicError };
 }
 
 async function withQuotaTimeout(

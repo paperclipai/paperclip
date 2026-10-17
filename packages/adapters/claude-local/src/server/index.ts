@@ -20,6 +20,7 @@ export {
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,
+  readClaudeQuotaToken,
   readIsolatedClaudeKeychainToken,
   fetchClaudeQuota,
   fetchClaudeCliQuota,

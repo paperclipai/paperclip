@@ -1,4 +1,5 @@
 import type { FeedbackDataSharingPreference } from "./feedback.js";
+import type { QuotaPacingSettings } from "./quota-pacing.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -37,6 +38,8 @@ export interface InstanceGeneralSettings {
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
+  /** Quota-aware run pacing for local subscription agents. Off by default. */
+  quotaPacing: QuotaPacingSettings;
 }
 
 export interface InstanceExperimentalSettings {

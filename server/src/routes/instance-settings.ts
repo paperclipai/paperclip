@@ -28,6 +28,7 @@ import {
   type ActivityPublication,
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
+import { applyQuotaPacingSettings } from "../services/quota-pacing.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
@@ -226,6 +227,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         (field) => hidden.has(`instance.general.${field}`),
       );
       const updated = await svc.updateGeneral(req.body);
+      // Pacing reads its settings on each poll; push a change now so the
+      // scheduler uses it at once.
+      if (Object.prototype.hasOwnProperty.call(req.body, "quotaPacing")) {
+        applyQuotaPacingSettings(updated.general.quotaPacing);
+      }
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(

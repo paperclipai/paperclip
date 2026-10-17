@@ -31,8 +31,9 @@ import {
   heartbeatService,
   accessService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { getQuotaPacingState } from "../services/quota-pacing.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -341,6 +342,22 @@ export function costRoutes(
     }
     const results = await fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId);
     res.json(results);
+  });
+
+  // Quota pacing is instance-wide and reads the quota of the server's own
+  // subscription login, not the company's AI connections. Thus only instance
+  // admins can read it, as only they can change its settings. It returns
+  // cached state and never polls a provider.
+  router.get("/companies/:companyId/costs/quota-pacing", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+    const company = await companies.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json(getQuotaPacingState());
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
