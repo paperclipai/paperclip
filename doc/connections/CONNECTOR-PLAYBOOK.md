@@ -985,8 +985,8 @@ credential alone does not give an agent email capabilities. An active inbox
 assigned to that agent does, provided both the inbox connection and saved
 credential access remain authorized. AgentMail is available by default and does
 not depend on the experimental chat-connector flag. Other connectors must define an equally concrete assignment rule. TypeSafe
-has no per-agent resource, so its rule is an active connection with an install
-that targets the company or that agent. Keep every
+has no per-agent resource, so its rule is an active connection with an active
+organization grant and an install that targets the company or that agent. Keep every
 lookup company-scoped. Revoked grants, disabled connections, removed assignments,
 and any applicable experimental gates must remove the contribution. Fail closed on lookup errors.
 

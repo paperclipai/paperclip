@@ -1,6 +1,6 @@
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, exists, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { connectionGrants, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { typesafeAskSchema, type TypesafeAskResult } from "@paperclipai/shared";
 import { HttpError, badRequest, forbidden, unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
@@ -91,6 +91,20 @@ export async function assignedTypesafeConnections(
         eq(toolConnections.enabled, true),
         // Same health gate as the tool gateway's catalog.
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
+        // The key is the organization identity; revoking that grant revokes the key.
+        exists(
+          db
+            .select({ id: connectionGrants.id })
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.companyId, binding.companyId),
+                eq(connectionGrants.connectionId, toolConnections.id),
+                eq(connectionGrants.kind, "organization"),
+                eq(connectionGrants.status, "active"),
+              ),
+            ),
+        ),
         or(
           and(
             eq(toolConnectionInstalls.targetType, "company"),

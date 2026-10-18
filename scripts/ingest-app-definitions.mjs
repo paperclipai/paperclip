@@ -189,6 +189,7 @@ const apps = [
   }],
   ["typesafe", "TypeSafe", "Ask the Jev model yes/no, multiple-choice and scoring questions and get calibrated answers.", "ai", "typesafe.ai", ["https://docs.typesafe.ai/*"], {
     key: "api-key", label: "Connect with an API key", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
+    grantKinds: ["organization"],
     whenToUse: "Use a TypeSafe API key so agents can ask Jev typed questions.",
     credentialFields: [{ key: "apiKey", label: "TypeSafe API key", type: "password", placeholder: "Paste your TypeSafe API key", required: true, secret: true, helperMd: "Content an agent submits for evaluation is sent to TypeSafe. Grant access only to agents whose task content may leave this instance." }],
     keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },

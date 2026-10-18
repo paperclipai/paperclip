@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { listPaperclipSkillEntries } from "@paperclipai/adapter-utils/server-utils";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -220,6 +222,39 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
       expect(await assignedTypesafeConnections(db, { companyId, agentId: first.id })).toEqual([]);
     },
   );
+
+  it("stops calls once its organization identity is revoked", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    const service = toolAccessService(db);
+    const {
+      grants: [grant],
+    } = await service.listConnectionGrants(connectionId, companyId);
+    expect(grant).toMatchObject({ kind: "organization", status: "active" });
+    await service.revokeConnectionGrant(connectionId, grant!.id, actor);
+    const fetcher = provider();
+    expect(await assignedTypesafeConnections(db, { companyId, agentId: first.id })).toEqual([]);
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask(), fetcher as unknown as typeof fetch),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses a personal identity", async () => {
+    const { companyId } = await fixture("none");
+    await expect(
+      toolAccessService(db, { typesafeFetch: provider() as unknown as typeof fetch }).connectGalleryApp(
+        companyId,
+        {
+          galleryKey: "typesafe",
+          connectionMethodKey: "api-key",
+          name: `TypeSafe ${randomUUID().slice(0, 8)}`,
+          credentialValues: { "credentials.apiKey": KEY },
+          grantKind: "user",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+  });
 
   it("obeys a block policy and records the decision without task content", async () => {
     const { companyId, first, connectionId } = await fixture("all_agents");
@@ -451,5 +486,14 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     expect(markdown).toContain("typesafe_ask");
     expect(markdown).toContain(connectionId);
     expect(markdown).not.toContain(KEY);
+  });
+
+  it("keeps TypeSafe instructions out of universal skills", async () => {
+    const skills = await listPaperclipSkillEntries(
+      fileURLToPath(new URL("../", import.meta.url)),
+      [fileURLToPath(new URL("../../../skills", import.meta.url))],
+    );
+    expect(skills.some((skill) => skill.runtimeName === "paperclip")).toBe(true);
+    expect(skills.some((skill) => skill.runtimeName === "typesafe")).toBe(false);
   });
 });

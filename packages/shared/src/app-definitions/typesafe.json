@@ -22,6 +22,9 @@
       "ownershipModes": [
         "customer"
       ],
+      "grantKinds": [
+        "organization"
+      ],
       "whenToUse": "Use a TypeSafe API key so agents can ask Jev typed questions.",
       "credentialFields": [
         {

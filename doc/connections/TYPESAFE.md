@@ -16,17 +16,23 @@ read on 2026-09-20.
 | Authentication | `api_key`, sent as `Authorization: Bearer <key>` |
 | OAuth client ownership | Not applicable |
 | Credential source | `paperclip_vault` |
-| Grant identity | `organization` |
+| Grant identity | `organization` only (`grantKinds: ["organization"]`) |
 | Risk tier | S2 |
 
 Setup asks for one secret, the API key. The model is an advanced field that
 defaults to `jev-latest`. A pinned version such as `jev-1.13.0` is valid.
+The key is stored on the connection and shared by its agents, so setup offers no
+personal ("Just me") identity, and the server refuses a `user` grant.
 
 TypeSafe publishes no hosted MCP server, so the connected MCP gateway cannot
 reach it. The connection is a connector contribution instead (see
 "Connector-provided skills and tools" in
 [CONNECTOR-PLAYBOOK.md](./CONNECTOR-PLAYBOOK.md)): a bundled skill and one
-native tool, `typesafe_ask`. The catalog for this connection is always empty.
+native tool, `typesafe_ask`. The skill is `TYPESAFE_SKILL` in
+`server/src/services/connectors/typesafe-skill.ts`, supplied as the
+contribution's `skillMarkdown`, so it is materialized only for agents that are
+assigned the connection and never sits in the universal `skills/` directory.
+The catalog for this connection is always empty.
 The connection is identified by `config.sourceTemplateKey === "typesafe"`.
 
 ## Health
@@ -52,6 +58,8 @@ again, so removing access stops a run that is already in progress.
 - The connection belongs to the agent's company.
 - The connection is `active` and enabled, and its health is "ok". This is the
   same health gate the tool gateway applies to its catalog.
+- Its organization grant is `active`. Revoking that identity stops every call,
+  because the key on the connection is that identity's credential.
 - A `tool_connection_installs` row targets the company or that agent.
 - Tool governance allows the call. `typesafe_ask` asks
   `toolAccessPolicyService` for a decision as tool `typesafe.ask`, risk level
@@ -82,7 +90,7 @@ The request is `state`, `questions`, optional `model` and optional
 `connectionId`. `connectionId` is required only when more than one TypeSafe
 connection is assigned. Paperclip validates the request before it leaves the
 instance: question types, 1 to 255 choice options, 2 to 10 score levels. The
-full contract is in `skills/typesafe/SKILL.md`.
+full contract is in `server/src/services/connectors/typesafe-skill.ts`.
 
 | Provider status | Response | Code |
 | --- | --- | --- |
@@ -121,7 +129,9 @@ decides whether to retry.
 3. Ask one `noul` question with an agent key. The answer returns with usage.
 4. Confirm the `typesafe.ask` activity row and that it holds no task content.
 5. Remove the install. The same call returns 403.
-6. Connect with an invalid key. Setup fails with 422 and leaves no connection.
+6. Restore the install, then revoke the organization identity. The same call
+   returns 403.
+7. Connect with an invalid key. Setup fails with 422 and leaves no connection.
 
 ## Live proof
 
@@ -143,7 +153,7 @@ external. No key, state or answer text is recorded here.
 Not covered by this run: the setup screens against the real provider in a
 browser, and the 429 and 529 paths, which the provider did not produce. The
 setup screens are covered by `AppsConnect.test.tsx` and by the interactive
-stories in `ui/storybook/stories/typesafe-connect-flow.stories.tsx`.
+stories in `ui/storybook/stories/connection-setup/TypesafeConnection.stories.tsx`.
 
 One difference from the provider documentation: the API accepts a `score` with
 one level. Paperclip keeps the documented minimum of two.
