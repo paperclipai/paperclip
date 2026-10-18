@@ -12,6 +12,20 @@ interface ParsedPiOutput {
     costUsd: number | null;
   };
   finalMessage: string | null;
+  /**
+   * Stop reason of the terminal assistant message (from `agent_end`, falling
+   * back to the last `turn_end`). Pi reports provider failures as "error" and
+   * output-limit truncation as "length"; null when the terminal message did
+   * not carry one.
+   */
+  finalStopReason: string | null;
+  /**
+   * Text content of the terminal assistant message, including empty text when
+   * the terminal message carried no text block (distinct from
+   * `finalMessage`, which keeps the last non-empty text). Used to detect a
+   * final turn that was cut off before it produced completion content.
+   */
+  finalTurnText: string;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
 
@@ -47,6 +61,8 @@ export function createPiJsonlParser() {
       costUsd: null,
     },
     finalMessage: null,
+    finalStopReason: null,
+    finalTurnText: "",
     toolCalls: [],
   };
 
@@ -98,7 +114,12 @@ export function createPiJsonlParser() {
           const lastMessage = messages[messages.length - 1];
           if (lastMessage?.role === "assistant") {
             const content = lastMessage.content as string | Array<{ type: string; text?: string }>;
+            // Track the terminal message text even when it is empty: a turn
+            // cut off at the model output limit ("length") with no text block
+            // is the truncation edge this field exists to detect.
+            result.finalTurnText = extractTextContent(content);
             result.finalMessage = extractTextContent(content);
+            result.finalStopReason = asString(lastMessage.stopReason, "") || null;
           }
         }
         continue;
@@ -121,6 +142,17 @@ export function createPiJsonlParser() {
       if (eventType === "turn_end") {
         const message = asRecord(event.message);
         if (message) {
+          // Track the latest assistant stop reason and text so a session whose
+          // terminal message was cut off at the model output limit ("length")
+          // is not silently reported as a complete run. `agent_end` overrides
+          // this when it carries the terminal message.
+          if (message.role === "assistant") {
+            const stopReason = asString(message.stopReason, "");
+            if (stopReason) result.finalStopReason = stopReason;
+            result.finalTurnText = extractTextContent(
+              message.content as string | Array<{ type: string; text?: string }>,
+            );
+          }
           const content = message.content as string | Array<{ type: string; text?: string }>;
           const text = extractTextContent(content);
           if (text) {
@@ -234,6 +266,20 @@ export function createPiJsonlParser() {
           addCost(cost?.total ?? usage.costUsd);
         }
       }
+    }
+
+    // Pi exits 0 when the model output limit truncates the final turn. When
+    // the truncated message carries no completion text the run did not
+    // actually finish its turn, so surface it as a parsed error. The adapter
+    // maps this to a failed run with an explicit error message instead of
+    // "succeeded". `finalTurnText` (not `finalMessage`) is the signal:
+    // `finalMessage` keeps the last non-empty text and would mask a
+    // truncated empty final turn.
+    if (result.finalStopReason === "length" && !result.finalTurnText.trim()) {
+      const message =
+        "Pi stopped at the model output limit before completing its final turn; no completion content was produced. " +
+        "Complete the remaining work in a fresh run without re-doing finished work.";
+      if (!result.errors.includes(message)) result.errors.push(message);
     }
 
     if (missingCost) result.usage.costUsd = null;
