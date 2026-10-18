@@ -13,6 +13,8 @@ import {
   toolAccessAuditEvents,
   toolConnectionInstalls,
   toolConnections,
+  toolProfileEntries,
+  toolProfiles,
 } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import {
@@ -254,6 +256,62 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
         actor,
       ),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("keeps a saved exclusion when setup preserves existing access", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    const [profile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    await db.insert(toolProfileEntries).values({
+      companyId,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "exclude",
+      connectionId,
+      applicationId: connection!.applicationId,
+    });
+    await toolAccessService(db, { typesafeFetch: provider() as unknown as typeof fetch }).finishGalleryAppConnection(
+      companyId,
+      connectionId,
+      {
+        enabledCatalogEntryIds: [],
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+        preserveExistingAccess: true,
+      },
+      actor,
+    );
+    const saved = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile!.id));
+    expect(saved.map((entry) => entry.effect).sort()).toEqual(["exclude", "include"]);
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask(), fetcher as unknown as typeof fetch),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate its connection entry when setup preserves existing access", async () => {
+    const { companyId, connectionId } = await fixture("all_agents");
+    await toolAccessService(db, { typesafeFetch: provider() as unknown as typeof fetch }).finishGalleryAppConnection(
+      companyId,
+      connectionId,
+      {
+        enabledCatalogEntryIds: [],
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+        preserveExistingAccess: true,
+      },
+      actor,
+    );
+    const [profile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)));
+    const saved = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile!.id));
+    expect(saved).toHaveLength(1);
   });
 
   it("obeys a block policy and records the decision without task content", async () => {

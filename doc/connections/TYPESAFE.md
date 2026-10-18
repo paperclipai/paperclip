@@ -75,7 +75,9 @@ The setup finish step writes those installs from the access choice ("all
 agents" or selected agents). The generic API-key path creates none by itself.
 The same step adds one `connection` entry to the connection's access profile,
 because this connection has no catalog actions to include. Without that entry
-governance denies every call by default.
+governance denies every call by default. When setup preserves existing access,
+an earlier exclusion or conditional entry on the connection stays; only an
+identical include is deduplicated.
 `PUT /api/tool-connections/{connectionId}/installs` changes them later.
 
 ## Asking
@@ -112,6 +114,9 @@ decides whether to retry.
 - The `state` and the questions are sent to TypeSafe. The key step of setup
   tells the operator this, under the key field. The text comes from the
   field's `helperMd`, because provider copy stays out of the shared access step.
+- HTTP diagnostics omit the request body and the error text for
+  `POST /api/companies/{companyId}/typesafe/ask`, including requests rejected
+  before the handler runs. The route shares this rule with agent commentary.
 - The API key stays in the vault. It is never placed in connection config, the
   skill, tool results, errors or logs. Provider error bodies are discarded
   because they can echo the submitted state.
