@@ -86,6 +86,14 @@ earlier exclusion or conditional include keeps its effect.
 changes keep the connection entry: other apps lose their legacy connection-wide
 include there, but for TypeSafe it is the only grant.
 
+## Requests from a task
+
+An agent can ask for TypeSafe with a connection request. TypeSafe has no catalog
+tools, so readiness does not use the catalog. A connection is ready for an agent
+when it passes the checks above and a read-only governance decision for
+`typesafe.ask` (no rate limit consumed, no audit row) allows it. Completing the
+request uses the same test, and exactly one ready connection is required.
+
 ## Asking
 
 | Surface | Form |

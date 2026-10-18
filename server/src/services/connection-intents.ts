@@ -5,6 +5,8 @@ import { assertAgentConnectionInstallAccess, connectionManagementService } from 
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
+import { typesafeUsableConnections } from "./connectors/typesafe.js";
+import { TYPESAFE_GALLERY_KEY } from "./typesafe-api.js";
 import { emailConnectionService } from "./email-connections.js";
 import { grantConnectionAgentTools } from "./connection-agent-access.js";
 import { agentService } from "./agents.js";
@@ -370,6 +372,11 @@ export function connectionIntentService(db: Db) {
       && connection.status !== "archived" && connection.connectionPurpose !== "ai"
     );
     if (matching.length === 0) return null;
+    // TypeSafe has no catalog tools; its connector eligibility and policy decision are the readiness test.
+    if (input.serviceSlug === TYPESAFE_GALLERY_KEY) {
+      const usable = await typesafeUsableConnections(db, { companyId: input.companyId, agentId: input.agentId });
+      return usable.length === 1 ? access.getConnection(usable[0]!.id, input.companyId) : null;
+    }
     const effective = await access.getConnectionAssignmentsForAgent(input.companyId, input.agentId, matching.map(connection => connection.id));
     const installedIds = new Set(effective.installedConnections.map((connection) => connection.id));
     const permittedIds = new Set(effective.allowedConnectionIds);
@@ -1357,7 +1364,7 @@ export function connectionIntentService(db: Db) {
       }
 
       const effective = await txAccess.getEffectiveToolAssignmentsForAgent(loaded.issue.companyId, payload.requestingAgentId);
-      if (!effective.allowedTools.some((tool) => tool.connectionId === selectedConnection.id)) throw conflict("This connection has no permitted tools. Review its action permissions before continuing.");
+      if (payload.serviceSlug !== TYPESAFE_GALLERY_KEY && !effective.allowedTools.some((tool) => tool.connectionId === selectedConnection.id)) throw conflict("This connection has no permitted tools. Review its action permissions before continuing.");
 
       const runtimeConnection = await connectionIntentService(txDb).usableConnectionForAgent({
         companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,

@@ -752,6 +752,55 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   });
 
 
+  it("completes a TypeSafe request from a task and then reports it ready", async () => {
+    const companyId = claims.company_id;
+    const [agent] = await db.insert(agents).values({
+      companyId, name: "TypeSafe asker", role: "researcher", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    }).returning();
+    const [goal] = await db.insert(goals).values({ companyId, title: "Rate tickets", level: "task", status: "active" }).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId, goalId: goal!.id, title: "Rate tickets", status: "in_progress", priority: "medium", assigneeAgentId: agent!.id,
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent!.id, status: "running", responsibleUserId: "responsible-user", contextSnapshot: { issueId: issue!.id },
+    }).returning();
+    const taskClaims = { ...claims, sub: agent!.id, run_id: run!.id };
+    const service = connectionIntentService(db);
+    const request = await service.request(taskClaims, "typesafe");
+    expect(request.interactionId).toEqual(expect.any(String));
+
+    const typesafeFetch = vi.fn(async () => new Response(JSON.stringify({ models: [{ name: "jev-latest" }] }), {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    const access = toolAccessService(db, { typesafeFetch });
+    const actor = { actorType: "user" as const, actorId: "responsible-user" };
+    const { connectionId } = await access.connectGalleryApp(companyId, {
+      galleryKey: "typesafe", connectionMethodKey: "api-key", name: `TypeSafe ${randomUUID().slice(0, 8)}`,
+      credentialValues: { "credentials.apiKey": "ts-intent-key" },
+    }, actor);
+    await access.finishGalleryAppConnection(companyId, connectionId, {
+      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] }, preserveExistingAccess: true,
+    }, actor);
+
+    await expect(service.complete(request.interactionId!, connectionId, "responsible-user", { canManageOrganizationGrant: true }))
+      .resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId } });
+    await expect(service.usableConnectionForAgent({
+      companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe",
+    })).resolves.toMatchObject({ id: connectionId });
+
+    await db.insert(toolPolicies).values({
+      companyId, name: "No TypeSafe", policyType: "block", priority: 1, enabled: true, selectors: { toolNames: ["typesafe.ask"] },
+    });
+    try {
+      await expect(service.usableConnectionForAgent({
+        companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe",
+      })).resolves.toBeNull();
+    } finally {
+      await db.delete(toolPolicies).where(and(eq(toolPolicies.companyId, companyId), eq(toolPolicies.name, "No TypeSafe")));
+    }
+  });
+
   it("native authority discovers and requests services on an empty tool snapshot", async () => {
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const issueId = String(run!.contextSnapshot!.issueId);

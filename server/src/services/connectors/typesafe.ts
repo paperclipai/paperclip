@@ -124,6 +124,58 @@ export async function assignedTypesafeConnections(
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function configuredModel(connection: { config: Record<string, unknown> }) {
+  const methodConfig = connection.config.methodConfig;
+  const model =
+    methodConfig && typeof methodConfig === "object" && !Array.isArray(methodConfig)
+      ? (methodConfig as Record<string, unknown>).model
+      : undefined;
+  return typeof model === "string" && model ? model : undefined;
+}
+
+function askPolicyRequest(
+  binding: AskBinding,
+  connectionId: string,
+  args: { model: string; questionCount: number },
+) {
+  return {
+    companyId: binding.companyId,
+    actor: {
+      actorType: "agent" as const,
+      actorId: binding.agentId,
+      agentId: binding.agentId,
+    },
+    runContext: {
+      issueId: binding.issueId ?? undefined,
+      heartbeatRunId: binding.runId ?? undefined,
+    },
+    request: {
+      connectionId,
+      toolName: "typesafe.ask",
+      providerType: "typesafe",
+      riskLevel: "read" as const,
+      // Shape only: the audit row must not hold the state or the questions.
+      arguments: args,
+      sideEffecting: false,
+    },
+  };
+}
+
+/** Assigned connections whose governance would allow a call now. Read-only: no rate limit or audit. */
+export async function typesafeUsableConnections(db: Db, binding: AgentBinding) {
+  const policy = toolAccessPolicyService(db);
+  const usable = [];
+  for (const connection of await assignedTypesafeConnections(db, binding)) {
+    const model = configuredModel(connection);
+    if (!model) continue;
+    const decision = await policy.decide(
+      askPolicyRequest(binding, connection.id, { model, questionCount: 1 }),
+    );
+    if (decision.allowed) usable.push(connection);
+  }
+  return usable;
+}
+
 export async function executeTypesafeAsk(
   db: Db,
   binding: AskBinding,
@@ -160,13 +212,8 @@ export async function executeTypesafeAsk(
   if (!connection)
     throw forbidden("That TypeSafe connection is not assigned to this agent");
 
-  const methodConfig = connection.config.methodConfig;
-  const configured =
-    methodConfig && typeof methodConfig === "object" && !Array.isArray(methodConfig)
-      ? (methodConfig as Record<string, unknown>).model
-      : undefined;
-  const model = input.model ?? configured;
-  if (typeof model !== "string" || !model)
+  const model = input.model ?? configuredModel(connection);
+  if (!model)
     throw unprocessable("This TypeSafe connection has no model", {
       code: "typesafe_model_missing",
     });
@@ -174,25 +221,7 @@ export async function executeTypesafeAsk(
 
   const policy = toolAccessPolicyService(db);
   const policyRequest = {
-    companyId: binding.companyId,
-    actor: {
-      actorType: "agent" as const,
-      actorId: binding.agentId,
-      agentId: binding.agentId,
-    },
-    runContext: {
-      issueId: binding.issueId ?? undefined,
-      heartbeatRunId: binding.runId ?? undefined,
-    },
-    request: {
-      connectionId: connection.id,
-      toolName: "typesafe.ask",
-      providerType: "typesafe",
-      riskLevel: "read" as const,
-      // Shape only: the audit row must not hold the state or the questions.
-      arguments: { model, questionCount },
-      sideEffecting: false,
-    },
+    ...askPolicyRequest(binding, connection.id, { model, questionCount }),
     consumeRateLimit: true,
   };
   const decision = await policy.decide(policyRequest);
