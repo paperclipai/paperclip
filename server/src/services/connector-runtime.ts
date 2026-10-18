@@ -27,6 +27,7 @@ import {
 } from "./connectors/typesafe.js";
 import { materializeAsset } from "./native-runtime/runtime-context.js";
 import { BROWSER_USE_CLOUD_SKILL } from "./connectors/browser-use-cloud/skill.js";
+import { TYPESAFE_SKILL } from "./connectors/typesafe-skill.js";
 import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 
 type AgentBinding = { companyId: string; agentId: string; runId?: string; issueId?: string };
@@ -120,8 +121,10 @@ const connectors: ConnectorDefinition[] = [
   },
   {
     key: "typesafe",
+    resolvePhase: "connectors.typesafe.resolve",
     label: "TypeSafe",
     skillName: "typesafe",
+    skillMarkdown: TYPESAFE_SKILL,
     tools: [...TYPESAFE_TOOLS],
     async resolve(db, binding) {
       return (await assignedTypesafeConnections(db, binding)).map(

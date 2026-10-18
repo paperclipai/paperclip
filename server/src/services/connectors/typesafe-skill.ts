@@ -1,11 +1,12 @@
----
+/** Bundled only for authorized TypeSafe connection assignments. */
+export const TYPESAFE_SKILL = `---
 name: typesafe
 description: Ask TypeSafe's Jev model yes/no, multiple-choice and scoring questions about text or data and get calibrated answers with a confidence. Provided automatically by your TypeSafe connection.
 ---
 
 # TypeSafe
 
-Jev is an evaluator. It reads a `state` and answers the typed questions you
+Jev is an evaluator. It reads a \`state\` and answers the typed questions you
 define. It does not write text, call tools or edit files. Use it when a decision
 must be consistent and come with a probability, not a paragraph.
 
@@ -16,24 +17,24 @@ Good uses:
 - Route between named options. "Which team owns this issue?"
 - Rate against a rubric. "How severe is this incident?"
 
-The `state` and your questions are sent to TypeSafe. Do not submit content that
+The \`state\` and your questions are sent to TypeSafe. Do not submit content that
 must not leave this instance. Do not look for provider credentials; Paperclip
 holds the key.
 
 ## How to call it
 
-Native runners use the `typesafe_ask` tool with the request below as its
+Native runners use the \`typesafe_ask\` tool with the request below as its
 arguments.
 
-Other runtimes use `paperclipai typesafe ask --file <request.json>`. If the
-installed CLI does not include `typesafe`, use the authenticated HTTP API
+Other runtimes use \`paperclipai typesafe ask --file <request.json>\`. If the
+installed CLI does not include \`typesafe\`, use the authenticated HTTP API
 instead; do not install or upgrade tools for this. Send
-`POST /api/companies/$PAPERCLIP_COMPANY_ID/typesafe/ask` with the same JSON, the
-injected Paperclip API URL and bearer key, and the `X-Paperclip-Run-Id` header.
+\`POST /api/companies/$PAPERCLIP_COMPANY_ID/typesafe/ask\` with the same JSON, the
+injected Paperclip API URL and bearer key, and the \`X-Paperclip-Run-Id\` header.
 
 ## Request
 
-```json
+\`\`\`json
 {
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {
@@ -58,20 +59,20 @@ injected Paperclip API URL and bearer key, and the `X-Paperclip-Run-Id` header.
     }
   }
 }
-```
+\`\`\`
 
-- `state`: a string, object or array. Structured data is fine.
-- `questions`: a map. You choose each key; the answer returns under the same key.
-- `instructions`: a string, or an object that holds the question in one field
+- \`state\`: a string, object or array. Structured data is fine.
+- \`questions\`: a map. You choose each key; the answer returns under the same key.
+- \`instructions\`: a string, or an object that holds the question in one field
   and data it refers to in others. Refer to a data field by name in backticks.
-- `noul`: a yes/no question. `criteria` is optional.
-- `choice`: `criteria` maps each option to a description, or `null`. 1 to 255
+- \`noul\`: a yes/no question. \`criteria\` is optional.
+- \`choice\`: \`criteria\` maps each option to a description, or \`null\`. 1 to 255
   options.
-- `score`: `criteria` is an ordered array of 2 to 10 level descriptions, lowest
+- \`score\`: \`criteria\` is an ordered array of 2 to 10 level descriptions, lowest
   first.
-- `model`: optional. It overrides the connection's model, for example
-  `jev-preview`.
-- `connectionId`: required only when more than one TypeSafe connection is listed
+- \`model\`: optional. It overrides the connection's model, for example
+  \`jev-preview\`.
+- \`connectionId\`: required only when more than one TypeSafe connection is listed
   under "Assigned resources" below.
 
 Ask several questions about one state in one call. A request may hold 64k tokens
@@ -79,7 +80,7 @@ in total, and 32k for the state plus the longest question.
 
 ## Reading answers
 
-```json
+\`\`\`json
 {
   "model": "jev-1.13.0",
   "answers": {
@@ -100,13 +101,13 @@ in total, and 32k for the state plus the longest question.
   },
   "usage": { "input_tokens": 318, "output_tokens": 34 }
 }
-```
+\`\`\`
 
-- `noul` is the probability of yes, from 0 to 1. Pick your threshold before you
+- \`noul\` is the probability of yes, from 0 to 1. Pick your threshold before you
   ask, and state it when you report the decision.
-- `choice` is the most likely option. `confidence` tells you how far ahead it
+- \`choice\` is the most likely option. \`confidence\` tells you how far ahead it
   is. Treat a low confidence as "unclear", not as an answer.
-- `score` is probability-weighted and can land between levels. Use `legend` to
+- \`score\` is probability-weighted and can land between levels. Use \`legend\` to
   name the levels.
 
 ## Errors
@@ -114,7 +115,8 @@ in total, and 32k for the state plus the longest question.
 | Status | Meaning | What to do |
 | --- | --- | --- |
 | 400 | The request shape is wrong. | Fix the request. The response names the field. |
-| 403 | No TypeSafe connection is assigned to you, a policy blocks the call, or the request carries no active run of yours. | Send `X-Paperclip-Run-Id` from your run environment. Otherwise stop and report it; access is managed on the connection in Paperclip. |
-| 422 | TypeSafe rejected the request or the model name, or you must pick a `connectionId`. | Fix the request. |
+| 403 | No TypeSafe connection is assigned to you, a policy blocks the call, or the request carries no active run of yours. | Send \`X-Paperclip-Run-Id\` from your run environment. Otherwise stop and report it; access is managed on the connection in Paperclip. |
+| 422 | TypeSafe rejected the request or the model name, or you must pick a \`connectionId\`. | Fix the request. |
 | 429, 503 | TypeSafe is rate limiting or overloaded. | Wait, then retry once. |
 | 502 | TypeSafe rejected the stored key or failed. | Stop. Report that the connection needs attention. |
+`;
