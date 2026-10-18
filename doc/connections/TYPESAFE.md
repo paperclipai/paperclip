@@ -67,6 +67,10 @@ again, so removing access stops a run that is already in progress.
   approval rules and rate limits all apply, and each decision is audited. The
   audit row holds the model and the question count, never the state or the
   questions.
+- The run is not a restricted chat run (an external chat turn, a `chat:`
+  source or an external chat question response). External chat participants
+  steer those runs, so their content must not leave the instance. AgentMail
+  applies the same rule.
 - On the HTTP route, the `X-Paperclip-Run-Id` header names a run that is
   `running` and belongs to the calling agent. An agent key alone is refused.
   The native runner supplies its own bound run.

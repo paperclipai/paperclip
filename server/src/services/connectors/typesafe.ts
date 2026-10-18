@@ -1,9 +1,10 @@
 import { and, eq, exists, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { connectionGrants, heartbeatRuns, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { typesafeAskSchema, type TypesafeAskResult } from "@paperclipai/shared";
 import { HttpError, badRequest, forbidden, unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
+import { isRestrictedChatRunSnapshot } from "../restricted-chat-run.js";
 import { secretService } from "../secrets.js";
 import { toolAccessPolicyService } from "../tool-access-policy.js";
 import {
@@ -133,6 +134,17 @@ export async function executeTypesafeAsk(
   if (!parsed.success)
     throw badRequest("Invalid TypeSafe request", { issues: parsed.error.issues });
   const input = parsed.data;
+
+  if (binding.runId) {
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId)))
+      .limit(1);
+    if (!run) throw forbidden("TypeSafe needs a run of this company");
+    if (isRestrictedChatRunSnapshot(run.contextSnapshot ?? {}))
+      throw forbidden("Restricted chat runs cannot send content to TypeSafe");
+  }
 
   const connections = await assignedTypesafeConnections(db, binding);
   if (!connections.length)

@@ -375,6 +375,57 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a chat-sourced run", { source: "chat:slack" }],
+    ["an external chat question response", { paperclipExternalChatQuestionResponse: true }],
+  ])("refuses %s", async (_label, contextSnapshot) => {
+    const { companyId, first } = await fixture("all_agents");
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId: first.id, invocationSource: "assignment", status: "running", contextSnapshot })
+      .returning();
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: run!.id, issueId: null },
+        ask(),
+        fetcher as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses a run that does not exist in the company", async () => {
+    const { companyId, first } = await fixture("all_agents");
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: randomUUID(), issueId: null },
+        ask(),
+        fetcher as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ status: 403, message: "TypeSafe needs a run of this company" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("allows an ordinary run of the agent", async () => {
+    const { companyId, first } = await fixture("all_agents");
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId: first.id, invocationSource: "assignment", status: "running", contextSnapshot: {} })
+      .returning();
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: run!.id, issueId: null },
+        ask(),
+        provider() as unknown as typeof fetch,
+      ),
+    ).resolves.toEqual(ANSWER);
+  });
+
   it("refuses a call after access is revoked mid-run", async () => {
     const { companyId, first, connectionId } = await fixture("all_agents");
     const fetcher = provider();
