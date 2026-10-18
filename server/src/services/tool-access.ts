@@ -3369,19 +3369,25 @@ export function toolAccessService(
             .select()
             .from(toolProfileEntries)
             .where(eq(toolProfileEntries.profileId, existingProfile.id));
-          for (const prior of priorEntries)
-            if (
-              !entries.some(
-                (entry) =>
-                  (entry.catalogEntryId &&
-                    entry.catalogEntryId === prior.catalogEntryId) ||
-                  (!prior.catalogEntryId &&
+          // Saved selector rules (exclusions, conditions) outrank this setup's defaults.
+          const defaults = entries.splice(0, entries.length);
+          entries.push(
+            ...defaults.filter(
+              (entry) =>
+                entry.catalogEntryId ||
+                !priorEntries.some(
+                  (prior) =>
+                    !prior.catalogEntryId &&
                     entry.selectorType === prior.selectorType &&
                     entry.connectionId === prior.connectionId &&
-                    (entry.toolName ?? null) === prior.toolName &&
-                    (entry.effect ?? "include") === prior.effect &&
-                    stableHash(entry.conditions ?? null) === stableHash(prior.conditions ?? null)),
-              )
+                    (entry.toolName ?? null) === prior.toolName,
+                ),
+            ),
+          );
+          for (const prior of priorEntries)
+            if (
+              !prior.catalogEntryId ||
+              !entries.some((entry) => entry.catalogEntryId === prior.catalogEntryId)
             )
               entries.push({
                 selectorType: prior.selectorType,

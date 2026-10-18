@@ -293,6 +293,40 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("keeps a saved conditional include when setup preserves existing access", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    const [profile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)));
+    const conditions = { arguments: { fieldEquals: { model: "jev-preview" } } };
+    await db
+      .update(toolProfileEntries)
+      .set({ conditions })
+      .where(eq(toolProfileEntries.profileId, profile!.id));
+    await toolAccessService(db, { typesafeFetch: provider() as unknown as typeof fetch }).finishGalleryAppConnection(
+      companyId,
+      connectionId,
+      {
+        enabledCatalogEntryIds: [],
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+        preserveExistingAccess: true,
+      },
+      actor,
+    );
+    const saved = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile!.id));
+    expect(saved).toEqual([expect.objectContaining({ selectorType: "connection", effect: "include", conditions })]);
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask(), fetcher as unknown as typeof fetch),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(evaluateCalls(fetcher)).toHaveLength(0);
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask({ model: "jev-preview" }), fetcher as unknown as typeof fetch),
+    ).resolves.toEqual(ANSWER);
+  });
+
   it("does not duplicate its connection entry when setup preserves existing access", async () => {
     const { companyId, connectionId } = await fixture("all_agents");
     await toolAccessService(db, { typesafeFetch: provider() as unknown as typeof fetch }).finishGalleryAppConnection(

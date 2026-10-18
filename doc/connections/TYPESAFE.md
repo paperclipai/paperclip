@@ -80,8 +80,8 @@ agents" or selected agents). The generic API-key path creates none by itself.
 The same step adds one `connection` entry to the connection's access profile,
 because this connection has no catalog actions to include. Without that entry
 governance denies every call by default. When setup preserves existing access,
-an earlier exclusion or conditional entry on the connection stays; only an
-identical include is deduplicated.
+a saved entry for the same connection selector replaces that default, so an
+earlier exclusion or conditional include keeps its effect.
 `PUT /api/tool-connections/{connectionId}/installs` changes them later.
 
 ## Asking
