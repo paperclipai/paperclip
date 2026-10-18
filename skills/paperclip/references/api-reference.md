@@ -4,6 +4,28 @@ Fetch `GET /api/openapi.json` for the current request schemas. It is available t
 
 Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
 
+## Routes Unavailable Inside a Sandbox
+
+In a sandbox-backed run, `PAPERCLIP_API_URL` points at the run-scoped callback bridge, not the host API. The bridge forwards only the routes on its allowlist (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST` in `packages/adapter-utils/src/sandbox-callback-bridge.ts`). Any other route returns `403` with `{"error":"Route not allowed: <METHOD> <path>"}` before it reaches the server. That 403 comes from the bridge, not from your permissions, so a retry returns the same 403 and you should not look for another route to the same data. Work from the routes that are allowed. If the task needs one of these routes, say so on the issue and hand that step to a run outside the sandbox.
+
+These routes in this skill are refused inside a sandbox:
+
+- Issue diagnostics and monitors: `GET /api/issues/:issueId/diagnostics/blockers`, `GET /api/issues/:issueId/diagnostics/wakes`, `GET /api/issues/:issueId/diagnostics/subtree`, `POST /api/issues/:issueId/monitor/check-now`
+- Other issue writes: `PUT /api/issues/:issueId/title`, `POST /api/issues/:issueId/inbox-archive`, `DELETE /api/issues/:issueId/inbox-archive`, `DELETE /api/issues/:issueId/documents/:key`, `DELETE /api/issues/:issueId/approvals/:approvalId`, `POST /api/issues/:issueId/interactions/:interactionId/resolve-from-comment`, `DELETE /api/attachments/:attachmentId`
+- Issue workspaces: `GET /api/issues/:issueId/workspace`, `PUT /api/issues/:issueId/workspace`, `POST /api/issues/:issueId/workspace/repositories`
+- Decisions: `POST /api/companies/:companyId/decisions`, `POST /api/companies/:companyId/decision-bundles`
+- Projects, goals and workspaces: `POST /api/companies/:companyId/projects`, `PATCH /api/projects/:projectId`, `GET /api/projects/:projectId/workspaces`, `POST /api/projects/:projectId/workspaces`, `PATCH /api/projects/:projectId/workspaces/:workspaceId`, `DELETE /api/projects/:projectId/workspaces/:workspaceId`, `GET /api/companies/:companyId/project-repositories`, `POST /api/companies/:companyId/goals`, `PATCH /api/goals/:goalId`
+- Company administration: `GET /api/companies`, `POST /api/companies`, `PATCH /api/companies/:companyId`, `POST /api/companies/:companyId/archive`, `POST /api/companies/:companyId/logo`, `GET /api/companies/:companyId/activity`, `GET /api/companies/:companyId/costs/summary`, `GET /api/companies/:companyId/costs/by-agent`, `GET /api/companies/:companyId/costs/by-project`, `POST /api/companies/:companyId/cost-events`, `POST /api/companies/:companyId/openclaw/invite-prompt`, `GET /api/companies/:companyId/adapters/:adapterType/models`
+- Company import and export: `POST /api/companies/:companyId/exports/preview`, `POST /api/companies/:companyId/exports`, `POST /api/companies/:companyId/imports/preview`, `POST /api/companies/:companyId/imports/apply`
+- Agent management: `POST /api/companies/:companyId/agents`, `PATCH /api/agents/:agentId`, `GET /api/agents/:agentId/config-revisions`, `POST /api/agents/:agentId/config-revisions/:revisionId/rollback`, `POST /api/agents/:agentId/heartbeat/invoke`, `POST /api/agents/:agentId/keys`, `POST /api/agents/:agentId/pause`, `POST /api/agents/:agentId/resume`, `POST /api/agents/:agentId/terminate`
+- Approval decisions: `POST /api/approvals/:approvalId/approve`, `POST /api/approvals/:approvalId/reject`, `POST /api/approvals/:approvalId/request-revision`, `POST /api/approvals/:approvalId/resubmit`
+- Secrets and connections: `GET /api/agents/me/secrets`, `POST /api/agents/me/secrets/:key/value`, `GET /api/agents/me/secret-proposals`, `POST /api/agents/me/secret-proposals`, `DELETE /api/agents/me/secret-proposals/:id`, `GET /api/companies/:companyId/secrets`, `POST /api/companies/:companyId/secrets`, `PATCH /api/secrets/:secretId`, `POST /api/connection-intents/:id/complete`, `POST /api/connection-intents/:id/decline`, `POST /api/runtime-tools/connections/request`
+- Routine trigger secrets: `POST /api/routine-triggers/:triggerId/rotate-secret`, `POST /api/routine-triggers/public/:publicId/fire`
+- Cases: `GET /api/companies/:companyId/cases`, `GET /api/cases/:caseIdOrIdentifier`, `POST /api/companies/:companyId/cases`, `PATCH /api/cases/:caseIdOrIdentifier`, `PUT /api/cases/:caseIdOrIdentifier/documents/body`, `POST /api/cases/:caseIdOrIdentifier/attachments`, `POST /api/cases/:caseIdOrIdentifier/links`
+- Company skills and the skills catalog: `GET /api/companies/:companyId/skills/:skillId`, `GET /api/companies/:companyId/skills/:skillId/files`, `GET /api/companies/:companyId/skills/:skillId/update-status`, `POST /api/companies/:companyId/skills`, `POST /api/companies/:companyId/skills/import`, `POST /api/companies/:companyId/skills/scan-projects`, `POST /api/companies/:companyId/skills/install-catalog`, `POST /api/companies/:companyId/skills/:skillId/audit`, `POST /api/companies/:companyId/skills/:skillId/install-update`, `POST /api/companies/:companyId/skills/:skillId/reset`, `DELETE /api/companies/:companyId/skills/:skillId`, `GET /api/skills/catalog`, `GET /api/skills/catalog/ref`, `GET /api/skills/catalog/:catalogId`, `GET /api/skills/catalog/:catalogId/files`
+
+A test keeps this list in step with the allowlist. When a route is added to the allowlist, remove it here.
+
 ---
 
 ## Response Schemas
@@ -243,6 +265,8 @@ Clients that need only a compact receipt can send `Prefer: return=minimal`. The 
 
 ### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
 
+Not available inside a sandbox; see [Routes Unavailable Inside a Sandbox](#routes-unavailable-inside-a-sandbox).
+
 Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
 
 Read `diagnosis` first. It is a deterministic, nullable explanation derived only from fields included in the response. The endpoint also returns bounded structured blocker rows with status, readiness, and anomaly flags:
@@ -281,6 +305,8 @@ Security and bounds:
 - No raw wake payloads, activity details, errors, or trigger blobs are returned by this Slice-1 endpoint.
 
 ### Wake Diagnostics (`GET /api/issues/:issueId/diagnostics/wakes`)
+
+Not available inside a sandbox; see [Routes Unavailable Inside a Sandbox](#routes-unavailable-inside-a-sandbox).
 
 Use this read-only diagnostic when you need to answer why an issue's assignee was or was not woken. Read `diagnosis` first; `likelyReason` is the same value for callers that prefer that name. The string is deterministic, nullable, and derived only from fields included in the response plus authorized blocker state.
 
@@ -325,6 +351,8 @@ Security and bounds:
 - Results are capped to 50 wake requests and 50 activity records within a 14-day lookback. If either cap is hit, `truncated` is `true` and the diagnosis states that it only covers returned records.
 
 ### Subtree Diagnostics (`GET /api/issues/:issueId/diagnostics/subtree`)
+
+Not available inside a sandbox; see [Routes Unavailable Inside a Sandbox](#routes-unavailable-inside-a-sandbox).
 
 Use this read-only diagnostic when an issue has child work and you need the combined wake/dependency view for the subtree. Read top-level `diagnosis` first; `likelyReason` is the same value. The response omits unauthorized subtree nodes and hidden blocker nodes before deriving diagnosis text.
 
