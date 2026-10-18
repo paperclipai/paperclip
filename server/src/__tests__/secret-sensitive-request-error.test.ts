@@ -161,6 +161,7 @@ describe("secretSensitiveRouteFamily", () => {
       ["GET", "/api/muse/v1/commands", "muse"],
       ["GET", "/mcp/files/file-1", "mcp_files"],
       ["POST", "/api/companies/company/agent-commentary", "agent_commentary"],
+      ["POST", "/api/companies/company/typesafe/ask", "typesafe_ask"],
       ["PUT", "/api/companies/company/observability", "agent_observability"],
       ["POST", "/MCP/RUNNER/call", "mcp_runner"],
       ["POST", "/api/companies/company/agents/agent/avatar", "agent_avatar"],

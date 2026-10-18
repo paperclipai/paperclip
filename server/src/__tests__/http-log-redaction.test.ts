@@ -83,15 +83,22 @@ describe("HTTP logger redaction", () => {
     expect(chunks.join("")).not.toMatch(/code-canary|pkce-canary|refresh-canary|redirect-canary|state-canary/);
   });
 
-  it.each([[400, "/api/companies/company/agent-commentary"], [503, "/API/COMPANIES/company/AGENT-COMMENTARY"], [503, "http://localhost/api/companies/company/agent-commentary"]] as const)("keeps rejected commentary content out of %i diagnostics for %s", async (status, url) => {
-    const canary = "private-agent-commentary-canary";
+  it.each([
+    [400, "/api/companies/company/agent-commentary"],
+    [503, "/API/COMPANIES/company/AGENT-COMMENTARY"],
+    [503, "http://localhost/api/companies/company/agent-commentary"],
+    [400, "/api/companies/company/typesafe/ask"],
+    [502, "/API/COMPANIES/company/TYPESAFE/ASK"],
+    [403, "http://localhost/api/companies/company/typesafe/ask"],
+  ] as const)("keeps rejected agent content out of %i diagnostics for %s", async (status, url) => {
+    const canary = "private-agent-content-canary";
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
     const app = express();
     app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
     app.use(express.json());
-    app.post("/api/companies/:companyId/agent-commentary", (_req, res) => {
-      if (status === 503) (res as any).err = new Error(`Driver echoed ${canary}`);
+    app.post(["/api/companies/:companyId/agent-commentary", "/api/companies/:companyId/typesafe/ask"], (_req, res) => {
+      if (status >= 500) (res as any).err = new Error(`Driver echoed ${canary}`);
       res.status(status).end();
     });
     const server = createServer(app);
