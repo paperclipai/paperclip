@@ -19,6 +19,7 @@ import {
   type TestDriveHarness,
 } from "../commands/test-drive.js";
 import type { RunOptions, StartedServer } from "../commands/run.js";
+import { formatCliError } from "../format-cli-error.js";
 import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -587,6 +588,27 @@ describe("test-drive foreground lifecycle", () => {
       createApi: () => freshBootstrapApi().api,
       openBrowser: vi.fn(async () => true),
     })).rejects.toThrow("downstream rejected [REDACTED]");
+  });
+
+  it("keeps a redacted key out of the CLI's printed error chain", async () => {
+    process.env.PAPERCLIP_HOME = "/tmp/test-drive-redaction";
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+
+    const failure = await testDriveCommand({
+      apiKey: "literal-secret",
+      browser: false,
+    }, {
+      run: async () => {
+        throw new Error("downstream rejected literal-secret");
+      },
+      createApi: () => freshBootstrapApi().api,
+      openBrowser: vi.fn(async () => true),
+    }).catch((error: unknown) => error);
+
+    const printed = formatCliError(failure);
+    expect(printed).toBe("downstream rejected [REDACTED]");
+    expect(printed).not.toContain("literal-secret");
   });
 
   it("redacts a custom environment key when its option name has whitespace", async () => {
