@@ -3,7 +3,6 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
-import { google as googleSocialProvider } from "better-auth/social-providers";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
@@ -257,35 +256,38 @@ export function isGoogleSsoEnabled(env: NodeJS.ProcessEnv = process.env): boolea
 }
 
 /**
- * Build the Better Auth `google()` social-provider plugin when the Google SSO
- * env vars are set. Returns `undefined` otherwise, so the provider is not
- * registered at all (Better Auth's catch-all handler then 404s
- * `/api/auth/sign-in/social` for google and `/api/auth/callback/google`).
+ * Build the Better Auth `socialProviders.google` config record when the Google
+ * SSO env vars are set. Returns `undefined` otherwise, so the provider is not
+ * registered at all and Better Auth's catch-all handler 404s
+ * `/api/auth/sign-in/social` for google and `/api/auth/callback/google`.
  *
- * - PKCE (S256) is the Better Auth generic-OAuth core's default for the
- *   authorization-code flow; the code verifier is held in the state cookie.
- * - `id_token` verification (signature, iss, aud, exp, nonce) is the
- *   provider's built-in `idToken` block.
- * - `prompt: "select_account"` matches the reference pattern and forces the
- *   account chooser even when a Google session already exists.
+ * Better Auth 1.7.2 builds `context.socialProviders` from the
+ * `socialProviders` options map at context-creation time — NOT from the
+ * plugin list. Registering the provider through that map is what makes
+ * `POST /sign-in/social` (and `GET /callback/google`) resolve "google".
+ *
+ * - PKCE (S256) is the generic-OAuth core default; the code verifier is held
+ *   in the state cookie.
+ * - `id_token` verification is the provider's built-in `idToken` block.
+ * - `prompt: "select_account"` forces the account chooser even when a Google
+ *   session already exists.
  */
-// The inferred return type references `JWTHeaderParameters` from `jose`
-// (via the provider's `idToken.jwks` callback). A type annotation is needed
-// for emit portability; the concrete plugin record is only consumed by
-// Better Auth itself (spread into the plugin list).
-type GoogleSsoPlugin = ReturnType<
-  typeof import("better-auth/social-providers").google
->;
-export function buildGoogleSsoPlugin(
+// Build the Better Auth `socialProviders.google` config record (the map value
+// Better Auth's context builder consumes) when the Google SSO env vars are set.
+// Returns `undefined` otherwise so the provider is not registered at all and
+// Better Auth's catch-all handler 404s the google social routes.
+export function buildGoogleSsoConfig(
   env: NodeJS.ProcessEnv = process.env,
-): GoogleSsoPlugin | undefined {
+): Record<string, unknown> | undefined {
   if (!isGoogleSsoEnabled(env)) return undefined;
-  return googleSocialProvider({
-    clientId: env.PAPERCLIP_GOOGLE_CLIENT_ID!.trim(),
-    clientSecret: env.PAPERCLIP_GOOGLE_CLIENT_SECRET!.trim(),
-    scope: ["openid", "email", "profile"],
-    prompt: "select_account",
-  });
+  return {
+    google: {
+      clientId: env.PAPERCLIP_GOOGLE_CLIENT_ID!.trim(),
+      clientSecret: env.PAPERCLIP_GOOGLE_CLIENT_SECRET!.trim(),
+      scope: ["openid", "email", "profile"],
+      prompt: "select_account",
+    },
+  };
 }
 
 /**
@@ -309,11 +311,10 @@ function buildBetterAuthPlugins(db: Db, config: Config) {
     issuer: "Paperclip",
     backupCodeOptions: { storeBackupCodes: "encrypted" },
   });
-  // Google SSO is optional per-instance: registered only when both the
-  // client ID and client secret env vars are set. When unregistered the
-  // Better Auth catch-all handler simply 404s the google social routes.
-  const googlePlugin = buildGoogleSsoPlugin();
-  const basePlugins = [twoFactorPlugin, ...(googlePlugin ? [googlePlugin] : [])];
+  // Google SSO is registered separately via `authConfig.socialProviders`
+  // (see createBetterAuthInstance) because Better Auth resolves social
+  // providers from that options map, not from the plugin list.
+  const basePlugins = [twoFactorPlugin];
   const handoffIdentity = resolveWorkspaceHandoffIdentity(config);
   if (!handoffIdentity) {
     return basePlugins;
@@ -381,6 +382,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
     plugins: buildBetterAuthPlugins(db, config),
+    ...(buildGoogleSsoConfig() ? { socialProviders: buildGoogleSsoConfig() } : {}),
   };
 
   if (!baseUrl) {

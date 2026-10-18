@@ -4,7 +4,7 @@ import { getCookies } from "better-auth/cookies";
 import {
   buildBetterAuthAdvancedOptions,
   buildBetterAuthRateLimitOptions,
-  buildGoogleSsoPlugin,
+  buildGoogleSsoConfig,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
   isGoogleSsoEnabled,
@@ -260,7 +260,7 @@ describe("Google SSO plugin registration", () => {
     process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
 
     expect(isGoogleSsoEnabled()).toBe(false);
-    expect(buildGoogleSsoPlugin()).toBeUndefined();
+    expect(buildGoogleSsoConfig()).toBeUndefined();
   });
 
   it("is disabled when the Google client secret is unset", () => {
@@ -268,7 +268,7 @@ describe("Google SSO plugin registration", () => {
     delete process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
 
     expect(isGoogleSsoEnabled()).toBe(false);
-    expect(buildGoogleSsoPlugin()).toBeUndefined();
+    expect(buildGoogleSsoConfig()).toBeUndefined();
   });
 
   it("is disabled when either value is whitespace-only", () => {
@@ -276,7 +276,7 @@ describe("Google SSO plugin registration", () => {
     process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
 
     expect(isGoogleSsoEnabled()).toBe(false);
-    expect(buildGoogleSsoPlugin()).toBeUndefined();
+    expect(buildGoogleSsoConfig()).toBeUndefined();
   });
 
   it("enables only when both env vars are set, and builds the google provider", () => {
@@ -284,10 +284,9 @@ describe("Google SSO plugin registration", () => {
     process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
 
     expect(isGoogleSsoEnabled()).toBe(true);
-    const plugin = buildGoogleSsoPlugin();
-    expect(plugin).toBeDefined();
-    expect(plugin!.id).toBe("google");
-    expect(plugin!.options).toMatchObject({
+    const cfg = buildGoogleSsoConfig();
+    expect(cfg).toBeDefined();
+    expect(cfg!.google).toMatchObject({
       clientId: "client-id",
       clientSecret: "s3cret",
       scope: ["openid", "email", "profile"],
@@ -306,11 +305,11 @@ describe("Google SSO plugin registration", () => {
         PAPERCLIP_GOOGLE_CLIENT_SECRET: "explicit-secret",
       }),
     ).toBe(true);
-    const plugin = buildGoogleSsoPlugin({
+    const cfg = buildGoogleSsoConfig({
       PAPERCLIP_GOOGLE_CLIENT_ID: "explicit-id",
       PAPERCLIP_GOOGLE_CLIENT_SECRET: "explicit-secret",
     });
-    expect(plugin!.options).toMatchObject({
+    expect(cfg!.google).toMatchObject({
       clientId: "explicit-id",
       clientSecret: "explicit-secret",
     });
