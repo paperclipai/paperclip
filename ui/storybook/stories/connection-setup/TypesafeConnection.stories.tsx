@@ -31,7 +31,7 @@ import { SetupPanel } from "@/pages/apps/app-detail/SetupPanel";
 import { PermissionsPanel } from "@/pages/apps/app-detail/PermissionsPanel";
 import { AdvancedPanel } from "@/pages/apps/app-detail/AdvancedPanel";
 import { IdentitiesSection } from "@/pages/apps/app-detail/IdentitiesSection";
-import { storybookAgents } from "../fixtures/paperclipData";
+import { storybookAgents } from "../../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
 const CONNECTION_ID = "connection-typesafe";
@@ -650,8 +650,22 @@ function WalkthroughHost() {
 }
 
 const meta: Meta = {
-  title: "Apps/TypeSafe connect flow",
-  parameters: { layout: "fullscreen" },
+  id: "apps-connections-typesafe",
+  title: "Apps, channels, and extensions/Connection setup/Apps/Connections/TypeSafe",
+  parameters: {
+    layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/catalog",
+        "connection-setup/credentials",
+        "connection-setup/failure",
+        "connection-setup/identity-and-access"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Production Browse, setup, connected-app and run transcript views with in-memory TypeSafe responses. No real key validation or Jev calls."
+    },
+  },
   beforeEach: ({ parameters }) =>
     installConnectFixtures(
       (parameters.typesafeScenario as ConnectScenario | undefined) ?? "success",
