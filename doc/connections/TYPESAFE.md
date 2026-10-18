@@ -82,7 +82,9 @@ because this connection has no catalog actions to include. Without that entry
 governance denies every call by default. When setup preserves existing access,
 a saved entry for the same connection selector replaces that default, so an
 earlier exclusion or conditional include keeps its effect.
-`PUT /api/tool-connections/{connectionId}/installs` changes them later.
+`PUT /api/tool-connections/{connectionId}/installs` changes them later. Install
+changes keep the connection entry: other apps lose their legacy connection-wide
+include there, but for TypeSafe it is the only grant.
 
 ## Asking
 

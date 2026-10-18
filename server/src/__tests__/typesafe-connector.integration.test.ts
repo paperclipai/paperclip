@@ -460,6 +460,24 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     ).resolves.toEqual(ANSWER);
   });
 
+  it("keeps working after its installs are changed", async () => {
+    const { companyId, first, second, connectionId } = await fixture("first_agent");
+    await toolAccessService(db).putConnectionInstalls(
+      connectionId,
+      {
+        installs: [
+          { targetType: "agent", targetId: first.id },
+          { targetType: "agent", targetId: second.id },
+        ],
+      },
+      actor,
+    );
+    for (const agent of [first, second])
+      await expect(
+        executeTypesafeAsk(db, binding(companyId, agent.id), ask(), provider() as unknown as typeof fetch),
+      ).resolves.toEqual(ANSWER);
+  });
+
   it("refuses a call after access is revoked mid-run", async () => {
     const { companyId, first, connectionId } = await fixture("all_agents");
     const fetcher = provider();
