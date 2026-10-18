@@ -1530,7 +1530,7 @@ function buildCodexStartupConfig(input: {
       ...(input.identityEnvironmentKeys ? {
         features: { ...parseObject(existing.features), ...(input.fastMode ? { fast_mode: true } : {}), shell_snapshot: false },
         shell_environment_policy: { ...parseObject(existing.shell_environment_policy),
-          inherit: "all", ignore_default_excludes: true, include_only: input.identityEnvironmentKeys },
+          inherit: "all", ignore_default_excludes: true, exclude: [], include_only: input.identityEnvironmentKeys },
       } : {}),
     }),
     invalidExistingConfig,

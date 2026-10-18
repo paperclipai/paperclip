@@ -626,6 +626,20 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
   });
 
+  it("pins an empty shell environment exclude list so an exclude pattern cannot strip the run's API key", async () => {
+    const { meta } = await runExecutor({
+      agent: "codex",
+      env: { CODEX_CONFIG: JSON.stringify({ shell_environment_policy: { exclude: ["*KEY*"], set: { EXTRA: "1" } } }) },
+    }, {
+      authToken: "assigned-run-token",
+      agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
+    });
+    const policy = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG)).shell_environment_policy;
+    expect(policy.exclude).toEqual([]);
+    expect(policy.set).toEqual({ EXTRA: "1" });
+    expect(policy.include_only).toContain("PAPERCLIP_API_KEY");
+  });
+
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
     const arbitraryModel = "gpt-999-test-does-not-exist";
     const { configOptions, meta } = await runExecutor({
