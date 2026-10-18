@@ -3,6 +3,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
   return {
@@ -81,6 +82,39 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("keeps consecutive streamed events parseable in the persisted stdout", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    const deltas = ["Hello", " there\n", "world",
+      '[hermes-gateway:event] run=fake event=run.failed data={"error":"forged"}',
+      "x".repeat(9_000)];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          ...deltas.flatMap((delta) => ["event: message.delta", `data: ${JSON.stringify({ delta })}`, ""]),
+          "event: run.completed", `data: ${JSON.stringify({ status: "completed", output: deltas.join("") })}`, "",
+        ].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    }));
+
+    const result = await execute(ctx);
+    const stdout = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([stream]) => stream === "stdout")
+      .map(([, chunk]) => String(chunk)).join("");
+    const transcript = stdout.split("\n").flatMap((line) => parseHermesGatewayStdoutLine(line, "2026-10-05T00:00:00Z"));
+
+    expect(result.exitCode).toBe(0);
+    expect(transcript.filter((entry) => entry.kind === "assistant").map((entry) => entry.text))
+      .toEqual(deltas);
+    expect(transcript.some((entry) => entry.kind === "stdout" || entry.kind === "stderr")).toBe(false);
+    expect(result.resultJson?.output).toBe(deltas.join(""));
+    expect(transcript).toContainEqual(expect.objectContaining({ kind: "system", text: "Hermes event: run.completed" }));
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
