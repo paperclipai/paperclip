@@ -14,6 +14,43 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * Managed checkout clone timeout. `PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS` raises it for big repositories on slow links
+ * (a ~400 MB repository at ~500 KB/s needs ~15 min; with the fixed 10 min every first clone fails from zero).
+ * Values below 1 min or not numeric use the 10 min default; values above Node's timer maximum are clamped to it
+ * (Node would otherwise fire the timer after 1 ms).
+ */
+export function managedCloneTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 60_000 ? Math.min(Math.floor(raw), 2_147_483_647) : MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS;
+}
+
+/**
+ * Optional partial clone for checkouts cloned from a URL: `PAPERCLIP_MANAGED_CLONE_FILTER=blob:none` (or
+ * `blob:limit=<n>[kmg]`, `tree:0`). Off by default. Later git commands fetch missing blobs on demand, so private
+ * repositories need working auth for them too.
+ */
+export function managedCloneFilterArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = (env.PAPERCLIP_MANAGED_CLONE_FILTER ?? "").trim();
+  return /^(blob:none|blob:limit=\d+[kmg]?|tree:0)$/.test(raw) ? [`--filter=${raw}`] : [];
+}
+
+/**
+ * The cause of a failed clone, cause first: a timeout says so, otherwise the last lines of git's stderr. The bare
+ * execFile message starts with the whole command line (including an inline credential helper), and run errors are
+ * stored truncated, so a timeout used to read like an auth failure.
+ */
+export function describeManagedCloneFailure(error: unknown, timeoutMs: number): string {
+  const e = error as { killed?: boolean; signal?: string | null; stderr?: unknown; message?: string } | null;
+  const stderr = typeof e?.stderr === "string" ? e.stderr : Buffer.isBuffer(e?.stderr) ? e!.stderr.toString("utf8") : "";
+  const tail = stderr.split("\n").map((l) => l.trim()).filter((l) => l && !/^Cloning into /.test(l)).slice(-3).join(" | ");
+  if (e?.killed || e?.signal === "SIGTERM") {
+    return `git clone timed out after ${Math.round(timeoutMs / 60_000)} min (set PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS for big repositories)${tail ? `; last git output: ${tail}` : ""}`;
+  }
+  if (tail) return `git clone failed: ${tail}`;
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function materializeManagedProjectWorkspace(
   cwd: string,
   input: {
@@ -64,6 +101,8 @@ export async function materializeManagedProjectWorkspace(
     ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
     : `${cwd}.clone-`);
   const cloneSource = input.localSource ?? input.repoUrl;
+  const cloneTimeoutMs = managedCloneTimeoutMs();
+  const filterArgs = input.localSource ? [] : managedCloneFilterArgs();
   let objectCache = input.objectCacheCompanyDirectory && !input.localSource
     ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
       const cache = await resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth);
@@ -82,14 +121,14 @@ export async function materializeManagedProjectWorkspace(
         recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
         return execFile(
           "git",
-          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
+          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), ...filterArgs, "--", cloneSource, cloneTmpDir],
           {
             env: {
               ...sanitizeRuntimeServiceBaseEnv(process.env),
               GIT_TERMINAL_PROMPT: "0",
               ...(auth?.env ?? {}),
             },
-            timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+            timeout: cloneTimeoutMs,
           },
         );
       });
@@ -102,10 +141,11 @@ export async function materializeManagedProjectWorkspace(
         await clone(null);
       }
     } catch (error) {
+      // Name the cause before any wrapping: the wrapper keeps only the message, not git's stderr.
+      const cause = describeManagedCloneFailure(error, cloneTimeoutMs);
       const connectionFailure = !input.localSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
-      if (connectionFailure) throw new GitConnectionFailureError(
-        error instanceof Error ? error.message : "Git clone failed", connectionFailure,
-      );
+      if (connectionFailure) throw new GitConnectionFailureError(cause, connectionFailure);
+      if (error instanceof Error && !isWorkspaceGitScanError(error)) error.message = cause;
       throw error;
     }
     if (objectCache && !reference) await measureRunPhase("workspace.checkout.cache_publish", () => publishRepositoryObjectCache(objectCache!, cloneTmpDir));
@@ -122,7 +162,11 @@ export async function materializeManagedProjectWorkspace(
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
-      await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef!], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+      // With a partial clone this checkout may fetch missing blobs, so it gets the clone's auth.
+      await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", [...(auth?.configArgs ?? []), "-C", cloneTmpDir, "checkout", input.repoRef!], {
+        timeout: cloneTimeoutMs,
+        env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...(auth?.env ?? {}) },
+      }));
     }
     await input.beforePublish?.(cloneTmpDir);
   } catch (error) {
