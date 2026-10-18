@@ -77,7 +77,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
   }
   const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
-    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug });
+    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug, issueId: task.id });
   if (!connection) return null;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.

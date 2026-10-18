@@ -91,7 +91,9 @@ include there, but for TypeSafe it is the only grant.
 An agent can ask for TypeSafe with a connection request. TypeSafe has no catalog
 tools, so readiness does not use the catalog. A connection is ready for an agent
 when it passes the checks above and a read-only governance decision for
-`typesafe.ask` (no rate limit consumed, no audit row) allows it. Completing the
+`typesafe.ask` (no rate limit consumed, no audit row) allows it in the task's
+context. The decision receives the task's issue, so an entry that requires an
+issue or a project is judged as the call from that task would be. Completing the
 request uses the same test, and exactly one ready connection is required.
 
 ## Asking

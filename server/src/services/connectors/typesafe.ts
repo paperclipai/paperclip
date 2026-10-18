@@ -161,8 +161,8 @@ function askPolicyRequest(
   };
 }
 
-/** Assigned connections whose governance would allow a call now. Read-only: no rate limit or audit. */
-export async function typesafeUsableConnections(db: Db, binding: AgentBinding) {
+/** Assigned connections whose governance would allow a call in this task context. Read-only: no rate limit or audit. */
+export async function typesafeUsableConnections(db: Db, binding: AskBinding) {
   const policy = toolAccessPolicyService(db);
   const usable = [];
   for (const connection of await assignedTypesafeConnections(db, binding)) {

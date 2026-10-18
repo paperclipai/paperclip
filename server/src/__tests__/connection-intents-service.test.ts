@@ -783,18 +783,27 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] }, preserveExistingAccess: true,
     }, actor);
 
+    // A task-limited include: execution supplies the issue, so readiness must too.
+    const [appProfile] = await db.select().from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)));
+    await db.update(toolProfileEntries).set({ conditions: { context: { requireIssue: true } } })
+      .where(eq(toolProfileEntries.profileId, appProfile!.id));
+
     await expect(service.complete(request.interactionId!, connectionId, "responsible-user", { canManageOrganizationGrant: true }))
       .resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId } });
     await expect(service.usableConnectionForAgent({
-      companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe",
+      companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe", issueId: issue!.id,
     })).resolves.toMatchObject({ id: connectionId });
+    await expect(service.usableConnectionForAgent({
+      companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe",
+    })).resolves.toBeNull();
 
     await db.insert(toolPolicies).values({
       companyId, name: "No TypeSafe", policyType: "block", priority: 1, enabled: true, selectors: { toolNames: ["typesafe.ask"] },
     });
     try {
       await expect(service.usableConnectionForAgent({
-        companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe",
+        companyId, agentId: agent!.id, responsibleUserId: "responsible-user", serviceSlug: "typesafe", issueId: issue!.id,
       })).resolves.toBeNull();
     } finally {
       await db.delete(toolPolicies).where(and(eq(toolPolicies.companyId, companyId), eq(toolPolicies.name, "No TypeSafe")));
