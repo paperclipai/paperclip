@@ -7459,6 +7459,46 @@ export function issueService(db: Db) {
     }
   }
 
+  // True when `blocker` already sits downstream of `issueId` in the existing
+  // "blocks" graph (blocker blocks X, X blocks ... blocks issueId). In that
+  // case inserting "blocker -> issueId" closes a cycle.
+  async function cycleWouldBeClosedByBlocker(
+    companyId: string,
+    issueId: string,
+    blocker: string,
+    dbOrTx: any = db,
+  ): Promise<boolean> {
+    if (blocker === issueId) return true;
+    const rows = await dbOrTx
+      .select({
+        blockerIssueId: issueRelations.issueId,
+        blockedIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    const adjacency = new Map<string, string[]>();
+    for (const row of rows) {
+      const list = adjacency.get(row.blockerIssueId) ?? [];
+      list.push(row.blockedIssueId);
+      adjacency.set(row.blockerIssueId, list);
+    }
+    const queue = [...(adjacency.get(issueId) ?? [])];
+    const visited = new Set<string>([issueId]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === blocker) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      queue.push(...(adjacency.get(current) ?? []));
+    }
+    return false;
+  }
+
   async function syncBlockedByIssueIds(
     issueId: string,
     companyId: string,
@@ -7490,7 +7530,41 @@ export function issueService(db: Db) {
           "Blocked-by issues must belong to the same company",
         );
       }
-      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+      // Pre-existing cyclic "blocks" edges in the company would make a
+      // whole-graph cycle check reject every blocker. The only edges we
+      // insert in this call are "blocker -> issueId", so a cycle can only
+      // close when one of those blockers is downstream of issueId in the
+      // existing graph. Validate candidate-by-candidate and drop any
+      // blocker that would close an existing cycle instead of aborting
+      // the entire update (recovery paths must never crash startup on
+      // legacy cyclic data).
+      try {
+        await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+      } catch (cycleError) {
+        const cycleChecks = await Promise.all(
+          deduped.map((candidate) =>
+            cycleWouldBeClosedByBlocker(companyId, issueId, candidate, dbOrTx),
+          ),
+        );
+        const safeBlockerIssueIds = deduped.filter(
+          (_, index) => !cycleChecks[index],
+        );
+        const dropped = deduped.filter(
+          (candidate) => !safeBlockerIssueIds.includes(candidate),
+        );
+        if (dropped.length > 0) {
+          logger.warn(
+            {
+              issueId,
+              companyId,
+              droppedBlockers: dropped,
+            },
+            "Dropping blocked-by issues that would close an existing blocking cycle",
+          );
+        }
+        deduped.splice(0, deduped.length, ...safeBlockerIssueIds);
+        void cycleError;
+      }
     }
 
     await dbOrTx
