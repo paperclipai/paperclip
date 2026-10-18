@@ -4,19 +4,31 @@ import { getCookies } from "better-auth/cookies";
 import {
   buildBetterAuthAdvancedOptions,
   buildBetterAuthRateLimitOptions,
+  buildGoogleSsoPlugin,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
+  isGoogleSsoEnabled,
   shouldDisableSecureAuthCookies,
 } from "../auth/better-auth.js";
 
 const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 const ORIGINAL_PUBLIC_URL = process.env.PAPERCLIP_PUBLIC_URL;
+const ORIGINAL_GOOGLE_CLIENT_ID = process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+const ORIGINAL_GOOGLE_CLIENT_SECRET = process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+
+function snapshotGoogleSsoEnv() {
+  if (ORIGINAL_GOOGLE_CLIENT_ID === undefined) delete process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+  else process.env.PAPERCLIP_GOOGLE_CLIENT_ID = ORIGINAL_GOOGLE_CLIENT_ID;
+  if (ORIGINAL_GOOGLE_CLIENT_SECRET === undefined) delete process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+  else process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = ORIGINAL_GOOGLE_CLIENT_SECRET;
+}
 
 afterEach(() => {
   if (ORIGINAL_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
   else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_INSTANCE_ID;
   if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
   else process.env.PAPERCLIP_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
+  snapshotGoogleSsoEnv();
 });
 
 describe("Better Auth cookie scoping", () => {
@@ -240,5 +252,67 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+});
+describe("Google SSO plugin registration", () => {
+  it("is disabled when the Google client id is unset", () => {
+    delete process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+    process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
+
+    expect(isGoogleSsoEnabled()).toBe(false);
+    expect(buildGoogleSsoPlugin()).toBeUndefined();
+  });
+
+  it("is disabled when the Google client secret is unset", () => {
+    process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "client-id";
+    delete process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+
+    expect(isGoogleSsoEnabled()).toBe(false);
+    expect(buildGoogleSsoPlugin()).toBeUndefined();
+  });
+
+  it("is disabled when either value is whitespace-only", () => {
+    process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "   ";
+    process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
+
+    expect(isGoogleSsoEnabled()).toBe(false);
+    expect(buildGoogleSsoPlugin()).toBeUndefined();
+  });
+
+  it("enables only when both env vars are set, and builds the google provider", () => {
+    process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "client-id";
+    process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
+
+    expect(isGoogleSsoEnabled()).toBe(true);
+    const plugin = buildGoogleSsoPlugin();
+    expect(plugin).toBeDefined();
+    expect(plugin!.id).toBe("google");
+    expect(plugin!.options).toMatchObject({
+      clientId: "client-id",
+      clientSecret: "s3cret",
+      scope: ["openid", "email", "profile"],
+      prompt: "select_account",
+    });
+  });
+
+  it("reads env from the provided object, not process.env", () => {
+    process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "process-id";
+    process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "process-secret";
+
+    expect(isGoogleSsoEnabled({})).toBe(false);
+    expect(
+      isGoogleSsoEnabled({
+        PAPERCLIP_GOOGLE_CLIENT_ID: "explicit-id",
+        PAPERCLIP_GOOGLE_CLIENT_SECRET: "explicit-secret",
+      }),
+    ).toBe(true);
+    const plugin = buildGoogleSsoPlugin({
+      PAPERCLIP_GOOGLE_CLIENT_ID: "explicit-id",
+      PAPERCLIP_GOOGLE_CLIENT_SECRET: "explicit-secret",
+    });
+    expect(plugin!.options).toMatchObject({
+      clientId: "explicit-id",
+      clientSecret: "explicit-secret",
+    });
   });
 });

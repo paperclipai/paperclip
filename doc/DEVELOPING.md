@@ -1336,6 +1336,19 @@ Protected `/api/health` on a cloned workspace additionally carries a `workspace`
 
 The workspace UI surfaces `Provisioning database`, `Validating clone`, `Ready`, `Degraded`, `Repairing`, and `Repair failed`, each with one safe action (open, start, repair, or read the log).
 
+### Google SSO
+
+Optional per-instance Google OAuth2 sign-in (Authorization Code + PKCE S256) via Better Auth's built-in `google()` social provider. Enabled only when **both** of the following environment variables are set on the server process; when either is unset the Google sign-in button is not rendered and `GET /api/auth/callback/google` returns 404.
+
+| Variable | Description |
+|---|---|
+| `PAPERCLIP_GOOGLE_CLIENT_ID` | Google OAuth2 client ID (from the Google Cloud Console OAuth client for your instance) |
+| `PAPERCLIP_GOOGLE_CLIENT_SECRET` | Google OAuth2 client secret |
+
+The sign-in page discovers the enabled providers through `GET /api/auth/providers` (public, no session required), which returns `{ ssoProviders: ["google"], googleSsoEnabled: true }` when configured, or `{ ssoProviders: [], googleSsoEnabled: false }` otherwise. The sign-in page renders a "Sign in with Google" button only when `googleSsoEnabled` is true and the user is in sign-in mode (not the 2FA step).
+
+After a successful Google sign-in the user is upserted by Google `sub` (with email-based linking into existing `auth_users` rows). 2FA does **not** apply to the social sign-in path (documented trade-off; 2FA still guards email/password sign-in).
+
 ### Worktree CLI Reference
 
 **`npx paperclipai worktree init [options]`** — Create repo-local config/env and an isolated instance for the current worktree.

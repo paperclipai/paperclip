@@ -1,7 +1,9 @@
 import {
+  authProvidersSchema,
   authSessionSchema,
   currentUserProfileSchema,
   type AuthSession,
+  type AuthProviders,
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
@@ -30,6 +32,18 @@ export interface SignWithEmailResult {
   twoFactorRedirect?: boolean;
   /** Enabled two-factor providers, e.g. ["totp"]. */
   twoFactorMethods?: string[];
+}
+
+export interface SignInGoogleResult {
+  /**
+   * The Google authorization URL to send the user to. Returned when the
+   * server auto-redirects is disabled (`redirect: false` is not set —
+   * the default flow returns `redirect: true` with the URL on the
+   * `Location` header, which a same-origin `fetch` strips).
+   */
+  url?: string;
+  /** True when the server set a `Location` redirect to the provider. */
+  redirect: boolean;
 }
 
 export interface EnableTotpResult {
@@ -174,6 +188,22 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
   return parse(payload);
 }
 
+/**
+ * Append `name=value` to a URL's query string, preserving any existing
+ * query (and fragment). Used to build the Google SSO error-callback URL
+ * so the sign-in page can tell the difference between a normal return and
+ * a failed Google callback round trip.
+ */
+function appendAuthQueryParam(url: string, name: string, value: string): string {
+  const [beforeHash, hash] = url.split("#");
+  const [pathAndQuery] = beforeHash.split("?");
+  const existingQuery = pathAndQuery !== beforeHash ? beforeHash.slice(pathAndQuery.length + 1) : "";
+  const params = new URLSearchParams(existingQuery);
+  params.set(name, value);
+  const query = params.toString();
+  return hash ? `${pathAndQuery}?${query}#${hash}` : `${pathAndQuery}?${query}`;
+}
+
 export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
@@ -264,6 +294,63 @@ export const authApi = {
 
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
+
+  /**
+   * Which social SSO providers the server has registered. The sign-in page
+   * renders a "Sign in with Google" button only when `googleSsoEnabled`
+   * is true, so an unconfigured instance never surfaces the button.
+   */
+  getProviders: async (): Promise<AuthProviders> => {
+    const res = await fetch("/api/auth/providers", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      logAuthHttpError("GET", "/providers", res.status, res.statusText, payload);
+      throw extractAuthError(payload as AuthErrorBody, res.status);
+    }
+    return authProvidersSchema.parse(payload);
+  },
+
+  /**
+   * Begin the Google SSO authorization-code + PKCE flow. POSTs to
+   * Better Auth's `/sign-in/social` endpoint and returns the provider
+   * URL the browser must navigate to. The server's response carries the
+   * URL on the `Location` response header (stripped by a same-origin
+   * `fetch`) AND in the JSON body's `url` field, which this method
+   * reads and returns so the caller can `window.location.assign` it.
+   *
+   * `successRedirectUrl` (when provided) is passed through Better Auth's
+   * `callbackURL` so the session cookie is set on the page the user lands
+   * on after the Google callback. This is the sanctioned mechanism —
+   * Better Auth does not carry a custom return-`to` through its OAuth
+   * state cookie.
+   */
+  signInGoogle: async (opts?: { successRedirectUrl?: string }): Promise<SignInGoogleResult> => {
+    const body: Record<string, unknown> = { provider: "google" };
+    if (opts?.successRedirectUrl) {
+      body.callbackURL = opts.successRedirectUrl;
+      // If the Google callback fails (bad state, expired nonce, ...),
+      // Better Auth redirects to errorCallbackURL. Land back on the sign-in
+      // page with a `google_error=callback_failed` marker so the Auth page
+      // can surface an error banner. Append to whatever query already exists
+      // (e.g. a `next=` return path) so that context survives the round trip.
+      body.errorCallbackURL = appendAuthQueryParam(opts.successRedirectUrl, "google_error", "callback_failed");
+    }
+    const payload = await authPost("/sign-in/social", body);
+    if (!payload || typeof payload !== "object") {
+      throw new AuthApiError("Unexpected response from social sign-in", 500, payload);
+    }
+    const record = payload as Record<string, unknown>;
+    return {
+      ...(typeof record.url === "string" ? { url: record.url } : {}),
+      redirect: typeof record.redirect === "boolean" ? record.redirect : true,
+    };
+  },
 
   signOut: async (): Promise<SignOutResult | null> => {
     const payload = await authPost("/sign-out", {});

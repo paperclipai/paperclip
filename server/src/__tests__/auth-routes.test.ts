@@ -73,6 +73,51 @@ describe("auth routes", () => {
     else process.env.SENTRY_DSN_BACKEND = originalSentryDsnBackend;
   });
 
+  describe("GET /providers (Google SSO discovery)", () => {
+    const originalGoogleClientId = process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+    const originalGoogleClientSecret = process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+
+    afterEach(() => {
+      if (originalGoogleClientId === undefined) delete process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+      else process.env.PAPERCLIP_GOOGLE_CLIENT_ID = originalGoogleClientId;
+      if (originalGoogleClientSecret === undefined) delete process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+      else process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = originalGoogleClientSecret;
+    });
+
+    it("reports no SSO providers when Google SSO is unconfigured, without a session", async () => {
+      delete process.env.PAPERCLIP_GOOGLE_CLIENT_ID;
+      delete process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET;
+      const app = createApp({ type: "none", source: "none" }, baseUser);
+
+      const res = await request(app).get("/api/auth/providers");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ssoProviders: [], googleSsoEnabled: false });
+    });
+
+    it("reports google enabled when both operator env vars are set, without a session", async () => {
+      process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "client-id";
+      process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
+      const app = createApp({ type: "none", source: "none" }, baseUser);
+
+      const res = await request(app).get("/api/auth/providers");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ssoProviders: ["google"], googleSsoEnabled: true });
+    });
+
+    it("treats whitespace-only env values as unconfigured", async () => {
+      process.env.PAPERCLIP_GOOGLE_CLIENT_ID = "   ";
+      process.env.PAPERCLIP_GOOGLE_CLIENT_SECRET = "s3cret";
+      const app = createApp({ type: "none", source: "none" }, baseUser);
+
+      const res = await request(app).get("/api/auth/providers");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ssoProviders: [], googleSsoEnabled: false });
+    });
+  });
+
   it("returns the persisted user profile in the session payload", async () => {
     vi.stubEnv("SENTRY_ENVIRONMENT", undefined);
     delete process.env.SENTRY_DSN;

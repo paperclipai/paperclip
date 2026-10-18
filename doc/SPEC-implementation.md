@@ -661,6 +661,16 @@ member-permission management.
 This preset change adds no database migration; existing role-default seeding
 continues to insert missing grants without replacing custom scopes.
 
+## 9.1.1 Google SSO (Optional)
+
+Per-instance Google OAuth2 sign-in (Authorization Code + PKCE S256) via Better Auth's `google()` social provider. Enabled only when both `PAPERCLIP_GOOGLE_CLIENT_ID` and `PAPERCLIP_GOOGLE_CLIENT_SECRET` are set in the server environment. When unset, the provider is not registered, the sign-in button is not rendered, and `GET /api/auth/callback/google` returns 404.
+
+- `GET /api/auth/providers` (public, no session): returns `{ ssoProviders: ["google"], googleSsoEnabled: true }` when enabled, else `{ ssoProviders: [], googleSsoEnabled: false }`.
+- Sign-in page (`/auth`) renders a "Sign in with Google" button only when `googleSsoEnabled` is true and the user is in sign-in mode (not the 2FA step).
+- Successful sign-in upserts the user by Google `sub`, linking to an existing `auth_users` row on matching email; no duplicate account is created.
+- 2FA does not apply to the social sign-in path (documented trade-off; 2FA still guards email/password sign-in).
+- `return_to` / `next` query param is validated server-side; only single-leading-`/` relative paths are accepted (open-redirect guard).
+
 ## 9.2 Agent Auth
 
 - Bearer API key mapped to one agent and company

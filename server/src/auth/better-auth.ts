@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
+import { google as googleSocialProvider } from "better-auth/social-providers";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
@@ -241,6 +242,53 @@ export function resolveWorkspaceHandoffIdentity(
 }
 
 /**
+ * Whether Google SSO sign-in is enabled for this instance.
+ *
+ * Enabled only when BOTH `PAPERCLIP_GOOGLE_CLIENT_ID` and
+ * `PAPERCLIP_GOOGLE_CLIENT_SECRET` are set in the server environment. When
+ * either is unset the provider is not registered, the sign-in button is not
+ * rendered by the UI, and `GET /api/auth/callback/google` is not served.
+ */
+export function isGoogleSsoEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(
+    env.PAPERCLIP_GOOGLE_CLIENT_ID?.trim() &&
+      env.PAPERCLIP_GOOGLE_CLIENT_SECRET?.trim(),
+  );
+}
+
+/**
+ * Build the Better Auth `google()` social-provider plugin when the Google SSO
+ * env vars are set. Returns `undefined` otherwise, so the provider is not
+ * registered at all (Better Auth's catch-all handler then 404s
+ * `/api/auth/sign-in/social` for google and `/api/auth/callback/google`).
+ *
+ * - PKCE (S256) is the Better Auth generic-OAuth core's default for the
+ *   authorization-code flow; the code verifier is held in the state cookie.
+ * - `id_token` verification (signature, iss, aud, exp, nonce) is the
+ *   provider's built-in `idToken` block.
+ * - `prompt: "select_account"` matches the reference pattern and forces the
+ *   account chooser even when a Google session already exists.
+ */
+// The inferred return type references `JWTHeaderParameters` from `jose`
+// (via the provider's `idToken.jwks` callback). A type annotation is needed
+// for emit portability; the concrete plugin record is only consumed by
+// Better Auth itself (spread into the plugin list).
+type GoogleSsoPlugin = ReturnType<
+  typeof import("better-auth/social-providers").google
+>;
+export function buildGoogleSsoPlugin(
+  env: NodeJS.ProcessEnv = process.env,
+): GoogleSsoPlugin | undefined {
+  if (!isGoogleSsoEnabled(env)) return undefined;
+  return googleSocialProvider({
+    clientId: env.PAPERCLIP_GOOGLE_CLIENT_ID!.trim(),
+    clientSecret: env.PAPERCLIP_GOOGLE_CLIENT_SECRET!.trim(),
+    scope: ["openid", "email", "profile"],
+    prompt: "select_account",
+  });
+}
+
+/**
  * Assemble the Better Auth plugin list.
  *
  * - `twoFactor()` (TOTP + backup codes) is always registered. It is strictly
@@ -261,12 +309,17 @@ function buildBetterAuthPlugins(db: Db, config: Config) {
     issuer: "Paperclip",
     backupCodeOptions: { storeBackupCodes: "encrypted" },
   });
+  // Google SSO is optional per-instance: registered only when both the
+  // client ID and client secret env vars are set. When unregistered the
+  // Better Auth catch-all handler simply 404s the google social routes.
+  const googlePlugin = buildGoogleSsoPlugin();
+  const basePlugins = [twoFactorPlugin, ...(googlePlugin ? [googlePlugin] : [])];
   const handoffIdentity = resolveWorkspaceHandoffIdentity(config);
   if (!handoffIdentity) {
-    return [twoFactorPlugin];
+    return basePlugins;
   }
   return [
-    twoFactorPlugin,
+    ...basePlugins,
     workspaceLoginHandoffPlugin({
       db,
       // Re-resolved per exchange so a hot restart cannot keep validating

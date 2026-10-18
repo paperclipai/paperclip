@@ -216,6 +216,24 @@ export const authSessionSchema = z.object({
 
 export type AuthSession = z.infer<typeof authSessionSchema>;
 
+export const authProvidersSchema = z.object({
+  /**
+   * Social SSO providers currently registered on this instance. The UI
+   * renders a sign-in button only for providers it finds here, so an
+   * unregistered provider never surfaces. `google` is the only provider
+   * Paperclip ships today; the array shape leaves room for more.
+   */
+  ssoProviders: z.array(z.string().min(1)),
+  /**
+   * Convenience flag for the one provider Paperclip ships: whether Google
+   * SSO is enabled (both operator env vars set). Mirrors `ssoProviders`
+   * containing `"google"` so existing callers can key off a single boolean.
+   */
+  googleSsoEnabled: z.boolean(),
+});
+
+export type AuthProviders = z.infer<typeof authProvidersSchema>;
+
 export const updateCurrentUserProfileSchema = z.object({
   name: z.string().trim().min(1).max(120),
   image: z

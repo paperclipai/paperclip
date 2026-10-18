@@ -615,6 +615,7 @@ export const queryKeys = {
   },
   auth: {
     session: ["auth", "session"] as const,
+    providers: ["auth", "providers"] as const,
   },
   inboxAgentPolicy: {
     mine: (companyId: string) =>

@@ -3,10 +3,12 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers } from "@paperclipai/db";
 import {
+  authProvidersSchema,
   authSessionSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
+import { isGoogleSsoEnabled } from "../auth/better-auth.js";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
@@ -39,6 +41,21 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
 
 export function authRoutes(db: Db) {
   const router = Router();
+
+  // Public pre-auth discovery endpoint: tells the sign-in page which SSO
+  // providers the server has registered so it can render a sign-in button
+  // only when Google SSO is enabled. Reveals provider existence, never
+  // provider configuration. Mounted on `authRoutes` before the Better Auth
+  // catch-all in `app.ts`, so this exact path always resolves here.
+  router.get("/providers", (req, res) => {
+    const enabled = isGoogleSsoEnabled();
+    res.json(
+      authProvidersSchema.parse({
+        ssoProviders: enabled ? ["google"] : [],
+        googleSsoEnabled: enabled,
+      }),
+    );
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

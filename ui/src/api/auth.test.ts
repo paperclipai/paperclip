@@ -195,3 +195,114 @@ describe("authApi two-factor methods", () => {
     );
   });
 });
+
+describe("authApi.getProviders", () => {
+  it("normalizes the providers response and GETs /api/auth/providers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ssoProviders: ["google"], googleSsoEnabled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authApi.getProviders()).resolves.toEqual({
+      ssoProviders: ["google"],
+      googleSsoEnabled: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/providers", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  });
+
+  it("reports no providers when Google SSO is unconfigured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ssoProviders: [], googleSsoEnabled: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authApi.getProviders()).resolves.toEqual({
+      ssoProviders: [],
+      googleSsoEnabled: false,
+    });
+  });
+
+  it("throws an AuthApiError on a 500", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "boom" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authApi.getProviders()).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe("authApi.signInGoogle", () => {
+  it("posts provider=google to /api/auth/sign-in/social and returns the authorize URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc&code_challenge=x",
+        redirect: true,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await authApi.signInGoogle({ successRedirectUrl: "/auth?next=/issues" });
+
+    expect(result).toEqual({
+      url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc&code_challenge=x",
+      redirect: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/sign-in/social", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "google",
+        callbackURL: "/auth?next=/issues",
+        errorCallbackURL: "/auth?next=%2Fissues&google_error=callback_failed",
+      }),
+    });
+  });
+
+  it("omits callback and error URLs when no success redirect is provided", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ url: "https://accounts.google.com", redirect: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authApi.signInGoogle();
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/sign-in/social", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "google" }),
+    });
+  });
+
+  it("surfaces a 404 from an unregistered provider as an AuthApiError", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "NOT_FOUND", code: "provider_not_found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authApi.signInGoogle()).rejects.toMatchObject({ status: 404, code: "provider_not_found" });
+  });
+});
