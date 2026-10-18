@@ -45,6 +45,13 @@ export interface AdapterUsageCheckpoint {
   usage?: UsageSummary;
   usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
   usageBasis?: "per_run" | "session_cumulative" | null;
+  /** Marks a receipt recovered after the fact (for example from the durable
+   * Pi session file) rather than reported live by the adapter. */
+  usageSource?: "recovered_stream";
+  /** Durable adapter session reference (the Pi session file path for
+   * pi_local) so a run interrupted before its final receipt can still
+   * recover usage from the provider's own session record. */
+  sessionRef?: string | null;
   provider?: string | null;
   biller?: string | null;
   model?: string | null;
@@ -524,6 +531,19 @@ export interface ServerAdapterModule {
    * or a Paperclip code update.
    */
   refreshModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Optional: recover the authoritative usage of a session after a run was
+   * interrupted before its final receipt (operator stop, graceful server
+   * shutdown, timeout). The adapter reads its own durable session record
+   * (the Pi session JSONL for pi_local) and returns a complete checkpoint,
+   * or null when nothing is recoverable. `from`/`to` bound the window so a
+   * session resumed by a later run cannot be double-counted.
+   */
+  recoverSessionUsage?: (input: {
+    sessionRef: string;
+    from?: Date | null;
+    to?: Date | null;
+  }) => Promise<AdapterUsageCheckpoint | null>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

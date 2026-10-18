@@ -128,6 +128,7 @@ import {
   testEnvironment as piTestEnvironment,
   sessionCodec as piSessionCodec,
   listPiModels,
+  readPiSessionUsage,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
@@ -882,6 +883,34 @@ const piLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
+  // A killed Pi process (operator stop, graceful server shutdown, timeout)
+  // never returns its final receipt. The session file on disk holds every
+  // completed turn, so interrupted runs can still recover authoritative
+  // usage from it. Remote session refs are not readable here; those runs
+  // remain pending for their normal recovery path.
+  recoverSessionUsage: async ({ sessionRef, from, to }) => {
+    const summary = await readPiSessionUsage(sessionRef, { from, to });
+    if (!summary || summary.responses === 0) return null;
+    return {
+      usage: {
+        inputTokens: summary.usage.inputTokens,
+        cachedInputTokens: summary.usage.cachedInputTokens,
+        cacheWriteTokens: summary.usage.cacheWriteTokens,
+        outputTokens: summary.usage.outputTokens,
+      },
+      usageBasis: "per_run",
+      usageSource: "recovered_stream",
+      sessionRef,
+      provider: summary.provider,
+      model:
+        summary.provider && summary.model && !summary.model.startsWith(`${summary.provider}/`)
+          ? `${summary.provider}/${summary.model}`
+          : summary.model,
+      billingType: "unknown",
+      costUsd: summary.costUsd,
+      complete: true,
+    };
+  },
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 

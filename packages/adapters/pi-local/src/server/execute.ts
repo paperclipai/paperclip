@@ -705,6 +705,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         heartbeatPromptChars: attemptRenderedHeartbeatPrompt.length,
       };
       const args = buildArgs(sessionFile, userPrompt);
+      // Bind the durable session reference before the process starts. A run
+      // interrupted before its first usage checkpoint (operator stop, graceful
+      // server shutdown, crash) still exposes the session file so completed
+      // turns can be recovered from it later.
+      await ctx.onUsage?.({
+        usage: { inputTokens: 0, outputTokens: 0 },
+        usageBasis: "per_run",
+        sessionRef: sessionFile,
+        provider,
+        model,
+        billingType: "unknown",
+        complete: false,
+      });
       if (onMeta) {
         await onMeta({
           adapterType: "pi_local",
@@ -753,7 +766,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const accountingLog = createUsageCheckpointLog(bufferedOnLog, ctx.onUsage ?? (async () => {}), stdout => {
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
-        return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
+        return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", sessionRef: sessionFile, provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
       });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),

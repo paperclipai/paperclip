@@ -8,6 +8,7 @@ import { budgetService, deliverBudgetEnforcement, type BudgetServiceHooks } from
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
+import { recoverPendingInterruptedRunUsage } from "./usage-session-recovery.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -189,6 +190,20 @@ export function createCostAccountingReconciler(db: Db, hooks: BudgetServiceHooks
       inFlight = (async () => {
         try {
           await replayUsageReceipts(db);
+          // Interrupted runs (operator stop, graceful shutdown, timeout) whose
+          // final receipt never arrived recover their completed-turn usage
+          // from the adapter's durable session record before settlement, so
+          // the ledger and the run receipt stay equal.
+          const recovered = await recoverPendingInterruptedRunUsage(db).catch((err) => {
+            logger.warn({ err: err }, "Interrupted-run usage recovery sweep failed; the next tick retries");
+            return [];
+          });
+          if (recovered.some((item) => item.recovered)) {
+            logger.info(
+              { runIds: recovered.filter((item) => item.recovered).map((item) => item.runId) },
+              "Recovered usage for interrupted runs from durable session records",
+            );
+          }
           return await reconcileRunCosts(db, hooks);
         } finally {
           inFlight = undefined;
