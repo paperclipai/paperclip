@@ -131,7 +131,15 @@ export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
       throw new TypesafeApiError(0, UNREACHABLE);
     });
     if (!response.ok) throw new TypesafeApiError(response.status);
-    return response.json().catch(() => undefined);
+    // The deadline also covers the body; a stream failure is transient, malformed JSON is not.
+    const text = await response.text().catch(() => {
+      throw new TypesafeApiError(0, UNREACHABLE);
+    });
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
   }
   // Zod issues can echo provider values, so a mismatch never leaves as a ZodError.
   function read<T>(schema: z.ZodType<T>, body: unknown): T {

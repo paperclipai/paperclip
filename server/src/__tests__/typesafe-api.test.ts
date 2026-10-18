@@ -81,6 +81,27 @@ describe("typesafeApi", () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["a network failure", () => new TypeError("terminated: private-host.internal")],
+    ["a timeout", () => new DOMException("The operation timed out: private-host.internal", "TimeoutError")],
+  ])("reports %s while reading the body as unreachable and retryable", async (_name, failure) => {
+    const { fetch } = fetcherFor(() =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"models":'));
+            controller.error(failure());
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const error = await typesafeApi(KEY, fetch).listModels().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypesafeApiError);
+    expect(error).toMatchObject({ code: "typesafe_unreachable", httpStatus: 503, retryable: true });
+    expect(`${(error as Error).message} ${JSON.stringify(error)}`).not.toContain("private-host");
+  });
+
   it("does not retry a rate-limited request", async () => {
     const { mock, fetch } = fetcherFor(() => json({}, 429));
     await typesafeApi(KEY, fetch).listModels().catch(() => null);
