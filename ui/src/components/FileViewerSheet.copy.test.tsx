@@ -133,12 +133,23 @@ describe("FileViewerSheet copy actions", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
+  // The toast confirmation lands in a later render than the click's own
+  // microtask + setTimeout(0); poll instead of asserting on one fixed tick.
+  async function waitForToast(text: string, attempts = 40): Promise<void> {
+    for (let i = 0; i < attempts; i += 1) {
+      if (document.body.textContent?.includes(text)) return;
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
   it("copies file contents and shows confirmation", async () => {
     renderSheet();
 
     await click("Copy file contents");
 
     expect(writeText).toHaveBeenCalledWith("hello from the file");
+    await waitForToast("Copied contents");
     expect(document.body.textContent).toContain("Copied contents");
   });
 
@@ -148,6 +159,7 @@ describe("FileViewerSheet copy actions", () => {
     await click("Copy link to this file view");
 
     expect(writeText).toHaveBeenCalledWith(window.location.href);
+    await waitForToast("Copied link");
     expect(document.body.textContent).toContain("Copied link");
   });
 
