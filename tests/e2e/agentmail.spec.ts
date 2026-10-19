@@ -307,7 +307,10 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   await page.screenshot({ path: test.info().outputPath("agentmail-settings-reconnect.png"), fullPage: true });
   await page.goto(`/${company.issuePrefix}/issues/${task.identifier}`);
   const email = page.getByRole("article", { name: "Email received", exact: true });
-  await expect(email).toBeVisible();
+  // A cold app boot after goto: the chat thread (and this card in its header)
+  // waits for the first comments, activity and runs reads. On a loaded CI
+  // runner the first API read came 3.3 s after the document.
+  await expect(email).toBeVisible({ timeout: 15_000 });
   await expect(email.getByText("Can you help?", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", {
     name: /^(Internal comment|Email reply|Start email child task)$/,
