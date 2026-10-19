@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -634,14 +634,47 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
 
     const app = createApp(companyId);
-    for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
-      const res = await request(app)
-        .get(`/api/companies/${companyId}/issues`)
-        .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-    }
+    // Hold the clock: a slow runner's loop outlasts the cache's stale window, and the first entries are
+    // pruned before the size is read. This test checks the size bound, not expiry.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
+        const res = await request(app)
+          .get(`/api/companies/${companyId}/issues`)
+          .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+      }
 
-    expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prunes compact issue-list cache entries past their stale window, which is why the bound test holds the clock", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const list = (q: string) => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact", limit: "20", q });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let index = 0; index < 10; index += 1) expect((await list(`early-${index}`)).status).toBe(200);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(10);
+      // What a slow runner's elapsed time does to the first entries of the bound test's loop.
+      vi.setSystemTime(Date.now() + 60_000);
+      expect((await list("late")).status).toBe(200);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("logs request_storm_detected for identical in-flight compact issue-list fanout without query values", async () => {
