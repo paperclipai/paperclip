@@ -19,7 +19,7 @@ import {
   type PluginSettingsPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { useCallback, useEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type AnchorHTMLAttributes, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { readIngestOperationIssueId, uploadIssueAttachmentFile } from "./issue-attachments.js";
 
 // ---------------------------------------------------------------------------
@@ -746,9 +746,48 @@ function useIsMobileLayout(): boolean {
   return useMediaQuery(mobileMediaQuery);
 }
 
+/**
+ * Counts the Git mirror syncs the banner has seen finish. Each data hook that shows mirrored content refetches
+ * when it moves: usePluginData caches per hook and does not poll, so without it a finished sync would leave the
+ * page list, the open page and the overview showing the old copy.
+ */
+let gitMirrorSyncGeneration = 0;
+const gitMirrorSyncListeners = new Set<() => void>();
+
+function announceGitMirrorSync() {
+  gitMirrorSyncGeneration += 1;
+  for (const listener of gitMirrorSyncListeners) listener();
+}
+
+function gitMirrorSyncSnapshot() {
+  return gitMirrorSyncGeneration;
+}
+
+function subscribeGitMirrorSync(listener: () => void) {
+  gitMirrorSyncListeners.add(listener);
+  return () => {
+    gitMirrorSyncListeners.delete(listener);
+  };
+}
+
+/** Refetch a query once for every mirror sync that finishes while it is mounted. */
+function useRefreshOnGitMirrorSync(refresh: () => void) {
+  const generation = useSyncExternalStore(subscribeGitMirrorSync, gitMirrorSyncSnapshot, gitMirrorSyncSnapshot);
+  const seen = useRef(generation);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (seen.current === generation) return;
+    seen.current = generation;
+    refreshRef.current();
+  }, [generation]);
+}
+
 function useOverview(companyId: string | null) {
   const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
-  return usePluginData<OverviewData>("overview", params);
+  const query = usePluginData<OverviewData>("overview", params);
+  useRefreshOnGitMirrorSync(query.refresh);
+  return query;
 }
 
 type GitMirrorStatusData = {
@@ -785,7 +824,9 @@ function usePages(companyId: string | null, opts: { includeRaw?: boolean; spaceS
     else if (opts.spaceSlug === DEFAULT_SPACE_SLUG) next.spaceSlug = DEFAULT_SPACE_SLUG;
     return next;
   }, [companyId, opts.includeRaw, opts.spaceSlug]);
-  return usePluginData<PagesData>("pages", params);
+  const query = usePluginData<PagesData>("pages", params);
+  useRefreshOnGitMirrorSync(query.refresh);
+  return query;
 }
 
 function useSpaces(companyId: string | null) {
@@ -816,7 +857,9 @@ function usePageContent(companyId: string | null, path: string | null, spaceSlug
     if (spaceSlug) next.spaceSlug = spaceSlug;
     return next;
   }, [companyId, path, spaceSlug]);
-  return usePluginData<PageContentData>("page-content", params);
+  const query = usePluginData<PageContentData>("page-content", params);
+  useRefreshOnGitMirrorSync(query.refresh);
+  return query;
 }
 
 function useOperations(companyId: string | null, filter: { operationType?: string | null; status?: string | null; spaceSlug?: string | null } = {}) {
@@ -3053,6 +3096,18 @@ function GitMirrorBanner({ companyId, spaceSlug }: { companyId: string; spaceSlu
     setPollExpired(false);
     pollDeadline.current = null;
   }, [companyId]);
+
+  // A sync finished (the first copy, a Sync now, the last continuation of a long one): the commit or sync
+  // time moved while no run is active, or a run that was active is not any more. The page views refetch.
+  const settledMark = mirror?.enabled ? `${mirror.commitSha ?? ""}|${mirror.syncedAt ?? ""}` : null;
+  const lastSeen = useRef<{ companyId: string; mark: string | null; active: boolean } | null>(null);
+  useEffect(() => {
+    if (!mirror) return;
+    const previous = lastSeen.current;
+    lastSeen.current = { companyId, mark: settledMark, active: syncActive };
+    if (!previous || previous.companyId !== companyId || syncActive) return;
+    if (previous.active || previous.mark !== settledMark) announceGitMirrorSync();
+  }, [mirror, companyId, settledMark, syncActive]);
 
   if (!mirror?.enabled || mirror.spaceSlug !== spaceSlug) return null;
 

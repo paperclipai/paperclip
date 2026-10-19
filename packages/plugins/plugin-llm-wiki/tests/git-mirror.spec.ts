@@ -401,8 +401,108 @@ describe("Git mirror sync", () => {
 
     const result = await sync(harness);
 
-    expect(result.skipped).toContainEqual({ path: "spaces/handbook/wiki/index.md", reason: "reserved for other wiki spaces" });
+    // Outside the wiki layout, so it lands under wiki/, never in the other space's folder.
+    expect(result.written).toContain("wiki/spaces/handbook/wiki/index.md");
+    expect(await read(harness, "wiki/spaces/handbook/wiki/index.md")).toBe("# intruder\n");
     expect(await read(harness, "spaces/handbook/wiki/index.md")).toBe("# handbook\n");
+  });
+
+  it("puts Markdown outside the wiki layout under wiki/, and skips what still has no page path", async () => {
+    const { harness } = await setup({
+      "README.md": "# Readme\n",
+      "docs/setup.md": "# Setup\n",
+      "wiki/docs/setup.md": "# The wiki's own setup page\n",
+      "NOTES.MD": "# Shouted\n",
+      "index.md": "# Root index\n",
+    });
+
+    const result = await sync(harness);
+
+    expect(result.written.sort()).toEqual(["index.md", "wiki/README.md", "wiki/docs/setup.md"]);
+    expect(result.skipped).toEqual([
+      // A file already at its page path keeps it, whatever the tree order.
+      { path: "docs/setup.md", reason: "its wiki path wiki/docs/setup.md holds wiki/docs/setup.md" },
+      { path: "NOTES.MD", reason: "the wiki reads only .md pages" },
+    ]);
+    expect(await read(harness, "wiki/README.md")).toBe("# Readme\n");
+    expect(await read(harness, "wiki/docs/setup.md")).toBe("# The wiki's own setup page\n");
+    expect(await read(harness, "README.md")).toBeNull();
+    expect(await read(harness, "docs/setup.md")).toBeNull();
+  });
+
+  it("keeps the working copy when a changed branch does not exist", async () => {
+    const { harness, github } = await setup(HANDBOOK);
+    await sync(harness);
+    harness.setConfig(mirrorConfig({ branch: "mian" }));
+
+    await expect(sync(harness)).rejects.toThrow("returned 404");
+
+    for (const path of ["AGENTS.md", "IDEA.md", "wiki/index.md", "wiki/log.md", "wiki/projects/v3/index.md"]) {
+      expect(await read(harness, path)).toBe(github.files[path]);
+    }
+    const status = await harness.getData<GitMirrorStatus>("git-mirror", { companyId: COMPANY_ID });
+    expect(status).toMatchObject({ branch: "mian", commitSha: github.commit, fileCount: 5 });
+    expect(status.lastError).toContain("404");
+
+    // Fixed: the original branch again, and the copy is still the synced one.
+    harness.setConfig(mirrorConfig());
+    github.calls = [];
+    expect((await sync(harness)).status).toBe("unchanged");
+    expect(github.blobCalls()).toBe(0);
+  });
+
+  it("deletes nothing for a changed source that fails before its tree checks out", async () => {
+    for (const fail of ["credential", "truncated", "limits"] as const) {
+      const { harness, github } = await setup(HANDBOOK);
+      await sync(harness);
+      harness.setConfig(mirrorConfig({ spaceSlug: "handbook" }));
+      if (fail === "credential") github.permissions = { contents: "write", metadata: "read" };
+      if (fail === "truncated") github.truncated = true;
+      if (fail === "limits") {
+        // Sixty files just under the per-file limit: past the total, so the tree is refused before any fetch.
+        const fetch = github.fetch;
+        harness.ctx.http.fetch = async (url, init) => {
+          const response = await fetch(url, init);
+          if (!url.includes("/git/trees/")) return response;
+          const tree = await response.json() as { tree: unknown[] };
+          for (let at = 0; at < 60; at += 1) {
+            tree.tree.push({ path: `wiki/bulk/b${at}.md`, mode: "100644", type: "blob", sha: "a".repeat(40), size: 999_999 });
+          }
+          return new Response(JSON.stringify(tree), { status: 200 });
+        };
+      }
+
+      await expect(sync(harness)).rejects.toThrow(fail === "credential" ? "more than contents: read" : fail === "truncated" ? "too large for one listing" : "the mirror stops at");
+
+      for (const path of ["AGENTS.md", "wiki/index.md", "wiki/projects/v3/index.md"]) {
+        expect(await read(harness, path), `${fail}: ${path}`).toBe(HANDBOOK[path]);
+      }
+      const status = await harness.getData<GitMirrorStatus>("git-mirror", { companyId: COMPANY_ID });
+      expect(status.fileCount, fail).toBe(5);
+    }
+  });
+
+  it("replaces the copy in place when only the branch changes, removing only what the new branch lacks", async () => {
+    const { harness, github } = await setup(HANDBOOK);
+    await sync(harness);
+    harness.setConfig(mirrorConfig({ branch: "next" }));
+    github.branchName = "next";
+    github.commit = "d1".padEnd(40, "0");
+    github.files = { ...HANDBOOK, "wiki/index.md": "# Index on next\n" };
+    delete github.files["wiki/log.md"];
+    const deletedPaths: string[] = [];
+    const deleteFile = harness.ctx.localFolders.deleteFile.bind(harness.ctx.localFolders);
+    harness.ctx.localFolders.deleteFile = async (companyId, folderKey, path) => {
+      deletedPaths.push(path);
+      return deleteFile(companyId, folderKey, path);
+    };
+
+    const result = await sync(harness);
+
+    expect(result).toMatchObject({ status: "synced", branch: "next", commitSha: github.commit, fileCount: 4 });
+    expect(deletedPaths).toEqual(["wiki/log.md"]);
+    expect(await read(harness, "wiki/index.md")).toBe("# Index on next\n");
+    expect(await read(harness, "wiki/projects/v3/index.md")).toBe("# v3\n");
   });
 
   it("coalesces repeated forced syncs into one queued run", async () => {
@@ -1161,7 +1261,8 @@ class PageIndex {
 
 const INDEXED_HANDBOOK: RepoFiles = {
   ...HANDBOOK,
-  "README.md": "# Readme\n",
+  "README.md": "# Readme\n\nStart with the setup page.\n",
+  "docs/setup.md": "# Setup guide\n",
   "wiki/projects/v3/how-it-works.md": [
     "---",
     "# a YAML comment, not a heading",
@@ -1200,6 +1301,8 @@ describe("Git mirror page index", () => {
     expect(index.paths()).toEqual([
       "AGENTS.md",
       "IDEA.md",
+      "wiki/README.md",
+      "wiki/docs/setup.md",
       "wiki/index.md",
       "wiki/log.md",
       "wiki/projects/v3/how-it-works.md",
@@ -1219,6 +1322,13 @@ describe("Git mirror page index", () => {
       "wiki/projects/v3/how-it-works.md - How v3 works",
     ]);
     expect(await toolText(harness, "wiki_read_page", { path: "wiki/projects/v3/how-it-works.md" })).toContain("# How v3 works");
+
+    // Files outside the wiki layout land under wiki/, where the same tools read, list and search them.
+    expect(await toolText(harness, "wiki_read_page", { path: "wiki/README.md" })).toContain("Start with the setup page.");
+    expect(await toolText(harness, "wiki_read_page", { path: "wiki/docs/setup.md" })).toBe("# Setup guide\n");
+    expect(await toolText(harness, "wiki_search", { query: "readme" })).toBe("page: wiki/README.md - Readme");
+    expect(await toolText(harness, "wiki_search", { query: "setup guide" })).toBe("page: wiki/docs/setup.md - Setup guide");
+    expect(await toolText(harness, "wiki_list_pages")).toContain("wiki/docs/setup.md - Setup guide");
   });
 
   it("updates the rows of changed pages and removes the rows of deleted ones", async () => {
@@ -1261,6 +1371,8 @@ describe("Git mirror page index", () => {
     expect(index.paths()).toEqual([
       "AGENTS.md",
       "IDEA.md",
+      "wiki/README.md",
+      "wiki/docs/setup.md",
       "wiki/index.md",
       "wiki/log.md",
       "wiki/projects/v3/how-it-works.md",
@@ -1311,6 +1423,60 @@ describe("Git mirror page index", () => {
 
     await sync(harness);
     expect(index.rows.get(`${spaceId}|wiki/index.md`)?.title).toBe("Index");
+  });
+
+  it("reads no page back from disk in a sync that wrote it", async () => {
+    const { harness } = await setupIndexed(INDEXED_HANDBOOK);
+    const reads: string[] = [];
+    const readText = harness.ctx.localFolders.readText.bind(harness.ctx.localFolders);
+    harness.ctx.localFolders.readText = async (companyId, folderKey, relativePath) => {
+      reads.push(relativePath);
+      return readText(companyId, folderKey, relativePath);
+    };
+
+    expect((await sync(harness)).status).toBe("synced");
+
+    expect(reads).toEqual([]);
+  });
+
+  it("spends the time budget on the index check and resumes it where it stopped", async () => {
+    const pages = Object.fromEntries(Array.from({ length: 50 }, (_, at) => [`wiki/notes/n${String(at).padStart(2, "0")}.md`, `# Note ${at}\n`]));
+    const { harness, github, index } = await setupIndexed(pages);
+    await sync(harness);
+    // A ledger from before the index existed: every page's row is due for a check from disk.
+    const stateKey = { scopeKind: "company" as const, scopeId: COMPANY_ID, namespace: "llm-wiki", stateKey: "git-mirror" };
+    const stored = harness.getState(stateKey) as Record<string, unknown>;
+    await harness.ctx.state.set(stateKey, { ...stored, indexedSpace: undefined, indexVerified: undefined });
+    index.rows.clear();
+    // Each read takes 100 ms of a 1,000 ms budget.
+    let now = Date.parse("2026-10-19T06:00:00Z");
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const reads: string[] = [];
+    const readText = harness.ctx.localFolders.readText.bind(harness.ctx.localFolders);
+    harness.ctx.localFolders.readText = async (companyId, folderKey, relativePath) => {
+      reads.push(relativePath);
+      now += 100;
+      return readText(companyId, folderKey, relativePath);
+    };
+    github.calls = [];
+    try {
+      const statuses: string[] = [];
+      for (let run = 0; run < 10; run += 1) {
+        const result = await syncGitMirror(harness.ctx, COMPANY_ID, { budgetMs: 1_000 });
+        statuses.push(result.status);
+        if (result.status !== "partial") break;
+      }
+
+      expect(statuses).toEqual(["partial", "partial", "partial", "partial", "unchanged"]);
+    } finally {
+      dateNow.mockRestore();
+    }
+    // Every page read once across the runs, none twice, and no file fetched again.
+    expect(reads).toHaveLength(50);
+    expect(new Set(reads).size).toBe(50);
+    expect(github.blobCalls()).toBe(0);
+    expect(index.paths()).toHaveLength(50);
+    expect((harness.getState(stateKey) as { indexVerified?: unknown }).indexVerified).toBe(true);
   });
 
   it("removes a pre-index ledger's rows from its old space when the source changes", async () => {
@@ -1437,15 +1603,17 @@ describe("Mirrored page links", () => {
     const { harness, github, index } = await setupIndexed({ ...HANDBOOK, " wiki/spaced.md": "# Spaced\n" });
 
     const first = await sync(harness);
-    expect(first.written).toContain(" wiki/spaced.md");
-    // Neither form: the read tools would look for " wiki/spaced.md" at "wiki/spaced.md".
-    expect(index.paths().filter((path) => path.includes("spaced"))).toEqual([]);
+    // The read tools would read " wiki/spaced.md" as "wiki/spaced.md", so it moves under wiki/, to a path
+    // they read exactly as written; file and row share it.
+    expect(first.written).toContain("wiki/ wiki/spaced.md");
+    expect(await read(harness, "wiki/ wiki/spaced.md")).toBe("# Spaced\n");
+    expect(index.paths().filter((path) => path.includes("spaced"))).toEqual(["wiki/ wiki/spaced.md"]);
     github.files = { ...HANDBOOK };
     github.commit = "c2".padEnd(40, "0");
 
     const second = await sync(harness);
 
-    expect(second.deleted).toEqual([" wiki/spaced.md"]);
+    expect(second.deleted).toEqual(["wiki/ wiki/spaced.md"]);
     expect(index.paths()).toEqual(["AGENTS.md", "IDEA.md", "wiki/index.md", "wiki/log.md", "wiki/projects/v3/index.md"]);
   });
 

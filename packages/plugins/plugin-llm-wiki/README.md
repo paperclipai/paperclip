@@ -180,6 +180,12 @@ How it behaves:
 - Only `*.md` files outside dot-directories are mirrored, up to 1 MB each,
   5,000 files and 50 MB in total. A truncated tree listing fails the sync
   instead of mirroring part of the repository.
+- Every mirrored file lands at a path the page tools read: `AGENTS.md`,
+  `IDEA.md`, `index.md`, `log.md`, `WIKI.md` and `wiki/**.md` keep their
+  path, and any other Markdown file goes under `wiki/` (`README.md` becomes
+  `wiki/README.md`, `docs/setup.md` becomes `wiki/docs/setup.md`). A file
+  whose new path another repository file already holds, or with an upper-case
+  `.MD` extension, is skipped and listed in the sync's skipped files.
 - Against the repository the plugin only issues `GET` requests. Inside
   Paperclip the mirrored space refuses page writes, source captures, log
   appends, space bootstrap and (for the default space) template edits. Root
@@ -192,6 +198,13 @@ How it behaves:
 - One sync runs per company at a time; a forced sync waits for the running one
   and then reads the config afresh. A sync that fails part-way is redone in
   full next time, even if the branch moved back to the last synced commit.
+- A changed repository, branch or space touches nothing until the new
+  credential, branch, tree and limits check out, so a misspelled branch leaves
+  the working copy as it was. A changed repository or branch for the same
+  space replaces the copy in place, deleting only what the new branch lacks; a
+  changed space removes the old copy before the new one is written.
+- A sync stops at a 10-minute budget, spent on blob fetches, deletes and the
+  page index check alike, and hands the rest to a continuation.
 - Sync state (commit, per-file object ids, last error) lives in plugin state;
   no credential is ever stored there or in an error message.
 - The wiki-root folder path must be configured first (the Wiki setup screen, or
@@ -204,6 +217,8 @@ How it behaves:
   page type, outgoing links), so `wiki_list_pages`, `wiki_search` and backlinks
   cover it. Search covers indexed page titles and paths, not mirrored file
   contents. No revision rows are written: the repository holds the history.
+  The Wiki page refetches its page list, open page and overview when the
+  banner sees a sync finish.
 
 ## Managed Agent Instructions
 

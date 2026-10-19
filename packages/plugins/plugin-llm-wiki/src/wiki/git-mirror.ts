@@ -46,8 +46,6 @@ const ALLOWED_TOKEN_PERMISSIONS = new Set(["contents", "metadata"]);
 const OBJECT_ID = /^[0-9a-f]{40}$/;
 /** Ledger value for a file the mirror is about to write: never a blob id, so it is always rewritten. */
 const PENDING = "pending";
-/** Managed subfolders of non-default spaces live under this directory of the wiki root. */
-const SPACES_DIRECTORY = "spaces";
 
 type SecretRef = Parameters<PluginContext["secrets"]["resolve"]>[0];
 
@@ -81,10 +79,10 @@ export type GitMirrorState = {
   resumable: boolean;
   /** The force-request count (FORCE_STATE_KEY) the last forced rewrite took effect for. */
   forceConsumed: number;
-  /** Logical path -> Git blob sha of every file the mirror wrote. Only these are ever deleted. */
+  /** Page path (mirroredPagePath) -> Git blob sha of every file the mirror wrote. Only these are ever deleted. */
   files: Record<string, string>;
   skipped: GitMirrorSkip[];
-  /** Blobs fetched and judged unmirrorable (not UTF-8, too large), by path: not fetched again while unchanged. */
+  /** Blobs fetched and judged unmirrorable (not UTF-8, too large), by repository path: not fetched again while unchanged. */
   skippedBlobs: Record<string, { sha: string; reason: string }>;
   /**
    * The space whose page index holds this ledger's pages: a file's blob id is recorded only after its page row
@@ -97,6 +95,12 @@ export type GitMirrorState = {
    * sync replaces any row the space held before the mirror owned those paths.
    */
   indexVerified: boolean;
+  /**
+   * The pages whose rows this sync still rewrites from disk (takeIndexBacklog), null between syncs. A page the
+   * sync writes leaves it (writing rewrites its row), so the backfill reads only pages no run of this sync has
+   * indexed, and a run that hands off resumes where it stopped.
+   */
+  indexBacklog: Record<string, true> | null;
 };
 
 export type GitMirrorSyncResult = {
@@ -162,7 +166,7 @@ async function readForceRequests(ctx: PluginContext, companyId: string): Promise
 }
 
 function emptyState(): GitMirrorState {
-  return { source: null, commitSha: null, syncedAt: null, lastAttemptAt: null, lastError: null, inProgress: false, resumable: false, forceConsumed: 0, files: {}, skipped: [], skippedBlobs: {}, indexedSpace: null, indexVerified: false };
+  return { source: null, commitSha: null, syncedAt: null, lastAttemptAt: null, lastError: null, inProgress: false, resumable: false, forceConsumed: 0, files: {}, skipped: [], skippedBlobs: {}, indexedSpace: null, indexVerified: false, indexBacklog: null };
 }
 
 export async function readGitMirrorState(ctx: PluginContext, companyId: string): Promise<GitMirrorState> {
@@ -177,6 +181,9 @@ export async function readGitMirrorState(ctx: PluginContext, companyId: string):
     skippedBlobs: typeof value.skippedBlobs === "object" && value.skippedBlobs !== null ? { ...value.skippedBlobs } : {},
     indexedSpace: isIndexedSpace(value.indexedSpace) ? { ...value.indexedSpace } : null,
     indexVerified: value.indexVerified === true,
+    indexBacklog: typeof value.indexBacklog === "object" && value.indexBacklog !== null && !Array.isArray(value.indexBacklog)
+      ? { ...value.indexBacklog }
+      : null,
   };
 }
 
@@ -186,28 +193,52 @@ function isIndexedSpace(value: unknown): value is { id: string; companyId: strin
 }
 
 /**
- * Bring the page rows of owned, written pages in line with the files, reading each from disk: until
- * `indexVerified` is set, every such page (its paths may hold rows written before the mirror owned
- * them); after that, only pages with no row. A file it cannot read is left for
- * the next sync, which then checks again.
+ * Take this sync's index check once, before it writes any page: until `indexVerified` is set, every owned,
+ * written page (its path may hold a row written before the mirror owned it); after that, only those with no
+ * row. Kept in state across hand-offs, so a continuation resumes it instead of starting over.
  */
-async function backfillPageIndex(ctx: PluginContext, companyId: string, state: GitMirrorState, space: WikiSpace): Promise<number> {
-  const indexed = await indexedPagePaths(ctx, space);
-  let count = 0;
+async function takeIndexBacklog(ctx: PluginContext, state: GitMirrorState, space: WikiSpace): Promise<void> {
+  if (state.indexBacklog) return;
+  const owned = Object.entries(state.files).filter(([path, sha]) => sha !== PENDING && isWikiPagePath(path)).map(([path]) => path);
+  const indexed = state.indexVerified ? await indexedPagePaths(ctx, space) : null;
+  state.indexBacklog = Object.fromEntries(owned.filter((path) => !indexed?.has(path)).map((path) => [path, true as const]));
+}
+
+type SyncBudget = { outOfTime(): boolean; spend(): void };
+
+/**
+ * Rewrite the rows of the pages left in `indexBacklog` from disk (a page this sync wrote has already left it).
+ * Each read spends the sync budget; out of time, it returns false with the rest still due, for a
+ * continuation. Each page is tried once per sync: one it cannot read leaves `indexVerified` unset, so the
+ * next sync checks every page again.
+ */
+async function backfillPageIndex(
+  ctx: PluginContext,
+  companyId: string,
+  state: GitMirrorState,
+  space: WikiSpace,
+  budget: SyncBudget,
+): Promise<boolean> {
+  await takeIndexBacklog(ctx, state, space);
+  const backlog = state.indexBacklog ?? {};
   let complete = true;
-  for (const [path, sha] of Object.entries(state.files)) {
-    if (sha === PENDING || !isWikiPagePath(path) || (state.indexVerified && indexed.has(path))) continue;
-    let contents: string;
-    try {
-      contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
-    } catch {
-      complete = false;
-      continue;
+  for (const path of Object.keys(backlog)) {
+    const sha = state.files[path];
+    if (sha !== undefined && sha !== PENDING) {
+      if (budget.outOfTime()) return false;
+      budget.spend();
+      try {
+        const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+        await indexMirroredPage(ctx, space, path, contents);
+      } catch {
+        complete = false;
+      }
     }
-    if (await indexMirroredPage(ctx, space, path, contents)) count += 1;
+    delete backlog[path];
   }
   if (complete) state.indexVerified = true;
-  return count;
+  state.indexBacklog = null;
+  return true;
 }
 
 /**
@@ -246,6 +277,19 @@ export function gitBlobSha(bytes: Buffer): string {
 export function isMirrorablePath(path: string): boolean {
   if (!/\.md$/i.test(path) || path.includes("\\") || /[\u0000-\u001f\u007f]/.test(path)) return false;
   return path.split("/").every((segment) => segment.length > 0 && !segment.startsWith("."));
+}
+
+/**
+ * Where a repository file lands in the space, so the page tools read, list and search every file the mirror
+ * writes: a path they read as written (AGENTS.md, IDEA.md, index.md, log.md, WIKI.md, wiki/**.md) stays put;
+ * any other Markdown file goes under wiki/ (README.md -> wiki/README.md, docs/setup.md -> wiki/docs/setup.md).
+ * Null when even that is no page path (an upper-case `.MD` extension). Nothing lands outside wiki/ and the
+ * root page files, so a root mirror never writes into the other spaces' subfolders.
+ */
+export function mirroredPagePath(path: string): string | null {
+  if (isWikiPagePath(path)) return path;
+  const nested = `wiki/${path}`;
+  return isWikiPagePath(nested) ? nested : null;
 }
 
 const TOKEN_SHAPES = /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g;
@@ -425,9 +469,10 @@ async function runSync(
     state.inProgress = true;
     await ctx.state.set(stateScope(companyId), state);
   };
-  // Fetches and deletes both spend the budget; every run does at least one so a continuation always advances.
+  // Fetches, deletes and index reads spend the budget; every run does at least one so a continuation always advances.
   let ops = 0;
   const outOfTime = () => ops > 0 && Date.now() >= deadline;
+  const budget: SyncBudget = { outOfTime, spend: () => { ops += 1; } };
   // Out of time with work left: save an accurate ledger and let a continuation run take over.
   const handOff = async (rootPath: string | null, spaceSlug: string, commitSha: string): Promise<GitMirrorSyncResult> => {
     await assertRootUnchanged(ctx, companyId, rootPath);
@@ -467,33 +512,9 @@ async function runSync(
       pathPrefix: space.pathPrefix,
       rootPath: rootIdentity(folder),
     };
-    if (state.source && !sameSource(state.source, source)) {
-      await markInProgress();
-      const oldIndexSpace = await ledgerIndexSpace(ctx, companyId, state);
-      if (state.source.rootPath === source.rootPath) {
-        // A different repository, branch or space under the same root: the old copy belongs to nothing now.
-        // Until this cleanup finishes, state.source stays the old source, so a continuation resumes it.
-        for (const path of Object.keys(state.files)) {
-          if (outOfTime()) return handOff(source.rootPath, space.slug, state.commitSha ?? "");
-          await assertRootUnchanged(ctx, companyId, source.rootPath);
-          if (oldIndexSpace) await unindexMirroredPages(ctx, oldIndexSpace, [path]);
-          await ctx.localFolders.deleteFile(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath({ pathPrefix: state.source.pathPrefix }, path));
-          delete state.files[path];
-          deleted.push(path);
-          ops += 1;
-        }
-      }
-      // A different root: the ledger describes files under a folder this plugin no longer points at, so it
-      // is dropped without deleting anything here, and the new root is reconciled from scratch. Their page
-      // rows go: the read tools would look for those pages under the new root.
-      if (oldIndexSpace) await unindexMirroredPages(ctx, oldIndexSpace, Object.keys(state.files));
-      state.files = {};
-      state.skippedBlobs = {};
-      state.commitSha = null;
-      state.syncedAt = null;
-    }
-    state.source = source;
-    state.indexedSpace = { id: space.id, companyId: space.companyId, wikiId: space.wikiId };
+    // A changed source touches nothing until its credential, branch, tree and limits have all checked out:
+    // a misspelled branch or a repository past the limits must leave the working copy as it was.
+    const previous = state.source && !sameSource(state.source, source) ? state.source : null;
 
     const credential = await repositoryCredential(ctx, companyId, mirror, secrets);
     const base = `/repos/${encodeURIComponent(mirror.owner)}/${encodeURIComponent(mirror.repo)}`;
@@ -505,9 +526,11 @@ async function runSync(
     if (!commitSha || !treeSha) throw new Error(`GitHub returned no commit for ${repository}@${mirror.branch}`);
     if (!OBJECT_ID.test(commitSha) || !OBJECT_ID.test(treeSha)) throw new Error(`GitHub returned a malformed object id for ${repository}@${mirror.branch}`);
 
-    if (!options.force && !forceRequested && !state.inProgress && state.commitSha === commitSha) {
+    if (!previous && !options.force && !forceRequested && !state.inProgress && state.commitSha === commitSha) {
       await assertRootUnchanged(ctx, companyId, source.rootPath);
-      await backfillPageIndex(ctx, companyId, state, space);
+      state.source = source;
+      state.indexedSpace = { id: space.id, companyId: space.companyId, wikiId: space.wikiId };
+      if (!(await backfillPageIndex(ctx, companyId, state, space, budget))) return handOff(source.rootPath, space.slug, commitSha);
       state.lastError = null;
       await ctx.state.set(stateScope(companyId), state);
       return {
@@ -516,21 +539,30 @@ async function runSync(
       };
     }
 
-    await markInProgress();
     const tree = await github(ctx, "GET", `${base}/git/trees/${treeSha}?recursive=1`, credential) as {
       tree?: TreeEntry[];
       truncated?: unknown;
     } | null;
     if (tree?.truncated) throw new Error(`The ${repository} tree is too large for one listing; refusing a partial mirror`);
     const skipped: GitMirrorSkip[] = [];
+    /** Page path (mirroredPagePath) -> the tree entry written there. */
     const wanted = new Map<string, TreeEntry>();
     let totalBytes = 0;
-    for (const entry of Array.isArray(tree?.tree) ? tree.tree : []) {
-      if (entry.type !== "blob" || entry.mode === "120000" || !isMirrorablePath(entry.path)) continue;
+    const entries = (Array.isArray(tree?.tree) ? tree.tree : [])
+      .filter((entry) => entry.type === "blob" && entry.mode !== "120000" && isMirrorablePath(entry.path));
+    // A file already at its page path keeps it; a file that would move under wiki/ yields to it (stable sort).
+    const moves = (entry: TreeEntry) => (mirroredPagePath(entry.path) === entry.path ? 0 : 1);
+    entries.sort((a, b) => moves(a) - moves(b));
+    for (const entry of entries) {
       if (typeof entry.sha !== "string" || !OBJECT_ID.test(entry.sha)) throw new Error(`GitHub returned a malformed object id for ${entry.path}`);
-      if (!space.pathPrefix && entry.path.startsWith(`${SPACES_DIRECTORY}/`)) {
-        // The root holds the other spaces' managed subfolders; a root mirror must not write into them.
-        skipped.push({ path: entry.path, reason: "reserved for other wiki spaces" });
+      const pagePath = mirroredPagePath(entry.path);
+      if (!pagePath) {
+        skipped.push({ path: entry.path, reason: "the wiki reads only .md pages" });
+        continue;
+      }
+      const holder = wanted.get(pagePath);
+      if (holder) {
+        skipped.push({ path: entry.path, reason: `its wiki path ${pagePath} holds ${holder.path}` });
         continue;
       }
       if (typeof entry.size === "number" && entry.size > MAX_MIRROR_FILE_BYTES) {
@@ -538,10 +570,50 @@ async function runSync(
         continue;
       }
       totalBytes += entry.size ?? 0;
-      wanted.set(entry.path, entry);
+      wanted.set(pagePath, entry);
     }
     if (wanted.size > MAX_MIRROR_FILES) throw new Error(`${repository} has ${wanted.size} Markdown files; the mirror stops at ${MAX_MIRROR_FILES}`);
     if (totalBytes > MAX_MIRROR_TOTAL_BYTES) throw new Error(`${repository} has ${totalBytes} bytes of Markdown; the mirror stops at ${MAX_MIRROR_TOTAL_BYTES}`);
+
+    await markInProgress();
+    if (previous) {
+      const oldIndexSpace = await ledgerIndexSpace(ctx, companyId, state);
+      const sameTarget = previous.rootPath === source.rootPath
+        && previous.spaceSlug === source.spaceSlug
+        && (previous.pathPrefix ?? null) === (source.pathPrefix ?? null)
+        && (!oldIndexSpace || oldIndexSpace.id === space.id);
+      if (sameTarget) {
+        // Only the repository or branch changed: the old copy stays readable while the new one replaces it.
+        // Every owned file is rewritten from the new tree or removed by the delete pass below, and pending
+        // marks make that resumable like a forced rewrite.
+        for (const path of Object.keys(state.files)) state.files[path] = PENDING;
+      } else {
+        if (previous.rootPath === source.rootPath) {
+          // A different space under the same root: the old copy belongs to nothing now.
+          // Until this cleanup finishes, state.source stays the old source, so a continuation resumes it.
+          for (const path of Object.keys(state.files)) {
+            if (outOfTime()) return handOff(source.rootPath, space.slug, state.commitSha ?? "");
+            await assertRootUnchanged(ctx, companyId, source.rootPath);
+            if (oldIndexSpace) await unindexMirroredPages(ctx, oldIndexSpace, [path]);
+            await ctx.localFolders.deleteFile(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath({ pathPrefix: previous.pathPrefix }, path));
+            delete state.files[path];
+            deleted.push(path);
+            ops += 1;
+          }
+        }
+        // A different root: the ledger describes files under a folder this plugin no longer points at, so it
+        // is dropped without deleting anything here, and the new root is reconciled from scratch. Their page
+        // rows go: the read tools would look for those pages under the new root.
+        if (oldIndexSpace) await unindexMirroredPages(ctx, oldIndexSpace, Object.keys(state.files));
+        state.files = {};
+      }
+      state.skippedBlobs = {};
+      state.commitSha = null;
+      state.syncedAt = null;
+      state.indexBacklog = null;
+    }
+    state.source = source;
+    state.indexedSpace = { id: space.id, companyId: space.companyId, wikiId: space.wikiId };
 
     if (rewriteAll) {
       // Marking every owned file pending makes the rewrite resumable: a continuation finds them still pending.
@@ -551,15 +623,16 @@ async function runSync(
       state.skippedBlobs = {};
       state.forceConsumed = Math.max(state.forceConsumed, forceRequests);
     }
+    await takeIndexBacklog(ctx, state, space);
     // From here a crash leaves the ledger untrustworthy again, until a clean hand-off sets this back.
     state.resumable = false;
     await ctx.state.set(stateScope(companyId), state);
 
     for (const [path, entry] of [...wanted]) {
       if (state.files[path] === entry.sha) continue;
-      const known = state.skippedBlobs[path];
+      const known = state.skippedBlobs[entry.path];
       if (known?.sha === entry.sha) {
-        skipped.push({ path, reason: known.reason });
+        skipped.push({ path: entry.path, reason: known.reason });
         wanted.delete(path);
         continue;
       }
@@ -568,14 +641,14 @@ async function runSync(
       const blob = await github(ctx, "GET", `${base}/git/blobs/${entry.sha}`, credential) as { content?: unknown; encoding?: unknown } | null;
       if (blob?.encoding !== "base64" || typeof blob.content !== "string") throw new Error(`GitHub returned no content for ${path}`);
       const bytes = Buffer.from(blob.content, "base64");
-      if (gitBlobSha(bytes) !== entry.sha) throw new Error(`Content of ${path} does not match its Git object id; refusing to write it`);
+      if (gitBlobSha(bytes) !== entry.sha) throw new Error(`Content of ${entry.path} does not match its Git object id; refusing to write it`);
       // The tree's sizes are GitHub's word; the limits hold on the bytes actually received.
       totalBytes += bytes.length - (entry.size ?? 0);
       if (totalBytes > MAX_MIRROR_TOTAL_BYTES) throw new Error(`${repository} has more than ${MAX_MIRROR_TOTAL_BYTES} bytes of Markdown; the mirror stops there`);
       if (bytes.length > MAX_MIRROR_FILE_BYTES) {
         const reason = `larger than ${MAX_MIRROR_FILE_BYTES} bytes`;
-        skipped.push({ path, reason });
-        state.skippedBlobs[path] = { sha: entry.sha, reason };
+        skipped.push({ path: entry.path, reason });
+        state.skippedBlobs[entry.path] = { sha: entry.sha, reason };
         wanted.delete(path);
         continue;
       }
@@ -583,8 +656,8 @@ async function runSync(
       try {
         contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {
-        skipped.push({ path, reason: "not UTF-8 text" });
-        state.skippedBlobs[path] = { sha: entry.sha, reason: "not UTF-8 text" };
+        skipped.push({ path: entry.path, reason: "not UTF-8 text" });
+        state.skippedBlobs[entry.path] = { sha: entry.sha, reason: "not UTF-8 text" };
         wanted.delete(path);
         continue;
       }
@@ -599,7 +672,8 @@ async function runSync(
       // The blob id is recorded only once the page row matches the file, so a failed index write is redone.
       await indexMirroredPage(ctx, space, path, contents);
       state.files[path] = entry.sha;
-      delete state.skippedBlobs[path];
+      if (state.indexBacklog) delete state.indexBacklog[path];
+      delete state.skippedBlobs[entry.path];
       written.push(path);
     }
 
@@ -616,7 +690,7 @@ async function runSync(
     for (const path of Object.keys(state.skippedBlobs)) if (!treePaths.has(path)) delete state.skippedBlobs[path];
 
     await assertRootUnchanged(ctx, companyId, source.rootPath);
-    await backfillPageIndex(ctx, companyId, state, space);
+    if (!(await backfillPageIndex(ctx, companyId, state, space, budget))) return handOff(source.rootPath, space.slug, commitSha);
     state.commitSha = commitSha;
     state.syncedAt = new Date().toISOString();
     state.lastError = null;
