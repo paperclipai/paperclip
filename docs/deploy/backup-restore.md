@@ -11,7 +11,7 @@ you put load on it.
 Read [Database](/deploy/database) first if you are not sure which of the three
 database modes you are running. The restore below covers a deployment with a
 **separate PostgreSQL** — a container, or a hosted server. Embedded PostgreSQL
-is different in kind and is covered at the end.
+is different in kind; see the note under "The `psql` invocation" below.
 
 There is no single Compose layout to write against, so this page does not
 pretend there is: the next section has you name your deployment's moving parts
@@ -250,10 +250,24 @@ Define it once as a shell array; every database command below is
 `-T` matters: without it Compose allocates a TTY and piping a dump in fails.
 
 **Embedded PostgreSQL has no `$PSQL` and no separate database artifact.** The
-database lives *inside* the data directory (`instances/<id>/db`), so the
-data-directory artifact already carries it and steps 3 to 5 do not apply —
-restore is steps 1, 2 and 6 only. The Docker quickstart is this shape.
-`paperclipai db:backup` is its backup path; see [Database](/deploy/database).
+database lives *inside* the data directory (`instances/<id>/db`). The Docker
+quickstart is this shape. Whether the data-directory artifact can bring the
+database back depends on how its tar was taken:
+
+- **Taken with Paperclip stopped.** Stopping Paperclip stops its embedded
+  PostgreSQL, so the tar holds a cold copy of the cluster. Steps 3 to 5 do not
+  apply: restore is steps 1, 2 and 6 only.
+- **Taken while Paperclip ran.** The tar read the live cluster file by file,
+  which is the smear described above. That `db/` is not a database backup:
+  PostgreSQL can refuse to start on it, or start on inconsistent data. Restore
+  the database from a logical dump instead. Use `paperclipai db:backup` output,
+  or one of the dumps the server writes to `instances/<id>/data/backups/` (on by
+  default), which the tar also carries. Load it into a separate PostgreSQL of
+  major version 18 or newer, the embedded server's version, with steps 3 to 5.
+  Then set `DATABASE_URL` so Paperclip uses it instead of the embedded one. This
+  moves the deployment to external PostgreSQL; see [Database](/deploy/database).
+  Nothing writes a pairing marker for these dumps, so step 4's run-log check
+  fails unfinalized transcripts as unbounded unless you pass `--allow-unbound`.
 
 ### The data directory — `$PC_DATA`
 
@@ -434,7 +448,7 @@ Now check two things that nothing later will tell you about.
 ```sh
 ls -l "$PC_DATA"/instances/*/secrets/master.key
 # named volume:
-docker run --rm -v "$VOL":/paperclip alpine ls -l /paperclip/instances/*/secrets/master.key
+docker run --rm -v "$VOL":/paperclip alpine sh -c 'ls -l /paperclip/instances/*/secrets/master.key'
 ```
 
 If the artifact predates the secrets in the database, see

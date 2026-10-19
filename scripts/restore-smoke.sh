@@ -315,7 +315,9 @@ docker network connect "$NETWORK" "$CONTAINER"
 # so the image's entrypoint is told to run as the caller's uid/gid rather than
 # chown the extract. DATABASE_URL points at the restored database and
 # overrides whatever connection string the restored config.json carries — that
-# one names the source's database. The auth secret is fresh: it signs browser
+# one names the source's database. The bind is loopback because the probes run
+# in this container, and a tailnet or custom bind names the source's network.
+# The auth secret is fresh: it signs browser
 # sessions, and reusing the source's here would be the only way this run
 # could mint credentials valid on the source.
 auth_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -324,6 +326,7 @@ docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e PAPERCLIP_HOME=/paperclip \
   -e PAPERCLIP_INSTANCE_ID="$instance_id" \
   -e PAPERCLIP_CONFIG="/paperclip/instances/$instance_id/config.json" \
+  -e PAPERCLIP_BIND=loopback \
   -e DATABASE_URL="postgres://paperclip:restore-smoke@$CONTAINER:5432/paperclip" \
   -e BETTER_AUTH_SECRET="$auth_secret" \
   -e USER_UID="$(id -u)" -e USER_GID="$(id -g)" \
