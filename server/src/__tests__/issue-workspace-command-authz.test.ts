@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -151,11 +151,15 @@ function registerRouteMocks() {
   }));
 }
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -190,7 +194,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue workspace command authorization", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -206,6 +210,10 @@ describe("issue workspace command authorization", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
+    await loadAppModules();
+  }, 120_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.addComment.mockResolvedValue(null);
     mockIssueService.create.mockResolvedValue(makeIssue());
