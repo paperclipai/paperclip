@@ -7,6 +7,10 @@ async function json(response: APIResponse) {
 }
 
 async function swipeToLastOption(page: Page, picker: Locator, list = picker.getByRole("listbox"), last = list.getByRole("option").last()) {
+  // A sheet can open before its rows arrive (its list is fetched when it opens): wait for the target row.
+  // The default `last` already matches a fixed option ("No assignee", "Use agent default") while the catalog
+  // is pending, so a caller whose target is a fetched row passes that row's own locator.
+  await expect(last, "the sheet's target row did not arrive").toBeAttached();
   // The shared picker animates its height between views. Native touch
   // coordinates must use the settled sheet rather than its clipped first frame.
   await expect.poll(() => picker.evaluate((element) => {
@@ -118,7 +122,9 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
   const modelTrigger = page.getByRole("button", { name: "Select model and effort", exact: true });
   await assigneeTrigger.tap();
   const assigneePicker = page.getByRole("dialog", { name: "Select assignee", exact: true });
-  const lastAssignee = await swipeToLastOption(page, assigneePicker);
+  const assigneeList = assigneePicker.getByRole("listbox");
+  const lastAssignee = await swipeToLastOption(page, assigneePicker, assigneeList,
+    assigneeList.getByRole("option").filter({ hasText: "Touch Agent 22" }));
   await expect(lastAssignee).toContainText("Touch Agent 22");
   await lastAssignee.tap();
   await expect(assigneePicker).toBeHidden();
@@ -143,7 +149,9 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
   await page.screenshot({ path: testInfo.outputPath("model-before-keyboard.png") });
   // A reduced viewport exercises the space available when a phone keyboard opens.
   await page.setViewportSize({ width: 390, height: 430 });
-  const lastModel = await swipeToLastOption(page, picker);
+  const modelList = picker.getByRole("listbox");
+  const lastModel = await swipeToLastOption(page, picker, modelList,
+    modelList.getByRole("option").filter({ hasText: "Touch Model 24" }));
   await expect(lastModel).toContainText("Touch Model 24");
   await page.screenshot({ path: testInfo.outputPath("model-after-touch-scroll.png") });
   await lastModel.tap();
