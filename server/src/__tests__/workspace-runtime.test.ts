@@ -75,6 +75,8 @@ import {
 } from "../services/workspace-realization.ts";
 import {
   deriveViteHmrPort,
+  RUNTIME_EXPOSURE_APP_PORT_MAX,
+  RUNTIME_EXPOSURE_APP_PORT_MIN,
   type Environment,
   type EnvironmentLease,
 } from "@paperclipai/shared";
@@ -7100,6 +7102,19 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     };
   }
 
+  // The allocator offers every caller the first free pair of the exposure range
+  // (42000 and 52000), and another server test file on the runner can start a
+  // runtime there at the same time. A pair picked at random from the rest of
+  // the range keeps a test whose guest binds a port late off that pair.
+  async function isolatedExposureAppPort() {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const appPort = RUNTIME_EXPOSURE_APP_PORT_MIN + 100
+        + Math.floor(Math.random() * (RUNTIME_EXPOSURE_APP_PORT_MAX - RUNTIME_EXPOSURE_APP_PORT_MIN - 100));
+      if (await isLoopbackPortFree(appPort) && await isLoopbackPortFree(deriveViteHmrPort(appPort))) return appPort;
+    }
+    throw new Error("no free exposure port pair found");
+  }
+
   it("waits for every managed process-tree listener before requesting HTTPS exposure", async () => {
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
@@ -7142,9 +7157,13 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         return [];
       },
     };
+    // The guest binds its HMR port 750 ms after it starts (see
+    // isolatedExposureAppPort): offer the allocator only an isolated pair.
+    const appPort = await isolatedExposureAppPort();
     setWorkspaceRuntimeExposureDepsForTests({
       broker,
-      isPortAvailable: isLoopbackPortFree,
+      isPortAvailable: async (port) =>
+        (port === appPort || port === deriveViteHmrPort(appPort)) && isLoopbackPortFree(port),
       isBrokerAvailable: async () => true,
       resolveHostname: async () => "runner.tail123.ts.net",
       probeHealth: async () => true,
