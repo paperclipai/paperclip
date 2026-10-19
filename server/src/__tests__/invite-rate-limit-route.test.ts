@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -36,11 +36,15 @@ function createDbStub(...selectResponses: unknown[][]) {
   };
 }
 
-async function createApp(db: Record<string, unknown>) {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
   ]);
+}
+
+async function createApp(db: Record<string, unknown>) {
+  const [{ accessRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };
@@ -65,9 +69,10 @@ async function createApp(db: Record<string, unknown>) {
 }
 
 describe("invite-token endpoint rate limiting", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
-  });
+    await loadAppModules();
+  }, 120_000);
 
   it(
     "returns 429 once the per-IP threshold is exceeded",
