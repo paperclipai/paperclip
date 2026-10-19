@@ -1479,6 +1479,58 @@ describe("Git mirror page index", () => {
     expect((harness.getState(stateKey) as { indexVerified?: unknown }).indexVerified).toBe(true);
   });
 
+  it("keeps a failed index check on record across a hand-off, so a later sync retries it", async () => {
+    const { harness, index } = await setupIndexed({ "wiki/a.md": "# A\n", "wiki/b.md": "# B\n" });
+    await sync(harness);
+    const spaceId = [...index.rows.values()][0]!.spaceId;
+    // A ledger from before the index existed, over rows the space held before the mirror owned both paths.
+    const stateKey = { scopeKind: "company" as const, scopeId: COMPANY_ID, namespace: "llm-wiki", stateKey: "git-mirror" };
+    const stored = harness.getState(stateKey) as Record<string, unknown>;
+    await harness.ctx.state.set(stateKey, { ...stored, indexedSpace: undefined, indexVerified: undefined });
+    const stale = { spaceId, title: "Previous local title", pageType: "notes", backlinks: [] as string[], hash: "old" };
+    index.rows.set(`${spaceId}|wiki/a.md`, { ...stale, path: "wiki/a.md" });
+    index.rows.set(`${spaceId}|wiki/b.md`, { ...stale, path: "wiki/b.md" });
+    // The first read fails once and takes the whole 1,000 ms budget, so the rest of the check is handed off.
+    let now = Date.parse("2026-10-19T06:00:00Z");
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const reads: string[] = [];
+    let failed: string | null = null;
+    const readText = harness.ctx.localFolders.readText.bind(harness.ctx.localFolders);
+    harness.ctx.localFolders.readText = async (companyId, folderKey, relativePath) => {
+      reads.push(relativePath);
+      if (failed === null) {
+        failed = relativePath;
+        now += 1_000;
+        throw new Error("disk busy");
+      }
+      now += 10;
+      return readText(companyId, folderKey, relativePath);
+    };
+    const statuses: string[] = [];
+    try {
+      for (let run = 0; run < 5; run += 1) {
+        const result = await syncGitMirror(harness.ctx, COMPANY_ID, { budgetMs: 1_000 });
+        statuses.push(result.status);
+        if (result.status !== "partial") break;
+      }
+    } finally {
+      dateNow.mockRestore();
+      harness.ctx.localFolders.readText = readText;
+    }
+    const other = failed === "wiki/a.md" ? "wiki/b.md" : "wiki/a.md";
+
+    expect(statuses).toEqual(["partial", "unchanged"]);
+    expect([...reads].sort()).toEqual(["wiki/a.md", "wiki/b.md"]);
+    expect(index.rows.get(`${spaceId}|${other}`)?.title).not.toBe("Previous local title");
+    // The continuation did not read the failed page again, and did not certify its stale row either.
+    expect(index.rows.get(`${spaceId}|${failed}`)?.title).toBe("Previous local title");
+    expect((harness.getState(stateKey) as { indexVerified?: unknown }).indexVerified).toBe(false);
+
+    expect((await sync(harness)).status).toBe("unchanged");
+    expect(index.rows.get(`${spaceId}|${failed}`)?.title).not.toBe("Previous local title");
+    expect((harness.getState(stateKey) as { indexVerified?: unknown }).indexVerified).toBe(true);
+  });
+
   it("removes a pre-index ledger's rows from its old space when the source changes", async () => {
     const { harness, index } = await setupIndexed(INDEXED_HANDBOOK);
     await sync(harness);

@@ -96,11 +96,12 @@ export type GitMirrorState = {
    */
   indexVerified: boolean;
   /**
-   * The pages whose rows this sync still rewrites from disk (takeIndexBacklog), null between syncs. A page the
-   * sync writes leaves it (writing rewrites its row), so the backfill reads only pages no run of this sync has
-   * indexed, and a run that hands off resumes where it stopped.
+   * This sync's index check (takeIndexBacklog), null between syncs: true for a page whose row it still rewrites
+   * from disk, false for one it tried and could not read. A page the sync writes leaves it (writing rewrites its
+   * row), so the backfill reads only pages no run of this sync has indexed, a run that hands off resumes where it
+   * stopped, and a failed check is still on record when the sync finishes.
    */
-  indexBacklog: Record<string, true> | null;
+  indexBacklog: Record<string, boolean> | null;
 };
 
 export type GitMirrorSyncResult = {
@@ -207,10 +208,10 @@ async function takeIndexBacklog(ctx: PluginContext, state: GitMirrorState, space
 type SyncBudget = { outOfTime(): boolean; spend(): void };
 
 /**
- * Rewrite the rows of the pages left in `indexBacklog` from disk (a page this sync wrote has already left it).
- * Each read spends the sync budget; out of time, it returns false with the rest still due, for a
- * continuation. Each page is tried once per sync: one it cannot read leaves `indexVerified` unset, so the
- * next sync checks every page again.
+ * Rewrite the rows of the pages still due in `indexBacklog` from disk (a page this sync wrote has already left
+ * it). Each read spends the sync budget; out of time, it returns false with the rest still due, for a
+ * continuation. Each page is tried once per sync, and one it cannot read stays in the backlog as failed, across
+ * any hand-off: `indexVerified` is set only when no check failed, so the next sync checks every page again.
  */
 async function backfillPageIndex(
   ctx: PluginContext,
@@ -221,8 +222,8 @@ async function backfillPageIndex(
 ): Promise<boolean> {
   await takeIndexBacklog(ctx, state, space);
   const backlog = state.indexBacklog ?? {};
-  let complete = true;
   for (const path of Object.keys(backlog)) {
+    if (!backlog[path]) continue;
     const sha = state.files[path];
     if (sha !== undefined && sha !== PENDING) {
       if (budget.outOfTime()) return false;
@@ -231,12 +232,13 @@ async function backfillPageIndex(
         const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
         await indexMirroredPage(ctx, space, path, contents);
       } catch {
-        complete = false;
+        backlog[path] = false;
+        continue;
       }
     }
     delete backlog[path];
   }
-  if (complete) state.indexVerified = true;
+  if (Object.keys(backlog).length === 0) state.indexVerified = true;
   state.indexBacklog = null;
   return true;
 }

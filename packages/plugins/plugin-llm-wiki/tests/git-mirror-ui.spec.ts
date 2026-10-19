@@ -7,6 +7,7 @@ import { WikiPage } from "../src/ui/index.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const PAGE_PATH = "wiki/projects/control-plane/index.md";
+const NOTES_PATH = "wiki/notes/draft.md";
 
 type BridgeGlobal = typeof globalThis & {
   __paperclipPluginBridge__?: {
@@ -22,9 +23,21 @@ type Worker = {
   mirror: { running: boolean; commitSha: string | null; syncedAt: string | null; lastAttemptAt: string | null };
   title: string;
   body: string;
+  /** The saved contents of a page in "notes", a writable space the mirror does not target. */
+  notes: string;
 };
 
-function respond(worker: Worker, key: string): unknown {
+function space(slug: string) {
+  return {
+    id: `space-${slug}`, companyId: COMPANY_ID, wikiId: "default", slug, displayName: slug,
+    spaceType: "managed", folderMode: "managed_subfolder", rootFolderKey: "wiki-root", pathPrefix: slug === "default" ? null : `spaces/${slug}`,
+    configuredRootPath: null, accessScope: "shared", ownerUserId: null, ownerAgentId: null, teamKey: null,
+    settings: {}, status: "active", createdAt: null, updatedAt: null,
+  };
+}
+
+function respond(worker: Worker, key: string, params?: Record<string, unknown>): unknown {
+  const inNotes = params?.spaceSlug === "notes";
   switch (key) {
     case "git-mirror":
       return {
@@ -42,20 +55,25 @@ function respond(worker: Worker, key: string): unknown {
     case "overview":
       return { folder: { healthy: true }, wikiId: "default" };
     case "spaces":
-      return {
-        spaces: [{
-          id: "space-default", companyId: COMPANY_ID, wikiId: "default", slug: "default", displayName: "default",
-          spaceType: "managed", folderMode: "managed_subfolder", rootFolderKey: "wiki-root", pathPrefix: null,
-          configuredRootPath: null, accessScope: "shared", ownerUserId: null, ownerAgentId: null, teamKey: null,
-          settings: {}, status: "active", createdAt: null, updatedAt: null,
-        }],
-      };
+      return { spaces: [space("default"), space("notes")] };
     case "pages":
+      if (inNotes) {
+        return {
+          pages: [{ path: NOTES_PATH, title: "Draft", pageType: "notes", backlinkCount: 0, sourceCount: 0, contentHash: worker.notes, updatedAt: null }],
+          sources: [],
+        };
+      }
       return {
         pages: [{ path: PAGE_PATH, title: worker.title, pageType: "projects", backlinkCount: 0, sourceCount: 0, contentHash: worker.body, updatedAt: null }],
         sources: [],
       };
     case "page-content":
+      if (inNotes) {
+        return {
+          wikiId: "default", path: NOTES_PATH, contents: worker.notes, title: "Draft", pageType: "notes",
+          backlinks: [], sourceRefs: [], updatedAt: null, hash: worker.notes,
+        };
+      }
       return {
         wikiId: "default", path: PAGE_PATH, contents: worker.body, title: worker.title, pageType: "projects",
         backlinks: [], sourceRefs: [], updatedAt: null, hash: worker.body,
@@ -70,6 +88,10 @@ describe("Git mirror banner", () => {
   let root: Root;
   let worker: Worker;
   let fetches: Record<string, number>;
+  let gates: Record<string, Promise<void>>;
+  let pathname: string;
+  let typeInEditor: ((value: string) => void) | null;
+  let saves: string[];
   let consoleError: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -82,43 +104,60 @@ describe("Git mirror banner", () => {
       mirror: { running: false, commitSha: "a".repeat(40), syncedAt: "2026-10-19T05:00:00Z", lastAttemptAt: "2026-10-19T05:00:00Z" },
       title: "Control plane",
       body: "Old body from commit aaaaaaa",
+      notes: "saved contents",
     };
     fetches = {};
+    gates = {};
+    pathname = `/PAP/wiki/page/${PAGE_PATH}`;
+    typeInEditor = null;
+    saves = [];
     (globalThis as BridgeGlobal).__paperclipPluginBridge__ = {
       sdkUi: {
         // As the host bridge (ui/src/plugins/bridge.ts usePluginData) behaves: one asynchronous fetch on mount,
-        // on a key or params change and on refresh(), and none otherwise; each hook keeps its own copy.
+        // on a key or params change and on refresh(), and none otherwise; each hook keeps its own copy. Every
+        // fetch sets loading and keeps the data it has until the answer lands. A test can hold a key's answers.
         usePluginData: (key: string, params?: Record<string, unknown>) => {
           const [data, setData] = useState<unknown>(null);
+          const [loading, setLoading] = useState(true);
           const [counter, setCounter] = useState(0);
           const paramsKey = JSON.stringify(params ?? null);
           useEffect(() => {
             let cancelled = false;
+            setLoading(true);
             fetches[key] = (fetches[key] ?? 0) + 1;
-            const answer = respond(worker, key);
-            void Promise.resolve().then(() => {
-              if (!cancelled) setData(answer);
+            void (gates[key] ?? Promise.resolve()).then(() => {
+              if (cancelled) return;
+              setData(respond(worker, key, params));
+              setLoading(false);
             });
             return () => {
               cancelled = true;
             };
+            // eslint-disable-next-line react-hooks/exhaustive-deps
           }, [key, paramsKey, counter]);
           const refresh = useCallback(() => setCounter((value) => value + 1), []);
-          return { data, loading: data === null, error: null, refresh };
+          return { data, loading, error: null, refresh };
         },
-        usePluginAction: (key: string) => async () => {
+        usePluginAction: (key: string) => async (params?: Record<string, unknown>) => {
           if (key === "sync-git-mirror") worker.mirror = { ...worker.mirror, running: true, lastAttemptAt: "2026-10-19T05:10:00Z" };
+          if (key === "write-page") {
+            saves.push(String(params?.contents));
+            return { hash: String(params?.contents) };
+          }
           return { status: "queued" };
         },
         usePluginToast: () => () => undefined,
-        useHostLocation: () => ({ pathname: `/PAP/wiki/page/${PAGE_PATH}`, search: "", hash: "" }),
+        useHostLocation: () => ({ pathname, search: "", hash: "" }),
         useHostNavigation: () => ({
           resolveHref: (to: string) => `/PAP${to.startsWith("/") ? to : `/${to}`}`,
           navigate: () => undefined,
           linkProps: (to: string) => ({ href: `/PAP${to.startsWith("/") ? to : `/${to}`}`, onClick: () => undefined }),
         }),
         MarkdownBlock: ({ content }: { content: string }) => createElement("div", { "data-page-body": "" }, content),
-        MarkdownEditor: ({ value }: { value: string }) => createElement("textarea", { value, readOnly: true }),
+        MarkdownEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => {
+          typeInEditor = onChange;
+          return createElement("textarea", { value, readOnly: true, "data-editor": "" });
+        },
         AssigneePicker: () => createElement("div"),
         ProjectPicker: () => createElement("div"),
       },
@@ -162,6 +201,12 @@ describe("Git mirror banner", () => {
     });
     await flush();
     await flush();
+  }
+
+  function button(label: string): HTMLButtonElement {
+    const found = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(label));
+    if (!found) throw new Error(`no ${label} button`);
+    return found;
   }
 
   function finishSync() {
@@ -223,5 +268,67 @@ describe("Git mirror banner", () => {
     // Still running: the banner polls its own status, and the page views wait for the sync to finish.
     expect(fetches["git-mirror"]).toBeGreaterThan(before["git-mirror"] ?? 0);
     for (const key of ["pages", "page-content", "overview"]) expect(fetches[key]).toBe(before[key]);
+  });
+
+  it("keeps an unsaved edit in another space, and saves it, when a mirror sync finishes", async () => {
+    // A sync of the mirrored default space is running; the person is editing a page in the writable "notes" space.
+    worker.mirror = { ...worker.mirror, running: true, lastAttemptAt: "2026-10-19T05:10:00Z" };
+    pathname = `/PAP/wiki/spaces/notes/page/${NOTES_PATH}`;
+    await render();
+    expect(container.textContent).toContain("saved contents");
+    await act(async () => {
+      button("Edit page").click();
+    });
+    await flush();
+    await act(async () => {
+      vi.advanceTimersByTime(2_500);
+    });
+    const before = { ...fetches };
+
+    // Typed 500 ms before the banner's next poll, which sees the sync finish; the autosave is 800 ms out.
+    await act(async () => {
+      typeInEditor?.("new unsaved draft");
+    });
+    finishSync();
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await flush();
+    await flush();
+
+    expect(fetches["git-mirror"]).toBeGreaterThan(before["git-mirror"] ?? 0);
+    expect(fetches["page-content"]).toBe(before["page-content"]);
+    expect(fetches.pages).toBe(before.pages);
+    expect(container.querySelector<HTMLTextAreaElement>("[data-editor]")?.value).toBe("new unsaved draft");
+    expect(saves).toEqual([]);
+
+    await act(async () => {
+      vi.advanceTimersByTime(800);
+    });
+    await flush();
+    expect(saves).toEqual(["new unsaved draft"]);
+  });
+
+  it("keeps the open page on screen while it refetches after a sync", async () => {
+    worker.mirror = { ...worker.mirror, running: true, lastAttemptAt: "2026-10-19T05:10:00Z" };
+    await render();
+    expect(container.textContent).toContain("Old body from commit aaaaaaa");
+
+    let release = () => undefined as void;
+    gates["page-content"] = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    finishSync();
+    await poll();
+
+    // The refetch is in flight (the bridge reports loading): the page it already shows stays mounted.
+    expect(container.textContent).toContain("commit bbbbbbb");
+    expect(container.textContent).toContain("Old body from commit aaaaaaa");
+    expect(container.textContent).not.toContain(`Loading ${PAGE_PATH}`);
+
+    release();
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("New body from commit bbbbbbb");
   });
 });

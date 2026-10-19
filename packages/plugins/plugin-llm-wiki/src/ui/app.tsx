@@ -14,6 +14,7 @@ import {
   useHostNavigation,
   type FileTreeNode,
   type ManagedRoutinesListItem,
+  type PluginDataResult,
   type PluginPageProps,
   type PluginRouteSidebarProps,
   type PluginSettingsPageProps,
@@ -747,20 +748,26 @@ function useIsMobileLayout(): boolean {
 }
 
 /**
- * Counts the Git mirror syncs the banner has seen finish. Each data hook that shows mirrored content refetches
- * when it moves: usePluginData caches per hook and does not poll, so without it a finished sync would leave the
- * page list, the open page and the overview showing the old copy.
+ * Counts the Git mirror syncs the banner has seen finish, per company and mirrored space. Each data hook that
+ * shows mirrored content refetches when its own count moves: usePluginData caches per hook and does not poll,
+ * so without it a finished sync would leave the page list, the open page and the overview showing the old copy.
+ * A view of another space never refetches for it, so a sync cannot reload a page someone is editing there.
  */
-let gitMirrorSyncGeneration = 0;
+const gitMirrorSyncGenerations = new Map<string, number>();
 const gitMirrorSyncListeners = new Set<() => void>();
+/** The scope of a company-wide view (the overview): it counts every mirror sync of its company. */
+const ANY_SPACE = "*";
 
-function announceGitMirrorSync() {
-  gitMirrorSyncGeneration += 1;
-  for (const listener of gitMirrorSyncListeners) listener();
+function gitMirrorSyncKey(companyId: string, spaceSlug: string) {
+  return `${companyId}\n${spaceSlug}`;
 }
 
-function gitMirrorSyncSnapshot() {
-  return gitMirrorSyncGeneration;
+function announceGitMirrorSync(companyId: string, spaceSlugs: string[]) {
+  for (const slug of new Set([...spaceSlugs, ANY_SPACE])) {
+    const key = gitMirrorSyncKey(companyId, slug);
+    gitMirrorSyncGenerations.set(key, (gitMirrorSyncGenerations.get(key) ?? 0) + 1);
+  }
+  for (const listener of gitMirrorSyncListeners) listener();
 }
 
 function subscribeGitMirrorSync(listener: () => void) {
@@ -770,23 +777,41 @@ function subscribeGitMirrorSync(listener: () => void) {
   };
 }
 
-/** Refetch a query once for every mirror sync that finishes while it is mounted. */
-function useRefreshOnGitMirrorSync(refresh: () => void) {
-  const generation = useSyncExternalStore(subscribeGitMirrorSync, gitMirrorSyncSnapshot, gitMirrorSyncSnapshot);
-  const seen = useRef(generation);
+/** Refetch a query once for every mirror sync of its company and space that finishes while it is mounted. */
+function useRefreshOnGitMirrorSync(refresh: () => void, companyId: string | null, spaceSlug: string | null | undefined) {
+  const key = companyId ? gitMirrorSyncKey(companyId, spaceSlug || DEFAULT_SPACE_SLUG) : null;
+  const snapshot = useCallback(() => (key ? gitMirrorSyncGenerations.get(key) ?? 0 : 0), [key]);
+  const generation = useSyncExternalStore(subscribeGitMirrorSync, snapshot, snapshot);
+  const seen = useRef({ key, generation });
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   useEffect(() => {
-    if (seen.current === generation) return;
-    seen.current = generation;
+    const previous = seen.current;
+    seen.current = { key, generation };
+    // A new scope fetches on its own (its params changed); only a sync seen in the same scope refetches.
+    if (previous.key !== key || previous.generation === generation) return;
     refreshRef.current();
-  }, [generation]);
+  }, [key, generation]);
+}
+
+/**
+ * A query result plus `refreshing`: a refetch of the params whose data is already shown. A view keeps showing
+ * (and editing) that data meanwhile instead of unmounting into its loading state; the host bridge keeps `data`
+ * and sets `loading` on every refetch, and a first load or a change of params is not a refresh.
+ */
+function useRefreshingQuery<T>(query: PluginDataResult<T>, params: Record<string, unknown> | undefined) {
+  const paramsKey = JSON.stringify(params ?? null);
+  const settledKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!query.loading && query.data !== null) settledKey.current = paramsKey;
+  }, [query.loading, query.data, paramsKey]);
+  return { ...query, refreshing: query.loading && query.data !== null && settledKey.current === paramsKey };
 }
 
 function useOverview(companyId: string | null) {
   const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
   const query = usePluginData<OverviewData>("overview", params);
-  useRefreshOnGitMirrorSync(query.refresh);
+  useRefreshOnGitMirrorSync(query.refresh, companyId, ANY_SPACE);
   return query;
 }
 
@@ -825,7 +850,7 @@ function usePages(companyId: string | null, opts: { includeRaw?: boolean; spaceS
     return next;
   }, [companyId, opts.includeRaw, opts.spaceSlug]);
   const query = usePluginData<PagesData>("pages", params);
-  useRefreshOnGitMirrorSync(query.refresh);
+  useRefreshOnGitMirrorSync(query.refresh, companyId, opts.spaceSlug);
   return query;
 }
 
@@ -858,8 +883,8 @@ function usePageContent(companyId: string | null, path: string | null, spaceSlug
     return next;
   }, [companyId, path, spaceSlug]);
   const query = usePluginData<PageContentData>("page-content", params);
-  useRefreshOnGitMirrorSync(query.refresh);
-  return query;
+  useRefreshOnGitMirrorSync(query.refresh, companyId, spaceSlug);
+  return useRefreshingQuery(query, params);
 }
 
 function useOperations(companyId: string | null, filter: { operationType?: string | null; status?: string | null; spaceSlug?: string | null } = {}) {
@@ -3100,14 +3125,18 @@ function GitMirrorBanner({ companyId, spaceSlug }: { companyId: string; spaceSlu
   // A sync finished (the first copy, a Sync now, the last continuation of a long one): the commit or sync
   // time moved while no run is active, or a run that was active is not any more. The page views refetch.
   const settledMark = mirror?.enabled ? `${mirror.commitSha ?? ""}|${mirror.syncedAt ?? ""}` : null;
-  const lastSeen = useRef<{ companyId: string; mark: string | null; active: boolean } | null>(null);
+  // Only the mirrored space's views refetch (and the space it left, when its target changed).
+  const mirroredSpace = mirror?.spaceSlug ?? null;
+  const lastSeen = useRef<{ companyId: string; mark: string | null; active: boolean; spaceSlug: string | null } | null>(null);
   useEffect(() => {
     if (!mirror) return;
     const previous = lastSeen.current;
-    lastSeen.current = { companyId, mark: settledMark, active: syncActive };
+    lastSeen.current = { companyId, mark: settledMark, active: syncActive, spaceSlug: mirroredSpace };
     if (!previous || previous.companyId !== companyId || syncActive) return;
-    if (previous.active || previous.mark !== settledMark) announceGitMirrorSync();
-  }, [mirror, companyId, settledMark, syncActive]);
+    if (previous.active || previous.mark !== settledMark) {
+      announceGitMirrorSync(companyId, [previous.spaceSlug, mirroredSpace].filter((slug): slug is string => slug !== null));
+    }
+  }, [mirror, companyId, settledMark, syncActive, mirroredSpace]);
 
   if (!mirror?.enabled || mirror.spaceSlug !== spaceSlug) return null;
 
@@ -3497,7 +3526,8 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
   }, [context.companyId, content.data, editable, path, savedHash, writePage, spaceSlug]);
 
   if (!path) return <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Pick a page from the tree.</div>;
-  if (content.loading) return <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Loading {path}…</div>;
+  // A refetch of this page (a finished mirror sync) keeps it on screen: unmounting would drop an unsaved edit.
+  if (content.loading && !content.refreshing) return <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Loading {path}…</div>;
   if (content.error && path.startsWith("raw/")) {
     return (
       <div style={{ padding: isMobile ? 16 : 28, display: "grid", gap: 12 }}>
