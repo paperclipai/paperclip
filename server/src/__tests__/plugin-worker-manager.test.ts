@@ -186,6 +186,10 @@ describe("plugin-worker-manager stderr failure context", () => {
     try {
       await handle.start();
 
+      // The worker answers only after 60 s, past the 30 s manager default and
+      // the 15 s test timeout, so only the 10 ms handle default can settle the
+      // call. A 50 ms reply raced the 10 ms timer: a runner that stalled the
+      // host for 50 ms read the reply in the poll phase before timers ran.
       await expect(handle.call("environmentExecute", {
         driverKey: "e2b",
         companyId: "company-1",
@@ -193,7 +197,7 @@ describe("plugin-worker-manager stderr failure context", () => {
         config: {},
         lease: { providerLeaseId: "lease-1" },
         command: "echo",
-        delayMs: 50,
+        delayMs: 60_000,
       } as HostToWorkerMethods["environmentExecute"][0])).rejects.toMatchObject({
         message: expect.stringContaining("timed out after 10ms"),
       });
@@ -226,8 +230,10 @@ describe("plugin-worker-manager stderr failure context", () => {
         config: {},
         lease: { providerLeaseId: "lease-1" },
         command: "echo",
-        delayMs: 50,
-      } as HostToWorkerMethods["environmentExecute"][0], 100)).resolves.toMatchObject({
+        // Lands well after the 10 ms handle default and well inside the 10 s
+        // override, so neither a host nor a worker stall can flip the outcome.
+        delayMs: 200,
+      } as HostToWorkerMethods["environmentExecute"][0], 10_000)).resolves.toMatchObject({
         exitCode: 0,
         stdout: "ok\n",
       });
