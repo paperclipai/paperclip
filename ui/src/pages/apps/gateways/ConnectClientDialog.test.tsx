@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import { type ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -66,6 +65,8 @@ vi.mock("@/components/SearchableSelect", () => ({
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function storedToken(): ToolMcpGatewayToken {
   return {
     id: "token-1",
@@ -78,7 +79,8 @@ function storedToken(): ToolMcpGatewayToken {
     clientLabel: "research-client",
     ownerNote: "",
     allowedActions: ["tools/list", "tools/call"],
-    expiresAt: "2026-12-01T00:00:00.000Z",
+    // Relative to now: a fixed date would expire the fixture on the calendar.
+    expiresAt: new Date(Date.now() + 90 * DAY_MS).toISOString(),
     expiryOverrideReason: null,
     expiryOverrideByUserId: null,
     expiryOverrideByAgentId: null,
@@ -151,7 +153,7 @@ describe("ConnectClientDialog", () => {
   });
 
   afterEach(() => {
-    flushSync(() => root.unmount());
+    act(() => root.unmount());
     container.remove();
   });
 
@@ -160,7 +162,10 @@ describe("ConnectClientDialog", () => {
     const created = { ...persisted, token: "pcgw_FULL_SECRET" } satisfies ToolMcpGatewayTokenCreated;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    flushSync(() => {
+    // The dialog picks its token in an effect and re-renders. Under act, that
+    // re-render is flushed before the assertions; a timer wait does not order
+    // it (React schedules it on its own host callback).
+    await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <ConnectClientDialog
@@ -173,13 +178,15 @@ describe("ConnectClientDialog", () => {
         </QueryClientProvider>,
       );
     });
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(container.textContent).toContain("does not give it access to Paperclip or skills");
     const copyButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Copy");
     if (!copyButton) throw new Error("snippet copy button missing");
-    copyButton.click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    // Enabled only once the selected token is rendered into the snippet.
+    expect(copyButton.disabled).toBe(false);
+    await act(async () => {
+      copyButton.click();
+    });
 
     expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining('"Authorization": "Bearer pcgw_FULL_SECRET"'));
     expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining(
