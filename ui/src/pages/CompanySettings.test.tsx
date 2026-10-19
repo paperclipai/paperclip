@@ -117,9 +117,16 @@ async function flushReact() {
   });
 }
 
-async function waitForAssertion(assertion: () => void) {
+// Waits by elapsed time, not by a count of flushes. The data these pages
+// render arrives through react-query notifications and mocked API promises;
+// on a loaded CI runner that work finishes after a flush's act window closes
+// (CI logs show "not wrapped in act" updates for this file that never appear
+// locally) and React commits it later. A fixed 20 flushes (about 220 ms there)
+// ran out before the form or its options rendered.
+async function waitForAssertion(assertion: () => void, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
-  for (let i = 0; i < 20; i += 1) {
+  do {
     await flushReact();
     try {
       assertion();
@@ -127,7 +134,7 @@ async function waitForAssertion(assertion: () => void) {
     } catch (error) {
       lastError = error;
     }
-  }
+  } while (Date.now() < deadline);
   throw lastError;
 }
 
@@ -220,7 +227,10 @@ describe("CompanyEnvironments", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    mockEnvironmentsApi.capabilities.mockResolvedValue(
+    // A real 60 ms answer: the page must wait for data, as on a loaded CI runner,
+    // instead of finding it already there after a fixed number of flushes.
+    const capabilitiesLatency = <T,>(value: T) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), 60));
+    mockEnvironmentsApi.capabilities.mockImplementation(() => capabilitiesLatency(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
         sandboxProviders: {
           "secure-plugin": {
@@ -234,16 +244,13 @@ describe("CompanyEnvironments", () => {
           },
         },
       }),
-    );
+    ));
 
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
-
+    await waitForAssertion(() => expect(container.querySelector('[aria-label="Add environment"]')).toBeTruthy());
     const addEnvironmentButton = container.querySelector('[aria-label="Add environment"]');
-    expect(addEnvironmentButton).toBeTruthy();
 
     await act(async () => {
       click(addEnvironmentButton);
@@ -251,16 +258,18 @@ describe("CompanyEnvironments", () => {
 
     await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
     const dialog = getEnvironmentFormPage();
+    const driverOptions = () => {
+      const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+        .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+        | HTMLSelectElement
+        | undefined;
+      expect(driverSelect).toBeTruthy();
+      return Array.from(driverSelect!.options).map((option) => option.value);
+    };
 
-    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
-      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
-      | HTMLSelectElement
-      | undefined;
-    expect(driverSelect).toBeTruthy();
-
-    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
-    expect(driverOptionValues).not.toContain("local");
-    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+    // Sandbox appears once the capabilities answer arrives (60 ms above).
+    await waitForAssertion(() => expect(driverOptions()).toEqual(["sandbox", "ssh"]));
+    expect(driverOptions()).not.toContain("local");
 
     await act(async () => {
       root.unmount();
@@ -290,11 +299,8 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
-
+    await waitForAssertion(() => expect(findAction(container, "Edit")).toBeTruthy());
     const editButton = findAction(container, "Edit");
-    expect(editButton).toBeTruthy();
 
     await act(async () => {
       click(editButton);
@@ -364,13 +370,10 @@ describe("CompanyEnvironments", () => {
     await act(async () => {
       root.render(renderCompanyEnvironments(queryClient));
     });
-    await flushReact();
-    await flushReact();
+    await waitForAssertion(() => expect(container.textContent).toContain("Secure Sandbox"));
 
-    expect(container.textContent).toContain("Secure Sandbox");
-
+    await waitForAssertion(() => expect(findAction(container, "Edit")).toBeTruthy());
     const editButton = findAction(container, "Edit");
-    expect(editButton).toBeTruthy();
 
     await act(async () => {
       click(editButton);

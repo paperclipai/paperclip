@@ -250,9 +250,13 @@ async function flushReact() {
   }
 }
 
-async function waitForAssertion(assertion: () => void) {
+// Waits by elapsed time, not by a count of flushes: on a loaded CI runner the
+// mocked data lands after a flush's act window and React commits it later, so
+// a fixed count is load-sensitive (see CompanySettings.test.tsx).
+async function waitForAssertion(assertion: () => void, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
-  for (let i = 0; i < 20; i += 1) {
+  do {
     await flushReact();
     try {
       assertion();
@@ -260,7 +264,7 @@ async function waitForAssertion(assertion: () => void) {
     } catch (error) {
       lastError = error;
     }
-  }
+  } while (Date.now() < deadline);
   throw lastError;
 }
 
