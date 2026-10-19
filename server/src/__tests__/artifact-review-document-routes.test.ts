@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageService } from "../storage/types.js";
 
 const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
@@ -136,11 +136,15 @@ function createStorageService(): StorageService {
   } as unknown as StorageService;
 }
 
-async function createApp(options?: { companyIds?: string[] }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(options?: { companyIds?: string[] }) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -210,10 +214,14 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
 }
 
 describe("work product review-document route", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
-    vi.clearAllMocks();
     registerRouteMocks();
+    await loadAppModules();
+  }, 120_000);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockWorkProductService.getById.mockResolvedValue(makeWorkProduct());
   });
