@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { createRoot as createReactRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -165,14 +165,6 @@ const providerConfigs = [
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
 const activeRoots = new Set<Root>();
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void>;
-  flushSync(() => {
-    result = callback();
-  });
-  await result!;
-}
 
 function createRoot(container: Element | DocumentFragment) {
   const root = createReactRoot(container);
@@ -659,7 +651,7 @@ describe("Secrets page layout", () => {
 
     const valueTextarea = document.getElementById("rotate-value") as HTMLTextAreaElement | null;
     expect(valueTextarea).not.toBeNull();
-    setTextareaValue(valueTextarea!, "rotated-neon-admin-key");
+    await act(async () => setTextareaValue(valueTextarea!, "rotated-neon-admin-key"));
     await flushReact();
 
     const dialog = valueTextarea!.closest("[role='dialog']") as HTMLElement;
