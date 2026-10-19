@@ -689,8 +689,7 @@ describe("native workspace finalization recovery", () => {
   });
 
   it("does not start another recovery while workspace finalization is still running", async () => {
-    const cwd = path.join(workspaceRoot, "slow-workspace");
-    await fs.mkdir(cwd);
+    const cwd = await fs.mkdtemp(path.join(workspaceRoot, "slow-workspace-"));
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Slow workspace export" });
     await db.insert(workspaceOperations).values({
       companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
@@ -711,7 +710,8 @@ describe("native workspace finalization recovery", () => {
       await started;
       const second = resumeNativeWorkspaceFinalization({ db, runId: seeded.runId });
       // A second invocation must return busy without waiting for or executing the slow I/O.
-      const outcome = await Promise.race([second, new Promise((resolve) => setTimeout(() => resolve("still-running"), 1_000))]);
+      // The first stays inside that I/O until release(), so the second settling here proves it.
+      const outcome = await second;
       release();
       await Promise.all([first, second]);
       expect(outcome).toBeNull();
@@ -724,8 +724,7 @@ describe("native workspace finalization recovery", () => {
   });
 
   it("records directory-only recovery without inventing an execution-workspace foreign key", async () => {
-    const cwd = path.join(workspaceRoot, "directory-only");
-    await fs.mkdir(cwd);
+    const cwd = await fs.mkdtemp(path.join(workspaceRoot, "directory-only-"));
     const seeded = await seedRun({
       executionWorkspaceId: randomUUID(),
       title: "Recover a directory-only workspace",
@@ -771,8 +770,7 @@ describe("native workspace finalization recovery", () => {
   });
 
   it("retains a real company-owned execution workspace on the resumed operation", async () => {
-    const cwd = path.join(workspaceRoot, "owned-workspace");
-    await fs.mkdir(cwd);
+    const cwd = await fs.mkdtemp(path.join(workspaceRoot, "owned-workspace-"));
     const executionWorkspaceId = randomUUID();
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
@@ -803,19 +801,10 @@ describe("native workspace finalization recovery", () => {
   });
 
   it("does not attach a foreign-company workspace while retaining the bound prior operation cwd", async () => {
-    const authorizedCwd = path.join(
-      workspaceRoot,
-      "authorized-prior-operation",
-    );
-    const foreignCwd = path.join(workspaceRoot, "foreign-workspace");
-    const mismatchedCwd = path.join(
-      workspaceRoot,
-      "mismatched-issue-operation",
-    );
-    await Promise.all([
-      fs.mkdir(authorizedCwd),
-      fs.mkdir(foreignCwd),
-      fs.mkdir(mismatchedCwd),
+    const [authorizedCwd, foreignCwd, mismatchedCwd] = await Promise.all([
+      fs.mkdtemp(path.join(workspaceRoot, "authorized-prior-operation-")),
+      fs.mkdtemp(path.join(workspaceRoot, "foreign-workspace-")),
+      fs.mkdtemp(path.join(workspaceRoot, "mismatched-issue-operation-")),
     ]);
     const foreignWorkspaceId = randomUUID();
     await db.insert(executionWorkspaces).values({
