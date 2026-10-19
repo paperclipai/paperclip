@@ -21,7 +21,14 @@ describe("private task production review", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-review-");
     db = createDb(tempDb.connectionString);
     // Load the current route dependency graph during setup, outside assertion timeouts.
-    await Promise.all([import("../routes/issues.js"), import("../routes/projects.js")]);
+    await Promise.all([
+      import("../routes/issues.js"),
+      import("../routes/projects.js"),
+      import("../routes/assets.js"),
+      import("../routes/execution-workspaces.js"),
+      import("../realtime/live-events-ws.js"),
+      import("../services/live-events.js"),
+    ]);
   }, 120_000);
   afterAll(async () => { await tempDb?.cleanup(); });
 
