@@ -540,8 +540,9 @@ export function normalizeGatedExecutionWorkspaceField(
  * execution workspace of the task's own, running on the shared checkout.
  *
  * This is the single predicate that decides what the gate can honour, and both
- * sides of the request read it. `issueService.update` persists a baseline value
- * and drops the rest; the PATCH route refuses exactly the rest. Sharing it is
+ * sides of the request read it through `unpersistableGatedExecutionWorkspaceFields`:
+ * `issueService.update` persists a baseline value and drops the rest; the PATCH
+ * route refuses exactly what is dropped. Sharing it is
  * what keeps "accepted" and "written" from drifting apart — the two used to be
  * decided independently, and a value the route let through was silently deleted
  * one layer down.
@@ -578,32 +579,13 @@ export function isGatedExecutionWorkspaceBaseline(
 }
 
 /**
- * Names the gated fields present in a patch that ask for more than the gate can
- * give — a real workspace id, or an isolated/worktree posture.
- *
- * The complement is honoured: `undefined` (absent) and baseline values.
- */
-export function unhonourableGatedExecutionWorkspaceFields(
-  patch: Record<string, unknown>,
-): GatedExecutionWorkspaceField[] {
-  return GATED_EXECUTION_WORKSPACE_FIELDS.filter(
-    (field) =>
-      Object.prototype.hasOwnProperty.call(patch, field) &&
-      patch[field] !== undefined &&
-      !isGatedExecutionWorkspaceBaseline(
-        field,
-        normalizeGatedExecutionWorkspaceField(field, patch[field]),
-      ),
-  );
-}
-
-/**
  * Names the gated fields a patch cannot carry into the row while the gate is
- * off, so `issueService.update` can drop exactly those.
+ * off, so `issueService.update` can drop exactly those — and the PATCH route can
+ * refuse exactly those, unless the row already holds the same value.
  *
- * This is the route's refusal set plus one narrow case, and the narrowness is
- * the point: everything the route answers 200 for is written, so "accepted" and
- * "persisted" mean the same thing. A baseline `executionWorkspaceId`,
+ * Both sides reading this one set is the point: everything the route answers
+ * 200 for is written, so "accepted" and "persisted" mean the same thing. A
+ * baseline `executionWorkspaceId`,
  * `executionWorkspacePreference` or `executionWorkspaceSettings` removes
  * execution-workspace configuration rather than introducing any, so the gate has
  * nothing to withhold and the write lands — a clear clears, and a downgrade
@@ -617,7 +599,9 @@ export function unhonourableGatedExecutionWorkspaceFields(
  * `{}`. Writing that would replace the stored blob and take `networkEgress` with
  * it, over a request that never mentioned either. "Carries nothing the column
  * holds" is not the same statement as "clear the column"; only the second is a
- * write, and only the second is spelled `null`.
+ * write, and only the second is spelled `null`. The route refuses this blob too
+ * whenever the column holds anything, so it is never a 200 that left a stale
+ * posture behind.
  *
  * Persisting a baseline settings value also reaches one layer further out: on a
  * row the runtime bound (`executionWorkspaceId` + `reuse_existing`, the shape of

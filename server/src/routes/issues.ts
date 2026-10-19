@@ -383,7 +383,7 @@ import {
   normalizeGatedExecutionWorkspaceField,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
-  unhonourableGatedExecutionWorkspaceFields,
+  unpersistableGatedExecutionWorkspaceFields,
 } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -785,21 +785,16 @@ function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
  *   even when the runtime bound a workspace past the gate
  *   (`bindRuntimeSharedWorkspace`).
  *
- * What is left refused is the write the ticket was opened for: naming a real
+ * What is left refused is exactly what the service drops
+ * (`unpersistableGatedExecutionWorkspaceFields`), so a 200 always means the
+ * value landed. That is the write the ticket was opened for — naming a real
  * `executionWorkspaceId`, or a preference or settings blob asking for an
  * isolated workspace, a worktree strategy, or any other posture the gate has no
- * way to deliver.
- *
- * One residual is known and accepted rather than claimed away. A PATCH that only
- * moves `environmentId` inside the settings blob carries no gated content, so it
- * passes here and the service leaves the settings column untouched rather than
- * blanking it — issue environment selection is a separate feature which
- * `selectEnvironmentExecutionWorkspaceSettings` handles, and this guard neither
- * refuses it nor lets it overwrite the column (see
- * `unpersistableGatedExecutionWorkspaceFields`). Nothing the caller asked for is
- * dropped there: the parse discards `environmentId` from this column with the
- * gate on or off, so not writing is strictly closer to the request than writing
- * `{}` over it.
+ * way to deliver — plus a non-`null` settings blob that normalizes away to
+ * nothing (`{}`, `{ environmentId }`) against a column that holds something.
+ * The service will not blank the column over that blob, so answering 200 would
+ * leave whatever it held — a stale `isolated_workspace` included — behind a
+ * success. `null` is the spelling that clears.
  *
  * And `resolveExecutionWorkspaceMode` returns `agent_default`, not
  * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
@@ -810,7 +805,7 @@ function unhonourableExecutionWorkspaceFields(
   body: Record<string, unknown>,
   existing: Record<string, unknown>,
 ) {
-  return unhonourableGatedExecutionWorkspaceFields(body).filter(
+  return unpersistableGatedExecutionWorkspaceFields(body).filter(
     (field) =>
       !isSameExecutionWorkspaceValue(
         normalizeGatedExecutionWorkspaceField(field, body[field]),

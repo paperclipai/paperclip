@@ -188,11 +188,11 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
    * `environmentId` when called the way `update()` calls it, so the blob
    * normalizes to nothing and reads as a baseline value. If that is written, the
    * column is overwritten with `{}` and whatever it held — `networkEgress` here,
-   * which is honoured with the gate off — is gone. The blob carries no gated
-   * content, so the gate has no business either refusing it or rewriting the
-   * column over it.
+   * which is honoured with the gate off — is gone. So the service does not write
+   * it, and because it does not, the route must not answer 200 for it either:
+   * that would be the accepted-and-discarded behaviour this suite exists for.
    */
-  it("does not let an environment-only settings payload erase stored settings", async () => {
+  it("refuses an environment-only settings payload rather than erase stored settings", async () => {
     const seeded = await seed({
       isolatedWorkspaces: false,
       seedEnvironment: true,
@@ -203,9 +203,42 @@ describeEmbeddedPostgres("issue execution-workspace fields under the isolated-wo
       executionWorkspaceSettings: { environmentId: seeded.environmentId },
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("executionWorkspaceSettings");
     expect((await storedWorkspaceFields(seeded)).executionWorkspaceSettings).toMatchObject({
       networkEgress: { allowFqdns: ["registry.npmjs.org"] },
+    });
+  });
+
+  /**
+   * The case finding `ebf0a695b149920f` named, through the one shape the
+   * downgrade fix left open. `{}` normalizes to nothing, so the service leaves
+   * the column alone rather than blanking it; with the gate on the same request
+   * writes `{}` and the isolated posture is gone. Answering 200 here would leave
+   * `isolated_workspace` stored behind a success, ready to take effect again when
+   * the gate is switched back on. `null` is the spelling that clears.
+   */
+  it("refuses an empty settings blob over a stored isolated posture", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false, storeIsolatedSettings: true });
+
+    const res = await patch(seeded, { executionWorkspaceSettings: {} });
+
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("executionWorkspaceSettings");
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  /** Against an empty column the same blob asks for what is already there. */
+  it("accepts an empty settings blob when the column already holds nothing", async () => {
+    const seeded = await seed({ isolatedWorkspaces: false });
+
+    const res = await patch(seeded, { executionWorkspaceSettings: {} });
+
+    expect(res.status).toBe(200);
+    expect(await storedWorkspaceFields(seeded)).toMatchObject({
+      executionWorkspaceSettings: null,
     });
   });
 
