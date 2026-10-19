@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -94,14 +94,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
     const id = overrides.id ?? randomUUID();
+    // Derive the identifier from the id: random draws from 10,000 can collide on
+    // issues_identifier_idx. issue_number has no unique index, so a bounded number is enough.
+    const number = Number.parseInt(id.replace(/-/g, "").slice(0, 7), 16);
     await db.insert(issues).values({
       id,
       companyId,
       title: overrides.title ?? "Watched issue",
       status: overrides.status ?? "done",
       priority: overrides.priority ?? "medium",
-      identifier: overrides.identifier ?? `WDOG-${Math.floor(Math.random() * 10_000)}`,
-      issueNumber: overrides.issueNumber ?? Math.floor(Math.random() * 10_000),
+      identifier: overrides.identifier ?? `WDOG-${id}`,
+      issueNumber: overrides.issueNumber ?? number,
       parentId: overrides.parentId,
       assigneeAgentId: overrides.assigneeAgentId,
       originKind: overrides.originKind,
@@ -400,6 +403,20 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(1);
+  });
+
+  it("seeds issues whose default identifiers never collide, whatever Math.random() returns", async () => {
+    const companyId = await seedCompany();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      // Two ids that share their first seven hex digits.
+      await seedIssue(companyId, { id: "12345670-0000-4000-8000-000000000001" });
+      await seedIssue(companyId, { id: "1234567f-0000-4000-8000-000000000002" });
+    } finally {
+      random.mockRestore();
+    }
+    const rows = await db.select({ identifier: issues.identifier }).from(issues).where(eq(issues.companyId, companyId));
+    expect(new Set(rows.map((row) => row.identifier)).size).toBe(2);
   });
 
   it("marks a completed watchdog fingerprint reviewed, then reuses the same issue for a later stopped state", async () => {
