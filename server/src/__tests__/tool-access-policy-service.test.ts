@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -199,6 +199,15 @@ function executedActionInput(db: ReturnType<typeof createDb>, company: IdRef, ag
   };
 }
 
+// The rate limiter counts in fixed windows aligned to the wall clock
+// (windowStart in services/tool-access-policy.ts), so two calls that straddle
+// a window boundary get a fresh counter. Pin the clock at a known offset into
+// the current minute; only Date is faked, so database timers keep running.
+function pinClockInMinute(offsetMs: number) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(Math.floor(Date.now() / 60_000) * 60_000 + offsetMs));
+}
+
 describeEmbeddedPostgres("tool access policy service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -209,6 +218,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     await db.delete(toolRateLimitCounters);
     await db.delete(toolActionRequests);
     await db.delete(toolInvocations);
@@ -914,7 +924,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
       consumeRateLimit: true,
     };
 
+    // Mid-window, the second call comes 200 ms later in the same window.
+    pinClockInMinute(30_000);
     const first = await toolAccessPolicyService(db).decide(input);
+    vi.setSystemTime(new Date(Date.now() + 200));
     const second = await toolAccessPolicyService(db).decide(input);
 
     expect(first.allowed).toBe(true);
@@ -944,6 +957,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       consumeRateLimit: true,
     };
 
+    pinClockInMinute(30_000);
     const decisions = await Promise.all([
       toolAccessPolicyService(db).decide(input),
       toolAccessPolicyService(db).decide(input),
