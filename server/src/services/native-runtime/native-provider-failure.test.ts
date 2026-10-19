@@ -133,6 +133,57 @@ describe("native provider failure observation", () => {
     })).toEqual({ provider: "codex", category: "turn_failed", codexErrorInfo: "badRequest", runnerFailureCode: "unrecognized" });
   });
 
+  it("names a lost OpenCode server without copying provider text", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    observed.observe({ ...event, payload: { status: "failed", providerTerminalObserved: false, error: {
+      code: "opencode_server_exited", message: "Private provider message",
+      opencodeFailure: { kind: "server_exited", signal: "SIGKILL", connectionError: "ECONNREFUSED", detail: "private" },
+    } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+    const diagnostic = observed.unclassifiedTurnFailure("turn", terminal);
+    expect(diagnostic).toEqual({
+      provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_server_exited",
+      streamFailure: "server_exited", signal: "SIGKILL", connectionError: "ECONNREFUSED",
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/private/i);
+    expect(readNativeTurnFailureDiagnostic(diagnostic)).toEqual(diagnostic);
+  });
+
+  it("still identifies an OpenCode turn that failed with no structured cause", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    observed.observe({ ...event, payload: { status: "failed", error: null } });
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toEqual({ provider: "opencode", category: "turn_failed" });
+    const providerError = createNativeProviderFailureObservation({ kind: "opencode", model });
+    providerError.observe({ ...event, payload: { status: "failed", error: { code: "private_provider_code", name: "APIError" } } });
+    expect(providerError.unclassifiedTurnFailure("turn", terminal)).toEqual({
+      provider: "opencode", category: "turn_failed", runnerFailureCode: "unrecognized",
+    });
+  });
+
+  it("drops values outside the OpenCode stream-failure vocabulary", () => {
+    expect(readNativeTurnFailureDiagnostic({
+      provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_event_stream_lost",
+      streamFailure: "connection_failed", connectionError: "EPRIVATE", exitCode: 300, signal: "private signal", httpStatus: 42,
+    })).toEqual({
+      provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_event_stream_lost", streamFailure: "connection_failed",
+    });
+    expect(readNativeTurnFailureDiagnostic({
+      provider: "opencode", category: "turn_failed", streamFailure: "private", exitCode: 137,
+    })).toEqual({ provider: "opencode", category: "turn_failed" });
+    expect(readNativeTurnFailureDiagnostic({ provider: "opencode", category: "server_overloaded" })).toBeNull();
+  });
+
+  it("records only known signal names for a lost OpenCode server", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    observed.observe({ ...event, payload: { status: "failed", error: {
+      code: "opencode_server_exited", opencodeFailure: { kind: "server_exited", signal: "SIGPRIVATE" },
+    } } });
+    const expected = { provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_server_exited", streamFailure: "server_exited" };
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toEqual(expected);
+    expect(readNativeTurnFailureDiagnostic({ ...expected, signal: "SIGPRIVATE" })).toEqual(expected);
+    expect(readNativeTurnFailureDiagnostic({ ...expected, signal: "SIGTERM" })).toEqual({ ...expected, signal: "SIGTERM" });
+  });
+
   it.each([{ kind: "claude", model }, { kind: "codex" }, { kind: "codex", model: "other" }])(
     "does not apply a rejection to another selected provider/model (%j)", (provider) => {
       const observed = createNativeProviderFailureObservation(provider);

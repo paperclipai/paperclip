@@ -146,6 +146,28 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
+    const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
+    const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
+    const pending = withFollower ? [paused, ready] : [paused];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async input => pending.find(wake => !input.excludedWakeIds?.includes(wake.id)) ?? null),
+      findInvokableAgent: vi.fn(async input => input.agentId === paused.agentId
+        ? { ...AGENT, invokable: false, paused: true } : { ...AGENT, id: ready.agentId }),
+      getQueuedCommentLiveness: vi.fn(async input => ({ liveNonSelfCommentIds: input.queuedCommentIds, containedSelfAuthoredComment: false })),
+    });
+    const release = createReleaseIssueExecution({ issueLock: createFakeIssueLock(createFakeHost(), transaction,
+      { ...ISSUE, status: "blocked", assigneeAgentId: ready.agentId }, { ...RUN, status: "succeeded" }), recovery: createFakeRecovery() });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date(), resumeStrandedQueue: true });
+    expect(result.outcome.kind).toBe(withFollower ? "promoted" : "released");
+    expect(transaction.failDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.normalizeDeferredWakeCommentIds).not.toHaveBeenCalled();
+    expect(transaction.findNextDeferredWake).toHaveBeenNthCalledWith(2, expect.objectContaining({ excludedWakeIds: [paused.id] }));
+    if (withFollower) expect(transaction.finalizePromotedWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: ready.id }));
+    else expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+  });
+
   it.each(["closing", "mixed_comments", "explicit_resume", "interaction", "other_source_task", "parent_open"])(
     "checks late completed-delegation mentions without dropping independent input (%s)", async (scenario) => {
       const originalCommentIds = ["closing-comment", "second-comment"];

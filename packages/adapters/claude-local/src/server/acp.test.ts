@@ -278,7 +278,7 @@ describe("claude_local ACP lane", () => {
       onMeta: async (payload) => { meta.push(payload); },
     }));
     expect(result.exitCode).toBe(0);
-    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5");
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5-5");
   });
 
   it("keeps ACP model precedence consistent with CLI and provider overrides", () => {

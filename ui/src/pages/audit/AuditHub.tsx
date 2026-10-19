@@ -10,6 +10,7 @@ import { Costs } from "@/pages/Costs";
 import { Timeline } from "@/pages/Timeline";
 import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
 import { AuditRuns } from "./AuditRuns";
+import { AgentCommentary } from "./AgentCommentary";
 import { RoutineAuditActivity } from "./RoutineAuditActivity";
 import {
   AUDIT_SECTIONS,
@@ -97,7 +98,9 @@ export function AuditHub({ section }: { section: AuditSection }) {
         <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
       </Tabs>
 
-      {section === "activity" && routineId ? (
+      {section === "commentary" ? (
+        <AgentCommentary key={selectedCompanyId} companyId={selectedCompanyId} />
+      ) : section === "activity" && routineId ? (
         <RoutineAuditActivity companyId={selectedCompanyId} routineId={routineId} />
       ) : section === "activity" ? (
         <AuditFeed

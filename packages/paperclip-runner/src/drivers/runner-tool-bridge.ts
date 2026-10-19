@@ -22,6 +22,7 @@ export interface RunnerToolDefinition {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  _meta?: { "anthropic/alwaysLoad": true };
 }
 
 export interface RunnerToolCall {
@@ -36,6 +37,8 @@ export interface RunnerToolCall {
 
 export interface RunnerToolBridgeOptions {
   tools?: readonly Readonly<Record<string, unknown>>[];
+  /** Claude-only: avoid tool search for task naming and terminal disposition. */
+  preloadClaudeTaskTools?: boolean;
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler(call: RunnerToolCall): Promise<unknown>;
@@ -118,6 +121,13 @@ export async function startRunnerToolBridge(
     }
   }
   const visibleTools = [...tools, ...structuredClone(RESERVED_TOOLS)];
+  if (options.preloadClaudeTaskTools) {
+    for (const tool of visibleTools) {
+      if (tool.name === "set_task_title" || tool.name === PRP_COMPLETION_TOOL_NAME || tool.name === PRP_BLOCK_TOOL_NAME) {
+        tool._meta = { "anthropic/alwaysLoad": true };
+      }
+    }
+  }
   const admittedTools = [...visibleTools, ...privateTools];
   const validators = compileValidators(admittedTools);
   const calls = new Map<string, AdmittedCall>();

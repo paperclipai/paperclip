@@ -110,6 +110,13 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+Active remote process supervision distinguishes a failed health read from a
+confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
+exercise timeout recovery with a real listening process, unchanged ownership,
+and rejected identity evidence. The Runner restart tests require positive exit
+evidence before replacement. This coverage does not prove recovery of a
+historical retained sandbox or behavior during a live provider outage.
+
 The same database suite pauses an original preparation while recovery claims
 the remote run. It then verifies that the old preparation yields without opening
 a provider or changing the recovery owner, for both live and expired leases.
@@ -160,15 +167,18 @@ The recovery-card suite covers workspace divergence, reissue, reconcile, and
 confirmation. [Workspace export](../../ui/src/components/WorkspaceExportRecovery.test.tsx)
 covers quiet restoration, legacy/operator assistance and resolved states.
 
-For a retained legacy or native file hold, open the source task after its recovery action
-has resolved but its files still need recovery. An authorized board operator can
-record the verified recovered files and backup link without changing the current
-task status or starting another run. The server must independently validate the
-original stopped-execution receipt. Agent Chat must show the file hold rather than
-suggesting another message. The [file recovery form](../../ui/src/components/WorkspaceFileRecovery.test.tsx),
-[notice](../../ui/src/components/ExecutionBlockerNotice.test.tsx), and
+For a retained legacy or native file hold, open the source task after its recovery
+action has resolved but its files still need recovery. The task shows a compact
+operator-attention notice with inspection and collapsed diagnostics, without a
+file-certification form. A source-bound live recovery uses the ordinary working
+state; a missed or exhausted retry and an unknown action outcome remain visible.
+An authorized board operator can use the resolution API to record verified files
+and a backup link without changing task status or starting another run. The
+server independently validates the original stopped-execution receipt. Agent
+Chat retains the hold rather than suggesting another message. The
+[notice](../../ui/src/components/ExecutionBlockerNotice.test.tsx) and
 [repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
-cover evidence/confirmation, read-only access, stale or missing stop proof,
+cover quiet live recovery, read-only access, stale or missing stop proof,
 source-only repair, and preserved task status. These tests use fixtures; separately
 verify original files and their attached artifact before recording a real repair.
 
@@ -200,6 +210,20 @@ explicit rejection. Reload to confirm the durable outcome. For a workspace
 repair, record the compared branches/revisions and preserve uncommitted work;
 confirm the repair's actual result before resuming. Check the denied and stale
 action paths. A changed card label is insufficient proof of workspace integrity.
+
+For graceful legacy shutdown, interrupt a disposable sandbox run while file
+export is in flight. Delay settlement past the first 30-second wait. Confirm
+the lease stays available, no repair hold or successor appears before export,
+and the finalizer drain waits for the same owner. After export, confirm saved
+files, successful lease cleanup, and one bounded continuation. Reload before
+checking the successor. Repeat with controller loss: the expired fence must
+retain the exact source and require repair, never claim restored files or start
+a second executor. The database-backed
+[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+checks finalizer joining, release order, durable retry uniqueness, and reload.
+The [settlement regressions](../../server/src/services/heartbeat/recovery.test.ts)
+cover other-controller fencing and owner loss. Provider boundaries are controlled
+in these tests; they do not qualify a live sandbox export.
 
 For an abandoned native controller, follow the [stop-verification procedure](../../doc/native-workspace-finalization-recovery.md)
 with a disposable deployment. A new platform-bound owner recovers automatically

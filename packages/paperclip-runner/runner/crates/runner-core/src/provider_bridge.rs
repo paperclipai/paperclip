@@ -42,6 +42,7 @@ const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
 const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
 const QUESTION_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Required fields: idempotencyKey, interactionKind, title, prompt, and continuationPolicy. For questions, use payload.version=1 and a complete payload.questionSet matching the authorized schema. Preserve the supplied question and option IDs.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
+const MONITOR_INPUT_SCHEMA_HINT: &str = "Invalid set_task_monitor arguments. Supply idempotencyKey and monitor: {nextCheckAt: <future UTC timestamp>, notes: <next check>}. Put all scheduling fields inside monitor, or use monitor: null to clear. Omit taskId for the current task. Correct the arguments and retry.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -244,6 +245,7 @@ impl ProviderBridgeError {
             "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
             "request_human_input" => Some(QUESTION_INPUT_SCHEMA_HINT),
+            "set_task_monitor" => Some(MONITOR_INPUT_SCHEMA_HINT),
             _ => None,
         };
         Self {
@@ -1609,6 +1611,38 @@ mod tests {
         let other = ProviderBridgeError::input_schema_validation("some_other_tool")
             .with_schema_locations(&validator, &json!({"a": 1}));
         assert_eq!(other.safe_provider_message(), None);
+    }
+
+    #[test]
+    fn monitor_validation_reports_nested_schema_paths_without_submitted_values() {
+        let schema = json!({
+            "type": "object", "required": ["idempotencyKey", "monitor"],
+            "additionalProperties": false,
+            "properties": {
+                "idempotencyKey": {"type": "string"},
+                "monitor": {
+                    "type": ["object", "null"], "required": ["nextCheckAt", "notes"],
+                    "properties": {"nextCheckAt": {"type": "string"}, "notes": {"type": "string", "maxLength": 500}},
+                    "additionalProperties": false
+                }
+            }
+        });
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for input in [
+            json!({"idempotencyKey": "check-ci", "nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE"}),
+            json!({"idempotencyKey": "check-ci", "monitor": {"nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE".repeat(100), "PRIVATE_FIELD": "PRIVATE_VALUE"}}),
+        ] {
+            let error = ProviderBridgeError::input_schema_validation("set_task_monitor")
+                .with_schema_locations(&validator, &input);
+            let message = error.safe_provider_message().unwrap();
+            assert!(message.contains("Put all scheduling fields inside monitor"));
+            assert!(message.contains("/required") || message.contains("/properties/monitor/"));
+            for private in ["PRIVATE_TIMESTAMP", "PRIVATE_FIELD", "PRIVATE_VALUE"] {
+                assert!(!message.contains(private));
+            }
+            assert!(message.len() <= 512);
+            assert!(!message.chars().any(char::is_control));
+        }
     }
 
     #[test]

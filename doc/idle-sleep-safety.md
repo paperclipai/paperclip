@@ -36,7 +36,75 @@ signed bootstrap writes. Only the task-drain read skips request tracking.
 Its authentication finishes under a separate work token before entering the
 report, so it counts concurrent writes without blocking on its own scan.
 
+A matched static UI file served by the admitted, handler-tracked application finishes its request
+tracking when its response ends or closes, including a match found after the
+client has already disconnected. Unfinished middleware promises remain tracked.
+Routers share this application scope. A mounted Express application has hidden
+handler promises, so it keeps the existing conservative hold after an aborted
+download until the application itself completes the response. An application
+without installed handler tracking keeps the same conservative hold. Missing files
+continue through the normal fallback and error handlers; they do not exempt
+other GET requests or callback-only application work.
+
 ## Scheduled routine wake protocol
+
+Historical failed ephemeral leases and terminal custom-image setup sessions can
+become idle only after the host observes deletion of their exact provider
+resource. Cloud checks bounded batches on already-awake instances, outside the
+readiness path. The optional `environmentInspectLease` plugin RPC is read-only:
+it must never reconnect, start, stop, or destroy an allocation. Older workers
+without this method remain conservative. Daytona accepts its SDK's typed
+not-found response; authentication and transport failures are not deletion
+proof. Setup checks require the recorded provider-config fingerprint; lease
+checks use the recorded plugin and scoped config, never a replacement binding.
+For legacy secret references without a version manifest, only an unrotated
+initial version with a matching resolved-value hash establishes credential
+identity. Rotated/mutable credentials and ambient Daytona keys defer proof;
+not-found under another account cannot establish historical cleanup. Inspection
+also rejects an ambient API endpoint override when no endpoint was recorded.
+The manager permits at most two outstanding inspection RPCs across workers.
+Caller timeouts retain their slots until the actual worker reply or exit;
+timeouts cannot accumulate additional provider reads in later sweeps.
+
+Host-owned verification metadata binds the company, environment, resource,
+provider handle, optional run, and exact row version. Concurrent resume,
+replacement, cleanup, or configuration changes invalidate verification.
+Provider-supplied metadata cannot supply this marker. Inspection preserves
+failure outcomes and history and does not create a run-continuation receipt.
+Normal setup cancellation and timeout preserve the host's recorded config
+fingerprint and RPC company scope for later read-only verification.
+Retained allocations, unfinished runs/accounting/retries, export intents and
+live setup credentials continue to block sleep.
+
+Pending human-only connection setup can wait asleep when no active enabled
+connection of the requested purpose exists. Available access reblocks sleep so
+the existing reconciliation path can run; answering a setup card continues to
+use the normal admission and wake path.
+The delivery worker uses the same passive-wait proof to release its local
+admission hold. On an already-awake instance it keeps its existing five-second
+maintenance cadence, without creating a wake alarm. This catches newly available
+access even when its write does not notify the connection queue. Pending real
+deliveries and their downstream wake requests still block sleep.
+An owned drain pauses passive-only maintenance before it admits tracked work,
+so a slow pre-sleep backup can finish with an unchanged generation. New producer
+notifications still preempt the maintenance timer and invalidate that backup.
+
+An unconfigured Slack draft can also wait for browser setup when its matching
+channel connection is disabled and still a draft. It must have no provider
+identity, prior activation/activity, or setup error. Partially configured,
+enabled, foreign, and other-provider endpoints remain blockers; accepted chat
+deliveries retain their independent checks.
+An optional Slack slash-command name is configuration only and does not create
+background work. Other setup fields still retain their blockers.
+
+Cloud also reconciles missed routine issue-status hooks in bounded batches on
+awake instances. Exact company/routine/issue/run ownership and row locks are
+required. The normal routine service records completion or transient failure
+from the current issue status; a resumed issue can use its existing continuation
+rules. This repairs stale handoff bookkeeping without exempting unprocessed
+routine runs or consuming deferred comment requests.
+Lock contention and retryable transaction failures defer only that candidate;
+other repairs continue, and later sweeps retry the deferred row.
 
 Verified signed Cloud control callers may opt into
 `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1&ownerId=<owner>`.
@@ -235,7 +303,28 @@ including token refresh after a quota response times out. Credential-recovery
 journals, partial writes and probes block sleep across restart. Empty company
 directories left after successful recovery do not; invalid paths and read
 failures remain unknown. Credentials and connection records are retained.
-MCP, chat and other connections still block until they have a wake contract.
+Disabled draft connections and saved outbound HTTP MCP connections have no
+independent listener. They can permit sleep while accepted calls and credential
+work still pass the other fences. MCP connections with a retained GitHub
+webhook binding, local stdio processes, channels, and other active transports
+remain blockers until their inbound work has a supported wake contract.
+
+With the issue-scheduling capability, pending questions, confirmations,
+checkbox confirmations and task suggestions can be passive waits. Their
+producer must have finished without retry or accounting debt. The response
+audience and continuation policy stay unchanged. Unknown pending siblings,
+foreign-company records and unfinished producers block sleep. A resolved card
+does not make an otherwise runnable issue passive. The schedule generation
+includes response identity and audience, including when only a routine owns
+the next alarm.
+Merge confirmations remain blockers because GitHub polling can accept them
+without a human response and does not yet have a durable wake contract.
+
+Known board escalation actions for stranded work, missing disposition and a
+lost review path can also be passive. They require a blocked source in the same
+company, board ownership, no automatic wake, no monitor or timeout, and no live
+execution binding. The action remains visible and unresolved. Other recovery
+causes and autonomous owners remain blockers.
 
 A failed ephemeral lease is history only with successful cleanup, a release
 timestamp, and an exact provider termination receipt bound to its company, run,
@@ -243,6 +332,10 @@ lease and resource. Its run must be finished without retry or accounting debt.
 Pending cleanup claims and export/stop-and-retain intents still block. Failure
 labels or cleanup success without that proof do not authorize sleep. Lease
 history is retained; this check performs no provider teardown or data updates.
+A released local ephemeral bookkeeping lease needs no remote termination
+receipt when its exact run has finished and both its provider and environment
+are local. It must have no provider resource reference or pending cleanup,
+export or retention intent. Unknown drivers and remote resources still block.
 
 Finished login-session history permits sleep only after its promotion claim is
 cleared and any retained provider reference has a matching released, expired,
@@ -265,10 +358,19 @@ Pending deliveries, missing
 completion evidence, and unfinished handoffs still block. Failed deliveries
 without a pending target are history; other work checks still apply.
 
-Every enabled plugin blocks sleep. A version label does not prove that arbitrary
-worker code has no background activity. No plugin approval or configuration
-bypass is supported. Scheduled and externally triggered work needs a durable
-host wake mechanism before this restriction can be relaxed.
+Processed connector-event receipts with a processing timestamp are idempotency
+history. Delivered connection-intent outboxes also permit sleep once their
+exact accepted wakes finish. A system-retired connection card parked behind a
+pending response keeps its undelivered outbox intact; the normal response path
+resumes delivery. Pending event application, unfinished wakes and all other
+execution checks still block. None of these exceptions fabricates completion
+or removes a durable receipt.
+
+Enabled plugins require the current worker's verified idle drain. A version
+label does not prove that arbitrary worker code has no background activity.
+No plugin approval or configuration bypass is supported. Scheduled and
+externally triggered work needs a durable host wake mechanism before it can
+permit sleep.
 
 This is a single-process admission protocol. A restart clears the owner. The
 host must serialize sleep with deploy/wake operations and bind its final check

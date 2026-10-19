@@ -18,6 +18,7 @@ import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
+import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -79,9 +80,8 @@ vi.mock("../api/grokBot", () => ({
   },
 }));
 
-vi.mock("../api/adapters", () => ({
-  adaptersApi: { list: async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }] },
-}));
+const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn(async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]) }));
+vi.mock("../api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
 
 vi.mock("../api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
@@ -640,6 +640,37 @@ async function flushUntil(check: () => boolean, timeoutMs = 4000) {
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
+  it.each(["paperclip", "legacy"] as const)("uses the resolved %s Claude form to preserve the correct turn limit", async defaultRunner => {
+    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner }]);
+    try {
+      const values = { ...defaultCreateValues, adapterType: "claude_local", runner: "auto" as const };
+      const result = await renderCreateForm([], values);
+      roots.push(result.root);
+      const resolved = result.onChange.mock.calls.reduce((current, [patch]) => ({ ...current, ...patch }), values);
+      expect(resolved.resolvedRunner).toBe(defaultRunner);
+      const config = buildClaudeLocalConfig(resolved);
+      if (defaultRunner === "legacy") expect(config.maxTurnsPerRun).toBe(1000);
+      else expect(config).not.toHaveProperty("maxTurnsPerRun");
+      expect(config).not.toHaveProperty("resolvedRunner");
+    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
+  });
+
+
+  it("carries a selected native Claude permission through the ordinary creation builder", async () => {
+    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" }]);
+    try {
+      const values = { ...defaultCreateValues, adapterType: "claude_local", runner: "auto" as const };
+      const result = await renderCreateForm([], values);
+      roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Permission mode"]'));
+      const deny = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Deny all");
+      expect(deny).toBeTruthy();
+      await clickElement(deny);
+      const resolved = result.onChange.mock.calls.reduce((current, [patch]) => ({ ...current, ...patch }), values);
+      expect(buildClaudeLocalConfig(resolved)).toMatchObject({ acpxPermissionMode: "deny-all" });
+    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
+  });
+
   it("keeps an explicit Codex draft policy until a harness reset clears it", async () => {
     mockEnvironmentsApi.list.mockResolvedValue([]);
     const container = document.createElement("div");
@@ -684,6 +715,21 @@ describe("AgentConfigForm environment selector", () => {
     await flushReact();
     await clickByText(result.container, "Save");
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
+  });
+
+  it.each(["codex", "claude"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
+    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" };
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
+    roots.push(result.root);
+    const effort = result.container.querySelector('[aria-label="Thinking effort"]');
+    expect(effort?.textContent).toContain("High");
+    await clickElement(effort);
+    await clickElement(document.querySelector('[role="option"][data-value=""]'));
+    await clickByText(result.container, "Save");
+    const saved = result.onSave.mock.calls[0][0];
+    expect(saved.replaceAdapterConfig).toBe(true);
+    expect(saved.adapterConfig).toMatchObject(profile);
+    for (const alias of ["modelReasoningEffort", "reasoningEffort", "effort"]) expect(saved.adapterConfig).not.toHaveProperty(alias);
   });
 
   it.each(["codex_local", "paperclip_runner"])("changes and clears the environment without changing a saved %s runner or account", async adapterType => {
@@ -748,7 +794,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
   });
 
-  it.each([{ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" }, { provider: "acpx", acpxAgent: "claude" }, { provider: "unknown-provider" }])("preserves saved native $provider configuration with the experimental gate off", async adapterConfig => {
+  it("shows Claude's saved runner without legacy command controls when the experimental gate is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", modelReasoningEffort: "high" } }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Claude");
+    await clickByText(result.container, "Advanced");
+    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain("Paperclip Runner");
+    const labels = Array.from(result.container.querySelectorAll("label")).map(label => label.textContent?.trim());
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Extra args (comma-separated)");
+    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed Claude"));
+    await flushReact();
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Claude" });
+  });
+
+  it.each([{ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" }, { provider: "unknown-provider" }])("preserves saved native $provider configuration with the experimental gate off", async adapterConfig => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig }, { showAdapterTypeField: true });
     roots.push(result.root);
@@ -915,7 +977,7 @@ describe("AgentConfigForm environment selector", () => {
 
   it.each([
     ["Codex", "codex", undefined, DEFAULT_CODEX_LOCAL_MODEL],
-    ["ACP agents", "acpx", "claude", "claude-sonnet-5"],
+    ["ACP agents", "acpx", "claude", "claude-opus-5-5"],
     ["Claude Managed", "claude_managed", undefined, "claude-sonnet-5"],
   ])("saves the %s harness default without the previous OpenCode model prefix", async (label, provider, acpxAgent, model) => {
     const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
@@ -1058,14 +1120,61 @@ describe("AgentConfigForm environment selector", () => {
     });
   });
 
+  it.each(["modelReasoningEffort", "reasoningEffort", "effort"])("clears native Claude %s when the model does not support it", async key => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "claude-opus-5-5", label: "claude-opus-5-5" },
+      { id: "claude-haiku-4-5", label: "claude-haiku-4-5" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "paperclip_runner",
+        adapterConfig: {
+          provider: "acpx", acpxAgent: "claude",
+          model: "claude-opus-5-5",
+          [key]: "max",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "claude-opus-5-5");
+    expect(modelButton).not.toBeUndefined();
+    await act(async () => {
+      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const astraOption = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "claude-haiku-4-5");
+    expect(astraOption).not.toBeUndefined();
+    await act(async () => {
+      astraOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    expect(saveButton).not.toBeUndefined();
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(result.onSave).toHaveBeenCalledWith({
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-haiku-4-5" },
+      replaceAdapterConfig: true,
+    });
+  });
+
   it("names the Claude default for new and existing agents without pinning it", async () => {
     const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
     const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
     roots.push(existing.root);
     const created = await renderCreateForm(environments, { adapterType: "claude_local", model: "" });
     roots.push(created.root);
-    expect(existing.container.textContent).toContain("Default (claude-opus-5)");
-    expect(created.container.textContent).toContain("Default (claude-opus-5)");
+    expect(existing.container.textContent).toContain("Default (claude-opus-5-5)");
+    expect(created.container.textContent).toContain("Default (claude-opus-5-5)");
     expect(existing.onSave).not.toHaveBeenCalled();
   });
 

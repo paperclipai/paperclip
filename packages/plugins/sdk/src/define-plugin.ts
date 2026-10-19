@@ -55,6 +55,8 @@ import type { PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } f
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
@@ -430,6 +432,11 @@ export interface PluginDefinition {
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Read provider state only. This must not start or reconnect a sandbox. */
+  onEnvironmentInspectLease?(
+    params: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation>;
 
   /** Called to materialize the run workspace inside the provider lease. */
   onEnvironmentRealizeWorkspace?(

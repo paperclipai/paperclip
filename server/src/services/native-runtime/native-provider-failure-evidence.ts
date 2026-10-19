@@ -19,7 +19,7 @@ async function observePersistedNativeTurnFailure(
       terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
   let execution;
   try { execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput); } catch { return null; }
-  if (execution.provider.kind !== "codex" ||
+  if ((execution.provider.kind !== "codex" && execution.provider.kind !== "opencode") ||
       execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
       execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
       execution.session.normalizedSessionId !== run.nativeSessionId ||

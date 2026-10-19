@@ -118,6 +118,25 @@ describeEmbeddedPostgres("native task monitors", () => {
     expect(audits[0]).toMatchObject({ runId: value.runId, agentId: value.agentId });
   });
 
+  it("defaults completion only to the current eligible saved monitor and clears it when consumed", async () => {
+    const value = await fixture();
+    const context = () => value.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} });
+    expect(await context()).toMatchObject({ completionContinuation: null });
+    await value.call({ idempotencyKey: "default-schedule", monitor: value.monitor });
+    expect(await context()).toMatchObject({
+      run: { id: value.runId }, activeTask: { executionRunId: value.runId },
+      completionContinuation: { kind: "monitor", summary: "Wait for the saved task monitor.",
+        idempotencyKey: `task-monitor:${value.issueId}:${value.monitor.nextCheckAt}` },
+    });
+    const scheduled = await value.read();
+    await db.update(issues).set(buildIssueMonitorTriggeredPatch({ issue: scheduled,
+      policy: normalizeIssueExecutionPolicy(scheduled.executionPolicy), triggeredAt: new Date() })).where(eq(issues.id, value.issueId));
+    expect(await context()).toMatchObject({ completionContinuation: null });
+    await value.call({ idempotencyKey: "replacement-schedule", monitor: value.monitor });
+    await value.call({ idempotencyKey: "cleared-schedule", monitor: null });
+    expect(await context()).toMatchObject({ completionContinuation: null });
+  });
+
   it("replaces and clears schedules without re-arming a receipt on replay", async () => {
     const value = await fixture();
     const original = { idempotencyKey: "first", monitor: value.monitor };

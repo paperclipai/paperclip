@@ -1,11 +1,13 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import type { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
@@ -51,7 +53,7 @@ function callbacks(db: Db) {
     canStartNewExternalBotWork: vi.fn(async () => true),
     executeRun: vi.fn(async () => undefined),
     applyWakeQueuePostCommitEffects: vi.fn(async () => undefined),
-    releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
+    releaseIssueExecutionAndPromote: vi.fn<HeartbeatQueueDependencies["releaseIssueExecutionAndPromote"]>(async () => undefined),
     publishRunLifecyclePluginEvent: vi.fn(),
     cancelRunInternal: vi.fn(async () => undefined),
     cancelActiveForAgentInternal: vi.fn(async () => undefined),
@@ -150,6 +152,80 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  async function strandedMention(runtimeMode = "legacy") {
+    const seeded = await fixture("succeeded");
+    await db.update(heartbeatRuns).set({ runtimeMode, nativeIssueId: runtimeMode === "native" ? seeded.issue.id : null, finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.run.id));
+    if (runtimeMode === "native") await db.insert(nativeRunFinalizations).values({ runId: seeded.run.id, companyId: seeded.company.id, issueId: seeded.issue.id, phase: "committed" });
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, seeded.issue.id));
+    const [recipient] = await db.insert(agents).values({ companyId: seeded.company.id, name: "Mention recipient", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: seeded.company.id, issueId: seeded.issue.id, body: "Saved feedback", authorAgentId: seeded.agent.id }).returning();
+    const [pending] = await db.insert(agentWakeupRequests).values({ companyId: seeded.company.id, agentId: recipient.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId: seeded.issue.id, _paperclipWakeContext: { issueId: seeded.issue.id, wakeReason: "issue_comment_mentioned", wakeCommentIds: [comment.id] } },
+    }).returning();
+    return { ...seeded, recipient, pending };
+  }
+
+  it.each(["legacy", "native"])("periodic recovery preserves a paused recipient through the real %s release adapter", async runtimeMode => {
+    const { company, issue, recipient, pending } = await strandedMention(runtimeMode);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, recipient.id));
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+    const deps = callbacks(db);
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, {
+      resolveResponsibleUserId: async () => "responsible-user",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    }), recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined } });
+    deps.releaseIssueExecutionAndPromote.mockImplementation(async (run, options) => {
+      await release({ companyId: run.companyId, runId: run.id, now: new Date(), ...options });
+    });
+    for (let pass = 0; pass < 2; pass++) {
+      await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null, finishedAt: null, error: null, payload: pending.payload });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, company.id))).toHaveLength(1);
+    }
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["legacy", "native"])("resumes an accepted non-assignee queue through its %s owner", async runtimeMode => {
+    const { run, pending } = await strandedMention(runtimeMode);
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: run.id }), { suppressImmediateRecovery: true, resumeStrandedQueue: true },
+    );
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null, payload: pending.payload,
+    });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves a former owner's ordinary messages for the assignment handoff", async () => {
+    const { pending } = await strandedMention();
+    const payload = { ...pending.payload, _paperclipWakeContext: {
+      ...(pending.payload!._paperclipWakeContext as Record<string, unknown>), wakeReason: "issue_commented",
+    } };
+    await db.update(agentWakeupRequests).set({ payload }).where(eq(agentWakeupRequests.id, pending.id));
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null, payload });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["queued", "running", "scheduled_retry"])("does not replay a finishing owner while another agent has a %s turn", async status => {
+    const { company, issue, recipient } = await strandedMention();
+    await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: recipient.id, status, invocationSource: "assignment", contextSnapshot: { issueId: issue.id } });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue({ ...recipient, status: "paused" });
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
 
   it.each(["claimed", "cancelled"] as const)("releases a running claim while preserving a %s wake", async (wakeStatus) => {
     const { run, issue, wake } = await fixture();

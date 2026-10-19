@@ -3,6 +3,66 @@
   "evidenceLevel": "Official documentation and public MCP metadata; no account-bound read/write proof. Runtime discovery never expands this allowlist.",
   "methods": [
     {
+      "app": "google-workspace",
+      "method": "paperclip-workspace",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-workspace",
+      "method": "customer-workspace-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
       "app": "airtable",
       "method": "mcp-oauth",
       "auth": "oauth",

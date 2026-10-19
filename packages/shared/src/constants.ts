@@ -1,4 +1,5 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const ISSUE_SUMMARIES_MAX_IDS = 5;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -436,11 +437,9 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
-export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+  "pipeline-case-body",
 ] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
@@ -1020,7 +1019,6 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
-  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

@@ -2,6 +2,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
 import { executeDaytonaTool, isDaytonaConnection, isCurrentDaytonaCatalogEntry } from "./daytona.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
+import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
@@ -12,6 +13,7 @@ import { claimSlackRateLimitRetry } from "./connectors/slack-retry.js";
 import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { slackToolsForSession } from "./connectors/slack-catalog.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { executeSlackTool } from "./connectors/slack.js";
 import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./chat-github-tools.js";
 import { githubChatReviewService } from "./chat-github-reviews.js";
@@ -1664,7 +1666,7 @@ export function createToolGatewayService(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
-        issueId: runContextSnapshotString("issueId"),
+        issueId: boundRunIssueIdSql(),
         projectId: runContextSnapshotString("projectId"),
       })
       .from(heartbeatRuns)
@@ -2973,7 +2975,7 @@ export function createToolGatewayService(
   async function searchableOnDemandTools(
     session: ToolGatewaySession,
   ): Promise<ToolGatewayDescriptor[]> {
-    const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(
+    const tools = (await connectionToolsForContext(session)).filter(
       isOnDemandRemoteTool,
     );
     const decisions = await decideToolsForListing(tools, (tool) =>
@@ -3044,8 +3046,21 @@ export function createToolGatewayService(
   /** Shared connection descriptors and task restrictions; no provider calls. */
   async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
-    const connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
+    let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
+    const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
+    if (connectionIds.length) {
+      const connections = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, session.companyId), inArray(toolConnections.id, connectionIds),
+      ));
+      for (const connection of connections.filter((item) => item.config.sourceTemplateKey === "google-workspace")) {
+        let scopes: string[] = [];
+        try { scopes = googleWorkspaceGrantedScopes(await resolveConnectionGrant(session, connection, false)); }
+        catch { /* Missing identity or consent never contributes tools. */ }
+        connectedTools = connectedTools.filter((tool) => tool.connectionId !== connection.id
+          || isGoogleWorkspaceToolGranted(tool.upstreamToolName ?? "", scopes));
+      }
+    }
     return [
       ...await measureRunPhase("connectors.discovery.github", () => githubBotToolsForSession(db, session)),
       ...await measureRunPhase("connectors.discovery.slack", () => slackToolsForSession(db, session)),
@@ -6006,7 +6021,19 @@ export function createToolGatewayService(
       const data = await browserUseService(db, options.remoteHttpRequest).execute(session, grant, invocationId!, entry.toolName, parameters);
       return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
     }
-    const endpoint = await resolvedRemoteEndpoint(session, connection, grant);
+    const workspaceTarget = connection.config.sourceTemplateKey === "google-workspace"
+      ? googleWorkspaceToolTarget(entry.toolName) : null;
+    // One service's call failure is not evidence that every Google endpoint is
+    // unhealthy. The invocation still records/returns its error; catalog refresh
+    // handles service availability, and grant checks remain authoritative.
+    const markCallHealth = (status: Parameters<typeof markRemoteConnectionHealth>[1], message: string) =>
+      workspaceTarget && status !== "ok" ? Promise.resolve() : markRemoteConnectionHealth(connection, status, message);
+    if (connection.config.sourceTemplateKey === "google-workspace"
+      && (!workspaceTarget || !isGoogleWorkspaceToolGranted(entry.toolName, googleWorkspaceGrantedScopes(grant)))) {
+      throw new ToolGatewayHttpError(403, "This Google action needs a permission you have not granted. Reconnect Google Workspace to change access.", "oauth_insufficient_scope");
+    }
+    const endpoint = workspaceTarget?.serverUrl ?? await resolvedRemoteEndpoint(session, connection, grant);
+    const upstreamToolName = workspaceTarget?.upstreamName ?? entry.toolName;
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
@@ -6031,7 +6058,7 @@ export function createToolGatewayService(
         endpoint: auditSafeEndpoint(endpoint),
         mcpMethod: "tools/call",
         requestId,
-        upstreamToolName: entry.toolName,
+        upstreamToolName,
         dispatched: true,
       },
     };
@@ -6042,8 +6069,19 @@ export function createToolGatewayService(
     // identity's session and leaves other agents on the connection alone.
     let mcpSession: { scope: string; headers: Record<string, string>; sessionId: string } | undefined;
     try {
-      const dispatchRemote = (target: string, init: RequestInit) =>
-        options.remoteHttpRequest
+      const dispatchRemote = async (target: string, init: RequestInit) => {
+        // Refresh can reduce consent. Recheck the selected grant after refreshing
+        // credentials and before every dispatch (including an authorization retry).
+        if (workspaceTarget) {
+          const [currentGrant] = await db.select().from(connectionGrants).where(and(
+            eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId),
+            eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.status, "active"),
+          ));
+          if (!currentGrant || !isGoogleWorkspaceToolGranted(entry.toolName, googleWorkspaceGrantedScopes(currentGrant))) {
+            throw new ToolGatewayHttpError(403, "This Google action is not covered by the current permission grant.", "oauth_insufficient_scope");
+          }
+        }
+        return options.remoteHttpRequest
           ? options.remoteHttpRequest(target, init)
           : guardedRemoteHttpFetch(target, init, {
               ...remoteHttpFetchOptions(),
@@ -6052,6 +6090,7 @@ export function createToolGatewayService(
               // letting the tighter default cut a legitimately slow tool short.
               responseTimeoutMs: ms,
             });
+      };
       const requireExplicitRetryAfterOAuthRefresh = async (refreshedResponse: Response): Promise<never> => {
         // The provider rejected this dispatch, but automatic replay is unsafe:
         // a server can apply a request before returning 401. A caller retry
@@ -6135,7 +6174,7 @@ export function createToolGatewayService(
           id: requestId,
           method: "tools/call",
           params: {
-            name: entry.toolName,
+            name: upstreamToolName,
             arguments: parameters,
           },
         }),
@@ -6143,7 +6182,7 @@ export function createToolGatewayService(
       let response = await dispatchRemote(endpoint, requestInit);
       if (isInsufficientConnectionScope(response)) {
         await response.body?.cancel().catch(() => undefined);
-        await markRemoteConnectionHealth(connection, "degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
+        await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
         throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", { connectionId: connection.id });
       }
       const oauth = asRecord(asRecord(connection.config)?.oauth);
@@ -6265,7 +6304,7 @@ export function createToolGatewayService(
           response.headers.get("traceparent"),
       };
       if (isInsufficientConnectionScope(response, body)) {
-        await markRemoteConnectionHealth(connection, "degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
+        await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
         throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", {
           connectionId: connection.id, catalogEntryId: entry.id,
         });
@@ -6274,7 +6313,7 @@ export function createToolGatewayService(
         // Session expiration is recoverable on an explicit retry. Marking the
         // connection unhealthy here would hide every tool and prevent it.
         if (!sessionExpired) {
-          await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned an HTTP error.");
+          await markCallHealth("error", "Remote MCP server returned an HTTP error.");
         }
         throw new ToolGatewayHttpError(
           502,
@@ -6322,8 +6361,7 @@ export function createToolGatewayService(
       }
       if (payloadRecord.error !== undefined) {
         const errorRecord = asRecord(payloadRecord.error);
-        await markRemoteConnectionHealth(
-          connection,
+        await markCallHealth(
           "error",
           "Remote MCP server returned a JSON-RPC error.",
         );
@@ -6364,8 +6402,7 @@ export function createToolGatewayService(
         false,
         sourceTemplateKey,
       );
-      await markRemoteConnectionHealth(
-        connection,
+      await markCallHealth(
         "ok",
         "Remote MCP server responded to tools/call.",
       );
@@ -6400,8 +6437,7 @@ export function createToolGatewayService(
         );
       }
       if (error instanceof Error && error.name === "AbortError") {
-        await markRemoteConnectionHealth(
-          connection,
+        await markCallHealth(
           "error",
           "Remote MCP tool call timed out.",
         );
@@ -6416,8 +6452,7 @@ export function createToolGatewayService(
           },
         );
       }
-      await markRemoteConnectionHealth(
-        connection,
+      await markCallHealth(
         "error",
         "Remote MCP tool call failed.",
       );
@@ -10185,6 +10220,7 @@ export function createToolGatewayService(
         sensitiveMode: "redact",
         promptInjectionMode: "ignore",
       });
+      let recoveredGitHubPublication: { content: string; data: unknown } | undefined;
       let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
 
@@ -10604,12 +10640,29 @@ export function createToolGatewayService(
         const gitHubReplayBindingMatches =
           recorded.invocation.agentId === session.agentId && recorded.invocation.runId === session.runId &&
           recorded.invocation.issueId === session.issueId && recorded.invocation.connectionId === tool.connectionId &&
-          recorded.invocation.toolName === tool.name && recorded.invocation.argumentsHash === effectiveArgumentsSummary.sha256 &&
+          recorded.invocation.toolName === tool.name &&
           ["authorized", "executing", "succeeded", "failed", "timed_out"].includes(recorded.invocation.status);
         if (gitHubPublicationReplay && gitHubReplayPolicyAllowed && !gitHubReplayBindingMatches)
           throw new ToolGatewayHttpError(409, "Idempotency key belongs to a different GitHub publication", "github_idempotency_conflict");
         const retryingGitHubPublication = gitHubPublicationReplay && accessDecision.allowed &&
           recorded.invocation.approvalState === "not_required" && gitHubReplayBindingMatches;
+        if (retryingGitHubPublication) {
+          // Invocation hashes describe shortened audit previews. The durable
+          // publication checks the complete saved request and current authority.
+          let receipt;
+          try {
+            receipt = await githubChatReviewService(db).readPublicationReceipt(
+              session, tool.upstreamToolName!, effectiveParameters, invocationId,
+            );
+          } catch (error) {
+            if (error instanceof HttpError && error.status === 409)
+              throw new ToolGatewayHttpError(409, error.message, "github_idempotency_conflict");
+            throw error;
+          }
+          if (!receipt)
+            throw new ToolGatewayHttpError(409, "The saved GitHub publication is not available yet", "github_publication_unavailable");
+          recoveredGitHubPublication = { content: JSON.stringify(receipt), data: receipt };
+        }
         if (recorded.replayed && !retryingSlackRateLimit && !retryingGitHubPublication) {
           if (gitHubPublicationReplay && !gitHubReplayPolicyAllowed)
             throw new ToolGatewayHttpError(policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode);
@@ -10748,7 +10801,7 @@ export function createToolGatewayService(
                   input.timeoutMs === undefined,
                 )
               : null;
-        const result = connectedMcpExecution
+        const result = recoveredGitHubPublication ?? (connectedMcpExecution
           ? connectedMcpExecution.result
           : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
@@ -10767,7 +10820,7 @@ export function createToolGatewayService(
             : await runWithTimeout(
                 executeBuiltinTool(session, tool, effectiveParameters, invocationId),
                 executionTimeoutMs,
-              );
+              ));
 
         const resultValidation = validateToolContent({
           value: result,

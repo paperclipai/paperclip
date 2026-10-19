@@ -32,6 +32,7 @@ describe("ACPX recovery identity", () => {
     ["pi", "../../../test-fixtures/pi-acp/profile-v13-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v14-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v22-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v23-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v7-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v8-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v9-identity.json"],
@@ -74,6 +75,21 @@ describe("ACPX recovery identity", () => {
     expect(() => verifyExpectedAcpxIdentity(expected, plan, { ...record, mode: undefined })).toThrow(/persisted runtime record/);
     const customMode = await createAcpxRecoveryBinding({ ...fixture.input, mode: "provider-custom-mode" });
     expect(customMode.mode).toBe("provider-custom-mode");
+  });
+
+  it("binds Claude effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, claudeEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, claudeEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, claudeEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).claudeEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, claudeEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, claudeEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
   });
 
   it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {

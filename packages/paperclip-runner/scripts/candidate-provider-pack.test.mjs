@@ -2,6 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
 
+async function withCopilotTestPlatform(run) {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 test("candidate options stay explicit and supported native assets are included by default", () => {
   assert.deepEqual(parseProviderPackArguments(["--", "/pack"]), { output: "/pack", candidates: [] });
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=pi,cursor"]), { output: "/pack", candidates: ["pi", "cursor"] });
@@ -30,7 +44,7 @@ test("candidate builder cannot admit unknown providers, options or duplicate ass
   await assert.rejects(materializeCandidateProviderPack({ provider: "arbitrary", outputRoot: "/tmp/unused" }), /Unknown candidate/);
 });
 
-test("Copilot pack selection reaches only the pinned native archive builder", async t => {
+test("Copilot pack selection reaches only the pinned native archive builder", t => withCopilotTestPlatform(async () => {
   const requests = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     requests.push({ url, redirect: options.redirect, credentials: options.credentials });
@@ -40,7 +54,7 @@ test("Copilot pack selection reaches only the pinned native archive builder", as
   assert.equal(requests.length, 1);
   assert.match(requests[0].url, /^https:\/\/registry\.npmjs\.org\/@github\/copilot-(darwin-(arm64|x64)|linux-x64)\/-\/copilot-.*-1\.0\.88\.tgz$/);
   assert.deepEqual({ redirect: requests[0].redirect, credentials: requests[0].credentials }, { redirect: "error", credentials: "omit" });
-});
+}));
 
 test("Pi pack selection reaches its pinned builder and rejects unsafe output before downloading", async t => {
   let requests = 0;

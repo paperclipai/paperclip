@@ -72,6 +72,8 @@ pub struct AcpxProviderSessionIdentity {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_thinking_level: Option<PiThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_effort: Option<String>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -94,6 +96,7 @@ pub struct AcpxProviderSessionConfig {
     pub permission_mode: AcpxPermissionMode,
     pub mode: Option<String>,
     pub pi_thinking_level: Option<PiThinkingLevel>,
+    pub claude_effort: Option<String>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -109,6 +112,14 @@ impl AcpxProviderSessionConfig {
             LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
+        if self.claude_effort.as_ref().is_some_and(|effort| {
+            self.agent != "claude"
+                || !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "Claude effort must be a supported Claude-only value",
+            ));
+        }
         if (self.agent == "pi") != self.pi_thinking_level.is_some() {
             return Err(LocalRunnerError::invalid(
                 "ACPX Pi thinking level must be explicit for Pi and absent for other agents",
@@ -188,6 +199,7 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.permission_mode != Some(self.permission_mode)
                 || expected_identity.mode != self.mode
                 || expected_identity.pi_thinking_level != self.pi_thinking_level
+                || expected_identity.claude_effort != self.claude_effort
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -207,6 +219,13 @@ impl AcpxProviderSessionIdentity {
         }
         if let Some(mode) = self.mode.as_deref() {
             validate_text(mode, MAX_ID_CHARS, "ACPX provider mode")?;
+        }
+        if self.claude_effort.as_ref().is_some_and(|effort| {
+            !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX identity contains invalid Claude effort",
+            ));
         }
         for (value, label) in [
             (&self.normalized_session_id, "normalized session"),
@@ -1313,6 +1332,9 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(effort) = &config.claude_effort {
+        params["claudeEffort"] = json!(effort);
+    }
     if let Some(level) = config.pi_thinking_level {
         params["piThinkingLevel"] = json!(level);
     }
@@ -1430,6 +1452,7 @@ fn verify_open_response(
         || identity.permission_mode != Some(config.permission_mode)
         || identity.mode != config.mode
         || identity.pi_thinking_level != config.pi_thinking_level
+        || identity.claude_effort != config.claude_effort
         || config
             .expected_identity
             .as_ref()
@@ -1755,6 +1778,7 @@ mod mode_tests {
             permission_mode: AcpxPermissionMode::ApproveReads,
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
+            claude_effort: None,
             permission_mode_pinned: true,
             provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
             system_instructions: String::new(),
@@ -1782,6 +1806,7 @@ mod mode_tests {
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
+            claude_effort: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
@@ -1919,6 +1944,27 @@ mod mode_tests {
         identity.mode = None;
         identity.pi_thinking_level = config.pi_thinking_level;
         identity
+    }
+
+    #[test]
+    fn claude_effort_is_explicit_claude_only_and_forwarded_without_clamping() {
+        let mut cfg = config();
+        cfg.agent = "claude".to_owned();
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            cfg.claude_effort = Some(effort.to_owned());
+            cfg.validate().unwrap();
+            assert_eq!(
+                session_open_params(&cfg, &[])["claudeEffort"],
+                json!(effort)
+            );
+        }
+        cfg.claude_effort = Some("ultra".to_owned());
+        assert!(cfg.validate().is_err());
+        cfg.claude_effort = Some("high".to_owned());
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+        cfg.claude_effort = None;
+        cfg.validate().unwrap();
     }
 
     #[test]

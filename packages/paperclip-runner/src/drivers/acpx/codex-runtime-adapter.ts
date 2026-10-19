@@ -1,3 +1,4 @@
+import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
@@ -308,6 +309,8 @@ export async function openQualifiedAcpxRuntime(
   const modeBinding = createAcpxModeBinding(options.profile.agent, options.mode);
   const selectedPiThinkingLevel = resolvePiThinkingLevel(options.profile.agent, options.piThinkingLevel);
   const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : undefined;
+  const selectedClaudeEffort = resolveClaudeEffort(options.profile.agent, options.claudeEffort);
+  const claudeEffort = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort) : undefined;
   const cursorInstructions = options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
@@ -319,6 +322,7 @@ export async function openQualifiedAcpxRuntime(
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
+    ...(claudeEffort ? { protocolGuardFactory: () => claudeEffort.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -544,6 +548,23 @@ export async function openQualifiedAcpxRuntime(
           await commandLaunches.refreshConsumedCommand?.();
         }
         return ensuredHandle;
+      }) : claudeEffort ? ensuredSession.then(async (ensuredHandle) => {
+        handle = ensuredHandle;
+        options.signal?.throwIfAborted();
+        if (!claudeEffort.isReady()) {
+          if (!runtime.setConfigOption) throw new Error("Claude effort admission requires native configuration");
+          const spawnsBeforeControl = commandLaunches.count;
+          await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
+          claudeEffort.assertReady();
+          await children.verifyLifetimeOwnership();
+          options.signal?.throwIfAborted();
+          // Fresh sessions retain their initialized provider. Only a cold
+          // control connection consumes another single-use launch snapshot.
+          if (commandLaunches.count > spawnsBeforeControl) {
+            await commandLaunches.refreshConsumedCommand?.();
+          }
+        }
+        return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
       throw classifySessionEnsureFailure(error);
@@ -560,6 +581,7 @@ export async function openQualifiedAcpxRuntime(
     cursorInstructions?.assertReady();
     modeBinding?.assertReady();
     piThinking?.assertReady();
+    claudeEffort?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -614,7 +636,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}) },
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

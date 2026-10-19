@@ -15,6 +15,8 @@ import { projectSafeChatPublicationText } from "./chat-publication-projection.js
 import type { GitHubAutomaticEventContext } from "@paperclipai/shared";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { logActivity } from "./activity-log.js";
+import { boundRunIssueId } from "./run-task-binding.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Api = { request<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> };
@@ -220,8 +222,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
   }
   async function requestsForRun(input: { companyId: string; endpointId: string; issueId: string; runId: string }) {
     const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-    if (!run || (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== input.issueId) throw forbidden("GitHub run has no request binding");
-    const ids = [...new Set([run.contextSnapshot?.wakeCommentId, ...(Array.isArray(run.contextSnapshot?.wakeCommentIds) ? run.contextSnapshot.wakeCommentIds : [])].filter((id): id is string => typeof id === "string"))];
+    if (!run || boundRunIssueId(run) !== input.issueId) throw forbidden("GitHub run has no request binding");
+    const originMessageId = await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" });
+    const ids = [...new Set([originMessageId, run.contextSnapshot?.wakeCommentId, ...(Array.isArray(run.contextSnapshot?.wakeCommentIds) ? run.contextSnapshot.wakeCommentIds : [])].filter((id): id is string => typeof id === "string"))];
     if (!ids.length) throw forbidden("GitHub run has no request binding");
     const links = await db.select({ deliveryId: chatMessageLinks.deliveryId }).from(chatMessageLinks)
       .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId), eq(chatConversations.companyId, input.companyId),
@@ -274,14 +277,20 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
     let receipt: { id: string; url: string } | undefined;
     for (const link of links) {
       if (!link.deliveryId) continue;
+      const responseForRequest = async () => (await db.select({ result: chatActions.result }).from(chatActions).where(and(
+        eq(chatActions.companyId, input.companyId), eq(chatActions.endpointId, input.endpointId),
+        eq(chatActions.deliveryId, link.deliveryId!), eq(chatActions.kind, "github_response_comment"),
+      )).limit(1))[0];
+      if ((await responseForRequest())?.result?.final === true) continue;
       const assertRun = async () => {
         const source = await context(link.deliveryId!);
         const [current] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
         if (!current || current.agentId !== source.endpoint.assignedAgentId ||
             !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
             source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
-            (current.nativeIssueId ?? current.contextSnapshot?.issueId) !== input.issueId)
+            boundRunIssueId(current) !== input.issueId)
           throw forbidden("GitHub failure authority changed");
+        if ((await responseForRequest())?.result?.final === true) throw forbidden("GitHub request already has a final response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
       receipt = await acknowledge(link.deliveryId, input.body, assertRun);

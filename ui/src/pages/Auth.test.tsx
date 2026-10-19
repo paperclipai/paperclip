@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,6 +8,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { AuthPage } from "./Auth";
+import { CliAuthPage } from "./CliAuth";
+import { ApiError } from "../api/client";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
@@ -308,5 +311,156 @@ describe("AuthPage", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("CliAuthPage rate-limit recovery", () => {
+  const challengeId = "00000000-0000-4000-8000-000000000429";
+  const challengeToken = "synthetic-cli-approval-fixture-token";
+  const challengePath = `/api/cli-auth/challenges/${challengeId}?token=${challengeToken}`;
+  const challengeQueryKey = ["cli-auth-challenge", challengeId, challengeToken];
+  const fetchCli = vi.fn<typeof fetch>();
+  let cliContainer: HTMLDivElement;
+  let cliRoot: ReturnType<typeof createRoot> | undefined;
+  let cliClient: QueryClient | undefined;
+
+  function response(body: unknown, status = 200) {
+    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  }
+
+  function pending(expiresAt = new Date(Date.now() + 10 * 60_000).toISOString()) {
+    return { id: challengeId, status: "pending", command: "paperclipai auth login", clientName: "paperclipai cli",
+      requestedAccess: "board", requestedCompanyId: null, requestedCompanyName: null, approvedAt: null,
+      cancelledAt: null, expiresAt, approvedByUser: null, requiresSignIn: false, canApprove: true, currentUserId: "operator" };
+  }
+
+  async function advance(milliseconds: number) {
+    await reactAct(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
+    await reactAct(async () => { await vi.advanceTimersByTimeAsync(0); });
+  }
+
+  async function mountCli() {
+    cliClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    cliRoot = createRoot(cliContainer);
+    await reactAct(async () => {
+      cliRoot!.render(<MemoryRouter initialEntries={[`/cli-auth/${challengeId}?token=${challengeToken}`]}>
+        <QueryClientProvider client={cliClient!}><Routes>
+          <Route path="/cli-auth/:id" element={<CliAuthPage />} />
+        </Routes></QueryClientProvider>
+      </MemoryRouter>);
+    });
+    await advance(0);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-15T20:00:00Z"));
+    fetchCli.mockReset();
+    vi.stubGlobal("fetch", fetchCli);
+    getSessionMock.mockResolvedValue({ user: { id: "operator" }, session: { id: "operator-session" } });
+    cliContainer = document.createElement("div");
+    document.body.appendChild(cliContainer);
+  });
+
+  afterEach(async () => {
+    await reactAct(async () => { cliRoot?.unmount(); });
+    cliClient?.clear();
+    cliRoot = undefined;
+    cliClient = undefined;
+    cliContainer.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("waits for the real API retry hint and recovers approval without a reload or automatic mutation", async () => {
+    fetchCli.mockResolvedValueOnce(response({ error: "Too many CLI auth requests", details: { retryAfterSeconds: 2 } }, 429))
+      .mockResolvedValueOnce(response(pending()));
+    await mountCli();
+    expect(fetchCli).toHaveBeenCalledTimes(1);
+    expect(cliContainer.textContent).toContain("Retrying shortly");
+    expect(cliContainer.textContent).not.toContain("CLI auth challenge unavailable");
+    await advance(1999);
+    expect(fetchCli).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(fetchCli).toHaveBeenCalledTimes(2);
+    expect(cliClient!.getQueryState(challengeQueryKey)).toMatchObject({ status: "success", fetchStatus: "idle", data: { status: "pending" } });
+    await advance(1);
+    expect(cliContainer.textContent).toContain("Approve Paperclip CLI access");
+    expect(fetchCli.mock.calls.map(([url, init]) => [String(url), init?.method]))
+      .toEqual([[challengePath, "GET"], [challengePath, "GET"]]);
+  });
+
+  it.each([400, 401, 403, 404, 410, 500])("does not retry an ordinary approval GET failure with HTTP%s", async status => {
+    fetchCli.mockImplementation(async () => response({ error: "Challenge unavailable" }, status));
+    await mountCli();
+    expect(cliContainer.textContent).toContain("CLI auth challenge unavailable");
+    expect(cliClient!.getQueryState(challengeQueryKey)?.error).toBeInstanceOf(ApiError);
+    await advance(10 * 60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a nonzero fallback and stops after three retries when the actual challenge expiry is unknown", async () => {
+    fetchCli.mockImplementation(async () => response({ error: "Too many CLI auth requests" }, 429));
+    await mountCli();
+    expect(cliClient!.getQueryData(challengeQueryKey)).toBeUndefined();
+    await advance(59_999);
+    expect(fetchCli).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(fetchCli).toHaveBeenCalledTimes(2);
+    await advance(60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(3);
+    await advance(60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(4);
+    expect(cliClient!.getQueryState(challengeQueryKey)).toMatchObject({ status: "error", fetchStatus: "idle", error: { status: 429 } });
+    await advance(1);
+    expect(cliContainer.textContent).toContain("CLI auth challenge unavailable");
+    await advance(10 * 60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not schedule a hinted retry beyond the actual expiry from an earlier successful read", async () => {
+    fetchCli.mockResolvedValueOnce(response(pending(new Date(Date.now() + 1500).toISOString())))
+      .mockImplementation(async () => response({ error: "Too many CLI auth requests", details: { retryAfterSeconds: 2 } }, 429));
+    await mountCli();
+    expect(cliContainer.textContent).toContain("Approve Paperclip CLI access");
+    await reactAct(async () => { void cliClient!.invalidateQueries({ queryKey: challengeQueryKey }); });
+    await advance(0);
+    expect(fetchCli).toHaveBeenCalledTimes(2);
+    expect(cliContainer.textContent).toContain("CLI auth challenge unavailable");
+    await advance(10 * 60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not shorten a hint that falls outside the finite page retry window", async () => {
+    fetchCli.mockImplementation(async () => response({ error: "Too many CLI auth requests", details: { retryAfterSeconds: 600 } }, 429));
+    await mountCli();
+    expect(cliContainer.textContent).toContain("CLI auth challenge unavailable");
+    await advance(20 * 60_000);
+    expect(fetchCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only the rate-limited read after one operator approval, without resubmitting it", async () => {
+    let reads = 0;
+    fetchCli.mockImplementation(async (_url, init) => {
+      if (init?.method === "POST") return response({ approved: true, status: "approved" });
+      reads += 1;
+      if (reads === 2) return response({ error: "Too many CLI auth requests", details: { retryAfterSeconds: 2 } }, 429);
+      return response({ ...pending(), status: reads > 2 ? "approved" : "pending" });
+    });
+    await mountCli();
+    const approve = [...cliContainer.querySelectorAll("button")].find(button => button.textContent === "Approve CLI access");
+    expect(approve).toBeDefined();
+    await reactAct(async () => { approve!.click(); });
+    await advance(0);
+    expect(fetchCli.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(reads).toBe(2);
+    await advance(2000);
+    expect(reads).toBe(3);
+    expect(cliClient!.getQueryState(challengeQueryKey)).toMatchObject({ status: "success", fetchStatus: "idle", data: { status: "approved" } });
+    await advance(1);
+    expect(cliContainer.textContent).toContain("CLI access approved");
+    expect(fetchCli.mock.calls.filter(([, init]) => init?.method === "POST").map(([url]) => String(url)))
+      .toEqual([`/api/cli-auth/challenges/${challengeId}/approve`]);
   });
 });

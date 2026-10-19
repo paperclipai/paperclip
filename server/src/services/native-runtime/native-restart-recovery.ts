@@ -19,7 +19,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
-import { reportRunFailure } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 
@@ -895,7 +895,7 @@ export async function claimNativeRestartRecoveries(input: {
           })
           .where(eq(heartbeatRuns.id, row.run.id))
           .returning();
-        if (updatedRun && updatedRun.status !== row.run.status) {
+        if (updatedRun && isNewTerminalRunFailure(row.run, updatedRun)) {
           terminalRunToReport = updatedRun;
         }
         await tx

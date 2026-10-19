@@ -46,6 +46,29 @@ import {
 import { RUNNERD_CANONICAL_ITEM } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("uses a saved monitor when a provider omits continuation", async () => {
+    const transport = new FakeCodexTransport();
+    const continuation = { kind: "monitor", summary: "Wait for saved monitor", idempotencyKey: "monitor:task:deadline" };
+    const dynamicToolHandler = vi.fn().mockResolvedValue({ run: { id: "monitor-default" },
+      activeTask: { executionRunId: "monitor-default" }, completionContinuation: continuation });
+    const feedback = vi.fn().mockResolvedValue("Monitor wait accepted.");
+    const session = await makeDriver([transport], { dynamicToolHandler, completionFeedback: feedback }).openSession({
+      runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: WORKSPACE,
+    });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Check the published PR later." } });
+      const report = { ...structuredClone(result), reportedWorkDisposition: "yielded" };
+      const response = await transport.invoke({ id: "finish-monitor", method: "item/tool/call", params: {
+        threadId: "thread-1", turnId: "turn-1", callId: "finish-monitor", tool: "paperclip_finish", arguments: report,
+      } });
+      expect(response).toMatchObject({ success: true });
+      expect(dynamicToolHandler).toHaveBeenCalledExactlyOnceWith({ tool: "get_task_context", callId: "finish-monitor:continuation",
+        threadId: "thread-1", turnId: "turn-1", arguments: {} });
+      expect(feedback).toHaveBeenCalledExactlyOnceWith({ ...report, continuation });
+      expect((await session.snapshot()).semanticResult?.result).toEqual({ ...report, continuation });
+    } finally { await session.close(); }
+  });
+
   it("returns current approval feedback and permits correcting a rejected completion report", async () => {
     const transport = new FakeCodexTransport();
     const feedback = vi.fn()

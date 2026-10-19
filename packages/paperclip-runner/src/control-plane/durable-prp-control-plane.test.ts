@@ -31,6 +31,7 @@ import {
   SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
   spawnRunner,
+  waitForProcess,
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
@@ -392,6 +393,29 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+
+it("does not release or replace a remote runner until its exit is confirmed", async () => {
+  let exited = false;
+  const launch = vi.fn(() => ({
+    child: { pid: 42, exitCode: null, kill: () => true },
+    completion: Promise.resolve({ code: null, signal: null, stdout: "", stderr: "health probe unavailable" }),
+    isExitConfirmed: () => exited,
+  }));
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-exit-test", identity, ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    processLauncher: launch,
+  });
+  expect(() => handle.restart!("replacement-ticket")).toThrow("runner_process_termination_unconfirmed");
+  await expect(waitForProcess(handle)).rejects.toThrow("runner_process_termination_unconfirmed");
+  expect(launch).toHaveBeenCalledTimes(1);
+  exited = true;
+  await expect(waitForProcess(handle)).resolves.toMatchObject({ code: null });
+  handle.restart!("replacement-ticket");
+  expect(launch).toHaveBeenCalledTimes(2);
+});
 
 it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
   const launches: RunnerProcessLaunchSpec[] = [];

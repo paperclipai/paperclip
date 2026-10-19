@@ -1466,7 +1466,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 5, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "codex-production-default-claude-explicit-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 8, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

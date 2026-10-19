@@ -77,6 +77,6 @@ Storybook: Mount RoutineRunVariablesDialog through actual RoutineDetail with req
 Production: POST /routines/{id}/run must validate variables, create one attributed execution/task and obey pause/access/budget gates; inspect actual task outcome separately.
 Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/RoutineRunVariablesDialog.tsx), [RoutineDetail.tsx](../../ui/src/pages/RoutineDetail.tsx), [routines.ts](../../server/src/routes/routines.ts). Tests: [RoutineRunVariablesDialog.test.tsx](../../ui/src/components/RoutineRunVariablesDialog.test.tsx), [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts), [routines-e2e.test.ts](../../server/src/__tests__/routines-e2e.test.ts)
 
-### Documentation scope: Routines, pipelines, cases, and status cards
+### Documentation scope: Routines, cases, and status cards
 
-All four capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas, stage automation types, and summarizer quality need deeper cases.
+All three capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas and summarizer quality need deeper cases.

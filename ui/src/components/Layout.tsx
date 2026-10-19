@@ -1,3 +1,4 @@
+import { BoardDialogs } from "./BoardDialogs";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -14,10 +15,6 @@ import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { AnnouncementWell } from "./AnnouncementWell";
@@ -745,10 +742,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <BoardDialogs />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       <AnnouncementWell health={health} />

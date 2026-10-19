@@ -9,6 +9,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { assertSkillSnapshotPath } from "./skill-snapshot.js";
 import { repositorySkillFrontmatter } from "./skill-repository-package.js";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 
 export const SKILL_VERSION_CACHE_IDLE_MS = 60 * 60 * 1000;
 const locks = new AsyncLocalStorage<Array<{ db: Db; companyId: string }>>();
@@ -91,9 +92,16 @@ export async function lastUsedAt(filename: string): Promise<number | null> {
 // A terminal run can still own provider execution or recovery. Only fully settled
 // runs release their pins; resume preparation reacquires the same cache lock.
 export async function protectedVersions(db: Db, companyId: string): Promise<Set<string> | null> {
-  const rows = await db.select({ pins: sql<unknown>`${heartbeatRuns.contextSnapshot}->'skillVersions'` })
+  const rows = await db.select({
+    id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
+    pins: sql<unknown>`${heartbeatRuns.contextSnapshot}->'skillVersions'`,
+    // Avoid loading large execution inputs for runs with the modern pin map.
+    legacyInput: sql<unknown>`case when ${heartbeatRuns.runtimeMode} = 'native'
+      and not coalesce(${heartbeatRuns.contextSnapshot} ? 'skillVersions', false)
+      then ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' end`,
+  })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), sql`(
-      ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled')
+      ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       or ${heartbeatRuns.finishedAt} is null
       or ${heartbeatRuns.controllerLeaseExpiresAt} > now()
       or exists (select 1 from ${nativeRunFinalizations} f
@@ -107,7 +115,27 @@ export async function protectedVersions(db: Db, companyId: string): Promise<Set<
             and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))
     )`));
   const versions = new Set<string>();
-  for (const { pins } of rows) {
+  for (const { pins, legacyInput, id, agentId, nativeIssueId } of rows) {
+    if (legacyInput != null) {
+      // Older native runs captured the complete selection in their immutable
+      // execution input before contextSnapshot.skillVersions was introduced.
+      // Use the recovery parser (including digest validation) and the exact run
+      // binding. Never repair a malformed modern pin map with a different source.
+      try {
+        const input = parseNativeExecutionInput(legacyInput);
+        if (!("runtimeContext" in input) || input.binding.companyId !== companyId
+          || input.binding.runId !== id || input.binding.agentId !== agentId
+          || input.binding.issueId !== nativeIssueId) return null;
+        for (const skill of input.runtimeContext.skills) {
+          // Unversioned skills have their own captured asset bundle; they do
+          // not reference a directory under __versions__.
+          if (skill.versionId === null) continue;
+          if (!uuid.test(skill.versionId)) return null;
+          versions.add(skill.versionId);
+        }
+        continue;
+      } catch { return null; }
+    }
     // Legacy/incomplete preparation is not proof that no skill is in use.
     if (!pins || typeof pins !== "object" || Array.isArray(pins)) return null;
     for (const version of Object.values(pins)) {

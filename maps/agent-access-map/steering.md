@@ -29,6 +29,10 @@ Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
 
+Accepted deferred requests remain pending while their recipient agent is paused.
+Resume uses the normal admission checks. This grants no new pause, resume, queue
+mutation, or execution authority to an agent.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.
 

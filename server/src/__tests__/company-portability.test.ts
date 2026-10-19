@@ -6095,7 +6095,7 @@ describe("company portability", () => {
     await expect(portability.importBundle(input, "user-1")).rejects.toMatchObject({ status: 422, details: { code: "paperclip_runner_dot_disabled" } });
     expect(agentSvc.create).not.toHaveBeenCalled();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
-    await expect(portability.importBundle({ ...input, adapterOverrides: { claudecoder: { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" } } } }, "user-1"))
+    await expect(portability.importBundle({ ...input, adapterOverrides: { claudecoder: { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-build-1.0.13" } } } }, "user-1"))
       .rejects.toMatchObject({ status: 422, details: { code: "paperclip_runner_rollout_disabled" } });
     expect(agentSvc.create).not.toHaveBeenCalled();
     await portability.importBundle(input, "user-1");
@@ -6129,7 +6129,7 @@ describe("company portability", () => {
       adapterOverrides: {
         claudecoder: {
           adapterType: "paperclip_runner",
-          adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" },
+          adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
         },
       },
     };
@@ -6161,7 +6161,7 @@ describe("company portability", () => {
     await portability.importBundle(request, "user-1");
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "paperclip_runner",
-      adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
+      adapterConfig: expect.objectContaining({ provider: "opencode" }),
     }), { createdByUserId: "user-1" });
 
     await portability.importBundle({

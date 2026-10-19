@@ -1,9 +1,10 @@
+import { nativeTaskConstraints } from "../backends/runtime-context.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, type NativeExecutionInputV1 } from "./native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, type NativeExecutionInputV1 } from "./native-execution.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -708,5 +709,47 @@ describe("native task context ownership", () => {
     ]) {
       expect(buildNativeModelEnvelope(stale).completionContract).toEqual(stale.completionContract.contract);
     }
+  });
+});
+
+
+describe("Claude effort input v9", () => {
+  const { permissionPolicy: _permission, qualificationModel: _model, reportedModelId: _reported, ...profile } = QUALIFIED_ACPX_PROFILES.claude;
+  const digest = "0".repeat(64);
+  const context = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
+    skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null } };
+  const current = { ...input, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V9, homeMode: "isolated", executionMode: "default", planningContext: null,
+    runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+    session: { ...input.session, driverKind: "acpx_runtime" },
+    provider: { kind: "acpx", agent: "claude", model: "claude-opus-5-5", permissionMode: "approve-all", profile } };
+  it.each(["low", "medium", "high", "xhigh", "max"])("round trips explicit %s and retains the compact model envelope", claudeEffort => {
+    const parsed = parseNativeExecutionInput({ ...current, provider: { ...current.provider, claudeEffort } });
+    expect(parsed).toMatchObject({ schema: NATIVE_EXECUTION_INPUT_SCHEMA_V9, provider: { claudeEffort } });
+    expect(buildNativeModelEnvelope(parsed).schema).toBe("paperclip.native-model-envelope.v3");
+    expect(JSON.stringify(buildNativeModelEnvelope(parsed))).not.toContain("claudeEffort");
+  });
+  it("directs answered Claude v9 questions to the actual compact envelope on fresh and resumed turns", () => {
+    const response = { interactionId: "answer-1", kind: "ask_user_questions", response: {
+      status: "answered", result: { version: 1, answers: [{ questionId: "destination", optionIds: ["workspace"], otherText: "Use the task workspace." }] },
+    } };
+    const parsed = parseNativeExecutionInput({ ...current, provider: { ...current.provider, claudeEffort: "high" }, interactionResponses: [response] });
+    const constraint = nativeTaskConstraints(parsed).find(value => value.includes("already authoritatively answered"));
+    expect(constraint).toContain("interactionResponses[0].response.result.answers");
+    expect(constraint).not.toContain("message.interactionResponses");
+    expect(constraint).not.toContain("Use the task workspace.");
+    for (const envelope of [buildNativeModelEnvelope(parsed), buildNativeModelEnvelope(parsed, { resumedSession: true })]) {
+      expect(envelope).toHaveProperty("interactionResponses.0.response.result.answers", response.response.result.answers);
+      expect(envelope).not.toHaveProperty("message");
+    }
+  });
+  it("keeps historical readers closed and rejects aliases and foreign effort", () => {
+    const { homeMode: _homeMode, ...historical } = current;
+    for (const schema of ["paperclip.native-execution-input.v4", NATIVE_EXECUTION_INPUT_SCHEMA]) {
+      expect(() => parseNativeExecutionInput({ ...historical, schema, provider: { ...current.provider, claudeEffort: "high" } })).toThrow("claudeEffort");
+      expect(parseNativeExecutionInput({ ...historical, schema }).schema).toBe(schema);
+    }
+    expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, claudeEffort: "ultra" } })).toThrow("Claude effort");
+    expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, agent: "codex", profile: QUALIFIED_ACPX_PROFILES.codex, claudeEffort: "high" } })).toThrow("Claude effort");
   });
 });

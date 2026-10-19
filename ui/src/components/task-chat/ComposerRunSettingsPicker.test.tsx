@@ -8,6 +8,7 @@ import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import type { ComposerRunSettings } from "./composer-run-settings";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
@@ -298,6 +299,55 @@ describe("composer assignee picker", () => {
     expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
     expect(document.body.textContent).not.toContain("Choose an agent");
     expect(loadModels).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("hides unsupported Muse settings without loading a catalog (mobile: %s)", async (mobile) => {
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([]);
+    const onSettingsChange = vi.fn();
+    const muse = { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "muse", model: "old-model" } } as Agent;
+    rememberComposerEffort("company-1", "high");
+    render(vi.fn(), onSettingsChange, true, { mobile, settings: null, agents: new Map([[muse.id, muse]]) });
+    expect(container!.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="task-chat-composer-model-label"]')).toBeNull();
+    await click("Select assignee");
+    expect(document.querySelector('[aria-label="Search assignees"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
+    expect(loadModels).not.toHaveBeenCalled();
+    expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("removes an open model menu when the same agent switches to Muse (mobile: %s)", async (mobile) => {
+    const onSettingsChange = vi.fn();
+    function ControlledPicker() {
+      const [muse, setMuse] = useState(false);
+      const [settings, setSettings] = useState<ComposerRunSettings | null>({ model: "gpt-6-sol", effort: "high", fast: true });
+      const selectedAgent = muse
+        ? { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "muse" } } as Agent
+        : agent;
+      return <>
+        <button type="button" aria-label="Switch to Muse" onClick={() => setMuse(true)}>Switch to Muse</button>
+        <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
+          options={options} agents={new Map([[agent.id, selectedAgent]])} settings={settings}
+          onSettingsChange={(next) => { onSettingsChange(next); setSettings(next); }} onAssigneeChange={vi.fn()} mobile={mobile}
+          modelOptionsOverride={[{ id: "gpt-6-sol", label: "GPT-6 Sol" }]} />
+      </>;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() => root!.render(<QueryClientProvider client={new QueryClient()}><ControlledPicker /></QueryClientProvider>));
+    await click("Select model and effort");
+    await click("Choose exact model");
+    expect(document.querySelector('[aria-label="Search or paste a model ID"]')).not.toBeNull();
+    await click("Switch to Muse");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Search or paste a model ID"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Effort"]')).toBeNull();
+    expect(document.querySelector('[data-testid="model-unavailable"]')?.textContent).toContain("Muse chooses its model and effort");
+    expect(onSettingsChange).toHaveBeenCalledOnce();
+    expect(onSettingsChange).toHaveBeenCalledWith(null);
   });
 
   it("opens the assignee list directly on mobile", async () => {

@@ -118,10 +118,15 @@ describe("buildCodexLocalConfig", () => {
 });
 
 describe("buildPaperclipRunnerConfig", () => {
-  it.each(["", "max"])("preserves or overrides saved native Codex reasoning effort (%s)", thinkingEffort => {
-    const values = makeValues({ thinkingEffort, adapterSchemaValues: { provider: "codex", modelReasoningEffort: "high" } });
-    expect(buildPaperclipRunnerConfig(values).modelReasoningEffort).toBe(thinkingEffort || "high");
-    expect(buildPaperclipRunnerConfig({ ...values, adapterSchemaValues: { provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "high" } })).not.toHaveProperty("modelReasoningEffort");
+  it.each(["codex", "claude"])("preserves, overrides and explicitly clears saved %s reasoning effort", harness => {
+    const profile = harness === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" };
+    const values = makeValues({ adapterSchemaValues: { ...profile, modelReasoningEffort: "high", reasoningEffort: "low", effort: "low" } });
+    const unhydrated = { ...values };
+    Reflect.deleteProperty(unhydrated, "thinkingEffort");
+    expect(buildPaperclipRunnerConfig(unhydrated).modelReasoningEffort).toBe("high");
+    expect(buildPaperclipRunnerConfig({ ...values, thinkingEffort: "max" }).modelReasoningEffort).toBe("max");
+    const cleared = buildPaperclipRunnerConfig({ ...values, thinkingEffort: "" });
+    for (const key of ["modelReasoningEffort", "reasoningEffort", "effort"]) expect(cleared).not.toHaveProperty(key);
   });
   it.each([undefined, false, true])("preserves Dot attachment consent in create/import forms: %s", value => {
     const config = buildPaperclipRunnerConfig(makeValues({ adapterType: "paperclip_runner", adapterSchemaValues: { provider: "openai_dot", dotAttachmentAccess: value } }));
@@ -225,6 +230,10 @@ describe("buildPaperclipRunnerConfig", () => {
     });
   });
 
+  it.each(["modelReasoningEffort", "reasoningEffort", "effort"])("keeps explicit Auto Claude effort cleared over saved %s", key => {
+    const config = buildPaperclipRunnerConfig(makeValues({ thinkingEffort: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "claude", [key]: "high" } }));
+    for (const effortKey of ["modelReasoningEffort", "reasoningEffort", "effort"]) expect(config).not.toHaveProperty(effortKey);
+  });
   it.each(["claude-opus-5", "my-custom-model"])("preserves the selected ACPX Claude model %s", (model) => {
     expect(buildPaperclipRunnerConfig(makeValues({ model, adapterSchemaValues: { provider: "acpx" } })))
       .toMatchObject({ provider: "acpx", acpxAgent: "claude", model });

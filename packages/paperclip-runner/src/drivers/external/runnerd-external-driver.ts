@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { HarnessRuntimeRequest, HarnessRuntimeRequestHandoff, HarnessRuntimeRequestResolution, HarnessDriver, HarnessDriverDescriptor, HarnessSession, OpenHarnessSessionInput, PersistedHarnessSession } from "../../contracts/harness-driver.js";
@@ -189,7 +190,17 @@ class RunnerdExternalSession implements HarnessSession {
       },
       onSemanticToolInput: async call => {
         if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
-          const result = validatePrpStructuredRunResult(call.input);
+          let completionInput: unknown;
+          try {
+            completionInput = await resolveCompletionContinuation(call.input, o.identity.runId,
+              o.dynamicToolHandler ? () => o.dynamicToolHandler!({
+                tool: "get_task_context", callId: `${call.callId}:continuation`,
+                threadId: o.identity.normalizedSessionId, turnId: o.identity.turnId, arguments: {},
+              }) : undefined);
+          } catch (error) {
+            return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true };
+          }
+          const result = validatePrpStructuredRunResult(completionInput);
           if (!result.ok || (call.operationId === "paperclip_block") !== (result.ok && result.result.reportedWorkDisposition === "blocked")) {
             return { result: { error: "Invalid completion report. Use the admitted completion contract and the correct completion tool." }, isError: true };
           }

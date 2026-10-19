@@ -34,6 +34,7 @@ import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -967,6 +968,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
     await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("Reconnect");
   });
+  it.each(["openrouter", "gateway"] as const)("preserves Claude custom headers for managed %s connections", async (kind) => {
+    const provider = kind === "openrouter" ? "openrouter" : "anthropic";
+    const routing = { kind, protocol: "messages", auth: "bearer", ...(kind === "gateway" ? { baseUrl: "https://gateway.example/v1" } : {}), models: [] } as const;
+    const saved = await service.save(companyId, "alice", { provider, method: "api_key", name: `Headers ${kind}`, ownership: "personal", allAgents: true, agentIds: [], routing: { ...routing, models: [] } }, "fixture-credential");
+    const selected = { provider, method: "api_key", mode: "delegated", ...saved } as const;
+    const customHeaders = "X-Gateway-Route: account-route\nx-title: Previous harness";
+    const reference = { type: "secret_ref", secretId: randomUUID(), version: "latest" };
+    const inherited = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = "X-Gateway-Route: inherited-route";
+    try {
+      for (const adapterType of ["claude_local", "paperclip_runner"]) {
+        for (const configured of [customHeaders, reference, undefined]) {
+          const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", binding: selected, adapterType,
+            config: { provider: "acpx", acpxAgent: "claude", env: configured === undefined ? {} : { ANTHROPIC_CUSTOM_HEADERS: configured } } });
+          try {
+            const effective = configured ?? process.env.ANTHROPIC_CUSTOM_HEADERS;
+            const expected = kind === "openrouter" && typeof effective === "string"
+              ? openRouterClaudeHeaders(effective)
+              : configured;
+            expect(runtime.config.env.ANTHROPIC_CUSTOM_HEADERS).toEqual(expected);
+          } finally { await runtime.cleanup(); }
+        }
+      }
+    } finally {
+      if (inherited === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = inherited;
+    }
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;

@@ -51,6 +51,8 @@ export const EXECUTION_PREPARATION_SPAN_ATTRS = {
   runId: "paperclip.task.run.run_id",
   fileCount: "paperclip.execution.fileCount",
   bytes: "paperclip.execution.bytes",
+  repositoryCacheOutcome: "paperclip.execution.repositoryCache.outcome",
+  repositoryCacheReferenceSupplied: "paperclip.execution.repositoryCache.reference_supplied",
 } as const;
 
 /**

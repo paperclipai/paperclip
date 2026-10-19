@@ -122,25 +122,6 @@ export {
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";
 export {
-  computePipelineHealth,
-  groupWarningsByStage,
-  isPipelineTerminalStageKind,
-  type PipelineHealthAgentRef,
-  type PipelineHealthFailedAutomationInput,
-  type PipelineHealthInput,
-  type PipelineHealthPipelineRef,
-  type PipelineHealthReport,
-  type PipelineHealthStageInput,
-  type PipelineHealthStageRef,
-  type PipelineHealthWarning,
-  type PipelineHealthWarningCode,
-} from "./pipeline-health.js";
-export {
-  caseTypeMatchesPipeline,
-  deriveCaseType,
-  type CaseTypePipelineRef,
-} from "./pipeline-case-type.js";
-export {
   deriveResponsibleUser,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
@@ -239,36 +220,6 @@ export type {
 } from "./types/decision-training.js";
 export { DECISION_TRAINING_RETENTION_POLICY } from "./types/decision-training.js";
 
-export type {
-  PipelineAutomationRetryBlocker,
-  PipelineAutomationRetryCleanupOptions,
-  PipelineAutomationRetryEffectCounts,
-  PipelineAutomationRetryPlan,
-  PipelineAutomationRetryRequest,
-  PipelineAutomationRetryRoutineRef,
-  PipelineAutomationRetryScope,
-  PipelineAutomationRetryStageRef,
-  PipelineCaseAttachmentOutputItem,
-  PipelineCaseConversationSource,
-  PipelineCaseConversationSourceKind,
-  PipelineCaseConversationSourceLinkRole,
-  PipelineCaseConversationSourceReason,
-  PipelineCaseDocumentOutputItem,
-  PipelineCaseDocumentPayload,
-  PipelineCaseDocumentRevision,
-  PipelineCaseLiveness,
-  PipelineCaseLivenessState,
-  PipelineCaseOutputContextSummary,
-  PipelineCaseOutputContextSummaryItem,
-  PipelineCaseOutputItem,
-  PipelineCaseOutputItemBase,
-  PipelineCaseOutputKind,
-  PipelineCaseOutputSource,
-  PipelineCaseOutputSourceRole,
-  PipelineCaseOutputsResponse,
-  PipelineCaseWorkProductOutputItem,
-  PipelineStageAutomation,
-} from "./types/pipeline.js";
 export {
   analyzeFrontmatterBlock,
   asBoolean,
@@ -404,6 +355,7 @@ export {
   AGENT_ICON_NAMES,
   PROJECT_ICON_NAMES,
   ISSUE_STATUSES,
+  ISSUE_SUMMARIES_MAX_IDS,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
@@ -447,7 +399,6 @@ export {
   ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES,
   ISSUE_TREE_HOLD_STATUSES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  PIPELINE_CASE_BODY_DOCUMENT_KEY,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   isSystemIssueDocumentKey,
   ISSUE_REFERENCE_SOURCE_KINDS,
@@ -588,7 +539,6 @@ export {
   HEARTBEAT_RUN_LIST_MAX_LIMIT,
   WORKSPACE_OVERVIEW_MAX_LIMIT,
   WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT,
-  PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
   type CompanyStatus,
@@ -1106,6 +1056,7 @@ export type {
   ExternalObjectSummary,
   ExternalObjectSummaryItem,
   CompactIssue,
+  IssueSummary,
   Issue,
   IssueVisibility,
   IssuePrivacyConstraints,
@@ -1984,6 +1935,7 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  issueSummariesQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -2005,6 +1957,7 @@ export {
   resolveIssueRecoveryActionSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
@@ -2291,15 +2244,6 @@ export {
   updateRoutineTriggerSchema,
   routineVariableSchema,
   runRoutineSchema,
-  pipelineAutomationRetryCleanupOptionsSchema,
-  pipelineAutomationRetryRequestSchema,
-  pipelineAutomationRetryScopeSchema,
-  pipelineStageAutomationSchema,
-  pipelineStageApproverSchema,
-  pipelineStageConfigSchema,
-  pipelineStageKindSchema,
-  pipelineStageOnEnterSchema,
-  pipelineStageVariableSchema,
   rotateRoutineTriggerSecretSchema,
   routineRevisionSnapshotRoutineV1Schema,
   routineRevisionSnapshotTriggerV1Schema,
@@ -2556,27 +2500,22 @@ export {
   ROUTINE_MENTION_SCHEME,
   SKILL_MENTION_SCHEME,
   USER_MENTION_SCHEME,
-  PIPELINE_MENTION_SCHEME,
   buildAgentMentionHref,
-  buildPipelineMentionHref,
   buildProjectMentionHref,
   buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
   extractAgentMentionIds,
-  extractPipelineMentions,
   extractProjectMentionIds,
   extractRoutineMentionIds,
   extractSkillMentionIds,
   extractUserMentionIds,
   parseAgentMentionHref,
-  parsePipelineMentionHref,
   parseProjectMentionHref,
   parseRoutineMentionHref,
   parseSkillMentionHref,
   parseUserMentionHref,
   type ParsedAgentMention,
-  type ParsedPipelineMention,
   type ParsedProjectMention,
   type ParsedRoutineMention,
   type ParsedSkillMention,
@@ -2881,13 +2820,13 @@ export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOp
 
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
 
-export * from "./muse-protocol.js";
-export * from "./muse-invitations.js";
 export * from "./types/task-workspace.js";
 export * from "./validators/task-workspace.js";
 
 export { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository } from "./validators/workspace-repository.js";
 
+export * from "./muse-protocol.js";
+export * from "./muse-invitations.js";
 export * from "./fast-response.js";
 
 export { HUMAN_TASK_ORIGIN_KINDS, isAgentCreatedIssue, type IssueCreationSourceFields } from "./issue-creation-source.js";

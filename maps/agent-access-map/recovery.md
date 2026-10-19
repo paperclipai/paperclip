@@ -24,6 +24,11 @@ Agent access: `available` — REST / native call_api; CLI issue diagnostics.
 
 Policy: Task/run visibility, run ownership and source/action policy; workspace export
 retry and some operator controls require board.
+Graceful legacy shutdown retains the exact sandbox until its owned adapter
+settles, including after the first shutdown wait. A renewed settlement fence
+protects cleanup by other controllers. Loss of the owner retains the source
+for repair after expiry. This automatic protection grants no agent operation,
+execution permission, or bypass of workspace repair gates.
 The server can recover a prepared remote bootstrap only with a durable
 never-claimed executor receipt and no contradictory execution evidence. This
 automatic classification grants no new agent action or permission; normal
@@ -35,6 +40,11 @@ recovery can establish a takeover claim; no agent permission is added.
 Older unmarked preparations do not qualify for this automatic path during an
 upgrade. The fencing marker comes from fresh server-owned identity creation;
 caller profile data cannot upgrade an existing preparation.
+
+Remote process-health reads retry within a bounded budget. An unavailable probe
+cannot authorize replacement or erase the original ownership marker. This is
+internal supervision; it grants no new agent recovery action. Existing task,
+company, process-identity and workspace-recovery checks remain required.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L9478) at
 the reviewed commit above.
@@ -113,10 +123,12 @@ supports source-only file repair. Board runtime management and recovery-resoluti
 authority are required. The request identifies the exact source action/run and
 records recovered-file evidence; the server verifies the original stop receipt.
 It preserves the current task status and does not wake or replay the agent. The
-task form fails closed without permission or source bindings. Agent Chat retains
-the file diagnosis while this hold exists. The
+task notice does not expose a file-certification form. The API still fails closed
+without permission or source bindings. Agent Chat retains the file diagnosis
+while this hold exists and suppresses the warning only for a verified durable
+recovery path. The
 [repair route regressions](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
-and [file form](../../ui/src/components/WorkspaceFileRecovery.test.tsx) cover the
+and [task notice](../../ui/src/components/ExecutionBlockerNotice.test.tsx) cover the
 local contract; they do not independently recover files or qualify a live provider.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L9478) at
@@ -176,6 +188,7 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `POST /api/issues/{id}/recovery-actions/retry-workspace-export`.
+- `POST /api/issues/{id}/recovery-actions/reconstruct-workspace`.
 - `POST /api/issues/{id}/recovery-actions/resume-workspace-finalization`.
 - `POST /api/issues/{id}/recovery-actions/resolve` for retained-source file repair.
 - `POST /api/execution-workspaces/{id}/reconcile-branch`.
@@ -184,6 +197,13 @@ Agent access: `restricted` — Board/runtime management APIs; agent reads diagno
 performs permitted workspace work.
 
 Policy: Export retry and branch reconciliation require board runtime management.
+Reconstruction also requires board runtime management. It verifies exact source
+destruction and same-task attachment hashes, records lost work and external action
+outcomes, and admits one fresh continuation through normal execution gates. The
+old failed export remains failed. A retained or uncertain source cannot use it.
+An intervening native run-only cancellation requires its own acknowledged Stop,
+confirmed stopped leases, board file repair and `not_performed` action outcome.
+The reconstruction records and rechecks that exact proof; other later runs stay denied.
 Retained legacy file-only repair requires the board, exact stopped-source receipts,
 and recovered-file evidence. It can record repair for a successful legacy turn
 without changing its result or authorizing replay. Queued and running sources

@@ -81,6 +81,17 @@ own policy and access review.
 Gaps: Settings APIs cover parts of configuration; pre-start database/binding/storage
 configuration is local operator tooling.
 
+Cloud staging exposes experimental controls to instance admins and permits saved
+overrides of Cloud feature defaults. This exception requires a managed instance
+and a provisioner-supplied `*.staging.paperclip.app` primary hostname; request
+headers do not establish staging. Ordinary board members and agents still cannot
+mutate instance settings. Only an explicit feature allowlist is editable. Cloud
+owner-admin elevation and managed-sandbox execution policy remain managed, and
+production policy and other Cloud floors remain.
+Local [route tests](../../server/src/__tests__/instance-settings-routes.test.ts)
+cover staging admin access, non-admin denial and a spoofed request hostname;
+no live Cloud or agent-credential verification is claimed.
+
 ## `diagnostics`
 
 Review: `baseline`.

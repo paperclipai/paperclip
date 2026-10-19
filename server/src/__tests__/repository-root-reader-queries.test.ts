@@ -9,6 +9,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess,
   executionWorkspaces, heartbeatRuns, issues, projects, projectAccessMembers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import { loadRepositoryRootReaders } from "../services/execution-workspace-root-readers.js";
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -55,10 +56,41 @@ it("bounds repeated-principal queries without loading retained run payloads", as
   const queries: string[] = [];
   const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as typeof db;
   await executionWorkspaceRepositoryService(recorded).guardForPublication(input());
-  expect(queries.length).toBeLessThan(800);
+  expect(queries.length).toBeLessThan(100);
   const runs = queries.filter(query => query.includes('from "heartbeat_runs"'));
   expect(runs.length).toBeGreaterThan(0);
+  expect(runs.length).toBeLessThan(10);
   expect(runs.every(query => !query.includes('"result_json"') && !query.includes('"runner_profile_json"'))).toBe(true);
+});
+
+it("rejects missing, foreign-company and mismatched retained run identities", async () => {
+  const invalidId = runIds[31];
+  const otherCompanyId = randomUUID();
+  await db.insert(companies).values({ id: otherCompanyId, name: "Foreign readers", issuePrefix: "FRQ" });
+  const service = executionWorkspaceRepositoryService(db);
+  for (const change of [
+    { companyId: otherCompanyId },
+    { contextSnapshot: { issueId: randomUUID(), taskId: issueId } },
+    { responsibleUserId: randomUUID() },
+  ]) {
+    try {
+      await db.update(heartbeatRuns).set(change).where(eq(heartbeatRuns.id, invalidId));
+      await expect(service.guardForPublication(input())).rejects.toThrow("identity");
+    } finally {
+      await db.update(heartbeatRuns).set({ companyId, nativeIssueId: null, contextSnapshot: { issueId }, responsibleUserId: userId })
+        .where(eq(heartbeatRuns.id, invalidId));
+    }
+  }
+  for (const change of [{ scopeId: randomUUID() }, { agentId: randomUUID() }, { issueId: randomUUID() }]) {
+    try {
+      await db.update(executionWorkspaceRepositoryAccess).set(change).where(eq(executionWorkspaceRepositoryAccess.scopeId, invalidId));
+      await expect(service.guardForPublication(input())).rejects.toThrow("identity");
+    } finally {
+      await db.update(executionWorkspaceRepositoryAccess).set({ scopeId: invalidId, agentId, issueId })
+        .where(eq(executionWorkspaceRepositoryAccess.scopeId, "scopeId" in change ? change.scopeId : invalidId));
+    }
+  }
+  await expect(service.guardForPublication(input())).resolves.toBeUndefined();
 });
 
 it("keeps each retained run identity and policy distinct for the same principals", async () => {
@@ -75,6 +107,54 @@ it("keeps each retained run identity and policy distinct for the same principals
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, invalidId));
   }
   await expect(service.guardForPublication(input())).resolves.toBeUndefined();
+});
+
+it("checks identities after the first query batch and reloads them on the next operation", async () => {
+  const ids = Array.from({ length: 501 }, () => randomUUID());
+  await db.insert(heartbeatRuns).values(ids.map(id => ({ id, companyId, agentId, responsibleUserId: userId,
+    status: "succeeded", contextSnapshot: { taskId: issueId } })));
+  const entries = ids.map(scopeId => ({ scopeId, issueId, agentId, responsibleUserId: userId }));
+  try {
+    const queries: string[] = [];
+    const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as typeof db;
+    const readers = await loadRepositoryRootReaders(recorded, companyId, entries);
+    expect(readers.map(reader => reader.actor.runId)).toEqual(ids);
+    expect(readers.every(reader => reader.issue.id === issueId && reader.actor.onBehalfOfUserId === userId)).toBe(true);
+    const agentQueries = queries.filter(query => query.includes('from "agents"'));
+    expect(agentQueries).toHaveLength(1);
+    expect(agentQueries.every(query =>
+      !query.includes('"adapter_config"') && !query.includes('"runtime_config"') && !query.includes('"metadata"'))).toBe(true);
+    await db.update(heartbeatRuns).set({ responsibleUserId: randomUUID() }).where(eq(heartbeatRuns.id, ids.at(-1)!));
+    await expect(loadRepositoryRootReaders(db, companyId, entries)).rejects.toThrow("identity");
+  } finally {
+    await db.delete(heartbeatRuns).where(inArray(heartbeatRuns.id, ids));
+  }
+});
+
+it("preserves each actor's saved policy in batched read decisions", async () => {
+  const actor: AuthorizationActor = { type: "agent", source: "agent_jwt", companyId, agentId,
+    runId: runIds[0], onBehalfOfUserId: userId };
+  const policyRunId = runIds[31];
+  const actors = [actor, { ...actor, runId: policyRunId }, { ...actor, runId: runIds[0].toUpperCase() },
+    { ...actor, runId: randomUUID() }];
+  const resources = [{ type: "project" as const, companyId, projectId }, { type: "company" as const, companyId }];
+  const service = authorizationService(db);
+  try {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionPolicy: { trustPreset: "unsupported" } } })
+      .where(eq(heartbeatRuns.id, policyRunId));
+    const decisions = await service.decideReadsForActors(actors, resources);
+    for (const [index, candidate] of actors.entries()) {
+      for (const [resourceIndex, resource] of resources.entries()) {
+        expect(decisions[index][resourceIndex]).toEqual(await service.decide({ actor: { ...candidate }, resource,
+          action: resource.type === "project" ? "project:read" : "company_scope:read" }));
+      }
+    }
+    expect(decisions[0][0].allowed).toBe(true);
+    expect(decisions[1][0].allowed).toBe(false);
+  } finally {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, policyRunId));
+  }
+  expect((await service.decideReadsForActors(actors, resources))[1][0].allowed).toBe(true);
 });
 
 it("reloads project grants on every publication attempt", async () => {

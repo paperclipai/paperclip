@@ -712,7 +712,7 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
-  it("rechecks selection policy when a saved native adapter switches its underlying harness", async () => {
+  it("rechecks selection policy when a saved native adapter switches to an experimentally gated harness", async () => {
     mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     const probe = vi.fn();
@@ -722,7 +722,7 @@ describe("agent routes adapter validation", () => {
       const app = await createApp();
       const res = await requestApp(app, baseUrl => request(baseUrl)
         .post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
-        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: { provider: "acpx", acpxAgent: "claude" } }));
+        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: { provider: "acpx", acpxAgent: "pi" } }));
       expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
       expect(probe).not.toHaveBeenCalled();
@@ -762,9 +762,9 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
-  it("keeps non-Codex native provider selection behind its existing flag", async () => {
+  it("keeps other native provider selection behind its existing flag", async () => {
     const app = await createApp();
-    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Native Claude", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } }));
+    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Native OpenCode", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" } }));
     expect(response.status).toBe(422);
     expect(response.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
   });

@@ -26,6 +26,9 @@ export function createDeliveryWorkCoordinator(input: {
       onSettled?: (hints?: ReadonlySet<string>) => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;
+      // An empty queue's maintenance may wait until dispatch admission reopens.
+      // Notifications and unresolved producer writes still reconcile in drain.
+      pausePassiveMaintenance?: boolean;
     }) {
       if (stopped) throw new Error("Delivery coordinator is stopped");
       if (workers.has(queue)) throw new Error(`Delivery worker already registered: ${queue}`);
@@ -35,6 +38,7 @@ export function createDeliveryWorkCoordinator(input: {
       let workerStopped = false;
       let controller: AbortController | null = null;
       let finishIntent: (() => void) | undefined;
+      let pendingWork = true;
       function schedule(delay: number, deadline?: number) {
         if (workerStopped) return;
         const at = deadline ?? Date.now() + delay;
@@ -47,13 +51,22 @@ export function createDeliveryWorkCoordinator(input: {
         scheduler.cancel(queue);
         scheduledAt = null;
         if (!input.canRun() && !(input.canReconcile?.() ?? false)) { schedule(task.retryMs); return; }
+        if (!input.canRun() && task.pausePassiveMaintenance && !pendingWork && !dirty &&
+            !finishIntent && !databaseWorkPending(input.owner, queue)) {
+          // A timer alone must not change the idle generation during a slow
+          // backup. Retry without querying or admitting work; a notification
+          // still preempts this deadline and retains its normal intent hold.
+          schedule(task.retryMs);
+          return;
+        }
         dirty = false;
         const finish = beginIdleTrackedWork();
         const attempt = new AbortController();
         controller = attempt;
         running = Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
           .then(() => workerStopped || !input.canRun() ? undefined : task.run(attempt.signal)).then(() => workerStopped ? false : task.hasPending()).then(pending => {
-          if (pending || databaseWorkPending(input.owner, queue)) schedule(task.retryMs);
+          pendingWork = pending || databaseWorkPending(input.owner, queue);
+          if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }
           const next = task.nextRunAt?.();
           if (next != null) {

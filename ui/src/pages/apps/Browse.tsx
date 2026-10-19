@@ -142,11 +142,12 @@ type ConnectionRemovalTarget = {
   poolRevision?: number;
 } & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
 
-// Temporary, page-only hold until Google OAuth verification is approved.
-// Keep definitions, direct setup/management routes, and runtime access intact.
-// Remove this filter after approval; reviewer instances stay on their pinned build.
-const GOOGLE_CONNECTOR_SLUGS = new Set(
-  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug),
+// Offer the unified connector for new Google accounts. Existing per-service
+// connections remain visible and keep their definitions and management routes.
+const LEGACY_GOOGLE_CONNECTOR_SLUGS = new Set(
+  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES)
+    .map((profile) => profile.appSlug)
+    .filter((slug) => slug !== "google-workspace"),
 );
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
@@ -641,15 +642,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       const savedAppConnections =
         connectionsByApplicationId.get(application.id) ?? [];
       if (applicationSlug === "gateway" && savedAppConnections.length === 0) continue;
-      let appConnections = savedAppConnections.filter(
-        (connection) => !GOOGLE_CONNECTOR_SLUGS.has(appConnectionSourceSlug(connection) ?? ""),
-      );
-      // Hide source-only Google rows, but keep independently identified connectors.
-      if (
-        (!applicationSlug || applicationSlug === "link") &&
-        savedAppConnections.length > 0 &&
-        appConnections.length === 0
-      ) continue;
+      let appConnections = savedAppConnections;
       // One legacy gateway application may contain several API formats. Group
       // each saved AI account by its actual routing, not the old application slug.
       const ungroupedCount = appConnections.length;
@@ -770,7 +763,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       }));
 
     return [...rowsBySlug.values(), ...customRows, ...aggregatorRows]
-      .filter((row) => !GOOGLE_CONNECTOR_SLUGS.has(row.slug) || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
+      .filter((row) => !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
+        || row.connections.length > 0
+        || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
       .map((row) => ({
         ...row,
         connections: [...row.connections].sort(

@@ -67,8 +67,21 @@ storage; instructions remain essential because redaction cannot guarantee
 secrecy. Writes and one content-free activity record commit together. Feedback
 bodies are excluded from HTTP diagnostics and dedicated mutation receipts.
 
-There is no feedback UI, read API, notification, automatic task creation, or
-external forwarding. This is separate from first-party Telemetry, OpenTelemetry
+Browse feedback at Audit → Commentary (`/activity/commentary`). The page has
+text search, agent/type filters, 50-message pages and a full-message dialog with
+task/run context. Filters, page offsets and selected messages have shareable
+URLs (`?entry=<message-id>` opens a message directly).
+
+The board-only read API is `GET /api/companies/:companyId/agent-commentary`
+(`agentId`, `kind`, `q`, `limit` up to 100, `offset`) and
+`GET /api/companies/:companyId/agent-commentary/:id`. Both require company access
+and `audit:view_agent_actions`. Source-task privacy filters previews, counts and
+details. List results contain at most 280 characters
+per message; the full body is loaded only on opening a message. Feedback whose
+source task was deleted stays hidden, using the task binding retained on its run.
+
+There is no notification, automatic task creation, or external forwarding.
+This is separate from first-party Telemetry, OpenTelemetry
 Observability, and the run log. Ordinary provider transcripts can still contain
 submitted tool arguments; there is no anonymity or ephemeral-storage promise.
 

@@ -70,6 +70,20 @@ reassignment and confirm that the outgoing run still stops.
 
 Manual: Add a comment and edit authorized properties. Reload and verify history, actor, and values. Complete a disposable task and inspect its deliverable; reopen through an available action and confirm the next execution follows current policy.
 
+Manual: Ask a standard native agent to schedule a future check on its current
+task. Reload and confirm the persisted monitor. After the agent yields, verify
+one later wake and a consumed schedule. For malformed-call recovery, use the
+[agent access recipe](../agent-access-map/tasks.md#properties) and verify that
+schema feedback supports a corrected call before a wait is claimed.
+
+Manual: Add an ordinary Board comment while a task retry is queued or running.
+Confirm that the same execution keeps working and receives the saved message,
+without a second executor or an implicit move to Todo. Repeat with a parked retry
+and verify that fresh instructions can supersede it. Explicit Stop must still
+cancel active work. The [comment route regressions](../../server/src/__tests__/issue-comment-reopen-routes.test.ts)
+and [HTTP/process and interrupted-cancellation tests](../../server/src/__tests__/issue-scheduled-retry-routes.test.ts)
+cover these boundaries locally; deployed runner acceptance remains separate.
+
 ## Gotchas
 
 - Priority remains an API field, but ordinary priority UI editing is hidden.

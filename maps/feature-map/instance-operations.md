@@ -44,11 +44,29 @@ It remains reachable during an idle drain. Use `/api/health` for explicit databa
 readiness, signed bootstrap, and authorized diagnostics; liveness does not
 establish database health or claim a workspace.
 
+Automated: [static UI idle completion](../../server/src/__tests__/static-ui-idle.test.ts)
+covers real aborted file streams, disconnects before file lookup, nested routers,
+and unfinished parent/fallback writes. Mounted Express applications retain their
+conservative hold. It does not qualify provider cleanup or a hosted sleep/wake cycle.
+
+Manual: On an otherwise idle disposable instance, close a static UI download
+served by the admitted application before it finishes. Repeat with a disconnect
+before headers arrive. Confirm that neither leaves a permanent request hold. An
+unfinished application write must still prevent sleep after its client leaves.
+
 ### `settings-backup`
 
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
 
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
+
+Cloud staging: On a managed `*.staging.paperclip.app` instance, verify experiments
+are visible and editable by an instance admin, and changes survive reload.
+Production keeps its hidden controls and managed feature values. Staging retains
+other Cloud restrictions. [Settings policy tests](../../server/src/__tests__/instance-settings-managed-overlay.test.ts),
+[route tests](../../server/src/__tests__/instance-settings-routes.test.ts), and
+[health tests](../../server/src/__tests__/health.test.ts) exercise simulated Cloud
+identities and persistence; they do not establish a deployed staging walkthrough.
 
 ## Gotchas
 

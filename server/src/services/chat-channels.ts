@@ -576,7 +576,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   function runtimeContextForRecord(
-    record: NonNullable<Awaited<ReturnType<typeof endpointRecord>>>,
+    record: Pick<NonNullable<Awaited<ReturnType<typeof endpointRecord>>>, "endpoint" | "credentialSecretRefs">,
   ): RuntimeContext {
     const generation = runtimeGeneration(record.endpoint.setup);
     const refsFingerprint = credentialFingerprint(record.credentialSecretRefs);
@@ -665,6 +665,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint: chatEndpoints,
         assignedAgentName: agents.name,
         connectionName: toolConnections.name,
+        connectionHealthStatus: toolConnections.healthStatus,
         applicationId: toolConnections.applicationId,
         credentialSecretRefs: toolConnections.credentialSecretRefs,
       })
@@ -775,8 +776,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       runtimeGeneration(endpoint.setup) !== context.generation
     )
       return null;
-    const refs = await tx
-      .select({ refs: toolConnections.credentialSecretRefs })
+    const connection = await tx
+      .select({ refs: toolConnections.credentialSecretRefs, healthStatus: toolConnections.healthStatus })
       .from(toolConnections)
       .where(
         and(
@@ -784,8 +785,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(toolConnections.id, endpoint.connectionId),
         ),
       )
-      .then((rows) => rows[0]?.refs ?? []);
-    if (credentialFingerprint(refs) !== context.credentialFingerprint) {
+      .then((rows) => rows[0]);
+    if (
+      (leasedChatProvider(endpoint.provider) && endpoint.status === "attention" && connection?.healthStatus === "failed") ||
+      credentialFingerprint(connection?.refs ?? []) !== context.credentialFingerprint
+    ) {
       return null;
     }
     const runtimeContext = context as RuntimeContext;
@@ -813,6 +817,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return null;
     }
     return record &&
+      !(leasedChatProvider(record.endpoint.provider) && record.endpoint.status === "attention" && record.connectionHealthStatus === "failed") &&
       allowedStatuses.includes(record.endpoint.status) &&
       runtimeGeneration(record.endpoint.setup) === context.generation &&
       credentialFingerprint(record.credentialSecretRefs) ===
@@ -898,7 +903,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (
         record.endpoint.status === "archived" ||
         record.endpoint.status === "paused" ||
-        record.endpoint.status === "draft"
+        record.endpoint.status === "draft" ||
+        (leasedChatProvider(record.endpoint.provider) && record.endpoint.status === "attention" && record.connectionHealthStatus === "failed")
       ) {
         throw conflict("Chat endpoint runtime is not available in this state", {
           code: "chat_endpoint_runtime_unavailable",
@@ -1140,6 +1146,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           inArray(chatEndpoints.status, ["verifying", "active", "attention"]),
           eq(toolConnections.status, "active"),
           eq(toolConnections.enabled, true),
+          or(ne(chatEndpoints.status, "attention"), ne(toolConnections.healthStatus, "failed")),
         ),
       );
     const eligibleIds = new Set(eligibleRows.map((row) => row.endpointId));

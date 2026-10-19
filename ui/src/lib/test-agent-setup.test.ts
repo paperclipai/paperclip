@@ -83,6 +83,14 @@ it("probes native Grok credentials with the pinned prerequisite in the selected 
   });
   expect(result.checks.some((check) => check.code === "grok_hello_probe_passed")).toBe(true);
 });
+it("accepts verified native API authentication without requiring a Legacy CLI", async () => {
+  testEnvironment.mockResolvedValue({ ...ready, checks: [
+    { code: "acpx_runtime_ready", level: "info", message: "Runtime verified" },
+    { code: "ai_connection_api_key_reverified", level: "info", message: "Key verified" },
+  ] });
+  expect((await testAgentSetup(input)).status).toBe("pass");
+  expect(testEnvironment).toHaveBeenCalledTimes(1);
+});
 it("does not repeat a completed model probe", async () => {
   testEnvironment.mockResolvedValue({
     ...ready,

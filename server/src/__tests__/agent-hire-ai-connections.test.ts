@@ -134,7 +134,7 @@ describe("agent-created hires use managed AI connections", () => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
-    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local" });
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local", runner: "legacy" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     // Fixed bindings contain identity only; compatibility is decided from
     // authoritative connection metadata when selecting each pool member.
@@ -155,7 +155,7 @@ describe("agent-created hires use managed AI connections", () => {
     ["opencode_local", {}, "PAPERCLIP_OPENCODE_PROVIDERS"],
     ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "OPENCODE_AUTH_JSON"],
     ["paperclip_runner", { provider: "opencode", model: "anthropic/claude-sonnet-5" }, "OPENCODE_CONFIG_CONTENT"],
-  ] as const)("%s hires with %j keep explicit %s auth outside the managed OpenRouter model catalog", async (adapterType, config, key) => {
+  ] as const)("%s hires with %j apply the host boundary to explicit %s auth", async (adapterType, config, key) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
@@ -163,9 +163,17 @@ describe("agent-created hires use managed AI connections", () => {
     const value = JSON.stringify(key === "PAPERCLIP_OPENCODE_PROVIDERS" ? { anthropic: provider }
       : key === "OPENCODE_CONFIG_CONTENT" ? { provider: { anthropic: provider } }
       : { anthropic: { type: "api", key: "fixture-explicit-key" } });
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
       name: "Independent OpenCode teammate", role: "engineer", adapterType, adapterConfig: { ...config, env: { [key]: value } },
-    }));
+    });
+    if (adapterType === "paperclip_runner") {
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
+      return;
+    }
+    const agent = hired(response);
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
     expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value });
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
@@ -385,19 +393,16 @@ describe("agent-created hires use managed AI connections", () => {
       ["openai", "claude_local", {}, "OPENAI_API_KEY"],
       ["anthropic", "paperclip_runner", { provider: "codex" }, "ANTHROPIC_API_KEY"],
       ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
-    ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
+    ] as const)(`${endpoint}: rejects host env settings for a %s caller hiring %s`, async (provider, adapterType, config, key) => {
       const f = await fixture(provider);
       const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Cross-provider config", role: "engineer", adapterType,
         adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
       });
-      if (adapterType.endsWith("_local")) {
-        expect(response.status).toBe(403);
-        expect(response.body.error).toContain("host-executed local adapter settings");
-        return;
-      }
-      const agent = hired(response);
-      expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user" });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
     });
   }
 

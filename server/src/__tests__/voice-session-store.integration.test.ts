@@ -1301,8 +1301,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(removed.paperclipRuntimeSkills).toEqual([]);
   });
 
-  it("makes call_my_phone discoverable through the governed gateway and reuses a durable attempt", async () => {
+  it.each([false, true])("makes call_my_phone discoverable through the governed gateway and reuses a durable attempt (continued: %s)", async continued => {
     const f = await phoneToolFixture();
+    if (continued) {
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running", nativeIssueId: f.issueId, contextSnapshot: {} }).returning();
+      await initializeRunIdentity(db, { companyId: f.companyId, agentId: f.agentId, runId: run.id, issueId: f.issueId, responsibleUserId: f.callerId, parentRunId: f.runId, cause: "monitor" });
+      f.gatewaySession = await f.gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId: run.id });
+    }
     const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);
     const tool = tools.find(tool => tool.providerType === "paperclip_speko_voice");
     expect(tool).toMatchObject({ upstreamToolName: "call_my_phone", connectionId: f.connectionId });

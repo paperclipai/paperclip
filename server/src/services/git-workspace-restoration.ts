@@ -1,4 +1,7 @@
+import { validateGitWorkspaceContents, type GitWorkspaceContents } from "./git-workspace-contents.js";
+import { recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -31,15 +34,17 @@ export type GitCacheRestoration = {
   gitBranchOwnershipVersion: 1;
   verifiedAt: string;
   restoredAt?: string;
+  contentsRestoredAt?: string | null;
+  contents?: GitWorkspaceContents;
 };
 export type GitCacheExpiration = {
   schema: "paperclip.git-cache-expiration.v1"; generation: number; workspaceRemoved: boolean;
-  worktreeTrash: string; worktreeAdmin: string; baseTrash: string | null; completed: boolean;
+  worktreeTrash: string; worktreeAdmin: string; baseTrash: string | null; completed: boolean; lockToken?: string;
 };
 type Workspace = {
   id: string; companyId: string; projectId: string | null; sourceIssueId: string | null; repoUrl: string | null;
   mode: string | null; strategyType: string | null; branchName: string | null;
-  cwd: string | null; providerRef: string | null; metadata: Record<string, unknown> | null;
+  cwd: string | null; providerRef: string | null; status?: string; metadata: Record<string, unknown> | null;
 };
 
 function managedSourcePaths(workspace: Workspace) {
@@ -86,16 +91,15 @@ export function readGitCacheRestoration(workspace: Workspace): GitCacheRestorati
     || (recipe.sourceKind === "isolated_remote" ? recipe.sourcePath !== recordedIsolatedRemoteSource(workspace)
       : recipe.sourceKind !== "managed_project" || recordedIsolatedRemoteSource(workspace) !== null || !managedSourcePaths(workspace).includes(recipe.sourcePath))
     || !shaPattern.test(recipe.commit) || !Number.isFinite(Date.parse(recipe.verifiedAt))
-    || (recipe.restoredAt !== undefined && !Number.isFinite(Date.parse(recipe.restoredAt)))) {
+    || (recipe.restoredAt !== undefined && !Number.isFinite(Date.parse(recipe.restoredAt)))
+    || (recipe.contentsRestoredAt != null && !Number.isFinite(Date.parse(recipe.contentsRestoredAt)))) {
     throw new GitCacheRestorationFailure();
   }
+  validateGitWorkspaceContents(recipe.contents);
   return recipe;
 }
 
 export async function gitCacheCommand(cwd: string, args: string[], signal?: AbortSignal) {
-  // The inspected repositories are agent-writable. core.fsmonitor in their
-  // local config would make `git status` run an arbitrary command as the
-  // server; the command-line setting takes precedence over it.
   const result = await execFile("git", ["-c", "core.fsmonitor=false", "-C", cwd, ...args], {
     timeout: 60_000, signal, maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
@@ -152,7 +156,12 @@ export async function assertReproducibleBaseGitStorage(cwd: string, signal?: Abo
     for (const name of await fs.readdir(path.join(root, directory))) {
       const file = `${directory}/${name}`;
       const entry = await fs.lstat(path.join(root, file));
-      if (!entry.isFile() || !templates.get(file)?.equals(await fs.readFile(path.join(root, file)))) throw new Error("custom_git_metadata");
+      if (!entry.isFile()) throw new Error("custom_git_metadata");
+      const actual = await fs.readFile(path.join(root, file));
+      const template = templates.get(file);
+      const managedExclude = file === "info/exclude" && template
+        ? Buffer.concat([template, Buffer.from(`\n/${PROJECT_REPOSITORIES_DIR}/\n`)]) : null;
+      if (!template?.equals(actual) && !managedExclude?.equals(actual)) throw new Error("custom_git_metadata");
     }
   }
   if (!templates.get("description")?.equals(await fs.readFile(path.join(root, "description")))) throw new Error("custom_git_metadata");
@@ -174,28 +183,10 @@ export async function assertReproducibleBaseGitStorage(cwd: string, signal?: Abo
   for (const directory of ["objects", "refs", "logs"]) await walk(directory);
 }
 
-/**
- * Paperclip writes this file into the worktree on every Claude run (it merges
- * its permission rules into whatever is there), so a terminal worktree's copy
- * is regenerated when the task runs again.
- */
 const PAPERCLIP_CLAUDE_SETTINGS_FILE = ".claude/settings.local.json";
 
-/**
- * Proves that a managed project checkout (`.paperclip-repositories/<name>`)
- * holds nothing that re-cloning would not restore; throws otherwise. Only the
- * expiration worker supplies one, because it can map the checkout back to its
- * project repository and reach upstream.
- */
 export type ManagedCheckoutProver = (checkoutPath: string, name: string, signal?: AbortSignal) => Promise<void>;
 
-/**
- * The proof for one managed checkout, against the repository URL recorded on
- * its project workspace row (never the checkout's own, agent-writable config):
- * the checkout's tree, index, config and Git storage hold nothing unique, it
- * has no linked worktrees, and every commit reachable from its refs or
- * reflogs is reachable from a current upstream branch or tag.
- */
 export async function assertReproducibleManagedCheckout(checkout: string, input: {
   repoUrl: string; resolveGitAuth: GitRemoteAuthProvider; signal?: AbortSignal;
 }) {
@@ -208,18 +199,10 @@ export async function assertReproducibleManagedCheckout(checkout: string, input:
   const worktrees = (await gitCacheCommand(checkout, ["worktree", "list", "--porcelain"], signal))
     .split("\n").filter(line => line.startsWith("worktree "));
   if (worktrees.length !== 1) throw new Error("managed_checkout_has_worktrees");
-  // Tree, index flags, local config, ignored files and in-progress state, as
-  // for any worktree; nested managed checkouts are never accepted here.
-  await assertReproducibleGitFiles(checkout, signal);
-  // Hooks, info files and object/ref storage must be stock.
+  await assertReproducibleGitFiles(checkout, signal, { preserveSettings: true });
   await assertReproducibleBaseGitStorage(checkout, signal);
   const refs = (await gitCacheCommand(checkout, ["for-each-ref", "--format=%(refname)"], signal)).trim().split("\n").filter(Boolean);
   if (refs.some(ref => !/^refs\/(heads|tags|remotes\/origin)\//.test(ref))) throw new Error("unsupported_managed_checkout_refs");
-  // Every commit a ref or reflog keeps must be on a current upstream branch or
-  // tag. Local remote-tracking refs prove nothing on their own (they may be
-  // stale), so the proof fetches upstream's refs fresh.
-  // HEAD is listed explicitly: a detached HEAD is not a named ref, and once
-  // its reflog expires nothing else would name its commits.
   const localTips = new Set([
     ...(await gitCacheCommand(checkout, ["rev-parse", "--verify", "HEAD^{commit}"], signal)).split("\n"),
     ...(await gitCacheCommand(checkout, ["for-each-ref", "--format=%(objectname)"], signal)).split("\n"),
@@ -229,34 +212,29 @@ export async function assertReproducibleManagedCheckout(checkout: string, input:
   if (localTips.size && await hasCommitsMissingUpstream(checkout, [...localTips], input.repoUrl, input.resolveGitAuth, signal)) {
     throw new Error("unpushed_managed_checkout");
   }
-  // Objects no ref or reflog reaches (a reset `git add`, a dropped stash) may
-  // be the only copy of some work.
   const unreachable = await gitCacheCommand(checkout, ["fsck", "--connectivity-only", "--unreachable", "--no-progress"], signal);
   if (unreachable.trim()) throw new Error("unreachable_managed_checkout_objects");
 }
 
-/** Upper bound on distinct ref and reflog commits a proof will consider. */
 const MANAGED_CHECKOUT_LOCAL_TIP_LIMIT = 5_000;
 
-/**
- * Fetches upstream's current branches and tags into a throwaway proof store
- * that borrows the checkout's objects (so only commits the checkout lacks are
- * downloaded), then asks whether any local commit is unreachable from them.
- * It is one fetch and one rev-list however many refs either side has. The
- * fetch runs config-free with the company's Git identity, never the
- * checkout's own config.
- */
 async function hasCommitsMissingUpstream(checkout: string, localTips: string[], repoUrl: string,
   resolveGitAuth: GitRemoteAuthProvider, signal?: AbortSignal) {
   const store = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-checkout-proof-"));
   try {
-    const auth = await resolveGitAuth(repoUrl);
-    const env = { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull };
-    const options = { timeout: 120_000, signal, maxBuffer: 16 * 1024 * 1024, env, cwd: os.tmpdir() };
+    const options = { timeout: 120_000, signal, maxBuffer: 16 * 1024 * 1024, cwd: os.tmpdir(),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull } };
     await execFile("git", ["init", "--bare", "--quiet", store], options);
     await fs.writeFile(path.join(store, "objects", "info", "alternates"), `${path.join(await fs.realpath(checkout), ".git", "objects")}\n`);
-    await execFile("git", [...auth?.configArgs ?? [], "-C", store, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
-      "--", repoUrl, "+refs/heads/*:refs/upstream/heads/*", "+refs/tags/*:refs/upstream/tags/*"], options);
+    try {
+      const auth = await resolveGitAuth(repoUrl);
+      await execFile("git", [...auth?.configArgs ?? [], "-C", store, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
+        "--", repoUrl, "+refs/heads/*:refs/upstream/heads/*", "+refs/tags/*:refs/upstream/tags/*"],
+        { ...options, env: { ...options.env, ...auth?.env } });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new Error("managed_checkout_upstream_unavailable");
+    }
     const missing = await execFile("git", ["-C", store, "rev-list", "--max-count=1", ...localTips, "--not", "--glob=refs/upstream/*"], options);
     return missing.stdout.trim() !== "";
   } finally {
@@ -264,13 +242,57 @@ async function hasCommitsMissingUpstream(checkout: string, localTips: string[], 
   }
 }
 
-/**
- * Inspect every untracked/ignored file. Only repository-ignored regenerable
- * directories, Paperclip's Claude settings file, and managed project checkouts
- * that `proveManagedCheckout` accepts qualify.
- */
+async function assertReproducibleFetchHead(cwd: string, gitDir: string, signal?: AbortSignal,
+  verifyFetchedCommit?: (commit: string, signal?: AbortSignal) => Promise<void>) {
+  const target = path.join(gitDir, "FETCH_HEAD");
+  const entry = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!entry) return;
+  const byteLimit = 64 * 1024;
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.size > byteLimit) throw new Error("unsupported_worktree_fetch_head");
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let contents: Buffer;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > byteLimit) throw new Error("unsupported_worktree_fetch_head");
+    const buffer = Buffer.alloc(byteLimit + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > byteLimit) throw new Error("unsupported_worktree_fetch_head");
+    contents = buffer.subarray(0, length);
+  } finally { await handle.close(); }
+  const text = contents.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(contents) || text && !text.endsWith("\n")) throw new Error("unsupported_worktree_fetch_head");
+  const commits = new Set<string>();
+  for (const line of text ? text.slice(0, -1).split("\n") : []) {
+    const match = /^([a-f0-9]{40})\t(?:not-for-merge)?\t[^\t\r\n\0]*$/.exec(line);
+    if (!match) throw new Error("unsupported_worktree_fetch_head");
+    commits.add(match[1]!);
+    if (commits.size > 32) throw new Error("worktree_fetch_head_budget");
+  }
+  for (const commit of commits) {
+    signal?.throwIfAborted();
+    const objectType = await gitCacheCommand(cwd, ["cat-file", "-t", commit], signal).catch(() => "");
+    const ancestor = objectType.trim() === "commit" && await gitCacheCommand(cwd, ["merge-base", "--is-ancestor", commit, "HEAD"], signal)
+      .then(() => true, () => false);
+    signal?.throwIfAborted();
+    if (ancestor) continue;
+    if (!verifyFetchedCommit) throw new Error("unverified_fetched_commit");
+    await verifyFetchedCommit(commit, signal);
+  }
+}
+
 export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSignal, options: {
   proveManagedCheckout?: ManagedCheckoutProver;
+  preserveSettings?: boolean;
+  verifyFetchedCommit?: (commit: string, signal?: AbortSignal) => Promise<void>;
 } = {}) {
   if ((await gitCacheCommand(cwd, ["status", "--porcelain=v1", "--untracked-files=all", "-z"], signal)).length) throw new Error("dirty_or_untracked_files");
   if ((await gitCacheCommand(cwd, ["ls-files", "-v"], signal)).split("\n").some(line => /^[a-zS] /.test(line))) throw new Error("unsupported_index_flags");
@@ -278,11 +300,7 @@ export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSign
   if (localConfig.split("\n").filter(Boolean).some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\.[^.]+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
   const regenerable = await findRegenerableWorkspaceDirs(cwd, { signal });
   const ignored = (await gitCacheCommand(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], signal)).split("\0").filter(Boolean);
-  const unexplained = ignored.filter(file => file !== PAPERCLIP_CLAUDE_SETTINGS_FILE && !regenerable.some(dir => file.startsWith(`${dir}/`)));
-  // Anything else unexplained must sit inside a managed project checkout that
-  // the caller can prove reproducible. Task repositories (`task-repo-*`) carry
-  // access receipts and staging clones (`*.clone-*`) are mid-publication, so
-  // neither ever qualifies.
+  const unexplained = ignored.filter(file => !(options.preserveSettings && file === PAPERCLIP_CLAUDE_SETTINGS_FILE) && !regenerable.some(dir => file.startsWith(`${dir}/`)));
   const checkouts = new Set<string>();
   for (const file of unexplained) {
     const [namespace, name, rest] = file.split("/", 3);
@@ -309,8 +327,9 @@ export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSign
   if (original) await gitCacheCommand(cwd, ["merge-base", "--is-ancestor", original.trim(), "HEAD"], signal)
     .catch(() => { throw new Error("unique_original_head"); });
   if (gitDir !== common) {
-    const allowed = new Set(["HEAD", "ORIG_HEAD", "index", "commondir", "gitdir", "logs", "refs", "COMMIT_EDITMSG", "index.lock", "HEAD.lock"]);
+    const allowed = new Set(["HEAD", "ORIG_HEAD", "FETCH_HEAD", "index", "commondir", "gitdir", "logs", "refs", "COMMIT_EDITMSG", "index.lock", "HEAD.lock"]);
     if ((await fs.readdir(gitDir)).some(name => !allowed.has(name))) throw new Error("unknown_worktree_git_files");
+    await assertReproducibleFetchHead(cwd, gitDir, signal, options.verifyFetchedCommit);
     async function assertEmptyRefs(root: string): Promise<void> {
       const entries = await fs.readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return []; throw error;
@@ -359,7 +378,8 @@ export async function inspectGitCacheRecipe(workspace: Workspace, resolveGitAuth
   if (!(await fs.lstat(path.join(workspace.cwd, ".git"))).isFile()) throw new Error("not_linked_worktree");
   if ((await gitCacheCommand(workspace.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim() !== path.join(await fs.realpath(source), ".git")) throw new Error("source_identity_changed");
   if ((await gitCacheCommand(workspace.cwd, ["symbolic-ref", "--short", "HEAD"], signal)).trim() !== workspace.branchName) throw new Error("branch_identity_changed");
-  await assertReproducibleGitFiles(workspace.cwd, signal, options);
+  await assertReproducibleGitFiles(workspace.cwd, signal, { ...options, preserveSettings: true,
+    verifyFetchedCommit: (commit, verificationSignal) => verifyRemoteGitCommit(workspace.repoUrl!, commit, resolveGitAuth, verificationSignal) });
   const commit = (await gitCacheCommand(workspace.cwd, ["rev-parse", "HEAD"], signal)).trim();
   await verifyRemoteGitCommit(workspace.repoUrl, commit, resolveGitAuth, signal);
   return { schema: "paperclip.git-cache-restoration.v1", companyId: workspace.companyId, workspaceId: workspace.id,
@@ -374,12 +394,45 @@ export function readGitCacheExpiration(workspace: Workspace): GitCacheExpiration
   const recipe = readGitCacheRestoration(workspace);
   if (!recipe || state.schema !== "paperclip.git-cache-expiration.v1" || !Number.isSafeInteger(state.generation)
     || state.generation !== workspace.metadata?.lifecycleGeneration
+    || (state.lockToken !== undefined && !/^[a-f0-9]{64}$/.test(state.lockToken))
     || state.worktreeTrash !== path.join(path.dirname(recipe.worktreePath), `.expired-git-worktree-${workspace.id}-${state.generation}`)
     || path.dirname(state.worktreeAdmin) !== path.join(recipe.sourcePath, ".git", "worktrees")
     || (state.baseTrash !== null && state.baseTrash !== path.join(path.dirname(recipe.sourcePath), `.expired-git-base-${workspace.id}-${state.generation}`))) {
     throw new GitCacheRestorationFailure();
   }
   return state;
+}
+
+export function gitCacheExpirationLockLocations(workspace: Workspace): GitExpirationLockLocation[] {
+  const state = readGitCacheExpiration(workspace);
+  const recipe = readGitCacheRestoration(workspace);
+  if (!state || !recipe || !state.lockToken || state.completed) return [];
+  const branchPath = (branch: string) => {
+    if (!branch || branch.split("/").some(part => !part || part === "." || part === "..") || branch.includes("\\")) throw new GitCacheRestorationFailure();
+    return `refs/heads/${branch}.lock`;
+  };
+  const locations: GitExpirationLockLocation[] = [
+    ...["index.lock", "HEAD.lock"].map(name => ({ root: recipe.sourcePath,
+      relativePath: path.relative(recipe.sourcePath, path.join(state.worktreeAdmin, name)), checkout: null })),
+    { root: recipe.sourcePath, relativePath: path.join(".git", branchPath(recipe.branchName)), checkout: null },
+  ];
+  for (const checkout of recipe.contents?.checkouts ?? []) {
+    for (const name of ["index.lock", "HEAD.lock", ...(checkout.branchName ? [branchPath(checkout.branchName)] : [])]) {
+      locations.push({ root: recipe.worktreePath, relativePath: path.join(PROJECT_REPOSITORIES_DIR, checkout.name, ".git", name), checkout: checkout.name });
+    }
+  }
+  return locations;
+}
+
+export async function recoverGitCacheExpirationLocks(workspace: Workspace) {
+  const state = readGitCacheExpiration(workspace);
+  if (!state?.lockToken || state.completed || !["archived", "cleanup_failed"].includes(workspace.status ?? "")) return;
+  const recipe = readGitCacheRestoration(workspace)!;
+  if (await fs.lstat(recipe.sourcePath).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  })) await verifiedGitCacheSource(workspace, recipe.sourcePath);
+  await recoverGitExpirationLocks(gitCacheExpirationLockLocations(workspace), state.lockToken);
 }
 
 // Both restart recovery and reopening finish only recorded, uniquely named trash.
@@ -466,6 +519,9 @@ export function savedGitWorkspaceRestoration(input: { metadata?: Record<string, 
     || value.worktreePath !== input.cwd || value.sourcePath !== input.baseCwd
     || value.repoUrl !== input.repoUrl || value.branchName !== input.branchName
     || !isRuntimeOwnedGitBranch(input.metadata)
-    || (value.restoredAt !== undefined && !Number.isFinite(Date.parse(value.restoredAt)))) throw new GitCacheRestorationFailure();
-  return { commit: value.commit, restored: value.restoredAt !== undefined };
+    || (value.restoredAt !== undefined && !Number.isFinite(Date.parse(value.restoredAt)))
+    || (value.contentsRestoredAt != null && !Number.isFinite(Date.parse(value.contentsRestoredAt)))) throw new GitCacheRestorationFailure();
+  validateGitWorkspaceContents(value.contents);
+  return { commit: value.commit, restored: value.restoredAt !== undefined, contents: value.contents,
+    contentsRestored: value.contentsRestoredAt === undefined ? value.restoredAt !== undefined : value.contentsRestoredAt !== null };
 }

@@ -1,5 +1,7 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { validateAiApiKey } from "../services/ai-api-key-test.js";
+import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
@@ -142,6 +144,33 @@ import {
   QUALIFIED_OPENCODE_RUNNER_VERSION,
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
+
+/** Reuse the existing provider key check without requiring a global Claude CLI.
+ * Readiness and account access are separate checks; model access is proven by a task.
+ */
+async function verifyNativeClaudeApiKey(
+  config: Record<string, unknown>,
+  result: AdapterEnvironmentTestResult,
+): Promise<AdapterEnvironmentTestResult> {
+  const env = config.env as Record<string, unknown> | undefined;
+  if (config.acpxAgent !== "claude" || !env || typeof env.ANTHROPIC_API_KEY !== "string"
+    || !env.ANTHROPIC_API_KEY || config.managedAiRouting || config.managedAiConnection
+    || ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(key => env[key])) return result;
+  try {
+    await validateAiApiKey("anthropic", env.ANTHROPIC_API_KEY);
+    return { ...result, checks: [...result.checks, {
+      code: "ai_connection_api_key_reverified", level: "info",
+      message: "Anthropic verified this API key. Model access is checked when the agent runs.",
+    }] };
+  } catch (error) {
+    const details = error && typeof error === "object" && "details" in error
+      ? error.details as { code?: string } | undefined : undefined;
+    return { ...result, status: "fail", checks: [...result.checks, {
+      code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
+      level: "error", message: "Could not verify the Anthropic API key. Check the connection and try again.",
+    }] };
+  }
+}
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -405,6 +434,10 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
+    if (profile.provider === "muse") {
+      return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+        checks: [{ code: "muse_background_test_required", level: "warn" as const, message: "Muse manages its model and billing. Verify the paired receiver and independent background reply in Paperclip; this read-only check does not wake Muse." }] };
+    }
     if (profile.provider === "openai_dot") {
       return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
         checks: [{ code: "dot_event_test_required", level: "warn" as const, message: "Dot manages its model and billing. Validate the dedicated agent binding and event round trip in Paperclip; this read-only check does not wake the Dot." }] };
@@ -429,21 +462,21 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
-            throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux x64 or macOS architecture.`);
+          if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
+            throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux ${profile.acpxAgent === "claude" ? "x64/ARM64" : "x64"} or macOS architecture.`);
           }
-          return {
+          return verifyNativeClaudeApiKey(context.config, {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
-          };
+          });
         }
         const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
         await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
-        return {
+        return verifyNativeClaudeApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
-        };
+        });
       } catch (error) {
         return {
           adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
@@ -501,19 +534,19 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   models: [
     ...codexModels,
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   listModels: async () => [
     ...await listCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   refreshModels: async () => [
     ...await refreshCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   supportsLocalAgentJwt: false,

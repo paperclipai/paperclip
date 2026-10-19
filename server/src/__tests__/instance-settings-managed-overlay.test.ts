@@ -6,14 +6,15 @@ import {
   normalizeExperimentalSettings,
 } from "../services/instance-settings.js";
 import { parseManagedConfigEnv } from "../services/managed-config.js";
+import { evaluateExecutionAllowlist } from "../services/execution-allowlist.js";
 
 const MANAGED_RAW = JSON.stringify({
   v: 1,
   mode: "cloud",
   catalogVersion: "2026.720.0",
   // enableApps is retained only for compatibility and must be ignored;
-  // enablePipelines remains a live managed feature.
-  features: { enableApps: false, enablePipelines: true },
+  // enableStatusCards remains a live managed feature.
+  features: { enableApps: false, enableStatusCards: true },
   plugins: { autoInstall: [] },
 });
 
@@ -70,11 +71,11 @@ describe("applyManagedExperimentalOverlay", () => {
 
     expect(experimental.enableApps).toBe(true);
     // managed overlay > schema default
-    expect(experimental.enablePipelines).toBe(true);
+    expect(experimental.enableStatusCards).toBe(true);
     // unmanaged keys keep their stored/default values
     expect(experimental.enableCases).toBe(false);
     expect(managedKeys).toEqual({
-      enablePipelines: { managed: true, managedBy: "paperclip-cloud" },
+      enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
     });
     // input is not mutated
     expect(stored.enableApps).toBe(true);
@@ -82,6 +83,98 @@ describe("applyManagedExperimentalOverlay", () => {
 });
 
 describe("instanceSettingsService managed overlay", () => {
+  it("keeps sandbox policy enforced on staging after a tenant tries to disable it", async () => {
+    const row = settingsRow({ enableManagedSandboxOnly: false });
+    const { db, persistedSets } = stubDb(row);
+    const runtimeEnv = {
+      PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app",
+      ...managedEnv(JSON.stringify({
+        v: 1, mode: "cloud", catalogVersion: "test",
+        features: { enableManagedSandboxOnly: true }, plugins: { autoInstall: [] },
+      })),
+    };
+    const service = instanceSettingsService(db, { runtimeEnv });
+    const updated = await service.updateExperimental({ enableManagedSandboxOnly: false });
+    Object.assign(row, persistedSets.at(-1));
+    const restored = await instanceSettingsService(db, { runtimeEnv }).getExperimental();
+    for (const experimental of [updated.experimental, restored]) {
+      expect(experimental).toMatchObject({
+        enableManagedSandboxOnly: true,
+        managedKeys: { enableManagedSandboxOnly: { managed: true, managedBy: "paperclip-cloud" } },
+      });
+      expect(evaluateExecutionAllowlist(
+        { managedSandboxOnly: experimental.enableManagedSandboxOnly },
+        { driver: "local", provider: null },
+      )).toMatchObject({ allowed: false, deniedDriver: "local" });
+    }
+  });
+
+  it("lets staging override managed defaults, persists toggles, and preserves other defaults", async () => {
+    const row = settingsRow({});
+    const { db, persistedSets } = stubDb(row);
+    const runtimeEnv = {
+      ...managedEnv(JSON.stringify({
+        v: 1, mode: "cloud", catalogVersion: "test",
+        features: { enableStatusCards: true, enableChatConnectors: false, enableNativeRunner: true },
+        plugins: { autoInstall: [] },
+      })),
+      PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app",
+    };
+    const service = instanceSettingsService(db, { runtimeEnv });
+    expect(await service.getExperimental()).toMatchObject({
+      enableStatusCards: true, enableChatConnectors: false, enableNativeRunner: true, managedKeys: {},
+    });
+    expect(persistedSets).toHaveLength(0);
+
+    for (const enabled of [true, false]) {
+      const updated = await service.updateExperimental({ enableChatConnectors: enabled, enableNativeRunner: enabled });
+      Object.assign(row, persistedSets.at(-1));
+      const expected = {
+        enableStatusCards: true, enableChatConnectors: enabled, enableNativeRunner: enabled, managedKeys: {},
+      };
+      expect(updated.experimental).toMatchObject(expected);
+      const restored = instanceSettingsService(db, { runtimeEnv });
+      expect(await restored.getExperimental()).toMatchObject(expected);
+      expect((await restored.get()).experimental).toMatchObject(expected);
+      expect(row.experimental).not.toHaveProperty("managedKeys");
+      expect(row.experimental).not.toHaveProperty("enableStatusCards");
+    }
+
+    const changedDefaults = instanceSettingsService(db, { runtimeEnv: {
+      ...runtimeEnv,
+      PAPERCLIP_MANAGED_CONFIG: JSON.stringify({
+        v: 1, mode: "cloud", catalogVersion: "test",
+        features: { enableStatusCards: false, enableChatConnectors: true, enableNativeRunner: true },
+        plugins: { autoInstall: [] },
+      }),
+    } });
+    expect(await changedDefaults.getExperimental()).toMatchObject({
+      enableStatusCards: false, enableChatConnectors: false, enableNativeRunner: false,
+    });
+
+    const production = instanceSettingsService(db, { runtimeEnv: { ...runtimeEnv, PAPERCLIP_PRIMARY_HOST: "team.paperclip.app" } });
+    expect(await production.getExperimental()).toMatchObject({
+      enableChatConnectors: false, enableNativeRunner: true,
+      managedKeys: { enableChatConnectors: { managed: true }, enableNativeRunner: { managed: true } },
+    });
+  });
+
+  it("preserves Cloud owner access policy on staging", async () => {
+    const { db } = stubDb(settingsRow({ enableOwnerInstanceAdmin: false }));
+    const service = instanceSettingsService(db, { runtimeEnv: {
+      PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app",
+      ...managedEnv(JSON.stringify({
+        v: 1, mode: "cloud", catalogVersion: "test",
+        features: { enableOwnerInstanceAdmin: true }, plugins: { autoInstall: [] },
+      })),
+    } });
+    expect(await service.getExperimental()).toMatchObject({
+      enableOwnerInstanceAdmin: true,
+      managedKeys: { enableOwnerInstanceAdmin: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    expect((await service.updateExperimental({ enableOwnerInstanceAdmin: false })).experimental.enableOwnerInstanceAdmin).toBe(true);
+  });
+
   it.each([{}, { enableMcpAggregators: false }])("keeps aggregators on with legacy stored and managed values: %j", async (stored) => {
     const { db } = stubDb(settingsRow({ ...stored, enableChatConnectors: true }));
     const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
@@ -129,9 +222,9 @@ describe("instanceSettingsService managed overlay", () => {
 
     const experimental = await svc.getExperimental();
     expect(experimental.enableApps).toBe(true);
-    expect(experimental.enablePipelines).toBe(true);
+    expect(experimental.enableStatusCards).toBe(true);
     expect(experimental.managedKeys).toEqual({
-      enablePipelines: { managed: true, managedBy: "paperclip-cloud" },
+      enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
     });
   });
 
@@ -169,13 +262,13 @@ describe("instanceSettingsService managed overlay", () => {
     // managed document's historical value.
     expect(persisted.enableApps).toBe(true);
     // The overlay-added value is not written.
-    expect(persisted.enablePipelines).toBe(false);
+    expect(persisted.enableStatusCards).toBe(false);
     expect(persisted.enableCases).toBe(true);
     expect(persisted).not.toHaveProperty("managedKeys");
 
     // The response still reflects the overlay.
     expect(updated.experimental.enableApps).toBe(true);
-    expect(updated.experimental.enablePipelines).toBe(true);
+    expect(updated.experimental.enableStatusCards).toBe(true);
     expect(updated.experimental.managedKeys?.enableApps).toBeUndefined();
   });
 

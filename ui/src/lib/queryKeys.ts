@@ -1,4 +1,8 @@
 export const queryKeys = {
+  agentCommentary: {
+    list: (companyId: string, filters: object) => ["agent-commentary", companyId, "list", filters] as const,
+    detail: (companyId: string, id: string | null) => ["agent-commentary", companyId, "detail", id] as const,
+  },
   skillSources: {
     projects: (companyId: string) => ['project-skill-repositories', companyId] as const,
     preview: (companyId: string, repositoryUrl: string, connectionId: string | null, commitSha: string | null, skillPath: string, filePath: string) => ['skill-sources', companyId, 'preview', repositoryUrl, connectionId, commitSha, skillPath, filePath] as const,
@@ -361,6 +365,9 @@ export const queryKeys = {
         "execution-workspace",
         executionWorkspaceId,
       ] as const,
+    summaries: (companyId: string) => ["issues", companyId, "summaries"] as const,
+    summaryBatch: (companyId: string, userId: string | null | undefined, sortedIds: readonly string[]) =>
+      ["issues", companyId, "summaries", userId ?? "__local_board__", sortedIds] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     commentsList: (issueId: string) =>
@@ -462,39 +469,6 @@ export const queryKeys = {
   folders: {
     list: (companyId: string, kind: string) =>
       ["folders", companyId, kind] as const,
-  },
-  pipelines: {
-    list: (companyId: string) => ["pipelines", companyId] as const,
-    detail: (pipelineId: string) =>
-      ["pipelines", "detail", pipelineId] as const,
-    cases: (pipelineId: string) => ["pipelines", "cases", pipelineId] as const,
-    caseDetail: (caseId: string) => ["pipelines", "item", caseId] as const,
-    caseChildren: (caseId: string) =>
-      ["pipelines", "item", caseId, "children"] as const,
-    caseEvents: (caseId: string) =>
-      ["pipelines", "item", caseId, "events"] as const,
-    caseIssueLinks: (caseId: string) =>
-      ["pipelines", "item", caseId, "issue-links"] as const,
-    caseOutputs: (caseId: string) =>
-      ["pipelines", "item", caseId, "outputs"] as const,
-    caseDocument: (caseId: string, key: string) =>
-      ["pipelines", "item", caseId, "document", key] as const,
-    caseDocumentRevisions: (caseId: string, key: string) =>
-      ["pipelines", "item", caseId, "document-revisions", key] as const,
-    intakeForm: (pipelineId: string) =>
-      ["pipelines", "intake-form", pipelineId] as const,
-    health: (pipelineId: string) =>
-      ["pipelines", "health", pipelineId] as const,
-    document: (pipelineId: string, key: string) =>
-      ["pipelines", "document", pipelineId, key] as const,
-    documentRevisions: (pipelineId: string, key: string) =>
-      ["pipelines", "document-revisions", pipelineId, key] as const,
-    attention: (companyId: string) =>
-      ["pipelines", "attention", companyId] as const,
-    reviewCases: (companyId: string) =>
-      ["pipelines", "review-cases", companyId] as const,
-    learnings: (companyId: string, offset: number) =>
-      ["pipelines", "learnings", companyId, offset] as const,
   },
   executionWorkspaces: {
     list: (

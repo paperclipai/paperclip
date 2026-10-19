@@ -164,3 +164,25 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: API exists; no dedicated timeline tool is necessary for this requirement.
+
+## `agent-commentary`
+
+Review: `baseline`.
+
+API: `present` — `GET /api/companies/{companyId}/agent-commentary` and
+`GET /api/companies/{companyId}/agent-commentary/{id}`.
+
+Agent access: `restricted` — the browsing API is board-only. Agent submission
+continues through the existing POST and native submit tools.
+
+Policy: Company membership, `audit:view_agent_actions`, and source-task visibility. Counts and previews
+use the same visibility predicate as full messages; cross-company IDs return 404.
+Feedback stays hidden after source-task deletion, even when its task foreign key clears.
+
+Evidence: `source-only` — [routes](../../server/src/routes/agent-commentary.ts) and
+[reader](../../server/src/services/agent-commentary-reader.ts).
+
+Verification: `not-run` for a deployed instance. Test list/detail denials with
+agent credentials, another company, and an unreadable task.
+
+Gaps: Storybook simulates the API and does not qualify deployed authorization.

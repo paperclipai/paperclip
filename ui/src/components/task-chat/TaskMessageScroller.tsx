@@ -118,7 +118,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
 
   const rememberAnchor = useCallback(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
     const rect = el.getBoundingClientRect();
     anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
     if (initialPositionApplied.current) navigation.remember(el.scrollTop, anchorRef.current);
@@ -126,7 +126,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
 
   const reconcileContent = useCallback(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
     // Clicking latest is an explicit follow intent. If content or the composer
     // changes during its glide, finish at the new bottom instead of restoring
     // the old reading anchor and cancelling the browser's smooth scroll.
@@ -144,6 +144,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   }, [rememberAnchor, scrollToBottom, hidePill]);
 
   const handleScroll = useCallback(() => {
+    if (!ref.current?.clientHeight) return;
     rememberAnchor();
     showScrollbarWhileScrolling();
     // A growing composer shrinks this viewport. Some browsers dispatch the
@@ -246,7 +247,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       appliedNavigation.current = { key: navigation.key, hash: navigation.hash };
       initialPositionApplied.current = false;
     }
-    if (el && navigation.ready && !initialPositionApplied.current) {
+    if (el && el.clientHeight > 0 && navigation.ready && !initialPositionApplied.current) {
       const top = navigation.initialPosition(el, el.getBoundingClientRect().top, el.scrollTop);
       if (top !== null) {
         el.scrollTop = top;

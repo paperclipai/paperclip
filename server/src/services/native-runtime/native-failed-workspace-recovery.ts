@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
@@ -6,12 +6,15 @@ import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
+import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { logger } from "../../middleware/logger.js";
 
 export async function preserveNativeFailedWorkspace(db: Db, selected: typeof heartbeatRuns.$inferSelect, options: { allowPreterminal?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
   if (readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)?.state !== "prepared") return;
   const issueId = selected.nativeIssueId ?? selected.issueId ?? selected.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return;
   return db.transaction(async tx => {
+    await tx.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
     const [task] = await tx.select({ id: issues.id }).from(issues).where(and(
       eq(issues.id, issueId), eq(issues.companyId, selected.companyId),
     )).for("update");
@@ -74,4 +77,50 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: typeof hea
     });
     return retained;
   });
+}
+
+const cancelledWorkspaceCursors = new WeakMap<Db, string>();
+
+/** Older controllers could acknowledge Stop without pinning prepared files.
+ * Record only the file obligation; the existing stop-only cleanup worker owns
+ * provider teardown. This never resumes a turn or changes the task's status. */
+export async function preserveCancelledNativeWorkspaces(db: Db) {
+  const select = (cursor?: string) => db.selectDistinct({ runId: heartbeatRuns.id })
+    .from(environmentLeases).innerJoin(heartbeatRuns, and(
+      eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, environmentLeases.companyId),
+    )).innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+      eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId), eq(nativeRunFinalizations.issueId, heartbeatRuns.nativeIssueId)))
+    .where(and(or(eq(environmentLeases.status, "active"), and(
+      inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral"),
+    )), eq(heartbeatRuns.runtimeMode, "native"),
+      eq(heartbeatRuns.status, "cancelled"), eq(nativeRunFinalizations.phase, "terminal_failure"),
+      isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
+      sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'`,
+      sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'`,
+      cursor ? gt(heartbeatRuns.id, cursor) : undefined,
+    )).orderBy(asc(heartbeatRuns.id)).limit(5);
+  let candidates = await select(cancelledWorkspaceCursors.get(db));
+  if (!candidates.length) {
+    cancelledWorkspaceCursors.delete(db);
+    candidates = await select();
+  }
+  for (const candidate of candidates) {
+    cancelledWorkspaceCursors.set(db, candidate.runId);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
+    if (run && hasAcknowledgedNativeStopIntent(run)) {
+      try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true }); }
+      catch (error) {
+        if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
+        let current: unknown = error;
+        let code: string | null = null;
+        for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+          const value = current as { code?: unknown; cause?: unknown };
+          if (value.code === "55P03" || value.code === "57014") { code = value.code; break; }
+          current = value.cause;
+        }
+        if (!code) throw error;
+        logger.warn({ runId: run.id, code }, "Cancelled native workspace retention is waiting for its current owner");
+      }
+    }
+  }
 }

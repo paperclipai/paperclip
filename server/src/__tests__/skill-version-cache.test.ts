@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues, nativeRunFinalizations, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, nativeRunFinalizations, environmentLeases, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.js";
 import { skillVersionCachePaths, touchSkillVersionCache, withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
+import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 async function sweepSkillVersionCache(db: ReturnType<typeof createDb>, options: { companyId: string; now?: number; dryRun?: boolean }) {
   const result = await skillVersionRetentionService(db).pruneCompany(options.companyId, { dryRun: options.dryRun, now: options.now === undefined ? undefined : new Date(options.now) });
   return { ...result, evicted: result.removed };
@@ -135,6 +137,88 @@ describePostgres("immutable skill version cache", () => {
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
   });
+
+  it("releases settled interrupted runs but preserves unfinished execution and cleanup", async () => {
+    const f = await fixture();
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    const run = await activeRun(f.companyId, null);
+    await db.update(heartbeatRuns).set({ status: "interrupted" }).where(eq(heartbeatRuns.id, run.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.unknown_run_pins).toBe(1);
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, run.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.unknown_run_pins).toBe(1);
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(0) }).where(eq(heartbeatRuns.id, run.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run.id,
+      status: "pending_cleanup", cleanupStatus: "failed" }).returning();
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.unknown_run_pins).toBe(1);
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, lease!.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+  });
+
+  async function legacyNativeRun(companyId: string, skills: Array<{ key: string; versionId: string | null }> = []) {
+    const run = await activeRun(companyId, null);
+    const [issue] = await db.insert(issues).values({ companyId, title: "Saved native selection" }).returning();
+    const runtimeContext = nativeRuntimeContextFixture();
+    runtimeContext.skills = skills.map((skill, index) => ({ ...skill, runtimeName: `skill-${index}`, bundle: runtimeContext.instructions.bundle }));
+    runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+    const execution = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v3",
+      binding: { companyId, runId: run.id, agentId: run.agentId, issueId: issue!.id, executionWorkspaceId: run.id },
+      task: { identifier: "CACHE-1", title: "Saved selection", description: null, prompt: "Read saved skills", workMode: "standard" },
+      workspace: { cwd: "/tmp", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: null, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      provider: { kind: "codex", model: null },
+      completionContract: { id: "contract", sha256: "saved", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Read saved skills", criteria: [{ id: "read", requirement: "Read skills" }] } },
+      interactionResponses: [], credentialBindings: [], executionMode: "default", planningContext: null, runtimeContext,
+    });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, status: "failed", finishedAt: new Date(),
+      runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue!.id, runId: run.id,
+      phase: "terminal_failure", recoveryState: "blocked" });
+    return { run, execution };
+  }
+
+  it.each([false, true])("uses the legacy native manifest without changing unresolved recovery (bundled skill: %s)", async bundled => {
+    const f = await fixture();
+    const old = await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    const { run } = await legacyNativeRun(f.companyId, bundled ? [{ key: "paperclipai/paperclip/slack", versionId: null }] : []);
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.contextSnapshot).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Upstream unavailable"))));
+    expect(await f.resolve(f.versions[0]!.id)).toMatchObject({ source: old.source });
+  });
+
+  it("preserves exact legacy manifest pins", async () => {
+    const f = await fixture();
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    await legacyNativeRun(f.companyId, [{ key: f.key, versionId: f.versions[0]!.id }]);
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.protected_version).toBe(1);
+  });
+
+  it.each(["companyId", "runId", "agentId", "issueId", "digest", "missing", "invalid_version", "invalid_pins", "legacy_adapter"])(
+    "fails closed for unusable native selection evidence (%s)", async invalid => {
+      const f = await fixture();
+      await f.resolve(f.versions[0]!.id);
+      await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+      const { run, execution } = await legacyNativeRun(f.companyId,
+        invalid === "invalid_version" ? [{ key: f.key, versionId: "not-a-version" }] : []);
+      if (["companyId", "runId", "agentId", "issueId"].includes(invalid)) Object.assign(execution.binding, { [invalid]: randomUUID() });
+      if (invalid === "digest" && "runtimeContext" in execution) execution.runtimeContext.aggregateDigest = "f".repeat(64);
+      await db.update(heartbeatRuns).set({
+        runnerProfileJson: invalid === "missing" ? {} : { nativeExecutionInput: execution },
+        ...(invalid === "invalid_pins" ? { contextSnapshot: { skillVersions: null } } : {}),
+        ...(invalid === "legacy_adapter" ? { runtimeMode: "legacy" } : {}),
+      }).where(eq(heartbeatRuns.id, run.id));
+      expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.unknown_run_pins).toBe(1);
+    },
+  );
 
   it("serializes eviction behind preparation and durable pinning across database clients", async () => {
     const f = await fixture();

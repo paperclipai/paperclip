@@ -202,6 +202,9 @@ describe("durable, authorized connection routing", () => {
     expect(changed.binding).toEqual(first.binding); expect(changed.runtimeConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high" }); expect(changed.notes).toHaveLength(1);
     const claude = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { model: "gpt-5.6-sol", modelReasoningEffort: "ultra" });
     expect(claude.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }); expect(claude.notes).toHaveLength(2);
+    const claudeEffort = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.notes).toEqual([]);
     const overrides = applyAiConnectionRouterTaskSettings({ model: "claude-sonnet-5", effort: "invalid", cwd: "/fixture" }, changed);
     const native = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: projectPaperclipRunnerTaskConfig("codex_app_server", changed.runtimeConfig, overrides) });
     expect(native).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", codexReasoningEffort: "high" });

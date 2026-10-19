@@ -21,6 +21,7 @@ import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
+import { loadRepositoryRootReaders, requiresAnonymousRepositoryAcquisition, rootReaderRunColumns } from "./execution-workspace-root-readers.js";
 
 import { canonicalRepositoryRoot, resolveRepositoryRoots, repositoryRootsOverlap, legacyRepositoryRootMayMatch, configuredWorkspaceRoot, verifiedIsolatedWorktree, unusedIsolatedCopyTarget, isolatedWorkspaceSourceRoots, type WorkspaceSourceCopyKind } from "./execution-workspace-source-roots.js";
 export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
@@ -28,6 +29,7 @@ export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 const execFile = promisify(execFileCallback);
 type RepositoryRow = typeof executionWorkspaceRepositories.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type RootProject = Pick<typeof projects.$inferSelect, "id" | "companyId" | "executionWorkspacePolicy">;
 
 function repositoryAccessKeys(entries: Array<Pick<typeof executionWorkspaceRepositoryAccess.$inferSelect, "kind" | "scopeId">>) {
   return new Set(entries.map(entry => `${entry.kind}:${entry.scopeId}`));
@@ -52,11 +54,6 @@ async function retainRepositorySources(tx: DbTransaction,
 
 const controllerAcquisitionMessage = "New controller repository acquisition requires a trusted task. Existing verified public checkouts remain available.";
 const lowTrustRepositoryMessage = "Low-trust repository reuse permits anonymous public URLs only; new acquisition is unavailable. Use an authorized configured source for private repositories.";
-const rootReaderRunColumns = {
-  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-  responsibleUserId: heartbeatRuns.responsibleUserId, nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
-  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId', 'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy')`,
-};
 
 function resolveAcquisitionSource(request: PrepareWorkspaceRepository["repository"], available: ProjectRepository[], anonymousOnly: boolean) {
   if (anonymousOnly && request.kind === "catalog") throw forbidden(lowTrustRepositoryMessage);
@@ -233,19 +230,6 @@ async function assertRootProjectsReadAccessForActors(db: Db | DbTransaction, act
   }
 }
 
-async function retainedRootReader(tx: DbTransaction, companyId: string, reader: Pick<typeof executionWorkspaceRepositoryAccess.$inferSelect, "scopeId" | "issueId" | "agentId" | "responsibleUserId">) {
-  const [run] = await measureRunPhase("workspace.sources.inventory", async () => tx.select(rootReaderRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, reader.scopeId), eq(heartbeatRuns.companyId, companyId))));
-  const [agent] = reader.agentId ? await measureRunPhase("workspace.sources.inventory", async () => tx.select({ id: agents.id }).from(agents).where(and(eq(agents.id, reader.agentId!), eq(agents.companyId, companyId)))) : [];
-  const [issue] = reader.issueId ? await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(issues).where(and(eq(issues.id, reader.issueId!), eq(issues.companyId, companyId)))) : [];
-  if (!run || !agent || !issue || run.agentId !== reader.agentId || run.responsibleUserId !== reader.responsibleUserId
-    || (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId) !== reader.issueId) {
-    throw forbidden("Repository root retains a reader whose identity is no longer available");
-  }
-  const actor: AuthorizationActor = { type: "agent", source: "agent_jwt", companyId,
-    agentId: reader.agentId!, runId: reader.scopeId, onBehalfOfUserId: reader.responsibleUserId === "local-board" ? null : reader.responsibleUserId };
-  return { actor, issue };
-}
-
 export async function lockExecutionWorkspaceRootProvenance(tx: DbTransaction, companyId: string) {
   await measureRunPhase("workspace.provenance_lock", () => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`task-repository-roots:${companyId}`}, 0))`));
 }
@@ -305,8 +289,7 @@ async function retainGitMetadataOwners(tx: DbTransaction, input: {
   const workspaceIds = new Set([...closure.sourceIds, ...input.workspaceIds]);
   const projectIds = new Set([...closure.sourceProjectIds, ...input.projectIds]);
   const readerActors: AuthorizationActor[] = [];
-  for (const reader of closure.overlappingEntries.filter(entry => entry.kind === "reader")) {
-    const { actor } = await measureRunPhase("workspace.readers.identity", () => retainedRootReader(tx, input.companyId, reader));
+  for (const { actor } of await loadRepositoryRootReaders(tx, input.companyId, closure.overlappingEntries.filter(entry => entry.kind === "reader"))) {
     readerActors.push(actor);
   }
   await measureRunPhase("workspace.readers.projects", () => assertRootProjectsReadAccessForActors(tx, readerActors, input.companyId, projectIds));
@@ -394,8 +377,7 @@ export async function retainIsolatedWorkspaceSourceAccess(db: Db, input: {
       await measureRunPhase("workspace.readers.projects", () => assertRootProjectAccess(tx, input.actor!, input.companyId, target.sourceProjectIds,
         { sharedProjectIds: target.sharedProjectIds, issueId: input.issueId }));
       const readerActors: AuthorizationActor[] = [];
-      for (const reader of target.overlappingEntries.filter(entry => entry.kind === "reader")) {
-        const { actor, issue } = await measureRunPhase("workspace.readers.identity", () => retainedRootReader(tx, input.companyId, reader));
+      for (const { actor, issue } of await loadRepositoryRootReaders(tx, input.companyId, target.overlappingEntries.filter(entry => entry.kind === "reader"))) {
         readerActors.push(actor);
         await measureRunPhase("workspace.readers.trust", () => assertRootProjectTrust(tx, { companyId: input.companyId, actor, issueId: issue.id, projectIds: target.sourceProjectIds }));
       }
@@ -419,11 +401,11 @@ export type TaskWorkspaceCreationTrustContext = {
 async function assertRootProjectTrust(db: Db | DbTransaction, input: {
   companyId: string; projectIds: Set<string>; actor: AuthorizationActor;
   issueId?: string | null; sourceWorkspaceId?: string; assigneeAgentId?: string | null; taskCreation?: TaskWorkspaceCreationTrustContext;
-}) {
+}, owners?: RootProject[]) {
   if (!input.projectIds.size) return;
-  const owners = await db.select().from(projects).where(and(eq(projects.companyId, input.companyId),
+  const sourceOwners = owners ?? await db.select().from(projects).where(and(eq(projects.companyId, input.companyId),
     or(...[...input.projectIds].map(id => eq(projects.id, id)))));
-  const restricted = owners.filter(owner => resolveCoreTrustPreset({ companyId: input.companyId, workspaceSourceProject: owner }).kind !== "standard");
+  const restricted = sourceOwners.filter(owner => resolveCoreTrustPreset({ companyId: input.companyId, workspaceSourceProject: owner }).kind !== "standard");
   if (!restricted.length) return;
   const incompatible = () => forbidden("Physical workspace source trust is incompatible with the task's execution policy");
   const runId = input.actor.runId;
@@ -514,13 +496,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
     const [workspaceSourceProject] = workspace?.projectId ? await reader.select().from(projects).where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, issue.companyId))) : [];
     const runId = input.runId ?? issue.executionRunId;
     const [run] = runId ? await reader.select(rootReaderRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId))) : [];
-    if (runId && (!run || (input.runId && run.agentId !== agentId) || (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId) !== issue.id)) {
-      throw forbidden("Task repository run identity is unavailable");
-    }
-    const trust = resolveCoreTrustPreset({ companyId: issue.companyId, agent, project, workspaceSourceProject, issue,
-      run: run ? { companyId: run.companyId, executionPolicy: run.contextSnapshot?.executionPolicy } : null });
-    if (trust.kind === "denied") throw forbidden(trust.detail);
-    return trust.kind === "low_trust_review";
+    return requiresAnonymousRepositoryAcquisition({ companyId: issue.companyId, issue, agent, project,
+      workspaceSourceProject, run, agentId, runId, explicitRunId: input.runId });
   }
   async function assertCurrentControllerAcquisition(input: { companyId: string; issueId: string; workspaceId: string; agentId: string; runId: string }) {
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
@@ -589,10 +566,20 @@ export function executionWorkspaceRepositoryService(db: Db) {
     const sourceActors: AuthorizationActor[] = [];
     const projectReaders: AuthorizationActor[] = [];
     await measureRunPhase("workspace.readers", async () => {
-      for (const reader of readers) {
-        const { actor, issue } = await measureRunPhase("workspace.readers.identity", () => retainedRootReader(tx, input.companyId, reader));
+      const identities = await loadRepositoryRootReaders(tx, input.companyId, readers);
+      const projectIds = [...new Set([...sourceProjectIds, ...sourceProjects.flatMap(source => source.projectId ? [source.projectId] : []),
+        ...identities.flatMap(reader => reader.issue.projectId ? [reader.issue.projectId] : [])])];
+      const projectRows: RootProject[] = [];
+      for (let offset = 0; offset < projectIds.length; offset += 500) {
+        projectRows.push(...await measureRunPhase("workspace.sources.inventory", () => tx.select({ id: projects.id,
+          companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects).where(and(
+          eq(projects.companyId, input.companyId), inArray(projects.id, projectIds.slice(offset, offset + 500))))));
+      }
+      const projectsById = new Map(projectRows.map(project => [project.id, project]));
+      const sourceOwners = projectRows.filter(project => sourceProjectIds.has(project.id));
+      for (const { entry: reader, actor, issue, agent, run } of identities) {
         await measureRunPhase("workspace.readers.trust", () => assertRootProjectTrust(tx, { companyId: input.companyId, projectIds: sourceProjectIds, actor, issueId: issue.id,
-          sourceWorkspaceId: input.reader?.runId === reader.scopeId ? input.sourceWorkspaceId : undefined }));
+          sourceWorkspaceId: input.reader?.runId === reader.scopeId ? input.sourceWorkspaceId : undefined }, sourceOwners));
         if (input.reader?.runId === reader.scopeId) {
           await measureRunPhase("workspace.readers.projects", () => assertRootProjectAccess(tx, actor, input.companyId, sourceProjectIds, { sharedProjectIds, issueId: issue.id }));
         } else projectReaders.push(actor);
@@ -606,7 +593,10 @@ export function executionWorkspaceRepositoryService(db: Db) {
           if (!ownSource) throw forbidden("Task workspace access is no longer available");
         } else sourceActors.push(actor);
         for (const sourceWorkspace of sourceProjects.length ? sourceProjects : [null]) {
-          if (await requiresAnonymousAcquisition(tx, { issue, workspace: sourceWorkspace, agentId: reader.agentId!, runId: reader.scopeId })) {
+          if (requiresAnonymousRepositoryAcquisition({ companyId: input.companyId, issue, agent, run,
+            agentId: reader.agentId, runId: reader.scopeId, explicitRunId: reader.scopeId,
+            project: issue.projectId ? projectsById.get(issue.projectId) : undefined,
+            workspaceSourceProject: sourceWorkspace?.projectId ? projectsById.get(sourceWorkspace.projectId) : undefined })) {
             await reserveRootPolicy(tx, input.companyId, canonicalCwd, "anonymous_only");
           }
         }
@@ -721,9 +711,9 @@ export function executionWorkspaceRepositoryService(db: Db) {
     }
     await requiresAnonymousAcquisition(tx, { issue, workspace, agentId: input.agentId, runId: input.runId });
     const [run] = await measureRunPhase("workspace.sources.inventory", async () => tx.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId))));
-    const { actor } = await measureRunPhase("workspace.readers.identity", () => retainedRootReader(tx, input.companyId, {
+    const [{ actor }] = await loadRepositoryRootReaders(tx, input.companyId, [{
       scopeId: input.runId, issueId: input.issueId, agentId: input.agentId, responsibleUserId: run?.responsibleUserId ?? null,
-    }));
+    }]);
     return { workspace, actor };
   }
   async function guardForPublication(input: PublicationInput) {

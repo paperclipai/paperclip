@@ -62,7 +62,6 @@ export function grantsForHumanRole(
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "tasks:assign", scope: null },
-        { permissionKey: "pipelines:write", scope: null },
         { permissionKey: "tools:manage_connections", scope: null },
         { permissionKey: "tools:manage_profiles", scope: null },
         { permissionKey: "tools:manage_runtime", scope: null },

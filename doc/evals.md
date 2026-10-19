@@ -10,6 +10,13 @@ The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
 
+The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
+uses ordinary task APIs and retained native receipts to measure unattended
+receiver behavior. It is a separate manual qualification probe, not a registered
+Product E2E campaign. Synthetic receiver tests cannot qualify personal Muse;
+real setup, clarification and fresh-conversation collaboration remain separate
+release gates.
+
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
 
@@ -404,8 +411,9 @@ Remaining native chat boundaries are in the explicit-only
 `agent-chat-qualification` suite: active task reassignment, user Retry after
 verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
-The 26 native `first-task` cells exercise onboarding before native selection
-becomes the UI default. Live results and semantic answer reviews must accompany
+The 26 native `first-task` cells inspect the production wizard's saved native
+default on qualified targets, without an API runner switch. The 26 Legacy cells
+select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)

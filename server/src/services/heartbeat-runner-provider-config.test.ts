@@ -117,6 +117,16 @@ describe("Paperclip Runner native provider configuration", () => {
       .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
   });
 
+  it.each([true, false])("carries Claude task effort while retaining provider and permissions (explicit agent: %s)", explicitAgent => {
+    const base = { provider: "acpx", ...(explicitAgent ? { acpxAgent: "claude" } : {}), model: "claude-opus-5-5", modelReasoningEffort: "medium", acpxPermissionMode: "deny-all" };
+    const projected = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { effort: "xhigh", provider: "codex", acpxAgent: "pi", acpxPermissionMode: "approve-all" });
+    expect(projected).toEqual({ ...base, modelReasoningEffort: "xhigh" });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: projected })).toMatchObject({ provider: "acpx", acpxAgent: "claude", claudeEffort: "xhigh", acpxPermissionMode: "deny-all" });
+    const changedModel = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "claude-sonnet-5" });
+    expect(changedModel).not.toHaveProperty("modelReasoningEffort");
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, chrome: true } })).toThrow("Legacy runner");
+  });
+
   it("uses an OpenCode task model without changing the Runner provider", () => {
     const projected = projectPaperclipRunnerTaskConfig(
       "opencode_server",

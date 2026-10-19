@@ -1,3 +1,4 @@
+import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
@@ -319,6 +320,14 @@ function mergeManagedEnvironmentMetadata(
     else merged[key] = value;
   }
   return merged;
+}
+
+function preserveInvalidatedSnapshotProofs(replacement: SQL): SQL {
+  const proofs = sql`(select coalesce(jsonb_object_agg(entry.key, entry.value || '{"invalidated":true}'::jsonb), '{}'::jsonb)
+    from jsonb_each(coalesce(${environments.metadata}->${SANDBOX_PLATFORM_PROBE_METADATA_KEY}, '{}'::jsonb)) as entry
+    where entry.value->>'v' = '2')`;
+  return sql`case when ${proofs} = '{}'::jsonb then ${replacement}
+    else coalesce(${replacement}, '{}'::jsonb) || jsonb_build_object(${SANDBOX_PLATFORM_PROBE_METADATA_KEY}::text, ${proofs}) end`;
 }
 
 export function environmentService(db: Db) {
@@ -868,8 +877,11 @@ export function environmentService(db: Db) {
       proof: Record<string, unknown> | null;
     }): Promise<boolean> => {
       const existing = sql`coalesce(${environments.metadata}->${SANDBOX_PLATFORM_PROBE_METADATA_KEY}, '{}'::jsonb)`;
+      const previous = sql`${existing}->${input.companyId}`;
       const probes = input.proof === null
-        ? sql`${existing} - ${input.companyId}`
+        ? sql`case when ${previous}->>'v' = '2'
+          then jsonb_set(${existing}, ARRAY[${input.companyId}]::text[], ${previous} || '{"invalidated":true}'::jsonb, true)
+          else ${existing} - ${input.companyId} end`
         : sql`${existing} || ${JSON.stringify({ [input.companyId]: input.proof })}::jsonb`;
       const rows = await db.update(environments).set({
         metadata: sql`jsonb_set(coalesce(${environments.metadata}, '{}'::jsonb), ARRAY[${SANDBOX_PLATFORM_PROBE_METADATA_KEY}]::text[], ${probes}, true)`,
@@ -1141,7 +1153,8 @@ export function environmentService(db: Db) {
         const userMetadata = withoutManagedEnvironmentArchiveToken(patch.metadata ?? null);
         if (userMetadata) delete userMetadata[SANDBOX_PLATFORM_PROBE_METADATA_KEY];
         if (changesTarget) {
-          values.metadata = userMetadata;
+          const replacement = userMetadata === null ? sql`null::jsonb` : sql`${JSON.stringify(userMetadata)}::jsonb`;
+          metadataUpdate = preserveInvalidatedSnapshotProofs(replacement);
         } else {
           const replacement = userMetadata === null ? sql`null::jsonb` : sql`${JSON.stringify(userMetadata)}::jsonb`;
           metadataUpdate = sql`case when ${environments.metadata} ? ${SANDBOX_PLATFORM_PROBE_METADATA_KEY}
@@ -1151,7 +1164,7 @@ export function environmentService(db: Db) {
         }
       } else if (changesTarget || patch.status !== undefined) {
         metadataUpdate = sql`${environments.metadata} - ${MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_METADATA_KEY}`;
-        if (changesTarget) metadataUpdate = sql`${metadataUpdate} - ${SANDBOX_PLATFORM_PROBE_METADATA_KEY}`;
+        if (changesTarget) metadataUpdate = preserveInvalidatedSnapshotProofs(sql`${metadataUpdate} - ${SANDBOX_PLATFORM_PROBE_METADATA_KEY}`);
       }
 
       const row = await writeDb
@@ -1463,7 +1476,7 @@ export function environmentService(db: Db) {
         releasedAt: null,
         failureReason: null,
         cleanupStatus: null,
-        metadata: input.metadata ?? null,
+        metadata: withoutCleanupVerification(input.metadata),
         createdAt: now,
         updatedAt: now,
       };
@@ -1584,7 +1597,7 @@ export function environmentService(db: Db) {
                     expiresAt: input.expiresAt ?? null,
                     failureReason: null,
                     cleanupStatus: null,
-                    metadata: input.metadata ?? null,
+                    metadata: withoutCleanupVerification(input.metadata),
                     updatedAt: now,
                   })
                   .where(
@@ -1652,6 +1665,11 @@ export function environmentService(db: Db) {
       },
     ) => {
       const now = new Date();
+      const releaseMetadata = options?.remoteExecutionTermination
+        ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
+        : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`;
+      const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
+        && status !== "pending_cleanup";
       const row = await db
         .update(environmentLeases)
         .set({
@@ -1663,9 +1681,9 @@ export function environmentService(db: Db) {
           ...(options?.cleanupStatus !== undefined ? { cleanupStatus: options.cleanupStatus } : {}),
           // A later release without a receipt cannot reuse an earlier stop's
           // authority (for example after a same-run lease resume).
-          metadata: options?.remoteExecutionTermination
-            ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
-            : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`,
+          metadata: cleanupSettled
+            ? sql`coalesce(${releaseMetadata}, '{}'::jsonb) || '{"pendingCleanupInFlight":false,"pendingCleanupLeaseExpiresAtMs":0}'::jsonb`
+            : releaseMetadata,
         })
         .where(and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
           ? and(eq(environmentLeases.status, "pending_cleanup"),
@@ -1739,7 +1757,7 @@ export function environmentService(db: Db) {
             releasedAt: now,
             failureReason: input.failureReason,
             cleanupStatus: "failed",
-            metadata: input.metadata ?? null,
+            metadata: withoutCleanupVerification(input.metadata),
             createdAt: now,
             updatedAt: now,
           })
@@ -1759,7 +1777,7 @@ export function environmentService(db: Db) {
       const row = await db
         .update(environmentLeases)
         .set({
-          metadata,
+          metadata: withoutCleanupVerification(metadata),
           lastUsedAt: new Date(),
           updatedAt: new Date(),
         })

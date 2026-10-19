@@ -289,6 +289,7 @@ export interface RunnerProcessHandle {
   completion: Promise<RunnerProcessResult>;
   processGroupId?: number | null;
   startedAt?: string;
+  isExitConfirmed?(): boolean;
   /** Relaunches the same immutable process specification with a fresh ticket. */
   restart?(ticket: string): RunnerProcessHandle;
 }
@@ -3654,7 +3655,12 @@ export function spawnRunner(options: {
   const environment = runnerEnvironment(options.ticket, options.identity.normalizedSessionId, options.environment);
   const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
     ...handle,
-    restart: (ticket) => spawnRunner({ ...options, ticket }),
+    restart: (ticket) => {
+      if (handle.isExitConfirmed?.() === false) {
+        throw new Error("runner_process_termination_unconfirmed");
+      }
+      return spawnRunner({ ...options, ticket });
+    },
   });
   if (options.processLauncher !== undefined) {
     return withRestart(
@@ -3739,7 +3745,7 @@ export async function waitForProcess(
 ): Promise<RunnerProcessResult> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       handle.completion,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
@@ -3760,6 +3766,10 @@ export async function waitForProcess(
         }, timeoutMs);
       }),
     ]);
+    if (handle.isExitConfirmed?.() === false) {
+      throw new Error("runner_process_termination_unconfirmed");
+    }
+    return result;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

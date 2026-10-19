@@ -57,6 +57,7 @@ export {
   type QualifiedAcpxEnvironmentProbe,
 } from "./drivers/acpx/codex-acpx-driver.js";
 export * from "./drivers/acpx/sidecar-protocol.js";
+export { resolveClaudeEffort } from "./drivers/acpx/claude-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,

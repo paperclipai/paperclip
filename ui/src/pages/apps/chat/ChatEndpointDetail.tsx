@@ -15,6 +15,7 @@ import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
 import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import { agentsApi } from "@/api/agents";
 import { ChatConversationList } from "./ChatConversationList";
+import { GitHubConnectionRecoveryNotice } from "./GitHubConnectionRecovery";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
 import { GitHubBotMention, GitHubAppIdentityActions } from "./GitHubAppIdentity";
 import { GitHubConnectionComplete, type GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
@@ -372,6 +373,7 @@ export function ChatEndpointDetail() {
           {endpoint.status !== "active" && <StatusBadge status={endpoint.status} className={endpoint.provider === "speko" ? "text-foreground" : undefined} />}
         </div>
       </header>
+      {endpoint.provider === "github" && <GitHubConnectionRecoveryNotice endpoint={endpoint} />}
       {activeTab === "settings" && endpoint.provider === "speko" && endpoint.status === "active" && <div className="space-y-6"><SpekoPhoneCallback companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoPhoneLine companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoIncomingCalls companyId={endpoint.companyId} endpointId={endpoint.id} agentId={endpoint.assignedAgentId} /></div>}
       {endpoint.provider === "slack" && <SlackTestMessageButton key={endpoint.id} endpointId={endpoint.id} />}
       {endpoint.provider === "github" && <div hidden={activeTab !== "settings" && activeTab !== "access"}>

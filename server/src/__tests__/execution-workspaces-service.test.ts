@@ -762,6 +762,101 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
+  describe("delivery reads after a pooled disconnect", () => {
+    const issueTreeFields = "id,status,completedAt,cancelledAt,updatedAt";
+    const pullRequestProductFields = "id,url,externalId,title,summary,metadata";
+
+    function disconnected() {
+      return new Error("Failed query", {
+        cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }),
+      });
+    }
+
+    // Fails the first `failuresPerRead` awaits of each delivery read, like a
+    // stale pooled socket, and counts every attempt by projection. Each
+    // attempt builds a fresh query, so recovery must rebuild the read.
+    function flakyDeliveryDb(failuresPerRead: number) {
+      const attempts = new Map<string, number>();
+      const errors: Error[] = [];
+      function failingQuery<T extends object>(query: T, key: string): T {
+        return new Proxy(query, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, target);
+            if (typeof value !== "function") return value;
+            if (prop === "then") {
+              return (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => {
+                const attempt = attempts.get(key) ?? 0;
+                attempts.set(key, attempt + 1);
+                if (attempt >= failuresPerRead) return value.call(target, resolve, reject);
+                const error = disconnected();
+                errors.push(error);
+                return Promise.reject(error).then(resolve, reject);
+              };
+            }
+            return (...args: unknown[]) => {
+              const result = value.apply(target, args);
+              return result === target ? receiver : result;
+            };
+          },
+        });
+      }
+      const flaky = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "select") return Reflect.get(target, prop, receiver);
+          return (fields?: Record<string, unknown>) => {
+            const builder = target.select(fields as never);
+            const key = fields ? Object.keys(fields).join(",") : "";
+            if (key !== issueTreeFields && key !== pullRequestProductFields) return builder;
+            return new Proxy(builder, {
+              get(inner, builderProp) {
+                const value = Reflect.get(inner, builderProp, inner);
+                if (builderProp !== "from" || typeof value !== "function") return value;
+                return (...args: unknown[]) => failingQuery(value.apply(inner, args) as object, key);
+              },
+            });
+          };
+        },
+      });
+      return { db: flaky, attempts, errors };
+    }
+
+    function serviceFor(flakyDb: typeof db) {
+      return executionWorkspaceService(flakyDb, {
+        resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null }
+        ),
+        workspaceReaperCooldownDays: 0,
+      });
+    }
+
+    it("rebuilds the issue tree and pull request reads in close readiness", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const expected = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      const flaky = flakyDeliveryDb(1);
+
+      const readiness = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId);
+
+      expect(readiness).toEqual(expected);
+      expect(readiness?.deliveryState).toBe("merged_via_pr");
+      expect(flaky.errors).toHaveLength(2);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(2);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBe(2);
+    }, 20_000);
+
+    it("propagates a persistent disconnect after three issue tree attempts", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const flaky = flakyDeliveryDb(3);
+
+      const failure = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId)
+        .then(() => null, (error: unknown) => error);
+      expect(flaky.errors).toHaveLength(3);
+      expect(failure).toBe(flaky.errors[2]);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(3);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBeUndefined();
+    }, 20_000);
+  });
+
   async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
     // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor
     // of the base. This workspace landed by ancestry and carries no tracked

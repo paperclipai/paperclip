@@ -944,7 +944,7 @@ describeEmbeddedPostgres("access service", () => {
 
     for (const permissionKey of [
       "agents:create", "agents:configure", "skills:create", "environments:manage",
-      "users:invite", "tasks:assign", "pipelines:write", "tools:manage_connections",
+      "users:invite", "tasks:assign", "tools:manage_connections",
       "tools:manage_profiles", "tools:manage_runtime", "tools:use", "tools:admin",
       "tools:view_audit", "audit:view_agent_actions",
     ] as const) {

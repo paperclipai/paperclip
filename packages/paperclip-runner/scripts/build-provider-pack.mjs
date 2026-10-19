@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
+import { removeControllerArtifactsFromProviderPack } from "./provider-pack-runtime-tree.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -117,6 +118,7 @@ try {
   if (deployed.status !== 0) {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
   }
+  removeControllerArtifactsFromProviderPack(temporaryRoot);
 
   // Fail the image build if a bridge silently brings back an older/private
   // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.

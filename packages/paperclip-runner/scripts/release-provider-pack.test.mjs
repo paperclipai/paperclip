@@ -9,7 +9,7 @@ import test from "node:test";
 import profiles from "../acpx-profiles.json" with { type: "json" };
 import distributions from "../cursor-distributions.json" with { type: "json" };
 import { verifyReleaseProviderPack } from "./release-provider-pack.mjs";
-import { existingReleaseProviderPack } from "./stage-release-runner-binaries.mjs";
+import { existingReleaseProviderPack, releaseProviderPackManifest } from "./stage-release-runner-binaries.mjs";
 
 const revision = "a".repeat(40);
 const digest = "sha256:" + "b".repeat(64);
@@ -93,4 +93,57 @@ test("daemon-only assembly retains an existing same-source Linux provider-pack i
     writeFileSync(file, JSON.stringify(seal(wrongTarget)));
     assert.throws(() => existingReleaseProviderPack(root, revision), /Linux x64 target/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function armFixture() {
+  const payload = fixture();
+  payload.target.architecture = "arm64";
+  delete payload.providers;
+  return payload;
+}
+test("ARM pack binds its own target and preserves other providers qualification limits", () => {
+  const pack = seal(armFixture());
+  assert.equal(verifyReleaseProviderPack(pack, revision, "linux-arm64"), pack);
+  assert.throws(() => verifyReleaseProviderPack(pack, revision), /Linux x64 target/);
+  assert.throws(() => verifyReleaseProviderPack(seal(fixture()), revision, "linux-arm64"), /linux-arm64 target/);
+  for (const inventory of ["providers", "candidateProviders"]) {
+    const payload = armFixture(); payload[inventory] = { pi: {} };
+    assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-arm64"), /must not expand/);
+  }
+});
+test("both remote pack identities bind one source and remain separated during assembly", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "release-provider-targets-")));
+  try {
+    for (const [target, payload] of [["linux-x64", fixture()], ["linux-arm64", armFixture()]]) {
+      const file = join(root, target, "provider-pack.json"); mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(seal(payload)));
+    }
+    const entries = releaseProviderPackManifest(root, revision);
+    assert.deepEqual(Object.keys(entries), ["linux-x64", "linux-arm64"]);
+    assert.notEqual(entries["linux-x64"].sha256, entries["linux-arm64"].sha256);
+    assert.throws(() => releaseProviderPackManifest(root, "c".repeat(40)), /release source/);
+    writeFileSync(join(root, "linux-arm64", "provider-pack.json"), JSON.stringify(seal(fixture())));
+    assert.throws(() => releaseProviderPackManifest(root, revision), /linux-arm64 target/);
+    rmSync(join(root, "linux-arm64"), { recursive: true });
+    assert.throws(() => releaseProviderPackManifest(root, revision), /exactly both/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("frozen image validation uses release profiles rather than the newer workflow checkout", () => {
+  const frozenProfiles = structuredClone(profiles);
+  const frozenDistributions = structuredClone(distributions);
+  frozenProfiles.acpxVersion = "frozen-acpx";
+  for (const agent of ["claude", "codex", "grok", "cursor"]) frozenProfiles.profiles[agent].commandDigest = digest;
+  frozenProfiles.profiles.cursor.agentServerVersion = "frozen-cursor";
+  frozenDistributions.platforms["linux-x64"].closureSha256 = "c".repeat(64);
+  const payload = fixture();
+  payload.pins.acpx = frozenProfiles.acpxVersion;
+  for (const agent of ["claude", "codex", "grok"]) payload.acpxProfileDigests[agent] = digest;
+  Object.assign(payload.providers.cursor, { version: "frozen-cursor", profileDigest: digest, closureDigest: "sha256:" + "c".repeat(64) });
+  const pack = seal(payload);
+  const expected = { profiles: frozenProfiles, distributions: frozenDistributions };
+  assert.throws(() => verifyReleaseProviderPack(pack, revision), /profiles/);
+  assert.equal(verifyReleaseProviderPack(pack, revision, "linux-x64", expected), pack);
+  payload.acpxProfileDigests.claude = "sha256:" + "d".repeat(64);
+  assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-x64", expected), /profiles/);
 });

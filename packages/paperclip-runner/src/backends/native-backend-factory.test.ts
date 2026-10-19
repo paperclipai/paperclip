@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
 
 const contextRoots: string[] = [];
 afterEach(() => { for (const root of contextRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function preparedExecution(base: NativeExecutionInput): NativeExecutionInput {
+function preparedExecution(base: NativeExecutionInput, version: "v5" | "v7" | "v9" = "v5"): NativeExecutionInput {
   const root = mkdtempSync(join(tmpdir(), "paperclip-prepared-backend-"));
   contextRoots.push(root);
   writeFileSync(join(root, "AGENTS.md"), "Keep assigned instructions.");
@@ -21,7 +21,7 @@ function preparedExecution(base: NativeExecutionInput): NativeExecutionInput {
     skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
   };
   return parseNativeExecutionInput({
-    ...base, schema: "paperclip.native-execution-input.v5", executionMode: "default", planningContext: null,
+    ...base, schema: `paperclip.native-execution-input.${version}`, ...(version === "v5" ? {} : { homeMode: "isolated" }), executionMode: "default", planningContext: null,
     runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     completionContract: { ...base.completionContract, contract: { ...base.completionContract.contract, criteria: [{ id: "objective", requirement: "Complete the task." }] } },
   });
@@ -31,7 +31,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
-import { createCodexNativeSessionBackend } from "./codex-native-backend.js";
+import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 function execution(
@@ -597,8 +597,8 @@ describe("native backend factory", () => {
     ).toThrow("Codex native backend requires provider kind codex");
   });
 
-  it("selects prepared transport only for v5 native input and retains prepared constraints", async () => {
-    const input = preparedExecution(execution());
+  it.each(["v5", "v7", "v9"] as const)("selects prepared transport for %s native input and retains prepared constraints", async version => {
+    const input = preparedExecution(execution(), version);
     const transport = new FakeCodexTransport();
     const backend = createCodexNativeSessionBackend(input, {
       transportFactory: () => transport,
@@ -626,8 +626,49 @@ describe("native backend factory", () => {
     );
   });
 
-  it("projects v5 OpenCode constraints to the prepared runtime boundary", () => {
-    const input = preparedExecution(opencodeExecution());
+  it("allows a completion-only turn after v9 Claude work without wrapping prepared input", async () => {
+    const { qualificationModel: _model, reportedModelId: _reported, permissionPolicy: _policy, ...profile } = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = preparedExecution({ ...acpxExecution("claude"), provider: {
+      kind: "acpx", agent: "claude", model: "claude-opus-5-5", permissionMode: "approve-all", profile,
+    } }, "v9");
+    if (input.schema !== "paperclip.native-execution-input.v9" || input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    input.provider.claudeEffort = "high";
+    const transport = new FakeCodexTransport("thread-1", "provider-session-1", {
+      kind: "acpx", normalizedSessionId: "session", acpxRecordId: "fixture-record",
+      backendSessionId: "fixture-backend", agentSessionId: "fixture-agent",
+      profileDigest: `sha256:${"a".repeat(64)}`, workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: input.provider.model, effectiveModel: input.provider.model, permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [60001, 60002, 60003],
+    });
+    const backend = createRunnerdNativeSessionBackend(input, {
+      transportFactory: () => transport,
+      environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const session = await backend.openSession({
+      identity: { companyId: "company", agentId: "agent", runId: "run", sessionId: "session" },
+      workingDirectory: WORKSPACE,
+    });
+    const first = JSON.stringify(buildNativeModelEnvelope(input));
+    const completion = "Call paperclip_finish with the result of the work already completed.";
+    try {
+      for (const [index, text] of [first, completion].entries()) {
+        transport.turnStartResponse = Promise.resolve({ turn: { id: `turn-${index + 1}`, status: "inProgress", items: [] } });
+        const turn = await session.startTurn({ message: { role: "user", text } });
+        transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+        for await (const event of session.events()) {
+          if (["turn.completed", "turn.failed", "turn.cancelled"].includes(event.eventType)) break;
+        }
+      }
+      const turns = transport.calls.filter(call => call.method === "turn/start");
+      expect(turns.map(call => call.params.input)).toEqual([first, completion].map(text => [{ type: "text", text, text_elements: [] }]));
+      expect(backend.preparedTaskConstraints).toEqual(expect.arrayContaining([expect.stringContaining("Obtain one accepted result")]));
+    } finally {
+      await session.close({ reason: "test-completed" });
+    }
+  });
+
+  it.each(["v5", "v7", "v9"] as const)("projects %s OpenCode constraints to the prepared runtime boundary", version => {
+    const input = preparedExecution(opencodeExecution(), version);
     const backend = createOpenCodeNativeSessionBackend(input, {
       runtimeDirectory: "/tmp/paperclip-opencode-prepared-factory",
     });

@@ -107,7 +107,7 @@ it("offers one Codex harness without a runner/provider tile", async () => {
   expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
   expect(document.querySelector("select")).toBeNull();
 });
-it.each(["claude", "grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
+it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
   await act(async () => (document.querySelector("summary") as HTMLElement).click());
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Experimental harness"]')!.click());

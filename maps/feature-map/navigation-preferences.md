@@ -70,3 +70,11 @@ Scope: browser
 Storybook: A NotFound rendering story can help polish, but missing-resource/legacy-deep-link capability principally needs real App/router/browser scenarios preserving company and query intent.
 Production: Cold-open invalid company/resource and retired URL; verify explicit fallback or correct canonical redirect without silently targeting a different resource/company.
 Sources: Source: [NotFound.tsx](../../ui/src/pages/NotFound.tsx), [App.tsx](../../ui/src/App.tsx), [company-routes.ts](../../ui/src/lib/company-routes.ts). Tests: [App.activity-routing.test.tsx](../../ui/src/App.activity-routing.test.tsx), [App.cases-routing.test.tsx](../../ui/src/App.cases-routing.test.tsx), [App.test.tsx](../../ui/src/App.test.tsx), [company-routes.test.ts](../../ui/src/lib/company-routes.test.ts)
+
+### Recent task refresh performance
+
+Saved recent tasks render immediately. One summary batch refreshes at most five
+IDs per company/account without passive full-detail or workspace inspection.
+Successful omissions remove unavailable entries; failed reads preserve history.
+Verify rename, inbox archive, pause/restart, reload, cross-tab updates and account
+switches. Inbox archive does not remove the task from recent history.

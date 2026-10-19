@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { beginIdleTrackedWork, idleWorkSnapshot, isIdleTaskDrainActive, readTaskDrain, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import type { Db } from "@paperclipai/db";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
-afterEach(async () => { for (const c of coordinators.splice(0)) await c.stop(); vi.useRealTimers(); });
+afterEach(async () => { stopTaskDrain(); for (const c of coordinators.splice(0)) await c.stop(); vi.useRealTimers(); });
 function setup() {
   vi.useFakeTimers();
   let outcome = "committed";
@@ -88,6 +90,43 @@ describe("delivery work coordinator", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(t.run).toHaveBeenCalledTimes(3);
     expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it.each([false, true])("pauses passive maintenance through a slow owned backup while preserving new work (%s)", async newWork => {
+    const s = setup(), t = task();
+    s.canRun.mockImplementation(() => !isIdleTaskDrainActive());
+    s.canReconcile.mockReturnValue(true);
+    await s.coordinator.register(DELIVERY_QUEUES.connection, {
+      ...t, nextRunAt: () => Date.now() + 5000, pausePassiveMaintenance: true,
+    }).ready;
+    const drain = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    const getStatus = () => {
+      const current = readTaskDrain(new Date());
+      return { ...current, draining: current !== null, startedAt: current?.startedAt ?? null,
+        expiresAt: current?.expiresAt ?? null, activeRuns: 0, pendingWakes: 0 };
+    };
+    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const checkpoint = async () => {
+      const finish = beginIdleTrackedWork(); entered();
+      try { await new Promise(resolve => setTimeout(resolve, 6000)); return true; }
+      finally { finish(); }
+    };
+    expect(idleWorkSnapshot().active).toBe(0);
+    const scan = readIdleSleepSafety(db, getStatus, Date.now, drain.ownerId, async () => "none", undefined, checkpoint);
+    await Promise.race([started, scan.then(result => { throw new Error(`Backup did not start: ${JSON.stringify(result)}`); })]);
+    expect(idleWorkSnapshot().active).toBe(1);
+    if (newWork) await s.enqueue(DELIVERY_QUEUES.connection);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await scan).toEqual({ version: 1, backgroundWork: newWork ? "unknown" : "none" });
+    expect(t.run).toHaveBeenCalledTimes(1);
+    expect(t.hasPending).toHaveBeenCalledTimes(newWork ? 2 : 1);
+    expect(idleWorkSnapshot().active).toBe(0);
+    stopTaskDrain();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.onError).not.toHaveBeenCalled();
   });
   it("fences unresolved writes until the server settles, then scans and releases the idle hold", async () => {
     const s = setup(), t = task();

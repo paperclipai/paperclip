@@ -6,8 +6,10 @@ export interface AgentRunnerAvailability {
   defaultRunner: AgentRunner;
 }
 
-export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" } | undefined {
-  return harness === "codex_local" ? { provider: "codex" } : undefined;
+export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" } | { provider: "acpx"; acpxAgent: "claude" } | undefined {
+  if (harness === "codex_local") return { provider: "codex" };
+  if (harness === "claude_local") return { provider: "acpx", acpxAgent: "claude" };
+  return undefined;
 }
 
 export const PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION = "2.39";

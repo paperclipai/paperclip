@@ -27,6 +27,7 @@ const SEMANTIC_RECEIPT_SOURCES = [
   ["../../cli/acpx-runtime-sidecar.ts", "semanticSidecarSourceSha256"],
   ["sidecar-protocol.ts", "semanticSidecarProtocolSourceSha256"],
   ["codex-acpx-driver.ts", "semanticDirectDriverSourceSha256"],
+  ["../completion-continuation.ts", "semanticContinuationSourceSha256"],
   ["../../protocol/replay-contract.ts", "semanticValidationSourceSha256"],
   ["../../protocol/result-normalization.ts", "semanticNormalizationSourceSha256"],
   ["../../contracts/completion-result.ts", "semanticCompletionContractSourceSha256"],
@@ -194,8 +195,38 @@ describe("Copilot build-owned installation", () => {
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBe("pending");
   });
 
-  it("admits the current v20 declaration and binds its source policy, receipts and patch hashes", () => {
-    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v20-identity.json", import.meta.url), "utf8"));
+  it("preserves v20 history while binding the controller-owned monitor continuation", async () => {
+    const prior = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v20-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v21-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort()).toEqual([
+      "agentProfileVersion", "semanticCompletionContractSourceSha256", "semanticContinuationSourceSha256", "semanticDirectDriverSourceSha256", "semanticSidecarSourceSha256",
+    ]);
+    expect(Object.keys(current.declaration).filter(key => !Object.hasOwn(prior.declaration, key))).toEqual(["semanticContinuationSourceSha256"]);
+    expect(Object.keys(prior.declaration).every(key => Object.hasOwn(current.declaration, key))).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 20)).toBe(true);
+    const sorted = Object.fromEntries(Object.entries(prior.declaration).sort(([a], [b]) => a.localeCompare(b)));
+    expect(`sha256:${createHash("sha256").update(JSON.stringify(sorted)).digest("hex")}`).toBe(prior.commandDigest);
+    await expect(verifyCopilotInstallation({ ...QUALIFIED_ACPX_PROFILES.copilot,
+      agentProfileVersion: 20, commandDigest: prior.commandDigest })).rejects.toThrow("exact pinned");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBe("pending");
+  });
+
+  it("preserves v22 history while binding the Claude-only preload metadata branch", async () => {
+    const prior = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v22-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v23-identity.json", import.meta.url), "utf8"));
+    expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort())
+      .toEqual(["agentProfileVersion", "semanticBridgeSourceSha256"]);
+    expect(Object.keys(current.declaration).sort()).toEqual(Object.keys(prior.declaration).sort());
+    expect(isSupportedAcpxProfileVersion("copilot", 22)).toBe(true);
+    const sorted = Object.fromEntries(Object.entries(prior.declaration).sort(([a], [b]) => a.localeCompare(b)));
+    expect(`sha256:${createHash("sha256").update(JSON.stringify(sorted)).digest("hex")}`).toBe(prior.commandDigest);
+    await expect(verifyCopilotInstallation({ ...QUALIFIED_ACPX_PROFILES.copilot,
+      agentProfileVersion: 22, commandDigest: prior.commandDigest })).rejects.toThrow("exact pinned");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBe("pending");
+  });
+
+  it("admits the current v23 declaration and binds its source policy, receipts and patch hashes", () => {
+    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v23-identity.json", import.meta.url), "utf8"));
     expect(identity.declaration.systemInstructionDelivery).toBe(COPILOT_SYSTEM_INSTRUCTION_DELIVERY);
     expect(identity.declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");
     expect(identity.declaration.permissionContextContract).toBe(COPILOT_PERMISSION_CONTEXT_CONTRACT);
@@ -226,7 +257,7 @@ describe("Copilot build-owned installation", () => {
     expect([...closure].filter(path => !bound.has(path))).toEqual(["negative-control:unbound-policy"]);
   });
   it.each([...PERMISSION_POLICY_SOURCES, ...SEMANTIC_RECEIPT_SOURCES])("changing %s changes the candidate identity", (_path, field) => {
-    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v20-identity.json", import.meta.url), "utf8"));
+    const identity = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v23-identity.json", import.meta.url), "utf8"));
     identity.declaration[field] = "0".repeat(64);
     const sorted = Object.fromEntries(Object.entries(identity.declaration).sort(([a], [b]) => a.localeCompare(b)));
     expect(`sha256:${createHash("sha256").update(JSON.stringify(sorted)).digest("hex")}`).not.toBe(identity.commandDigest);

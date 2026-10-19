@@ -1,4 +1,6 @@
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "../openrouter-attribution.js";
 import { spawn, type ChildProcess } from "node:child_process";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -13,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
+import { constants as osConstants } from "node:os";
 import { Agent as HttpAgent, createServer as createHttpServer, request as requestHttp, type IncomingMessage } from "node:http";
 import { Agent as HttpsAgent, request as requestHttps } from "node:https";
 import { getCACertificates } from "node:tls";
@@ -1040,7 +1043,15 @@ class OpenCodeHarnessSession implements HarnessSession {
       try {
         if (this.#closed || this.#completionSettlement)
           throw new Error("A completion is already settling or the session is closed");
-        const validation = validatePrpStructuredRunResult(call.arguments);
+        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
+        const completionInput = await resolveCompletionContinuation(call.arguments, this.#runId,
+          this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+            tool: "get_task_context", callId: `${call.callId}:continuation`,
+            threadId: this.#providerSessionId, turnId, arguments: {},
+          }) : undefined);
+        if (this.#closed || this.#activeTurnId !== turnId)
+          throw new Error("The turn ended while resolving completion");
+        const validation = validatePrpStructuredRunResult(completionInput);
         if (!validation.ok) throw new Error("Invalid semantic result");
         if (
           (tool === PRP_BLOCK_TOOL_NAME &&
@@ -1069,7 +1080,6 @@ class OpenCodeHarnessSession implements HarnessSession {
         const fingerprint = canonicalJson(validation.result);
         if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
           throw new Error("A different semantic result was already committed");
-        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
         // Wait for the bound controller before committing or resolving the
         // provider call. A rejection remains repairable in this same turn.
         const feedback = this.#completionFeedback
@@ -1344,8 +1354,9 @@ class OpenCodeHarnessSession implements HarnessSession {
           signal: this.#abort.signal,
         });
         if (!response.ok || !response.body)
-          throw new Error(
-            `OpenCode event stream returned HTTP ${response.status}`,
+          throw Object.assign(
+            new Error(`OpenCode event stream returned HTTP ${response.status}`),
+            { httpStatus: response.status },
           );
         const outboundFrameId = this.#runtime.trace?.frame({
           direction: "client_to_provider",
@@ -1443,8 +1454,9 @@ class OpenCodeHarnessSession implements HarnessSession {
           }
           this.#mapProviderEvent(event, frameId);
         }
-        throw new Error(
-          "OpenCode event stream closed before the session became terminal",
+        throw Object.assign(
+          new Error("OpenCode event stream closed before the session became terminal"),
+          { streamClosed: true },
         );
       } catch (error) {
         if (this.#closed || this.#abort.signal.aborted) return;
@@ -1452,16 +1464,48 @@ class OpenCodeHarnessSession implements HarnessSession {
         if (attempts > 3) {
           await this.#completionSettlement;
           if (this.#closed) return;
+          const failure = await openCodeEventStreamFailure(error, this.#runtime.process);
+          if (this.#closed) return;
           this.#emit("harness.diagnostic", {
             code: "opencode_sse_failed",
             message: redact(String(error), this.#runtime.sensitiveValues),
+            failure,
           });
+          this.#failActiveTurnOnStreamLoss(failure);
           this.#events.fail(error);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 50 * attempts));
       }
     }
+  }
+
+  /**
+   * The event stream is the only path for this turn's terminal event. Once it
+   * is gone the turn cannot finish, so record why before the stream ends
+   * instead of leaving runnerd to close it later with no cause.
+   */
+  #failActiveTurnOnStreamLoss(failure: OpenCodeEventStreamFailure): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#terminalTurns.has(turnId)) return;
+    this.#settlePendingRuntimeRequestsForTurn(turnId);
+    this.#emit(
+      "turn.failed",
+      {
+        status: "failed",
+        providerTerminalObserved: false,
+        error: {
+          code: failure.kind === "server_exited" ? "opencode_server_exited" : "opencode_event_stream_lost",
+          message: failure.kind === "server_exited"
+            ? "OpenCode stopped while the turn was running."
+            : "The OpenCode event stream failed while the turn was running.",
+          opencodeFailure: failure,
+        },
+      },
+      { turnId },
+    );
+    this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
+    this.#activeTurnId = null;
   }
 
   #mapProviderEvent(value: unknown, traceFrameId: number | null = null): void {
@@ -2164,7 +2208,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
@@ -2326,6 +2370,7 @@ async function startRuntime(input: {
       // provider instead of silently falling back or rejecting a newer model.
       provider: {
         [modelProvider!]: {
+          ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
             name: "Paperclip connection",
@@ -3021,7 +3066,55 @@ async function waitForExit(
   });
 }
 
-export const openCodeServerDriverInternals = { parseSse };
+/** Closed vocabulary for a lost OpenCode event stream. Never provider text. */
+export interface OpenCodeEventStreamFailure {
+  kind: "server_exited" | "connection_failed" | "http_error" | "stream_closed" | "stream_error";
+  exitCode?: number;
+  signal?: string;
+  connectionError?: string;
+  httpStatus?: number;
+}
+
+const OPENCODE_CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH",
+  "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function connectionErrorCode(error: unknown): string | undefined {
+  // undici reports `TypeError: fetch failed` and keeps the socket error in `cause`.
+  for (let current = error, depth = 0; current && depth < 4; current = record(current).cause, depth += 1) {
+    const code = record(current).code;
+    if (typeof code === "string") return OPENCODE_CONNECTION_ERROR_CODES.has(code) ? code : "unrecognized";
+  }
+  return undefined;
+}
+
+async function openCodeEventStreamFailure(
+  error: unknown,
+  process: ChildProcess,
+): Promise<OpenCodeEventStreamFailure> {
+  const connectionError = connectionErrorCode(error);
+  // A refused or reset connection usually means `opencode serve` has died.
+  // Give its exit a moment to be observed so the cause is the exit itself.
+  if (connectionError) await waitForExit(process, 1_000);
+  if (process.exitCode !== null || process.signalCode !== null) {
+    return {
+      kind: "server_exited",
+      ...(process.exitCode !== null ? { exitCode: process.exitCode } : {}),
+      ...(process.signalCode !== null && process.signalCode in osConstants.signals ? { signal: process.signalCode } : {}),
+      ...(connectionError ? { connectionError } : {}),
+    };
+  }
+  const httpStatus = record(error).httpStatus;
+  if (typeof httpStatus === "number" && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)
+    return { kind: "http_error", httpStatus };
+  if (connectionError) return { kind: "connection_failed", connectionError };
+  if (record(error).streamClosed === true) return { kind: "stream_closed" };
+  return { kind: "stream_error" };
+}
+
+export const openCodeServerDriverInternals = { parseSse, openCodeEventStreamFailure };
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   #items: T[] = [];

@@ -120,6 +120,7 @@ export type ReleaseIssueExecutionInput = {
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
+  resumeStrandedQueue?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -151,12 +152,12 @@ async function runReleaseDrain(
   // The `processedWakeIds` guard below makes a break of the invariant
   // fail loudly, instead of holding this transaction open forever.
   const processedWakeIds = new Set<string>();
-  const handoffWakeIds: string[] = [];
+  const preservedWakeIds: string[] = [];
 
   while (true) {
     const candidate = await ports.transaction.findNextDeferredWake({
       companyId: run.companyId, issueId: issue.id,
-      ...(handoffWakeIds.length ? { excludedWakeIds: handoffWakeIds } : {}),
+      ...(preservedWakeIds.length ? { excludedWakeIds: preservedWakeIds } : {}),
     });
     if (!candidate) break;
     if (processedWakeIds.has(candidate.id)) {
@@ -200,11 +201,11 @@ async function runReleaseDrain(
       !candidate.preservesIndependentContinuation && candidate.queuedCommentIds.length > 0 &&
       ["issue_commented", "issue_reopened_via_comment"].includes(candidate.wakeReason ?? candidate.reason ?? "");
     if (ordinaryTaskComment && candidate.agentId !== issue.assigneeAgentId) {
-      if (run.agentId !== issue.assigneeAgentId) {
+      if (input.resumeStrandedQueue || run.agentId !== issue.assigneeAgentId) {
         // The old owner can release before assignment admission adopts these
         // exact IDs. Leave its receipt intact, skip it for this drain, and let
         // a current-assignee wake behind it proceed.
-        handoffWakeIds.push(candidate.id);
+        preservedWakeIds.push(candidate.id);
       } else {
         // The current owner has finished. An obsolete assignment cannot
         // launch another former-owner run or reopen its completed task.
@@ -282,12 +283,17 @@ async function runReleaseDrain(
 
     // A comment-id rewrite cannot change the agent or pause-hold facts already fetched above, so one decision covers both the rewritten and un-rewritten cases.
     const wakeOutcome = decideWakeOutcome({
-      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false },
+      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false, paused: deferredAgent?.paused === true },
       pauseHold: { activePauseHold: pauseHold.activePauseHold, treeHoldInteractionWake: pauseHold.treeHoldInteractionWake },
     });
 
     if (wakeOutcome.kind === "fail_not_invokable") {
       await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
+      continue;
+    }
+
+    if (wakeOutcome.kind === "defer_agent_pause") {
+      preservedWakeIds.push(workingCandidate.id);
       continue;
     }
 
@@ -968,7 +974,8 @@ export function createReleaseIssueExecution(deps: {
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
     const result = await deps.issueLock.withIssueExecutionLock(
-      { companyId: input.companyId, runId: input.runId, now: input.now },
+      { companyId: input.companyId, runId: input.runId, now: input.now,
+        ...(input.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}) },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 

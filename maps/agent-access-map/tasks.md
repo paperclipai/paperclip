@@ -22,7 +22,10 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native create_task; REST / CLI / MCP.
 
 Policy: Company/task visibility, assignment/change policy, active-run checkout ownership
-and lifecycle rules.
+and lifecycle rules. Ordinary Board comments preserve queued/running retries;
+only a parked retry can be superseded. Explicit Stop/Interrupt retain their
+existing actor and execution authority. Agent comment tools do not acquire Board
+identity or cancellation authority through this behavior.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts) at the
 reviewed commit above.
@@ -36,6 +39,14 @@ Gaps: Creation is implemented; agent/user assignment and attachments may need
 narrower/different APIs.
 
 ## `organize`
+
+`GET /api/companies/{companyId}/issues/summaries?ids=...` reads up to five exact
+UUIDs and returns only navigation summaries. Normal company and task-read
+permissions apply to ordinary agent REST calls; task-bridge keys are denied.
+Hidden, missing, foreign and private inaccessible IDs are omitted without an
+existence disclosure. No dedicated CLI/native tool is added. Embedded database
+route tests cover same-company agent access and company/task-bridge denials;
+this does not establish a live native `call_api` journey.
 
 The issue-list API accepts optional `includeAgentCreatedTasks`; false restricts
 independent results to human creation before search/pagination. Omission retains
@@ -81,7 +92,8 @@ API: `present` — representative operation IDs:
 - `PUT /api/issues/{id}/title`.
 
 Agent access: `available` — Native set_task_title/reassign_task/set_dependencies and
-`call_api` for REST-authorized fields; agent REST.
+set_task_monitor; `call_api` for REST-authorized fields; agent REST. Monitor
+scheduling is a dedicated native tool, not a generic `call_api` operation.
 
 Policy: Company/task visibility, assignment/change policy, active-run checkout ownership
 and lifecycle rules. A legacy run can assign its own task to a human without
@@ -90,6 +102,12 @@ company and task. The outgoing run cannot mutate its human-owned task afterward,
 including through a late update already admitted before the handoff. Agent keys,
 native runs, board reassignment and transfers to
 another agent retain verified-stop requirements.
+
+Native monitors require standard work mode and an agent-owned task in progress
+or review. The responsible user's current permissions also apply. A malformed
+request is rejected before mutation; bounded schema guidance lets the provider
+correct it without exposing submitted values. Receipt replay never re-arms a
+consumed schedule.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts) at the
 reviewed commit above.
@@ -101,6 +119,13 @@ remaining operations before qualifying the whole capability. Focused route
 regressions in [ownership tests](../../server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts)
 cover a human handoff and stop enforcement for other actors, runtimes and targets;
 they use mocked services and do not claim live execution proof.
+
+Monitor verification: submit flat scheduling fields, observe the schema rejection
+and unchanged task, then retry with the nested `monitor` object and the same
+idempotency key. Inspect the saved schedule and audit, yield, and verify exactly
+one `issue_monitor_due` wake. [Scheduler integration coverage](../../server/src/__tests__/issue-monitor-scheduler.test.ts)
+uses real PostgreSQL, the native tool authority, and the heartbeat scheduler with
+a no-op process agent. It does not prove live model recovery.
 
 Gaps: Dedicated tools differ in scope and fields. Generic `call_api` forwards
 status, assignment and dependency fields to existing route authorization.

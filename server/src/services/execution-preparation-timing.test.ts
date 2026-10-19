@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createRunPreparationTiming, measureRunPhase, withRunExecutionTiming } from "./execution-preparation-timing.js";
+import { createRunPreparationTiming, measureRunPhase, recordRepositoryObjectCacheDetail, withRunExecutionTiming } from "./execution-preparation-timing.js";
 
 const handles = vi.hoisted(() => ({ getTracer: vi.fn(), startActiveSpan: vi.fn() }));
-vi.mock("@opentelemetry/api", () => ({
-  ROOT_CONTEXT: "root", SpanStatusCode: { ERROR: 2 },
-  trace: { getTracer: handles.getTracer, getActiveSpan: () => undefined },
-}));
+vi.mock("@opentelemetry/api", async importOriginal => {
+  const api = await importOriginal<typeof import("@opentelemetry/api")>();
+  return { ...api, trace: { ...api.trace, getTracer: handles.getTracer, getActiveSpan: () => undefined } };
+});
 beforeEach(() => {
   vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
   handles.getTracer.mockReturnValue({ startActiveSpan: handles.startActiveSpan });
@@ -43,7 +43,10 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
     await expect(createRunPreparationTiming("run", "native.controller")("backend_setup", () => 42)).resolves.toBe(42);
     for (const phase of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission", "execution.budget_reservation"] as const) {
       const result = {};
-      const work = vi.fn(() => result);
+      const work = vi.fn(() => {
+        recordRepositoryObjectCacheDetail({ outcome: "hit", referenceSupplied: true });
+        return result;
+      });
       await expect(withRunExecutionTiming("run", () => measureRunPhase(phase, work))).resolves.toBe(result);
       expect(work).toHaveBeenCalledOnce();
       const original = new Error("original startup failure");
@@ -58,4 +61,47 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
     warn.mockRestore();
     error.mockRestore();
   }
+});
+
+it("keeps cache outcomes and clone references on their owning concurrent phases", async () => {
+  const spans: Array<{ name: string; attributes: Record<string, unknown> }> = [];
+  handles.startActiveSpan.mockImplementation((name, options, _context, callback) => {
+    const record = { name, attributes: { ...options.attributes } };
+    spans.push(record);
+    return callback({
+      end: vi.fn(), setStatus: vi.fn(),
+      setAttribute: (key: string, value: unknown) => { record.attributes[key] = value; },
+    });
+  });
+  await Promise.all([
+    withRunExecutionTiming("first", () => measureRunPhase("workspace.checkout.cache_lookup", async () => {
+      await Promise.resolve();
+      recordRepositoryObjectCacheDetail({ outcome: "hit" });
+    })),
+    withRunExecutionTiming("second", () => measureRunPhase("workspace.checkout.git_clone", async () => {
+      await Promise.resolve();
+      recordRepositoryObjectCacheDetail({ referenceSupplied: false });
+    })),
+  ]);
+  expect(spans.find(span => span.name === "workspace.checkout.cache_lookup")?.attributes).toMatchObject({
+    "paperclip.execution.repositoryCache.outcome": "hit",
+  });
+  expect(spans.find(span => span.name === "workspace.checkout.git_clone")?.attributes).toMatchObject({
+    "paperclip.execution.repositoryCache.reference_supplied": false,
+  });
+  expect(spans.filter(span => span.name === "task.execution_attempt").every(span =>
+    Object.keys(span.attributes).every(key => key === "paperclip.task.run.run_id"))).toBe(true);
+});
+
+it("does not let cache attribute failures replace the operation result", async () => {
+  handles.startActiveSpan.mockImplementation((_name, _options, _context, callback) => callback({
+    end: vi.fn(), setStatus: vi.fn(),
+    setAttribute: () => { throw new Error("tracer failed"); },
+  }));
+  const work = vi.fn(() => {
+    recordRepositoryObjectCacheDetail({ outcome: "published", referenceSupplied: true });
+    return 42;
+  });
+  await expect(withRunExecutionTiming("run", () => measureRunPhase("workspace.checkout.cache_publish", work))).resolves.toBe(42);
+  expect(work).toHaveBeenCalledOnce();
 });

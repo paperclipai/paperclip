@@ -85,7 +85,7 @@
     {
       "path": "schemas/provider-descriptor.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
-      "sha256": "8383e8e73b3f7a9bd2e863eab9bd524591d10f4f92c8014e63e5c2d25e2dc597"
+      "sha256": "862c0c13f23564c3530cefcf01579b0535a565b919cc3dcff7bc1bee9a668baf"
     },
     {
       "path": "schemas/provider-event.schema.json",
@@ -180,7 +180,7 @@
     },
     {
       "path": "fixtures/evals/native-execution-seeded.json",
-      "sha256": "a564abe2d4dd502913250c93a0bbdd6dc06f2556efff6d93d577fcb9011e4a70",
+      "sha256": "509a5a3d63650a935b73fc116f6cdeb04cf75d63096cb1e91c7633a0748e5ee2",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

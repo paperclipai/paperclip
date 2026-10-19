@@ -17,6 +17,7 @@ Agent access: [companion](../agent-access-map/activity.md).
 - `runs`: find executions and follow their task/agent context.
 - `routine-audit`: inspect routine execution activity separately from its definition.
 - `timeline`: use the available timeline view to understand work over time.
+- `agent-commentary`: browse attributed agent suggestions and complaints.
 
 ## How to get to it (user POV)
 
@@ -54,6 +55,19 @@ Audit-event Load more and run listings differ: Runs currently loads at most 200
 entries without pagination. The tested RoutineAuditActivity component has no
 registered activity-route host; inspect execution links actually offered by
 the routine rather than treating that component test as a reachable journey.
+
+### `agent-commentary`
+
+Open Audit → Commentary (`/activity/commentary`). Search message text, filter by agent and suggestion/complaint,
+page through 50-message previews, and open a row to read the full message with its task/run links.
+Filters, page offsets and the selected entry are retained in the URL. Read access requires board company access and
+`audit:view_agent_actions`; task privacy applies to previews, counts and full messages.
+All Audit tab destinations resolve in both the classic and streamlined layouts.
+
+Storybook: [production page and message journeys](../../ui/storybook/stories/activity/agent-commentary.stories.tsx)
+covers populated, filtered, long-message, paginated, empty, loading, failed, denied,
+linked-message, mobile and light states using synthetic API fixtures. These examples do
+not prove live database filtering or authorization.
 
 ## Gotchas
 

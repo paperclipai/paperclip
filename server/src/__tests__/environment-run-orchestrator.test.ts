@@ -770,6 +770,7 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     expect(warm.lease.leasePolicy).toBe("reuse_by_environment");
     expect(warm.environment.config).toEqual({ provider: "daytona", reuseLease: true });
     expect(acquireRunLease.mock.calls[1][0].persistedExecutionWorkspace).toEqual(input.persistedExecutionWorkspace);
+    expect(acquireRunLease.mock.calls[1][0].configuredEnvironment).toBe(environment);
     // Run-scoped adaptation must not change the shared environment or other agents.
     expect(environment.config).toEqual({ provider: "daytona", reuseLease: false });
     const coldAgain = await orchestrator.acquireForRun({ ...input, heartbeatRunId: "run-3", adapterConfig: { lifecycleMode: "per_turn" } });

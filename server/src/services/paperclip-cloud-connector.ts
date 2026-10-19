@@ -17,6 +17,7 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
+  isGoogleWorkspaceScopeGrant,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -274,7 +275,7 @@ export function createPaperclipCloudConnector(input: {
 
   async function call(
     operation: PaperclipCloudConnectorOperation,
-    claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
+    claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
     secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
@@ -298,7 +299,10 @@ export function createPaperclipCloudConnector(input: {
       const definition = connectorProfileDefinition(claims.profile);
       payload.prv = definition.provider;
       payload.prf = claims.profile;
-      payload.scp = [...definition.scopes];
+      if (claims.scopes && (claims.profile !== "workspace.all" || !isGoogleWorkspaceScopeGrant(claims.scopes))) {
+        throw new PaperclipCloudConnectorError("Invalid requested service permissions", "CONNECTOR_CONFIG_INVALID");
+      }
+      payload.scp = [...(claims.scopes ?? definition.scopes)];
     }
     if (secret) payload.sh = await sha256Base64Url(secret.value);
     const body = {
@@ -338,6 +342,7 @@ export function createPaperclipCloudConnector(input: {
     subject: string,
     companyId: string,
     profile: PaperclipCloudConnectorProfileId,
+    requestedScopes?: string[],
   ): SealedConnectorCredentials {
     const definition = connectorProfileDefinition(profile);
     const envelope = parseEnvelope(response.sealed, purpose, definition.provider, profile);
@@ -348,7 +353,7 @@ export function createPaperclipCloudConnector(input: {
       config.environment,
       definition.provider,
       profile,
-      definition.scopes,
+      requestedScopes ?? definition.scopes,
     );
     if (
       credentials.instanceId !== config.instanceId
@@ -362,7 +367,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
-    if (!sameStringSet(credentials.scopes, definition.scopes)) {
+    if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
     return credentials;
@@ -423,7 +428,7 @@ export function createPaperclipCloudConnector(input: {
         || !manager || typeof manager !== "object" || !("appId" in manager) || typeof manager.appId !== "string" || !/^A[A-Z0-9]+$/.test(manager.appId)) return null;
       return manager.appId;
     },
-    async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri: string; returnState: string }) {
+    async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
@@ -472,9 +477,9 @@ export function createPaperclipCloudConnector(input: {
         ...(handoff ? { handoff } : {}),
       };
     },
-    async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; claimId: string; redemptionId: string }) {
+    async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; claimId: string; redemptionId: string }) {
       const profile = values.profile ?? "gmail.draft";
-      return openCredentials(await call("claim", { ...values, profile }), sealPurpose("initial", profile), values.subject, values.companyId, profile);
+      return openCredentials(await call("claim", { ...values, profile }), sealPurpose("initial", profile), values.subject, values.companyId, profile, values.scopes);
     },
     async refresh(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; refreshToken: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -761,7 +766,10 @@ function decryptEnvelope(
     "sha256",
     diffieHellman({ privateKey: recipientPrivateKey, publicKey: ephemeralKey }),
     Buffer.concat([ephemeralRaw, recipientRaw]),
-    aad,
+    // The combined profile's scope binding exceeds Node's 1024-byte HKDF-info
+    // limit. Its new wire contract hashes that binding; legacy profiles retain
+    // their original derivation. GCM still authenticates the complete AAD.
+    provider === "google" && profile === "workspace.all" ? createHash("sha256").update(aad).digest() : aad,
     32,
   ));
   const iv = Buffer.from(envelope.iv, "base64url");

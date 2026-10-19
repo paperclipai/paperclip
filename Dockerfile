@@ -144,6 +144,8 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN pnpm --filter @paperclipai/server build:runtime \
+  && test -f server/dist-runtime/index.mjs || (echo "ERROR: server runtime bundle missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
 # Remote OpenCode and ACPX runs require a controller-owned provider pack to
@@ -154,9 +156,11 @@ RUN rm -rf packages/paperclip-runner/runner/target
 FROM build AS runner-provider-pack
 # Unstamped local builds remain usable, but cannot qualify a remote pack.
 # Never invent a source revision to make an unqualified pack look verified.
-RUN mkdir -p /provider-pack \
+RUN mkdir -p /provider-pack /provider-pack-transport \
   && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
-    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack; \
+    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+      && node scripts/create-provider-pack-archive.mjs /provider-pack \
+      && mv /provider-pack.archives /provider-pack.archive.json /provider-pack-transport/; \
   else \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
   fi
@@ -187,6 +191,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 COPY --chown=node:node --from=build /app /app
 
 COPY --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain
 # readable afterward.
@@ -230,8 +235,8 @@ EXPOSE 3100
 # cgroup pid limit is exhausted and *every* fork() in the container fails.
 # tini reaps adopted orphans and forwards signals, so the exec chain below and
 # graceful shutdown are unchanged. Mirrors docker/agent-runtime/Dockerfile.base.
-ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "docker-entrypoint.sh"]
+CMD ["node", "server/dist-runtime/index.mjs"]
 
 # Cloud image variant (build with `--target cloud`): the production image
 # plus built bundled sandbox-provider plugins. Managed instances receive a

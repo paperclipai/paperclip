@@ -54,7 +54,7 @@ company's onboarding route, and finish; drafts save automatically. Follow the
 created first task, verify the selected agent and company, and inspect its output
 or explicit authentication gate. Reload both company and task.
 
-For Codex, choose the harness and leave runner selection automatic to prove the
+For Codex or Claude, choose the harness and leave runner selection automatic to prove the
 first-agent default. On a qualified target it saves Paperclip Runner; Advanced
 also permits Legacy. Do not switch runners after onboarding when claiming proof
 of that default. Test the selected runtime and account, then complete a bounded
@@ -68,6 +68,18 @@ Use [runner validation](./runs-adapters.md#adapter-setup) and
 [environment qualification](./execution-environments.md#environment-settings)
 for the prerequisites; a successful login alone is insufficient.
 
+For a new Claude agent on an explicit immutable sandbox image or a Daytona
+named snapshot, use Connect to
+qualify the selected environment through the existing permission-gated probe.
+Do not preprobe outside onboarding when claiming this first-use path. Fresh
+scoped discovery determines the runner for both the account test and hire;
+the measured Legacy result remains valid. An instance-admin denial, incomplete
+cleanup, missing lease or changed configuration stops setup before the adapter
+test or hire. Daytona resolves the selected snapshot to its immutable provider
+ID before creating the measured lease; native execution pins that same ID.
+Mutable image tags and other providers’ named templates remain unqualified. [Helper controls](../../ui/src/lib/qualify-claude-setup.test.ts)
+and mounted wizard/new-agent tests use mocks; live managed acceptance remains a
+separate gate.
 For a new Codex agent with Auto on a saved immutable OCI sandbox, Connect first
 uses the existing saved environment probe when authoritative qualification is
 absent. The board actor needs the existing instance-environment administration

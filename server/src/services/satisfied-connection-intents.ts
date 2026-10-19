@@ -11,10 +11,10 @@ type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | 
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
 
 /** Verify existing access only. This never installs tools, grants access, or adopts an identity. */
-export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   if (intent.kind !== "connection_intent" || intent.status !== "pending"
     || intent.companyId !== task.companyId || intent.issueId !== task.id
-    || task.assigneeUserId || !["in_progress", "in_review"].includes(task.status)) return null;
+    || task.assigneeUserId) return null;
   const parsed = connectionIntentPayloadSchema.safeParse(intent.payload);
   if (!parsed.success) return null;
   const payload = parsed.data;
@@ -42,6 +42,11 @@ export async function findSatisfiedToolConnection(db: Db, task: Task, intent: In
   return access.allowedCount + access.askFirstCount > 0 ? connection : null;
 }
 
+export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+  if (!["in_progress", "in_review"].includes(task.status)) return null;
+  return findAvailableToolConnection(db, task, intent, policyRunId);
+}
+
 /** Recheck both live requests and system-retired cards against the next run. */
 export async function connectionContinuationPendingResponse(db: Db, task: Task, responsibleUserId: string | null,
   policyRunId?: string | null): Promise<"interaction" | "approval" | null> {
@@ -55,7 +60,7 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
-    const connection = await findSatisfiedToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
+    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
     // Historical system retirements describe a service need, not a permanent
     // binding to an account the user may later replace. Delivery and native
     // response projection still validate their own exact recorded connection.

@@ -23,6 +23,8 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { setSentryRunLinkResolver } from "./sentry-links.js";
+import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -107,6 +109,8 @@ import { deliverNativeQuestionResponse } from "./services/native-runtime/native-
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
+import { historicalCleanupVerificationService } from "./services/historical-cleanup-verification.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
 import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
   createDeviceLoginReaper,
@@ -658,10 +662,12 @@ async function startServerWithDatabaseTeardown(
   // (after the application services, before the embedded provider stops) and
   // by the fail-loud startup path, so no exit leaves pooled backends behind.
   const closeDatabaseClients = async () => {
+    setSentryRunLinkResolver(null);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
     await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
   };
   startupDatabase.close = closeDatabaseClients;
+  setSentryRunLinkResolver(createSentryRunLinkResolver(db));
   
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
@@ -1327,6 +1333,7 @@ async function startServerWithDatabaseTeardown(
     retryMs: config.heartbeatSchedulerIntervalMs,
     run: () => service.sweepPending(),
     hasPending: () => service.hasPending(),
+    ...(queue === DELIVERY_QUEUES.connection ? { nextRunAt: connectionDeliveries.nextRunAt, pausePassiveMaintenance: true } : {}),
   }));
   // Preserve the existing task-scoped activity fast path. Claims in the
   // delivery service arbitrate with the coordinator's startup/recovery sweep.
@@ -1337,10 +1344,27 @@ async function startServerWithDatabaseTeardown(
       .catch(err => logger.error({ err }, "post-commit chat completion delivery failed")));
   });
   server.on("close", unsubscribeChatCompletions);
+  const cleanupInspectionRuntime = environmentRuntimeService(db as any, { pluginWorkerManager });
+  const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
+  const historicalCleanup = historicalCleanupVerificationService(db as any, {
+    inspectLease: lease => cleanupInspectionRuntime.inspectLeaseResource(lease.id),
+    inspectSetup: setup => environmentCustomImages.inspectSetupResource(setup),
+  });
+  let nextHistoricalCleanupCheck = 0;
+  const scheduleHistoricalCleanupVerification = () => {
+    if (!isCloudManagedInstance() || isIdleTaskDrainActive() || isWarmStandby() || heartbeatSchedulerStopped ||
+        Date.now() < nextHistoricalCleanupCheck) return;
+    nextHistoricalCleanupCheck = Date.now() + 5 * 60_000;
+    // Provider reads never delay readiness or the ordinary cleanup sweep.
+    trackHeartbeatSchedulerWork(historicalCleanup.sweep().then(result => {
+      if (result.verified > 0) logger.info(result, "verified historical provider cleanup");
+    }).catch(() => logger.warn("historical provider cleanup verification deferred")));
+  };
   const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
     environmentLeaseCleanupHeartbeat
       .sweepPendingCleanupLeases({ backoffMs })
       .then((result) => {
+        scheduleHistoricalCleanupVerification();
         if (result.destroyed > 0 || result.capped > 0) {
           logger.info(result, "environment lease cleanup sweep retried orphan sandbox teardowns");
         }
@@ -1405,8 +1429,16 @@ async function startServerWithDatabaseTeardown(
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
-    const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    let nextRoutineStatusReconcile = 0;
+    const scheduleRoutineStatusReconcile = () => {
+      if (!isCloudManagedInstance() || isWarmStandby() || isIdleTaskDrainActive() || heartbeatSchedulerStopped ||
+          Date.now() < nextRoutineStatusReconcile) return;
+      nextRoutineStatusReconcile = Date.now() + 5 * 60_000;
+      trackHeartbeatSchedulerWork(routines.reconcileExecutionRunStatuses().then(result => {
+        if (result.settled > 0) logger.info(result, "reconciled routine execution issue status");
+      }).catch(() => logger.warn("routine execution status reconciliation deferred")));
+    };
     const statusCards = statusCardService(db as any);
     const issues = issueService(db as any);
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
@@ -1725,6 +1757,7 @@ async function startServerWithDatabaseTeardown(
       // captures the authoritative set of running heartbeat rows.
       trackHeartbeatSchedulerWork((async () => {
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
+        scheduleRoutineStatusReconcile();
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
@@ -2066,6 +2099,7 @@ async function startServerWithDatabaseTeardown(
       await drainRunExecutionFinalizersForShutdown({
         signal,
         drain: drainHeartbeatExecutionFinalizers,
+        timeoutMs: 30_000,
         log: logger,
       });
     }

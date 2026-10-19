@@ -1,5 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -759,6 +760,9 @@ export function createPostgresRunDispatchAdapter(
     const promoteLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (
         run.status !== "scheduled_retry" ||
+        // The locked row is also the cancellation claim. If Stop won first,
+        // leave settlement to that owner rather than promote its parked run.
+        run.resultJson?.startupCancellation ||
         !run.scheduledRetryAt ||
         new Date(run.scheduledRetryAt).getTime() > now.getTime()
       ) {
@@ -981,10 +985,27 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
-  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
+  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date, publications?: ActivityPublication[]) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
+    if (typeof contextSnapshot.workspaceReconstructionActionId === "string") {
+      try {
+        await validateReconstructedWorkspaceDispatch(tx, run);
+        const current = await loadGateFacts({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
+          responsibleUserId: run.responsibleUserId, conversationContinuation: true, contextSnapshot,
+          scheduledRetryReason: run.scheduledRetryReason, retryReasonOverride: "native_safe_replacement", wakeupRequestId: run.wakeupRequestId,
+        }, now, tx, publications);
+        if (!current.agentFound || !decideScheduledRetryGate(current.facts, now).allowed) throw new Error("reconstruction_execution_not_eligible");
+      }
+      catch {
+        return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+          errorCode: "execution_reconciliation_required" as const,
+          reason: "Workspace reconstruction changed before execution. Inspect the saved sources and current task before continuing.",
+          details: { issueId, recoveryActionId: contextSnapshot.workspaceReconstructionActionId },
+        } };
+      }
+    }
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
@@ -1070,9 +1091,9 @@ export function createPostgresRunDispatchAdapter(
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
-    const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
+    const cancelLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now);
+      const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
@@ -1109,7 +1130,7 @@ export function createPostgresRunDispatchAdapter(
   async function dispatchResolvedInteractionIfCurrent<T>(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
-    const dispatchLockedRun = async (tx: Db, run: HeartbeatRun) => {
+    const dispatchLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (run.status !== input.expectedStatus || run.resultJson?.cancellation || run.resultJson?.startupCancellation) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
@@ -1117,6 +1138,7 @@ export function createPostgresRunDispatchAdapter(
         tx,
         run,
         input.now,
+        publications,
       );
       const decision =
         !initialDecision.stale && issueId

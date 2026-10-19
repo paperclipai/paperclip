@@ -42,6 +42,13 @@ describe("provider-neutral completion result schema", () => {
     expect(validate({ ...report, continuation: { ...report.continuation, kind: "invented" } })).toBe(false);
   });
 
+  it("lets the controller resolve an omitted provider continuation without weakening canonical results", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded" };
+    const providerValidate = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    expect(validate(report)).toBe(false);
+  });
+
   it("allows done with no verification and no actionable attention", () => {
     expect(validate(structuredClone(baseResult))).toBe(true);
   });
@@ -182,8 +189,8 @@ describe("provider-neutral completion result schema", () => {
       },
     };
     expect(providerValidate(yielded)).toBe(true);
-    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(false);
-    expect(providerValidate({ ...yielded, continuation: null })).toBe(false);
+    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(true);
+    expect(providerValidate({ ...yielded, continuation: null })).toBe(true);
     expect(providerValidate({ ...yielded, continuation: { kind: "response_wake" } })).toBe(false);
     expect(providerValidate({
       ...yielded, continuation: { ...yielded.continuation, kind: "same_agent" },

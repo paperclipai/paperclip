@@ -2525,7 +2525,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --hex-10b981: #10b981; /* ActivityCharts.tsx — >=0.8 success-rate bar tint; also the run-activity 'succeeded' segment. */
   --hex-737373: #737373; /* ActivityCharts.tsx — run activity 'other' segment tint. */
   --project-none: #64748b; /* Semantic rename of --hex-64748b (DECISION-SHEET.md A3, value unchanged). 'No project assigned' muted-slate fallback (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections; also ActivityCharts.tsx status 'backlog'. */
-  --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
+  --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
   --liveness-blue: #2563eb; /* DECISION-SHEET.md A6: IssueChatThread.tsx human-message 'liveness blue' bubble (PAP-95 rev 5). Same value as --status-task-in_progress by coincidence, decoupled on purpose so a future status-hue change doesn't drag the chat bubble along. */
   --app-logo-tile-1: #ff4f00;
   --app-logo-tile-2: #24292f;
@@ -2757,12 +2757,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-37: min(100%,22rem); /* Extracted from ui/src/pages/IssueDetail.tsx (w-[min(100%,22rem)]). */
   --sz-85dvh: 85dvh; /* Extracted from ui/src/pages/IssueDetail.tsx (max-h-[85dvh]). */
   --sz-calc-38: calc(100dvh - 9rem); /* Extracted from ui/src/pages/OrgChart.tsx (h-[calc(100dvh-9rem)]). */
-  --sz-calc-39: calc(100dvh - 3.5rem); /* Extracted from ui/src/pages/PipelineSettings.tsx (max-h-[calc(100dvh-3.5rem)]). */
-  --sz-calc-40: min(24rem,calc(100vw - 2rem)); /* Extracted from ui/src/pages/PipelineSettings.tsx (w-[min(24rem,calc(100vw-2rem))]). */
-  --sz-780px: 780px; /* Extracted from ui/src/pages/Pipelines.tsx (min-w-[780px]). */
-  --sz-148px: 148px; /* Extracted from ui/src/pages/Pipelines.tsx (w-[148px]). */
-  --sz-11px: 11px; /* Extracted from ui/src/pages/Pipelines.tsx (h-[11px]). */
-  --sz-9px: 9px; /* Extracted from ui/src/pages/Pipelines.tsx (h-[9px]). */
   --sz-720px: 720px; /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (max-h-[720px]). */
   --sz-460px: 460px; /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (max-h-[460px]). */
   --sz-960px: 960px; /* Extracted from ui/src/pages/Search.tsx (max-w-[960px]). */
@@ -2879,17 +2873,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-38: minmax(0,0.92fr) minmax(0,1.08fr); /* Extracted from ui/src/pages/InviteUxLab.tsx (grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]). */
   --gtc-39: minmax(0,1.2fr) 320px; /* Extracted from ui/src/pages/InviteUxLab.tsx (grid-cols-[minmax(0,1.2fr)_320px]). */
   --gtc-40: minmax(0,1fr) 320px; /* Extracted from ui/src/pages/IssueChatLongThreadPerf.tsx (grid-cols-[minmax(0,1fr)_320px]). */
-  --gtc-41: 10rem minmax(0,1fr); /* Extracted from ui/src/pages/PipelineSettings.tsx (grid-cols-[10rem_minmax(0,1fr)]). */
-  --gtc-42: minmax(0,1fr) 240px; /* Extracted from ui/src/pages/PipelineSettings.tsx (grid-cols-[minmax(0,1fr)_240px]). */
-  --gtc-43: minmax(0,1fr) minmax(0,1fr); /* Extracted from ui/src/pages/PipelineSettings.tsx (grid-cols-[minmax(0,1fr)_minmax(0,1fr)]). */
-  --gtc-44: 5rem 240px; /* Extracted from ui/src/pages/PipelineSettings.tsx (grid-cols-[5rem_240px]). */
-  --gtc-45: minmax(0,1fr) 340px; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[minmax(0,1fr)_340px]). */
-  --gtc-46: 18px minmax(0,1fr); /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[18px_minmax(0,1fr)]). */
-  --gtc-47: 120px 1fr; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[120px_1fr]). */
-  --gtc-48: 18px minmax(0,1fr) auto; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[18px_minmax(0,1fr)_auto]). */
-  --gtc-49: 18px 1fr auto; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[18px_1fr_auto]). */
-  --gtc-50: 1fr 280px; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[1fr_280px]). */
-  --gtc-51: 160px 1fr; /* Extracted from ui/src/pages/Pipelines.tsx (grid-cols-[160px_1fr]). */
   --gtc-52: minmax(0,1.4fr) minmax(220px,0.8fr); /* Extracted from ui/src/pages/PluginSettings.tsx (grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]). */
   --gtc-53: minmax(0,1.4fr) minmax(18rem,0.9fr); /* Extracted from ui/src/pages/ProjectWorkspaceDetail.tsx (grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]). */
   --gtc-54: minmax(12rem,2.4fr) minmax(5.25rem,0.75fr) minmax(7rem,1fr) minmax(5rem,0.7fr) 2.75rem; /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem]). */

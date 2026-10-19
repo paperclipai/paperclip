@@ -2,10 +2,11 @@ import { acpxProfileActivity } from "../drivers/acpx/profile-activity.js";
 import { appendSemanticToolReceipt, readNativeSemanticReceipt, semanticInputSha256 } from "../drivers/semantic-tool-receipt.js";
 import { startRunnerToolBridge, type RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
+import { resolveCompletionContinuation } from "../drivers/completion-continuation.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
 import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -314,6 +315,62 @@ describe("qualified ACPX runtime sidecar", () => {
     }
   });
 
+  it.each([true, false])("resolves an omitted continuation before the production sidecar validator only with a saved monitor: %s", async eligible => {
+    const raw = { reportedWorkDisposition: "yielded", summary: "The review fix is published.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [{ description: "Wait for checks.", blocksCompletion: true }] } };
+    const continuation = { kind: "monitor", summary: "Wait for the saved task monitor.", idempotencyKey: "task-monitor:task:deadline" };
+    const tools = new Map<string, any>(), emitted: any[] = [];
+    const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult });
+    const commands = loadActualToolCommands(tools);
+    const bridge = await startRunnerToolBridge({ handler, captureSemanticReceipt: () => () => {} });
+    try {
+      const response = fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } }) });
+      await vi.waitFor(() => expect(emitted.find(event => event.operationId === "get_task_context")).toBeDefined());
+      const read = emitted[0];
+      await commands.resolve({ callId: read.callId, turnId: "test-turn", result: {
+        run: { id: "test-run" }, activeTask: { executionRunId: "test-run" }, completionContinuation: eligible ? continuation : null,
+      }, error: null });
+      if (eligible) {
+        await vi.waitFor(() => expect(tools.has("3")).toBe(true));
+        expect(emitted.map(event => event.operationId)).toEqual(["get_task_context", "paperclip_finish"]);
+        expect(emitted[1].input).toMatchObject({ reportedWorkDisposition: "yielded", continuation });
+        expect(validatePrpStructuredRunResult(emitted[1].input).ok).toBe(true);
+        await commands.resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
+      }
+      const body = await (await response).json();
+      const receipt = readNativeSemanticReceipt({ contents: body.result.content });
+      expect(receipt).toMatchObject({ inputSha256: semanticInputSha256(raw),
+        normalizedInputSha256: eligible ? semanticInputSha256(emitted[1].input) : null, outcome: eligible ? "returned" : "error" });
+      if (!eligible) {
+        expect(emitted).toHaveLength(1);
+        expect(body.result.isError).toBe(true);
+        expect(body.result.content[0].text).toContain("no eligible saved monitor");
+      }
+    } finally {
+      for (const pending of tools.values()) { pending.cleanup(); pending.reject(new Error("test cleanup")); }
+      await bridge.close();
+    }
+  });
+
+  it("keeps sidecar completion identity reserved and refuses cancellation during its monitor read", async () => {
+    const tools = new Map<string, any>(), emitted: any[] = [], capture = vi.fn(() => vi.fn());
+    const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult });
+    const controller = new AbortController();
+    const call = { tool: "paperclip_finish", callId: "finish", arguments: { reportedWorkDisposition: "yielded", summary: "Wait for checks.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] } },
+      signal: controller.signal, captureNormalizedInput: capture };
+    const result = handler(call).catch(error => error);
+    try {
+      await vi.waitFor(() => expect(emitted).toHaveLength(1));
+      await expect(handler(call)).rejects.toThrow("duplicated");
+    } finally { controller.abort(); }
+    expect((await result).message).toContain("cancelled");
+    expect(capture).not.toHaveBeenCalled();
+    expect(tools.size).toBe(0);
+    expect(emitted[0].operationId).toBe("get_task_context");
+  });
+
   it("does not capture normalized authority when actual sidecar validation fails", async () => {
     const emitted: unknown[] = [], capture = vi.fn(() => vi.fn());
     const wait = loadWaitForTool({ tools: new Map(), emitted, validate: validatePrpStructuredRunResult });
@@ -363,6 +420,7 @@ describe("qualified ACPX runtime sidecar", () => {
       await expect(pending).rejects.toThrow("fixture write failed");
       expect(commit).not.toHaveBeenCalled(); expect(tools.size).toBe(0); expect(wire.sequence()).toBe(0);
     } else {
+      await vi.waitFor(() => expect(tools.has("3")).toBe(true));
       expect(commit).not.toHaveBeenCalled(); expect(tools.has("3")).toBe(true); expect(wire.sequence()).toBe(1);
       expect(JSON.parse(wire.writes[0]!).payload.input).toEqual(capture.mock.calls[0]![0]);
       await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
@@ -1274,15 +1332,11 @@ function loadWaitForTool(input: {
   const start = source.indexOf("async function waitForTool");
   const end = source.indexOf("\nasync function waitForPermission", start);
   if (start < 0 || end < 0) throw new Error("waitForTool source not found");
-  const functionSource = source
-    .slice(start, end)
-    .replace(
-      "async function waitForTool(call: RunnerToolCall): Promise<unknown>",
-      "async function waitForTool(call)",
-    );
+  const functionSource = stripTypeScriptTypes(source.slice(start, end));
   const factory = new Function(
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
+    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID",
     `return (${functionSource});`,
   );
   return factory(
@@ -1300,6 +1354,10 @@ function loadWaitForTool(input: {
     (value: unknown) => value,
     512,
     stringifyAcpxSidecarFrame,
+    resolveCompletionContinuation,
+    "test-run",
+    new Set<string>(),
+    randomUUID,
   );
 }
 

@@ -331,7 +331,7 @@ async function enqueueSafeNativeChatProgress(
         chatConversations,
         and(
           eq(chatConversations.companyId, heartbeatRuns.companyId),
-          sql`${issueIdFromContext} = ${chatConversations.issueId}::text`,
+          sql`coalesce(${heartbeatRuns.issueId}::text, ${issueIdFromContext}) = ${chatConversations.issueId}::text`,
           inArray(chatConversations.state, ["active", "waiting"]),
         ),
       )

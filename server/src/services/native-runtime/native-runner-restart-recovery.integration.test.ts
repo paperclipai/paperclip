@@ -50,6 +50,7 @@ import { materializeAsset } from "./runtime-context.js";
 import { createRunnerTestTlsTunnel, dockerCommandRunner } from "../../__tests__/helpers/docker-command-runner.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { closeIdleWarmNativeSessionsForRestart, executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
@@ -1453,6 +1454,31 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(run).toMatchObject({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_restart_recovery_blocked" });
     expect(issue).toMatchObject({ assigneeAgentId: agentId, executionRunId: null });
     expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
+  });
+
+  it("reports one event when it blocks a failed run that was an unreported pending retry", async () => {
+    const fixture = await seedRun("PENDING-RETRY-BLOCKED");
+    // The executor stores a scheduled same-run retry as failed + retryable_failure,
+    // and reportRunFailure skips that write. The blocked write reports it.
+    await fixture.db.update(heartbeatRuns).set({
+      status: "failed",
+      nativePhase: "retryable_failure",
+      runnerProfileJson: { sessionCheckpoint: {
+        terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+        providerSessionId: "unusable-provider-session",
+      } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    expect(await claimNativeRestartRecoveries({
+      db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+    })).toEqual([{ kind: "blocked", runId: fixture.runId, reason: "provider_checkpoint_permanently_failed" }]);
+    await waitForPendingRunFailureReports();
+
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toEqual([
+      [expect.objectContaining({ runId: fixture.runId, runStatus: "failed", errorCode: "native_restart_recovery_blocked" })],
+    ]);
   });
 
   it("classifies every requested recovery candidate without an implicit 100-run cap", async () => {

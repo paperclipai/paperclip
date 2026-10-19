@@ -8,6 +8,7 @@ import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
+import { staticUiFiles } from "./middleware/static-ui.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
@@ -21,6 +22,9 @@ import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
 import { createDotRunnerMcpTools, dotRunnerBroker } from "./services/dot-runner-broker.js";
 import { agentProfileAvatarRoutes } from "./routes/agent-profile-avatar.js";
+import { museTransportRoutes, museBoardRoutes } from "./routes/muse.js";
+import { museQualificationRoutes } from "./routes/muse-qualification.js";
+import { startMuseMaintenance } from "./services/muse-maintenance.js";
 import { grokBotRoutes } from "./routes/grok-bot.js";
 import { createGrokRoutineDispatcher } from "./services/grok-bot/dispatcher.js";
 import { dotRunnerRoutes } from "./routes/dot-runner.js";
@@ -103,7 +107,6 @@ import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
-import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -619,6 +622,8 @@ export async function createApp(
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
   app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
+  app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
+  const stopMuseMaintenance = startMuseMaintenance(db);
   app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
@@ -849,7 +854,6 @@ export async function createApp(
   api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(pipelineRoutes(db));
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,
@@ -1087,6 +1091,8 @@ export async function createApp(
     grokDispatcher.start();
   }
 
+  api.use(museBoardRoutes(db, opts.authPublicBaseUrl));
+  api.use(museQualificationRoutes(db));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -1113,7 +1119,7 @@ export async function createApp(
       // never change once built, so they can be cached aggressively.
       staticUi.use(
         "/assets",
-        express.static(path.join(uiDist, "assets"), {
+        staticUiFiles(path.join(uiDist, "assets"), {
           maxAge: "1y",
           immutable: true,
         }),
@@ -1127,7 +1133,7 @@ export async function createApp(
       // reasonably fast, with must-revalidate overrides for index.html and
       // sw.js (see staticUiCacheControl for why those two).
       staticUi.use(
-        express.static(uiDist, {
+        staticUiFiles(uiDist, {
           maxAge: "1h",
           setHeaders(res, filePath) {
             const override = staticUiCacheControl(filePath);
@@ -1235,7 +1241,7 @@ export async function createApp(
     const renderViteHtml = viteHtmlRenderer;
 
     if (fs.existsSync(publicUiRoot)) {
-      staticUi.use(express.static(publicUiRoot, { index: false }));
+      staticUi.use(staticUiFiles(publicUiRoot, { index: false }));
     }
     staticUi.get(/.*/, async (req, res, next) => {
       if (!shouldServeViteDevHtml(req)) {
@@ -1369,6 +1375,8 @@ export async function createApp(
     lifecycle,
     async (pluginId) =>
       (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+    undefined,
+    { unwatchedRoots: [bundledCatalogRoot] },
   );
   // Auto-provision bundled plugins so their providers are registered for
   // agent runs. Bundles are excluded from the pnpm
@@ -1458,6 +1466,7 @@ export async function createApp(
       viteHmrServer?.close();
       hostServiceCleanup.disposeAll();
       hostServiceCleanup.teardown();
+      await stopMuseMaintenance();
       await emailChannels.shutdown();
       await chatChannels.shutdown();
       // End the avatar worker pool, if a request ever started one, so no

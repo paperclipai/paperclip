@@ -55,6 +55,28 @@ function config() {
 }
 
 describe("Paperclip Cloud connector", () => {
+  it("accepts actual partial Workspace consent inside an envelope bound to the full requested profile", async () => {
+    const keys = config();
+    const scopes = ["https://www.googleapis.com/auth/documents"];
+    const credentials = { v: 1, accessToken: "test-access", refreshToken: "test-refresh", tokenType: "Bearer",
+      accessTokenExpiresAt: null, refreshTokenExpiresAt: null, scopes, subject, companyId, instanceId,
+      environment: keys.config.environment, provider: "google", profile: "workspace.all" };
+    let sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async () => Response.json({ sealed })) as typeof fetch });
+    await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).resolves.toEqual(credentials);
+    sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+    await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).resolves.toEqual(credentials);
+    for (const invalid of [[], [...scopes, "https://www.googleapis.com/auth/gmail.send"]]) {
+      credentials.scopes = invalid;
+      sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
+      await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
+      sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+      await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
+    }
+    sealed = seal({ ...credentials, scopes: undefined }, keys.sealPublicKey, "access", keys.config, "workspace.all");
+    await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+  });
   it("accepts a managed test identity and rejects other environments at its broker", () => {
     const identity = config().config;
     const env = {
@@ -208,6 +230,21 @@ describe("Paperclip Cloud connector", () => {
     const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
     await connector.startAuthorization({ subject, companyId, profile,
       returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "chat-state" });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("signs selected Workspace scopes without substituting the full profile", async () => {
+    const keys = config();
+    const scopes = ["https://www.googleapis.com/auth/gmail.readonly"];
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
+      expect(claims).toMatchObject({ prf: "workspace.all", scp: scopes });
+      return Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=workspace", expiresAt: "2099-01-01T00:00:00Z" });
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    await connector.startAuthorization({ subject, companyId, profile: "workspace.all", scopes,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "workspace-state" });
     expect(request).toHaveBeenCalledOnce();
   });
 
@@ -664,7 +701,7 @@ function seal(
     "sha256",
     diffieHellman({ privateKey: ephemeral.privateKey, publicKey: recipientPublicKey }),
     Buffer.concat([ephemeralRaw, recipientRaw]),
-    aad,
+    profile === "workspace.all" ? createHash("sha256").update(aad).digest() : aad,
     32,
   ));
   const iv = randomBytes(12);

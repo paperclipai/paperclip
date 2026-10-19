@@ -15,6 +15,7 @@ import {
   aiConnectionTaskPins,
   companies,
   toolConnections,
+  connectionGrants,
   toolCatalogEntries,
   toolProfiles,
   toolProfileEntries,
@@ -994,6 +995,9 @@ export function connectionIntentService(db: Db) {
         if (payload.accessRequest.connectionId !== connectionId) throw conflict("Use the connection named in this access request");
         throw forbidden("Granting agent tool access requires connection-management authority");
       }
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(and(eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.companyId, loaded.issue.companyId)))
+        .orderBy(connectionGrants.id).for("update");
       await lockToolConnectionRuntimeInputs(tx, loaded.issue.companyId, connectionId);
       let selectedConnection = await txAccess.getConnection(connectionId, loaded.issue.companyId);
       const selectedApplication = await txAccess.getApplication(

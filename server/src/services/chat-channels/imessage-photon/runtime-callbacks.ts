@@ -31,7 +31,7 @@ export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptio
         const current = await runtimeCallbackEndpoint(tx, endpointId, context, ["attention"]);
         if (!current) return;
         const connection = await tx.select().from(toolConnections).where(eq(toolConnections.id, current.connectionId)).then((rows) => rows[0]);
-        if (!connection?.enabled) throw new Error("Photon endpoint requires operator recovery");
+        if (!connection?.enabled || connection.healthStatus === "failed") throw new Error("Photon endpoint requires operator recovery");
         await notifyChatEndpointWork(tx, connectionId);
         await tx.update(chatEndpoints).set({ status: current.setup.step === "complete" ? "active" : "verifying", healthMessage: "Photon receiver connected", lastError: null, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpointId));
       });

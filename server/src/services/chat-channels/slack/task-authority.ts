@@ -1,11 +1,12 @@
 import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
+import { boundRunIssueId } from "../../run-task-binding.js";
 import type { createChatCredentials } from "../credentials.js";
 
 import { slackSearchActionToken } from "../../connectors/slack-search-context.js";
 import { slackAuthorizationRevision } from "../../connectors/slack-revision.js";
 
 import { instanceSettingsService } from "../../instance-settings.js";
-import { registerSlackTaskAuthority, slackRunOrigin } from "../../connectors/slack-authority.js";
+import { registerSlackTaskAuthority, slackRunOrigin, type SlackTaskBinding } from "../../connectors/slack-authority.js";
 import { measureRunPhase } from "../../execution-preparation-timing.js";
 import { measureRunTransaction } from "../../execution-transaction-timing.js";
 
@@ -53,12 +54,12 @@ export function createSlackTaskAuthorityRegistration(db: Db, options: SlackTaskA
   const { authorizeInboundWakeup, resolveCredentials } = options;
 
 
-  const unregisterSlackTaskAuthority = registerSlackTaskAuthority(db, async (binding) => {
+  const authorize = async (binding: SlackTaskBinding) => {
     if (!(await measureRunPhase("connectors.slack.settings", () => instanceSettingsService(db).getExperimental())).enableChatConnectors)
       throw forbidden("Chat connectors are disabled");
     const identity = await measureRunPhase("connectors.slack.identity", () => slackRunOrigin(db, binding));
     const run = identity.run;
-    if ((run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) !== binding.issueId || !run.responsibleUserId)
+    if (boundRunIssueId(run) !== binding.issueId || !run.responsibleUserId)
       throw forbidden("Slack tools require the bound task and an accepted linked user");
     const resolved = await measureRunTransaction(db, "connectors.slack.authority", async (tx) => {
       const [action] = await tx.select().from(chatActions).where(and(
@@ -140,19 +141,29 @@ export function createSlackTaskAuthorityRegistration(db: Db, options: SlackTaskA
     const credentials = await measureRunPhase("connectors.slack.credentials", () => resolveCredentials(resolved.endpoint, db, ["botToken"]));
     if (!credentials.botToken) throw forbidden("Slack bot credential is unavailable");
     return {
-      endpoint: resolved.endpoint, issueId: binding.issueId, conversation: resolved.conversation,
-      principalId: resolved.principalId, slackUserId: resolved.slackUserId,
-      userId: run.responsibleUserId, deliveryId: resolved.delivery?.id ?? null,
-      identityContextId: identity.context?.id ?? null,
-      workMode: resolved.issue.workMode,
-      revision: createHash("sha256").update(JSON.stringify([
-        resolved.endpoint.status, resolved.endpoint.allowDirectMessages, resolved.conversation?.sessionGeneration ?? null,
-        run.responsibleUserId, credentials.botToken,
-        await measureRunPhase("connectors.slack.revision", () => slackAuthorizationRevision(db, binding.companyId, resolved.endpoint.id, resolved.endpoint.connectionId, binding.agentId, run.responsibleUserId!)),
-      ])).digest("hex"),
-      botToken: credentials.botToken,
-      searchActionToken: resolved.delivery ? slackSearchActionToken(db, resolved.endpoint.id, resolved.endpoint.providerAccountId!, resolved.slackUserId, String((resolved.delivery.normalizedEvent.message as Record<string, unknown> | undefined)?.providerMessageId ?? "")) : null,
+      authority: {
+        endpoint: resolved.endpoint, issueId: binding.issueId, conversation: resolved.conversation,
+        principalId: resolved.principalId, slackUserId: resolved.slackUserId,
+        userId: run.responsibleUserId, deliveryId: resolved.delivery?.id ?? null,
+        identityContextId: identity.context?.id ?? null,
+        workMode: resolved.issue.workMode,
+        botToken: credentials.botToken,
+      },
+      searchActionToken: () => resolved.delivery ? slackSearchActionToken(db, resolved.endpoint.id, resolved.endpoint.providerAccountId!, resolved.slackUserId, String((resolved.delivery.normalizedEvent.message as Record<string, unknown> | undefined)?.providerMessageId ?? "")) : null,
     };
-  });
+  };
+  const unregisterSlackTaskAuthority = registerSlackTaskAuthority(db, async (binding) => {
+    const resolved = await authorize(binding);
+    const authority = resolved.authority;
+    return {
+      ...authority,
+      revision: createHash("sha256").update(JSON.stringify([
+        authority.endpoint.status, authority.endpoint.allowDirectMessages, authority.conversation?.sessionGeneration ?? null,
+        authority.userId, authority.botToken,
+        await measureRunPhase("connectors.slack.revision", () => slackAuthorizationRevision(db, binding.companyId, authority.endpoint.id, authority.endpoint.connectionId, binding.agentId, authority.userId)),
+      ])).digest("hex"),
+      searchActionToken: resolved.searchActionToken(),
+    };
+  }, async binding => (await authorize(binding)).authority);
   return { unregisterSlackTaskAuthority };
 }

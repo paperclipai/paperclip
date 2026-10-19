@@ -46,7 +46,8 @@ const ConfigureBuiltInAgentModal = lazy(() =>
   })),
 );
 
-export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+import { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
+export { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
 
 const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [

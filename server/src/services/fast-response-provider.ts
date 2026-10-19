@@ -1,3 +1,4 @@
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
 import { generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -139,6 +140,9 @@ export function fastResponseModel(
     route = metadata.routing;
   const guardedFetch: typeof fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
+    if (isOpenRouterUrl(String(url))) {
+      for (const [name, value] of Object.entries(OPENROUTER_ATTRIBUTION_HEADERS)) headers.set(name, value);
+    }
     if (route?.auth === "none") {
       headers.delete("authorization");
       headers.delete("x-api-key");

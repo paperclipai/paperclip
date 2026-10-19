@@ -1,5 +1,5 @@
 import { stableHash, descriptorHash } from "./tool-catalog-hash.js";
-import { assertProfileEntryInputs, assertProfileEntryShape } from "./tool-profile-entry-validation.js";
+import { assertProfileEntryInputs } from "./tool-profile-entry-validation.js";
 import { DAYTONA_TOOLS, daytonaClient, daytonaRisk, isDaytonaConnection, isDaytonaToolName } from "./daytona.js";
 import { chatCredentialMutationLease } from "./chat-credential-mutation-lease.js";
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
@@ -13,6 +13,7 @@ import type { ComposioAppAccount, ComposioAppAccountInput, ComposioAppSetupInput
 import { composioAppAccounts, composioAppSetupResult } from "./composio-app-setup.js";
 import { honchoManagedArguments } from "./honcho-connection.js";
 import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, GOOGLE_WORKSPACE_DEFAULT_SELECTION, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, isGoogleWorkspaceScopeGrant, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
@@ -45,6 +46,7 @@ import {
   lte,
   max,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -2069,9 +2071,30 @@ function toPolicy(row: typeof toolPolicies.$inferSelect): ToolPolicy {
   };
 }
 
+// Profile summaries and new-tool counts never read schemas, annotations, or
+// provider metadata. Keep those large fields out of these repeated reads.
+const profileCatalogColumns = {
+  id: toolCatalogEntries.id,
+  applicationId: toolCatalogEntries.applicationId,
+  connectionId: toolCatalogEntries.connectionId,
+  toolName: toolCatalogEntries.toolName,
+  riskLevel: toolCatalogEntries.riskLevel,
+  status: toolCatalogEntries.status,
+  firstSeenAt: toolCatalogEntries.firstSeenAt,
+};
+const profileReviewCatalogColumns = {
+  ...profileCatalogColumns,
+  title: toolCatalogEntries.title,
+  description: toolCatalogEntries.description,
+};
+type ProfileCatalogEntry = Pick<typeof toolCatalogEntries.$inferSelect, keyof typeof profileCatalogColumns>
+  & Partial<Pick<typeof toolCatalogEntries.$inferSelect, "title" | "description">>;
+type ProfileApplication = Pick<typeof toolApplications.$inferSelect, "id" | "name">;
+type ProfileConnection = Pick<typeof toolConnections.$inferSelect, "id" | "name">;
+
 function profileEntryMatchesCatalog(
   entry: typeof toolProfileEntries.$inferSelect,
-  catalogEntry: typeof toolCatalogEntries.$inferSelect,
+  catalogEntry: ProfileCatalogEntry,
 ): boolean {
   if (entry.selectorType === "application")
     return entry.applicationId === catalogEntry.applicationId;
@@ -2090,7 +2113,7 @@ function summarizeProfile(input: {
   profile: typeof toolProfiles.$inferSelect;
   entries: Array<typeof toolProfileEntries.$inferSelect>;
   bindings: Array<typeof toolProfileBindings.$inferSelect>;
-  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
+  catalog: ProfileCatalogEntry[];
   agentIds: string[];
 }): ToolProfileSummary {
   const includes = input.entries.filter((entry) => entry.effect === "include");
@@ -2150,8 +2173,8 @@ function summarizeProfile(input: {
 
 function profileCoversCatalogScope(input: {
   entry: typeof toolProfileEntries.$inferSelect;
-  catalogEntry: typeof toolCatalogEntries.$inferSelect;
-  catalogById: Map<string, typeof toolCatalogEntries.$inferSelect>;
+  catalogEntry: ProfileCatalogEntry;
+  catalogById: Map<string, ProfileCatalogEntry>;
 }): boolean {
   if (input.entry.effect !== "include") return false;
   if (input.entry.selectorType === "application")
@@ -2175,9 +2198,9 @@ function profileCoversCatalogScope(input: {
 function pendingNewToolsForProfile(input: {
   profile: typeof toolProfiles.$inferSelect;
   entries: Array<typeof toolProfileEntries.$inferSelect>;
-  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
-  applicationsById?: Map<string, typeof toolApplications.$inferSelect>;
-  connectionsById?: Map<string, typeof toolConnections.$inferSelect>;
+  catalog: ProfileCatalogEntry[];
+  applicationsById?: Map<string, ProfileApplication>;
+  connectionsById?: Map<string, ProfileConnection>;
 }): ToolProfileNewToolReviewItem[] {
   if (
     input.profile.status !== "active" ||
@@ -2224,8 +2247,8 @@ function pendingNewToolsForProfile(input: {
       connectionName:
         input.connectionsById?.get(catalogEntry.connectionId)?.name ?? null,
       toolName: catalogEntry.toolName,
-      title: catalogEntry.title,
-      description: catalogEntry.description,
+      title: catalogEntry.title ?? null,
+      description: catalogEntry.description ?? null,
       capability: catalogEntry.riskLevel,
       riskLevel: catalogEntry.riskLevel,
       addedAt: catalogEntry.firstSeenAt,
@@ -2237,10 +2260,10 @@ function buildProfileDetails(input: {
   profile: typeof toolProfiles.$inferSelect;
   entries: Array<typeof toolProfileEntries.$inferSelect>;
   bindings: Array<typeof toolProfileBindings.$inferSelect>;
-  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
+  catalog: ProfileCatalogEntry[];
   agentIds: string[];
-  applicationsById?: Map<string, typeof toolApplications.$inferSelect>;
-  connectionsById?: Map<string, typeof toolConnections.$inferSelect>;
+  applicationsById?: Map<string, ProfileApplication>;
+  connectionsById?: Map<string, ProfileConnection>;
 }): ToolProfileWithDetails {
   const pendingNewTools = pendingNewToolsForProfile({
     profile: input.profile,
@@ -2363,6 +2386,14 @@ export function classifyRisk(
   tool: McpToolDescriptor,
   sourceTemplateKey?: string | null,
 ): ToolRiskLevel {
+  if (sourceTemplateKey === "google-workspace") {
+    const target = googleWorkspaceToolTarget(tool.name);
+    if (!target) return "destructive";
+    const risk = classifyRisk({ ...tool, name: target.upstreamName }, target.appSlug);
+    if (risk === "destructive" || target.leaf === "delete_event" || target.leaf === "send_message") return "destructive";
+    if (target.write) return "write";
+    return risk;
+  }
   const annotations = tool.annotations ?? {};
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
@@ -2520,6 +2551,7 @@ export function isGoogleWorkspaceToolAllowed(
   profileId: GoogleWorkspaceConnectorProfileId,
   tool: McpToolDescriptor,
 ): boolean {
+  if (profileId === "workspace.all") return googleWorkspaceToolTarget(tool.name) !== null;
   const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profileId];
   const toolName = googleWorkspaceToolLeafName(tool.name);
   const readTools =
@@ -2910,7 +2942,7 @@ function sanitizeHttpFailure(error: unknown): {
     if (code === "grant_credential_invalid" || code === "oauth_insufficient_scope") {
       return { status: code === "grant_credential_invalid" ? "missing_secret" : "degraded", message: error.message, code };
     }
-    if (code === "slack_mcp_access_disabled") {
+    if (code === "slack_mcp_access_disabled" || code === "google_workspace_services_unavailable") {
       return { status: "error", message: error.message, code };
     }
     if (code === "user_authorization_required") {
@@ -3094,6 +3126,18 @@ export async function lockToolConnectionRuntimeInputs(client: ToolAccessMutation
     .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connectionId}`)))
     .for("no key update");
   await lockManagedAppPolicies(client, companyId, connectionId);
+}
+
+async function lockProfileEntryReferences(client: ToolAccessMutationDb, companyId: string, entries: Pick<CreateToolProfileEntryForProfile, "applicationId" | "connectionId" | "catalogEntryId">[]) {
+  const applicationIds = [...new Set(entries.flatMap(entry => entry.applicationId ? [entry.applicationId] : []))];
+  const connectionIds = [...new Set(entries.flatMap(entry => entry.connectionId ? [entry.connectionId] : []))];
+  const catalogIds = [...new Set(entries.flatMap(entry => entry.catalogEntryId ? [entry.catalogEntryId] : []))];
+  if (applicationIds.length) await client.select({ id: toolApplications.id }).from(toolApplications)
+    .where(and(eq(toolApplications.companyId, companyId), inArray(toolApplications.id, applicationIds))).orderBy(toolApplications.id).for("key share");
+  if (connectionIds.length) await client.select({ id: toolConnections.id }).from(toolConnections)
+    .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, connectionIds))).orderBy(toolConnections.id).for("key share");
+  if (catalogIds.length) await client.select({ id: toolCatalogEntries.id }).from(toolCatalogEntries)
+    .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, catalogIds))).orderBy(toolCatalogEntries.id).for("key share");
 }
 
 export function toolAccessService(
@@ -5900,19 +5944,6 @@ export function toolAccessService(
     }));
   }
 
-  async function assertProfileEntryInput(
-    companyId: string,
-    input: CreateToolProfileEntryForProfile,
-  ) {
-    assertProfileEntryShape(input);
-    if (input.applicationId)
-      await assertApplication(companyId, input.applicationId);
-    if (input.connectionId)
-      await getConnectionRow(input.connectionId, companyId);
-    if (input.catalogEntryId)
-      await assertCatalogEntry(companyId, input.catalogEntryId);
-  }
-
   async function getConnectionRow(idOrUid: string, companyId?: string) {
     const identifier =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -6078,7 +6109,7 @@ export function toolAccessService(
           asc(toolProfileBindings.createdAt),
         ),
       dbClient
-        .select()
+        .select(profileCatalogColumns)
         .from(toolCatalogEntries)
         .where(
           and(
@@ -6091,11 +6122,11 @@ export function toolAccessService(
         .from(agents)
         .where(eq(agents.companyId, profile.companyId)),
       dbClient
-        .select()
+        .select({ id: toolApplications.id, name: toolApplications.name })
         .from(toolApplications)
         .where(eq(toolApplications.companyId, profile.companyId)),
       dbClient
-        .select()
+        .select({ id: toolConnections.id, name: toolConnections.name })
         .from(toolConnections)
         .where(eq(toolConnections.companyId, profile.companyId)),
     ]);
@@ -6131,7 +6162,7 @@ export function toolAccessService(
         )
         .orderBy(asc(toolProfileEntries.createdAt)),
       db
-        .select()
+        .select(profileReviewCatalogColumns)
         .from(toolCatalogEntries)
         .where(
           and(
@@ -6141,11 +6172,11 @@ export function toolAccessService(
         )
         .orderBy(asc(toolCatalogEntries.toolName)),
       db
-        .select()
+        .select({ id: toolApplications.id, name: toolApplications.name })
         .from(toolApplications)
         .where(eq(toolApplications.companyId, profile.companyId)),
       db
-        .select()
+        .select({ id: toolConnections.id, name: toolConnections.name })
         .from(toolConnections)
         .where(eq(toolConnections.companyId, profile.companyId)),
     ]);
@@ -6258,10 +6289,11 @@ export function toolAccessService(
     companyId: string,
     profileId: string,
     entries: CreateToolProfileEntryForProfile[],
+    dbClient: ToolAccessMutationDb = db,
   ) {
-    await assertProfileEntryInputs(db, companyId, entries);
+    await assertProfileEntryInputs(dbClient, companyId, entries);
     if (entries.length === 0) return;
-    await db.insert(toolProfileEntries).values(
+    await dbClient.insert(toolProfileEntries).values(
       entries.map((entry) => ({
         companyId,
         profileId,
@@ -6281,9 +6313,10 @@ export function toolAccessService(
     companyId: string,
     profileId: string,
     entries: CreateToolProfileEntryForProfile[],
+    dbClient: ToolAccessMutationDb = db,
   ) {
-    await assertProfileEntryInputs(db, companyId, entries);
-    await db
+    await assertProfileEntryInputs(dbClient, companyId, entries);
+    await dbClient
       .delete(toolProfileEntries)
       .where(
         and(
@@ -6291,7 +6324,7 @@ export function toolAccessService(
           eq(toolProfileEntries.profileId, profileId),
         ),
       );
-    await createProfileEntries(companyId, profileId, entries);
+    await createProfileEntries(companyId, profileId, entries, dbClient);
   }
 
   /**
@@ -6605,17 +6638,14 @@ export function toolAccessService(
     let gatewayTokensRevoked = 0;
     let gatewaySessionsRevoked = 0;
     if (appProfile) {
-      appProfileEntriesRemoved = (
-        await db
-          .delete(toolProfileEntries)
-          .where(
-            and(
-              eq(toolProfileEntries.companyId, connection.companyId),
-              eq(toolProfileEntries.profileId, appProfile.id),
-            ),
-          )
-          .returning({ id: toolProfileEntries.id })
-      ).length;
+      appProfileEntriesRemoved = await db.transaction(async tx => {
+        await tx.select({ id: toolProfiles.id }).from(toolProfiles)
+          .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.id, appProfile.id)))
+          .for("no key update");
+        return (await tx.delete(toolProfileEntries)
+          .where(and(eq(toolProfileEntries.companyId, connection.companyId), eq(toolProfileEntries.profileId, appProfile.id)))
+          .returning({ id: toolProfileEntries.id })).length;
+      });
       appProfileBindingsRemoved = (
         await db
           .delete(toolProfileBindings)
@@ -7145,13 +7175,47 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
+    workspaceEndpoint?: string,
+    unavailableServices: string[] = [],
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     let headers = credentialHeaders ?? {
       ...projectedConnectionHeaders(connection),
       ...(await resolveCredentialHeaders(connection, actor)),
     };
-    const endpoint = await resolvedRemoteEndpoint(connection, actor);
+    if (connection.config.sourceTemplateKey === "google-workspace" && !workspaceEndpoint) {
+      const grant = await vaultGrantForConnection(connection, actor);
+      const scopes = googleWorkspaceGrantedScopes(grant);
+      const services = (Object.keys(GOOGLE_WORKSPACE_SERVICES) as GoogleWorkspaceService[])
+        .filter((service) => googleWorkspaceServiceGranted(service, scopes));
+      // One credential authority, no child connections or implied service grants.
+      const catalogs = await Promise.allSettled(services.map(async (service) => {
+        const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
+        const tools = await remoteTools(connection, headers, actor, profile.serverUrl);
+        return tools.map((tool) => ({ ...tool, name: googleWorkspaceToolName(service, tool.name) }))
+          .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, scopes));
+      }));
+      for (const [index, catalog] of catalogs.entries()) {
+        if (catalog.status === "fulfilled") continue;
+        const service = services[index]!;
+        unavailableServices.push(service);
+        await audit({ companyId: connection.companyId, connectionId: connection.id,
+          action: "tool_connection.catalog_refresh", outcome: "failure", actor,
+          reasonCode: "google_workspace_service_unavailable", details: { service } });
+      }
+      const currentGrant = await vaultGrantForConnection(connection, actor);
+      if (!currentGrant) throw unprocessable("OAuth authorization must be reconnected", { code: "oauth_reauthorization_required" });
+      if (catalogs.length > 0 && catalogs.every((catalog) => catalog.status === "rejected")) {
+        throw new HttpError(502, `Google services unavailable: ${unavailableServices.join(", ")}. Retry refreshing actions.`,
+          { code: "google_workspace_services_unavailable" });
+      }
+      // A service's authentication retry may have refreshed into a narrower
+      // grant. Never publish actions using the pre-refresh permission snapshot.
+      const currentScopes = googleWorkspaceGrantedScopes(currentGrant);
+      return catalogs.flatMap((catalog) => catalog.status === "fulfilled" ? catalog.value : [])
+        .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, currentScopes));
+    }
+    const endpoint = workspaceEndpoint ?? await resolvedRemoteEndpoint(connection, actor);
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
@@ -7491,6 +7555,7 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
+    unavailableServices: string[] = [],
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
@@ -7509,7 +7574,7 @@ export function toolAccessService(
       return [];
     }
     if (connection.transport === "mcp_remote")
-      return remoteTools(connection, credentialHeaders, actor);
+      return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
     if (connection.transport !== "local_stdio") {
       throw unsupportedToolConnectionTransport();
     }
@@ -7613,6 +7678,7 @@ export function toolAccessService(
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
+    const unavailableServices: string[] = [];
     try {
       assertSupportedConnection(connection);
       const config = asRecord(connection.config);
@@ -7674,7 +7740,7 @@ export function toolAccessService(
             : canProbeWithoutAuthorization
               ? {}
               : undefined;
-        await remoteTools(connection, credentialHeaders, actor);
+        await remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
       } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
@@ -7685,7 +7751,9 @@ export function toolAccessService(
       const updated = await updateConnectionHealth(
         connection,
         "ok",
-        config.sourceTemplateKey === "github" &&
+        unavailableServices.length > 0
+          ? `Connected. Google services unavailable: ${unavailableServices.join(", ")}. Other services remain available; retry refreshing actions.`
+          : config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
           : isDaytonaConnection(connection)
@@ -7758,12 +7826,14 @@ export function toolAccessService(
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     const refreshedAt = now();
+    const unavailableServices: string[] = [];
     let descriptors: McpToolDescriptor[];
     try {
       descriptors = await discoverTools(
         connection,
         refreshOptions.credentialHeaders,
         actor,
+        unavailableServices,
       );
     } catch (error) {
       if (
@@ -7811,10 +7881,30 @@ export function toolAccessService(
       existingRows.map((entry) => [entry.toolName, entry]),
     );
     const nativeDaytona = isDaytonaConnection(connection);
-    if (nativeDaytona || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+    if (connection.config.sourceTemplateKey === "google-workspace"
+      || nativeDaytona || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
+      // The catalog is shared, but discovery uses only the caller's grant. A
+      // narrower personal consent must not remove actions another active grant
+      // still supports. Never combine scopes from different grants into authority.
+      let otherWorkspaceGrants: string[][] = [];
+      let selectedWorkspaceScopes: string[] = [];
+      if (connection.config.sourceTemplateKey === "google-workspace") {
+        const selected = await vaultGrantForConnection(connection, actor);
+        selectedWorkspaceScopes = googleWorkspaceGrantedScopes(selected);
+        const grants = await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.status, "active"),
+        ));
+        otherWorkspaceGrants = grants.filter((grant) => grant.id !== selected?.id).map(googleWorkspaceGrantedScopes);
+      }
+      // Preserve only consent-filtered actions, not failed-service catalogs or
+      // tools a successful, sufficiently authorized discovery actually removed.
       const removedStatus = nativeDaytona ? "removed" : "disabled";
-      const removedIds = existingRows.filter((entry) => !discoveredNames.has(entry.toolName) && entry.status !== removedStatus).map((entry) => entry.id);
+      const removedIds = existingRows.filter((entry) => !discoveredNames.has(entry.toolName) && entry.status !== removedStatus
+        && !(otherWorkspaceGrants.some((scopes) => isGoogleWorkspaceToolGranted(entry.toolName, scopes))
+          && !isGoogleWorkspaceToolGranted(entry.toolName, selectedWorkspaceScopes)
+          && !unavailableServices.includes(googleWorkspaceToolTarget(entry.toolName)?.service ?? ""))).map((entry) => entry.id);
       if (removedIds.length) await publish(tx => tx.update(toolCatalogEntries)
         .set({ status: removedStatus, quarantineReason: nativeDaytona ? "provider_tool_removed" : "mcp_tool_removed", updatedAt: refreshedAt })
         .where(and(eq(toolCatalogEntries.companyId, connection.companyId), eq(toolCatalogEntries.connectionId, connection.id), inArray(toolCatalogEntries.id, removedIds))));
@@ -7950,7 +8040,9 @@ export function toolAccessService(
         config: normalizedConfig,
         transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
-        healthMessage: isAgentMailConnection(connection)
+        healthMessage: unavailableServices.length > 0
+          ? `Actions refreshed. Google services unavailable: ${unavailableServices.join(", ")}. Other services remain available; retry refreshing actions.`
+          : isAgentMailConnection(connection)
           ? "AgentMail API key is connected."
           : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
@@ -8033,7 +8125,7 @@ export function toolAccessService(
           ),
         ),
       db
-        .select()
+        .select({ connectionId: toolCatalogEntries.connectionId })
         .from(toolCatalogEntries)
         .where(
           and(
@@ -8042,7 +8134,7 @@ export function toolAccessService(
           ),
         ),
       db
-        .select()
+        .select({ invocationId: toolActionRequests.invocationId })
         .from(toolActionRequests)
         .where(
           and(
@@ -8052,7 +8144,7 @@ export function toolAccessService(
           ),
         ),
       db
-        .select()
+        .select({ id: toolInvocations.id, connectionId: toolInvocations.connectionId })
         .from(toolInvocations)
         .where(eq(toolInvocations.companyId, companyId)),
       db
@@ -8064,7 +8156,7 @@ export function toolAccessService(
         .from(toolProfileEntries)
         .where(eq(toolProfileEntries.companyId, companyId)),
       db
-        .select()
+        .select(profileCatalogColumns)
         .from(toolCatalogEntries)
         .where(
           and(
@@ -11495,6 +11587,13 @@ export function toolAccessService(
                 profile: profile.id,
                 refreshToken: refreshSecret.value,
               });
+              if (profile.id === "workspace.all") {
+                const requested = normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes);
+                credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+              }
+              if (profile.id === "workspace.all" && !isGoogleWorkspaceScopeGrant(credentials.scopes)) {
+                throw new PaperclipCloudConnectorError("Google did not return verifiable permissions", "REAUTHORIZATION_REQUIRED");
+              }
             } catch (error) {
               if (
                 error instanceof PaperclipCloudConnectorError &&
@@ -11539,6 +11638,14 @@ export function toolAccessService(
               },
             };
             const updated = await db.transaction(async (tx) => {
+              const [current] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+                .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId),
+                  eq(connectionGrants.status, "active"),
+                  sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`))
+                .for("update");
+              if (!current) throw conflict("OAuth credentials changed while refresh was in progress", {
+                code: "oauth_refresh_superseded", retryable: true,
+              });
               const txSecrets = secretService(tx);
               await txSecrets.rotate(
                 accessRef.secretId,
@@ -11790,6 +11897,12 @@ export function toolAccessService(
           throw error;
         }
 
+        if (connection.config.sourceTemplateKey === "google-workspace"
+          && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
+          await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
+            .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId)));
+          throw unprocessable("Google did not return verifiable permissions. Reconnect Google Workspace.", { code: "oauth_reauthorization_required" });
+        }
         let nextRefreshRef: ToolCredentialSecretRef | null = null;
         if (token.refreshToken) {
           nextRefreshRef = await createOrRotateOAuthSecret({
@@ -11852,6 +11965,9 @@ export function toolAccessService(
             unrequestedScopes: grantOauth.unrequestedScopes,
           },
         });
+        if (connection.config.sourceTemplateKey === "google-workspace") {
+          refreshed.scopes = googleWorkspaceEffectiveScopes(normalizeOauthScopes(grantOauth.requestedScopes ?? grantOauth.scopes), refreshed.scopes);
+        }
         const providerTenant = {
           ...(grant.providerTenant ?? {}),
           oauth: {
@@ -13617,6 +13733,9 @@ export function toolAccessService(
         const attemptedConnection = connectionRow;
         try {
           await db.transaction(async (tx) => {
+            if (revivedGrantMutation) await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+              .where(and(eq(connectionGrants.id, revivedGrantMutation.current.id), eq(connectionGrants.companyId, companyId)))
+              .for("update");
             const [latestConnection] = await tx
               .select()
               .from(toolConnections)
@@ -14504,6 +14623,15 @@ export function toolAccessService(
     ];
 
     const updated = await db.transaction(async (tx) => {
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connection.id)))
+        .orderBy(connectionGrants.id).for("update");
+      await tx.select({ id: toolApplications.id }).from(toolApplications)
+        .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
+        .for("update");
+      await tx.select({ id: toolConnections.id }).from(toolConnections)
+        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
+        .for("update");
       for (const field of providedFields) {
         const value = input.credentialValues[field.configPath]!.trim();
         if (field.placement === "url" && !remoteUrlCredentialMatchesPublicUrl(String(connection.config.url ?? ""), value)) {
@@ -14603,6 +14731,7 @@ export function toolAccessService(
       subjectUserId?: string;
       subjectAgentId?: string;
       scopes?: string[];
+      workspaceServices?: GoogleWorkspaceServiceSelection;
       returnTo?: string;
       issueId?: string;
       interactionId?: string;
@@ -14624,7 +14753,36 @@ export function toolAccessService(
     const galleryMethod = galleryEntry
       ? connectionMethodForConnection(galleryEntry, connection)
       : null;
-    const requestedScopes = (() => {
+    const requestedScopes = await (async () => {
+      if (input.workspaceServices && sourceTemplateKey !== "google-workspace") throw badRequest("Service selection requires Google Workspace");
+      if (sourceTemplateKey === "google-workspace") {
+        if (input.workspaceServices && input.scopes) throw badRequest("Choose services or scopes, not both");
+        const allowed = normalizeOauthScopes(galleryMethod?.defaults?.scopesHint);
+        let scopes = input.scopes ?? (input.workspaceServices ? googleWorkspaceSelectedScopes(input.workspaceServices) : undefined);
+        if (!scopes && connection.status !== "draft") {
+          // Account-page reconnect has no new service choice. Never replace its
+          // subject's saved request with the new-account write defaults.
+          const binding = actorBinding(input.actor);
+          const subjectUserId = input.subjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
+          const kind = connection.credentialPolicy === "per_user" ? "user"
+            : connection.credentialPolicy === "per_agent" ? "agent" : "organization";
+          const [grant] = await db.select().from(connectionGrants).where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.kind, kind),
+            kind === "user" ? eq(connectionGrants.subjectUserId, subjectUserId ?? "")
+              : kind === "agent" ? eq(connectionGrants.subjectAgentId, input.subjectAgentId ?? "")
+                : eq(connectionGrants.isDefault, true),
+          )).limit(1);
+          const saved = grant?.providerTenant?.oauth;
+          scopes = normalizeOauthScopes(saved?.requestedScopes ?? saved?.scopes)
+            .filter(scope => allowed.includes(scope));
+          if (scopes.length === 0) throw badRequest("Choose your Google Workspace services before reconnecting");
+        }
+        scopes ??= googleWorkspaceSelectedScopes(GOOGLE_WORKSPACE_DEFAULT_SELECTION);
+        if (!isGoogleWorkspaceScopeGrant(scopes) || scopes.some(scope => !allowed.includes(scope))) throw badRequest("Select at least one supported Google service");
+        return scopes;
+      }
       if (!galleryMethod) return input.scopes ?? null;
       const allowed = normalizeOauthScopes(galleryMethod.defaults?.scopesHint);
       if (!input.scopes) return allowed;
@@ -14845,6 +15003,7 @@ export function toolAccessService(
           : subjectUserId!,
         companyId,
         profile: managedProfile.id,
+        ...(managedProfile.id === "workspace.all" ? { scopes: requestedScopes! } : {}),
         returnUri: returnUri.toString(),
         returnState: state,
       });
@@ -14866,7 +15025,7 @@ export function toolAccessService(
         createdBySessionId: binding.sessionId,
         subjectUserId,
         subjectAgentId: authorizationSubjectAgentId,
-        requestedScopes: [...managedProfile.scopes],
+        requestedScopes: managedProfile.id === "workspace.all" ? requestedScopes! : [...managedProfile.scopes],
         returnTo: input.returnTo,
         issueId: intentLink?.issueId ?? input.issueId,
         interactionId: intentLink?.id,
@@ -14984,6 +15143,8 @@ export function toolAccessService(
     // against which it could safely judge the caller's requested scope.
     if (authorizationScopes.length > 0)
       authorizationUrl.searchParams.set("scope", authorizationScopes.join(" "));
+    if (galleryMethod && connection.config.sourceTemplateKey === "google-workspace")
+      authorizationUrl.searchParams.set("enable_granular_consent", "true");
     const reviewedAuthorizationParams =
       galleryMethod?.defaults?.oauthAuthorizationParams;
     if (reviewedAuthorizationParams?.access_type)
@@ -15364,9 +15525,11 @@ export function toolAccessService(
         : suggestedAgentIds.length > 0
           ? { agentIds: suggestedAgentIds }
           : "all_agents";
-    // An explicitly saved empty Access selection means no agents. A missing
-    // selection must still use managed OAuth's subject/recommended defaults.
-    const remoteMcpAccess = isRemoteMcpConnectorMethod(
+    // Workspace setup saves the operator's install selection before OAuth too.
+    // An empty selection means no agents, not permission to apply all-agent
+    // defaults after the user returns from Google.
+    const preserveEmptyInstalls = input.connection.config.sourceTemplateKey === "google-workspace"
+      || isRemoteMcpConnectorMethod(
       input.connection.config.sourceTemplateKey,
       input.connection.config.connectionMethodKey,
     ) || (input.connection.transport === "mcp_remote"
@@ -15374,7 +15537,7 @@ export function toolAccessService(
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
-        ? remoteMcpAccess ? { agentIds: [] } : normalizedSuggestedAccess
+        ? preserveEmptyInstalls ? { agentIds: [] } : normalizedSuggestedAccess
         : companyInstall
           ? "all_agents"
           : { agentIds };
@@ -15409,7 +15572,7 @@ export function toolAccessService(
       },
       input.actor,
     );
-    if (!deferTaskAccess && !remoteMcpAccess && installs.length === 0) {
+    if (!deferTaskAccess && !preserveEmptyInstalls && installs.length === 0) {
       const installTargets =
         access === "all_agents"
           ? [
@@ -15532,7 +15695,13 @@ export function toolAccessService(
       profile: profile.id,
       claimId: input.claimId,
       redemptionId: input.state,
+      ...(profile.id === "workspace.all" && stateRow.requestedScopes ? { scopes: stateRow.requestedScopes } : {}),
     });
+    if (profile.id === "workspace.all") {
+      const requested = normalizeOauthScopes(stateRow.requestedScopes);
+      credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+      if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
+    }
     const refreshToken = credentials.refreshToken;
     if ((profile.provider === "google" || profile.provider === "asana") && !refreshToken) {
       throw unprocessable(
@@ -15653,7 +15822,8 @@ export function toolAccessService(
                 : eq(connectionGrants.isDefault, true),
           ),
         )
-        .limit(1);
+        .limit(1)
+        .for("update");
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
@@ -15710,6 +15880,7 @@ export function toolAccessService(
             strategy: "paperclip_cloud_connector",
             accessTokenExpiresAt: credentials.accessTokenExpiresAt,
             scopes: credentials.scopes,
+            requestedScopes: stateRow.requestedScopes ?? undefined,
             tokenType: credentials.tokenType,
             ...(credentials.refreshTokenExpiresAt
               ? { refreshTokenExpiresAt: credentials.refreshTokenExpiresAt }
@@ -16236,6 +16407,13 @@ export function toolAccessService(
       code: input.code,
       resource: endpoints.resource,
     });
+    if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
+      throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });
+    }
+    if (sourceTemplateKey === "google-workspace") {
+      token.scope = googleWorkspaceEffectiveScopes(authorizedScopes, normalizeOauthScopes(token.scope)).join(" ");
+      if (!token.scope) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
+    }
     const connectedAt = now();
     const expiresAt = token.expiresIn
       ? new Date(connectedAt.getTime() + token.expiresIn * 1000).toISOString()
@@ -16279,7 +16457,8 @@ export function toolAccessService(
               eq(connectionGrants.subjectUserId, stateRow.subjectUserId!),
             ),
           )
-          .limit(1);
+          .limit(1)
+          .for("update");
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
           .for("update");
@@ -16599,6 +16778,10 @@ export function toolAccessService(
           "Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.",
         );
       }
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(and(eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "organization"), eq(connectionGrants.isDefault, true)))
+        .for("update");
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
@@ -16992,6 +17175,16 @@ export function toolAccessService(
         ];
         const nowAt = new Date();
         await db.transaction(async (tx) => {
+          await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+            .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connection.id),
+              or(eq(connectionGrants.id, personalGrant.id), and(eq(connectionGrants.kind, "organization"), eq(connectionGrants.isDefault, true)))))
+            .orderBy(connectionGrants.id).for("update");
+          await tx.select({ id: toolApplications.id }).from(toolApplications)
+            .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
+            .for("update");
+          await tx.select({ id: toolConnections.id }).from(toolConnections)
+            .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
+            .for("update");
           const [existingOrganizationGrant] = await tx
             .select()
             .from(connectionGrants)
@@ -18333,19 +18526,9 @@ export function toolAccessService(
         // Serialize replacements before taking the current audience snapshot.
         // Otherwise a second replacement could read the old rows, wait behind
         // an in-flight replacement, and then miss locking a newly-added member.
-        await tx
-          .select({ id: connectionGrants.id })
-          .from(connectionGrants)
-          .where(
-            and(
-              eq(connectionGrants.id, grant.id),
-              eq(connectionGrants.companyId, connection.companyId),
-              eq(connectionGrants.connectionId, connection.id),
-            ),
-          )
-          .for("update");
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${"paperclip.connection_grant_audience:" + grant.id}, 0))`);
         const existingAudience = await tx
-          .select({ subjectId: connectionGrantMembers.subjectId })
+          .select()
           .from(connectionGrantMembers)
           .where(
             and(
@@ -18408,6 +18591,19 @@ export function toolAccessService(
             );
           }
         }
+        await tx
+          .select({ id: connectionGrants.id })
+          .from(connectionGrants)
+          .where(
+            and(
+              eq(connectionGrants.id, grant.id),
+              eq(connectionGrants.companyId, connection.companyId),
+              eq(connectionGrants.connectionId, connection.id),
+            ),
+          )
+          .for("update");
+        const existingUserSet = new Set(existingUserIds);
+        if (requested.length === existingUserSet.size && requested.every(id => existingUserSet.has(id))) return existingAudience;
         await tx
           .delete(connectionGrantMembers)
           .where(
@@ -18500,11 +18696,14 @@ export function toolAccessService(
               eq(connectionGrants.status, "active"),
             ),
           )
+          .for("update")
           .limit(1);
         if (!grant)
           throw forbidden(
             "Only the active personal grant owner can create a delegation",
           );
+        await tx.select({ id: toolConnections.id }).from(toolConnections)
+          .where(eq(toolConnections.id, connection.id)).for("key share");
         const [targetAgent] = await tx
           .select({ id: agents.id })
           .from(agents)
@@ -18514,6 +18713,7 @@ export function toolAccessService(
               eq(agents.companyId, connection.companyId),
             ),
           )
+          .for("no key update")
           .limit(1);
         if (!targetAgent) throw notFound("Agent not found");
         const [existing] = await tx
@@ -18557,16 +18757,28 @@ export function toolAccessService(
       actor?: ActorInfo,
     ) => {
       const connection = await getConnectionRow(idOrUid);
-      const [delegation] = await db
-        .delete(connectionGrantDelegations)
-        .where(
-          and(
-            eq(connectionGrantDelegations.id, delegationId),
-            eq(connectionGrantDelegations.companyId, connection.companyId),
-            eq(connectionGrantDelegations.grantId, grantId),
-          ),
-        )
-        .returning();
+      const delegation = await db.transaction(async tx => {
+        const [grant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+          .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))
+          .for("update");
+        if (!grant) return undefined;
+        const [target] = await tx.select({ agentId: connectionGrantDelegations.agentId }).from(connectionGrantDelegations)
+          .where(and(eq(connectionGrantDelegations.id, delegationId), eq(connectionGrantDelegations.companyId, connection.companyId), eq(connectionGrantDelegations.grantId, grantId)));
+        if (!target) return undefined;
+        await tx.select({ id: agents.id }).from(agents)
+          .where(and(eq(agents.companyId, connection.companyId), eq(agents.id, target.agentId))).for("no key update");
+        const [removed] = await tx
+          .delete(connectionGrantDelegations)
+          .where(
+            and(
+              eq(connectionGrantDelegations.id, delegationId),
+              eq(connectionGrantDelegations.companyId, connection.companyId),
+              eq(connectionGrantDelegations.grantId, grantId),
+            ),
+          )
+          .returning();
+        return removed;
+      });
       if (!delegation) throw notFound("Connection grant delegation not found");
       const binding = actorBinding(actor);
       await db.insert(toolAccessAuditEvents).values({
@@ -18696,6 +18908,13 @@ export function toolAccessService(
         providerRevocation = "local_only_shared_client";
       }
       const grant = await db.transaction(async (tx) => {
+        const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+          .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))
+          .for("update");
+        if (!lockedGrant) throw notFound("Connection grant not found");
+        await tx.select({ id: agents.id }).from(agents)
+          .where(and(eq(agents.companyId, connection.companyId), notInArray(agents.status, ["pending_approval", "terminated"])))
+          .orderBy(agents.id).for("no key update");
         const removedDelegations = await tx
           .delete(connectionGrantDelegations)
           .where(
@@ -19118,9 +19337,9 @@ export function toolAccessService(
     configureRailwaySsh: async (connectionId: string, companyId: string, input: ConfigureRailwaySsh, actor: ActorInfo): Promise<RailwaySshSetup | null> => {
       const knownHosts = input.action === "enable" ? validateRailwayKnownHosts(input.knownHosts) : "";
       const setup = await db.transaction(async (tx) => {
+        const [grant] = await tx.select().from(connectionGrants).where(and(eq(connectionGrants.id, input.grantId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.companyId, companyId))).for("update");
         const [connection] = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId))).for("update");
         if (!connection || !isRailwayConnection(connection) || (connection.status !== "active" && input.action !== "remove")) throw unprocessable("Connect Railway before configuring container access.");
-        const [grant] = await tx.select().from(connectionGrants).where(and(eq(connectionGrants.id, input.grantId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.companyId, companyId))).for("update");
         if (!grant || (grant.status !== "active" && input.action !== "remove")) throw unprocessable("Select an active Railway authorization.");
         if (grant.kind === "user" && (actor.actorType !== "user" || actor.actorId !== grant.subjectUserId)) throw forbidden("Only this authorization's owner can configure its SSH key.");
         const existing = asRecord(connection.config.railwaySsh);
@@ -19585,7 +19804,7 @@ export function toolAccessService(
             asc(toolProfileBindings.createdAt),
           ),
         db
-          .select()
+          .select(profileCatalogColumns)
           .from(toolCatalogEntries)
           .where(
             and(
@@ -19598,11 +19817,11 @@ export function toolAccessService(
           .from(agents)
           .where(eq(agents.companyId, companyId)),
         db
-          .select()
+          .select({ id: toolApplications.id, name: toolApplications.name })
           .from(toolApplications)
           .where(eq(toolApplications.companyId, companyId)),
         db
-          .select()
+          .select({ id: toolConnections.id, name: toolConnections.name })
           .from(toolConnections)
           .where(eq(toolConnections.companyId, companyId)),
       ]);
@@ -19679,24 +19898,45 @@ export function toolAccessService(
       if (input.entries) {
         await assertProfileEntryInputs(db, existing.companyId, input.entries);
       }
-      await db
-        .update(toolProfiles)
-        .set({
-          profileKey: input.profileKey ?? existing.profileKey,
-          name: input.name ?? existing.name,
-          description: input.description ?? existing.description,
-          status: input.status ?? existing.status,
-          defaultAction: input.defaultAction ?? existing.defaultAction,
-          metadata: input.metadata ?? existing.metadata,
-          updatedAt: new Date(),
-        })
-        .where(eq(toolProfiles.id, profileId));
-      if (input.entries) {
-        await replaceProfileEntries(
-          existing.companyId,
-          profileId,
-          input.entries,
-        );
+      const referencesChanged = new Error("Tool profile references changed");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await db.transaction(async tx => {
+            const db = tx as unknown as Db;
+            const readReferences = () => tx.select({ applicationId: toolProfileEntries.applicationId, connectionId: toolProfileEntries.connectionId, catalogEntryId: toolProfileEntries.catalogEntryId })
+              .from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, existing.companyId), eq(toolProfileEntries.profileId, profileId)))
+              .orderBy(toolProfileEntries.id);
+            const oldReferences = input.entries ? await readReferences() : [];
+            await lockProfileEntryReferences(tx, existing.companyId, [...oldReferences, ...(input.entries ?? [])]);
+            const [current] = await tx.select().from(toolProfiles).where(eq(toolProfiles.id, profileId)).for("no key update");
+            if (!current) throw notFound("Tool profile not found");
+            if (input.entries && JSON.stringify(await readReferences()) !== JSON.stringify(oldReferences)) throw referencesChanged;
+            await db
+              .update(toolProfiles)
+              .set({
+                profileKey: input.profileKey ?? current.profileKey,
+                name: input.name ?? current.name,
+                description: input.description ?? current.description,
+                status: input.status ?? current.status,
+                defaultAction: input.defaultAction ?? current.defaultAction,
+                metadata: input.metadata ?? current.metadata,
+                updatedAt: new Date(),
+              })
+              .where(eq(toolProfiles.id, profileId));
+            if (input.entries) {
+              await replaceProfileEntries(
+                existing.companyId,
+                profileId,
+                input.entries,
+                tx,
+              );
+            }
+          });
+          break;
+        } catch (error) {
+          if (error !== referencesChanged) throw error;
+          if (attempt >= 2) throw conflict("Tool profile entries changed during replacement", { retryable: true });
+        }
       }
       return profileDetails(profileId, existing.companyId);
     },
@@ -19881,9 +20121,12 @@ export function toolAccessService(
     addProfileEntry: async (
       profileId: string,
       input: CreateToolProfileEntryForProfile,
-    ): Promise<ToolProfileEntry> => {
-      const profile = await getProfileRow(profileId);
-      await assertProfileEntryInput(profile.companyId, input);
+    ): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
+      const profile = await getProfileRow(profileId, undefined, tx);
+      await assertProfileEntryInputs(tx, profile.companyId, [input]);
+      await lockProfileEntryReferences(tx, profile.companyId, [input]);
+      await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, profile.id)).for("no key update");
       const [row] = await db
         .insert(toolProfileEntries)
         .values({
@@ -19904,7 +20147,7 @@ export function toolAccessService(
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
       return toProfileEntry(row);
-    },
+    }),
 
     getProfileEntry: async (entryId: string): Promise<ToolProfileEntry> => {
       const [row] = await db
@@ -19918,7 +20161,8 @@ export function toolAccessService(
     updateProfileEntry: async (
       entryId: string,
       input: UpdateToolProfileEntry,
-    ): Promise<ToolProfileEntry> => {
+    ): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
       const [existing] = await db
         .select()
         .from(toolProfileEntries)
@@ -19934,7 +20178,9 @@ export function toolAccessService(
         riskLevel: input.riskLevel ?? existing.riskLevel,
         conditions: input.conditions ?? existing.conditions,
       };
-      await assertProfileEntryInput(existing.companyId, next);
+      await assertProfileEntryInputs(tx, existing.companyId, [next]);
+      await lockProfileEntryReferences(tx, existing.companyId, [next]);
+      await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, existing.profileId)).for("no key update");
       const [row] = await db
         .update(toolProfileEntries)
         .set({
@@ -19955,9 +20201,13 @@ export function toolAccessService(
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, existing.profileId));
       return toProfileEntry(row);
-    },
+    }),
 
-    deleteProfileEntry: async (entryId: string): Promise<ToolProfileEntry> => {
+    deleteProfileEntry: async (entryId: string): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
+      const [existing] = await tx.select().from(toolProfileEntries).where(eq(toolProfileEntries.id, entryId));
+      if (!existing) throw notFound("Tool profile entry not found");
+      await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, existing.profileId)).for("no key update");
       const [row] = await db
         .delete(toolProfileEntries)
         .where(eq(toolProfileEntries.id, entryId))
@@ -19968,7 +20218,7 @@ export function toolAccessService(
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, row.profileId));
       return toProfileEntry(row);
-    },
+    }),
 
     bindProfile: async (
       profileId: string,

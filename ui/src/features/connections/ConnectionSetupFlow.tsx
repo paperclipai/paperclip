@@ -1,4 +1,6 @@
 import { StepHeader } from "./ConnectionSetupHeader";
+import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
+import type { GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
 export { StepHeader } from "./ConnectionSetupHeader";
 import { ConnectionInstructionsEditor } from "./ConnectionInstructions";
 import { connectionInstructionsConfig, defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
@@ -624,6 +626,10 @@ function StandardConnectionSetupFlow({
   onCancel,
   renderCredentialStep,
 }: ConnectionSetupFlowProps = {}) {
+  const workspaceSelectionRef = useRef<GoogleWorkspaceServiceSelection | null>(null);
+  const [workspaceConsent, setWorkspaceConsent] = useState<(() => void) | null>(null);
+  const [workspaceConnection, setWorkspaceConnection] = useState<ToolConnection | undefined>();
+  const [workspaceDraft, setWorkspaceDraft] = useState<GoogleWorkspaceServiceSelection | undefined>();
   const queryClient = useQueryClient();
   const routeNavigate = useNavigate();
   const navigate = useCallback((to: string, options?: { replace?: boolean }) => {
@@ -1227,6 +1233,12 @@ function StandardConnectionSetupFlow({
     })
     : false;
   const identityConnection = resumeConnection ?? reconnectConnection;
+  useEffect(() => {
+    workspaceSelectionRef.current = null;
+    setWorkspaceConsent(null);
+    setWorkspaceConnection(undefined);
+    setWorkspaceDraft(undefined);
+  }, [selectedCompanyId, requestedAppKey, identityConnection?.id]);
   const reconnectGrantKind: ConnectionGrantKind | null = identityConnection
     ? identityConnection.credentialPolicy === "per_user"
       ? "user"
@@ -1302,6 +1314,7 @@ function StandardConnectionSetupFlow({
         await toolsApi.updateConnection(connection.id, { agentInstructions: instructionValue });
       }
       return toolsApi.startOAuth(connection.id, {
+      ...(connection.config?.sourceTemplateKey === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
       asCurrentUser: connection.credentialPolicy === "per_user",
       ...(connection.credentialPolicy === "per_agent"
         ? { asAgentId: configuredAgentIdentity(connection) ?? [...installAgentIds][0] }
@@ -1315,6 +1328,7 @@ function StandardConnectionSetupFlow({
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
       setOAuthPhase("error");
+      workspaceSelectionRef.current = null;
       onPhaseChange?.("needs_retry");
       setOAuthError(
         details?.code === "invalid_grant"
@@ -1327,6 +1341,16 @@ function StandardConnectionSetupFlow({
   });
   const mutateOAuthStart = oauthStartMutation.mutate;
   const startOAuth = useCallback((connection: ToolConnection) => {
+    if (connection.config?.sourceTemplateKey === "google-workspace" && !workspaceSelectionRef.current) {
+      setWorkspaceConnection(connection);
+      setWorkspaceConsent(() => () => {
+        onPhaseChange?.("authorizing");
+        reserveOAuthPopup();
+        if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
+        mutateOAuthStart(connection);
+      });
+      return;
+    }
     onPhaseChange?.("authorizing");
     reserveOAuthPopup();
     if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
@@ -1369,6 +1393,7 @@ function StandardConnectionSetupFlow({
           requestedGrantKind,
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
+          ...(connectEntry.slug === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
           galleryKey: connectEntry.slug,
           ...(instructionValue ? { agentInstructions: instructionValue } : {}),
           ...(connectionMethodKey ? { connectionMethodKey } : {}),
@@ -1489,6 +1514,7 @@ function StandardConnectionSetupFlow({
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
+      if (entry?.slug === "google-workspace") workspaceSelectionRef.current = null;
       if (automaticOAuthEntry) {
         setOAuthPhase("error");
         onPhaseChange?.("needs_retry");
@@ -1530,11 +1556,19 @@ function StandardConnectionSetupFlow({
     const method = connectEntry
       ? availableToolConnectionMethod(connectEntry, connectionMethodKey || null)
       : null;
+    if (connectEntry?.slug === "google-workspace" && !workspaceSelectionRef.current) {
+      setWorkspaceConnection(identityConnection ?? undefined);
+      setWorkspaceConsent(() => () => {
+        reserveOAuthPopup();
+        mutateConnect(entryOverride);
+      });
+      return;
+    }
     if (method?.auth === "oauth") {
       reserveOAuthPopup();
     }
     mutateConnect(entryOverride);
-  }, [connectionMethodKey, entry, mutateConnect, reserveOAuthPopup]);
+  }, [connectionMethodKey, entry, identityConnection, mutateConnect, reserveOAuthPopup]);
 
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
@@ -2171,6 +2205,19 @@ function StandardConnectionSetupFlow({
       || connectorEnrollmentQuery.data?.configured !== true
     )
   );
+
+  if (workspaceConsent) return <GoogleWorkspaceServicesDialog
+    connection={workspaceConnection}
+    initial={workspaceDraft}
+    onCancel={selection => { if (selection) setWorkspaceDraft(selection); setWorkspaceConsent(null); setOAuthPhase("entry"); onPhaseChange?.("requested"); }}
+    onContinue={selection => {
+      workspaceSelectionRef.current = selection;
+      setWorkspaceDraft(selection);
+      const proceed = workspaceConsent;
+      setWorkspaceConsent(null);
+      proceed();
+    }}
+  />;
 
   if (showCuratedOAuthState && automaticOAuthEntry) {
     return (

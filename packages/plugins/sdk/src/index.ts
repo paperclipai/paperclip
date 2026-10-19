@@ -185,6 +185,8 @@ export type {
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,

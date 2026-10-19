@@ -122,6 +122,7 @@ import { prefetchIssueThread } from "../lib/issue-thread-queries";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
+  recordIssueDetailReadiness,
   ISSUE_DETAIL_CONTENT_MEASURE,
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_HEADER_MEASURE,
@@ -1588,6 +1589,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedActivity = activity ?? [];
   const resolvedLinkedRuns = linkedRuns ?? [];
+  useEffect(() => {
+    recordIssueDetailReadiness({ activity: !activityPending, "linked-runs": !linkedRunsPending, runtime: runtimeSelectionKnown });
+  }, [issueId, issueQueryRef, activityPending, linkedRunsPending, runtimeSelectionKnown]);
   const retryFailedRun = useMutation({
     mutationFn: async (runId: string) => {
       const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
@@ -3362,6 +3366,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     isError: workProductsError,
     refetch: refetchWorkProducts,
   } = useIssueWorkProducts(issueId);
+  useEffect(() => {
+    recordIssueDetailReadiness({ issue: !!loadedIssue, comments: !commentsLoading, interactions: !interactionsLoading, attachments: !attachmentsLoading, "work-products": !workProductsLoading });
+  }, [issueId, loadedIssue, commentsLoading, interactionsLoading, attachmentsLoading, workProductsLoading]);
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
     {

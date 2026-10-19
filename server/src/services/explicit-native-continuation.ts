@@ -144,6 +144,9 @@ export async function admitExplicitNativeContinuation(input: {
   if (!actions.length) return null;
   const blocker = await getExecutionBlocker(db, companyId, issueId);
   if (blocker && blocker.recoveryActionId === null) return null;
+  if (blocker?.workspaceRepairRequired && ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(blocker.cause)) {
+    return blocked("workspace_reconstruction_required", "Recover the saved files or record reconstruction before continuing. Your message is saved.");
+  }
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),

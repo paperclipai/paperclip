@@ -1,6 +1,7 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -205,7 +206,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   });
   const hasVoiceConnection = effective.installedConnections.some(connection => connection.transport === "voice");
   const [runIdentity] = hasGitHubConnection || hasVoiceConnection
-    ? await input.db.select({ contextSnapshot: heartbeatRuns.contextSnapshot, responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+    ? await input.db.select({ issueId: boundRunIssueIdSql(), responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.id, input.runId),
@@ -227,7 +228,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   // App access is optional runtime context. Keep usable assignments pinned, but
   // do not stop unrelated work because an assigned app needs attention.
   const githubBotConnectionIds = await githubBotConnectionIdsForRun(input.db, input.agent.companyId, input.agent.id, input.runId);
-  const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: typeof runIdentity?.contextSnapshot?.issueId === "string" ? runIdentity.contextSnapshot.issueId : typeof runIdentity?.contextSnapshot?.taskId === "string" ? runIdentity.contextSnapshot.taskId : null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
+  const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: runIdentity?.issueId ?? null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
   const availableConnectionIds = new Set(resolvedInstalledConnections.filter((connection) =>
     permitted.has(connection.id)
     && connection.status === "active"

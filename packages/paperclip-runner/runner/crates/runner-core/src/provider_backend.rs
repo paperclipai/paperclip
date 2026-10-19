@@ -5036,6 +5036,21 @@ mod tests {
         assert!(question_message.len() <= 512);
         assert_eq!(question_result.result["error"]["retryable"], false);
 
+        let monitor_result = schema_rejection(
+            "set_task_monitor",
+            json!({"PRIVATE_FIELD": "PRIVATE_VALUE"}),
+        );
+        let monitor_message = monitor_result.result["error"]["message"].as_str().unwrap();
+        assert!(monitor_message.contains("Put all scheduling fields inside monitor"));
+        assert!(monitor_message.contains("Correct the arguments and retry"));
+        assert!(monitor_message.contains("/required (missing \"requiredField\")"));
+        assert!(!monitor_message.contains("PRIVATE_FIELD"));
+        assert!(!monitor_result.result.to_string().contains("PRIVATE_VALUE"));
+        assert!(monitor_message.len() <= 512);
+        assert!(!monitor_message.chars().any(char::is_control));
+        assert_eq!(monitor_result.result["error"]["code"], "invalid_tool_call");
+        assert_eq!(monitor_result.result["error"]["retryable"], false);
+
         let ordinary_result = schema_rejection("get_task_context", json!({}));
         assert_eq!(
             ordinary_result.result["error"]["message"],

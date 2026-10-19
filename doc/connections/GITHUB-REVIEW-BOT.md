@@ -240,6 +240,12 @@ still pending. Claim publication only after `status: processed`. Receipt recover
 does not itself mark a task Done; the agent must finish its task after confirming
 the receipt.
 
+Receipt recovery compares the complete saved publication request, including long
+text and nested coverage entries. Shortened audit previews do not establish
+request identity. Changed content or a missing durable publication returns a
+conflict without dispatching another write. Exact retries read the current
+receipt; the durable worker owns pending publication retries.
+
 For a call that required human approval, the durable publication keeps that
 verified approval for its exact operation. An exact caller retry only reads the
 current receipt; the worker owns provider retries. A new policy denial or revoked

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_ADAPTER_TYPES } from "../../packages/shared/src/constants.js";
@@ -179,6 +179,7 @@ describe("target and selected credential boundaries", () => {
       expect(await resolveConnectionSecret(config, undefined, {})).toBeUndefined();
       await expect(resolveConnectionSecret(config, "XAI_API_KEY", {})).rejects.toThrow("missing_XAI_API_KEY");
       await writeFile(path.join(root, "public"), "OPENAI_API_KEY=private", { mode: 0o644 });
+      await chmod(path.join(root, "public"), 0o644);
       await expect(resolveConnectionSecret(parseConnectionConfig({ secretFile: path.join(root, "public") }), "OPENAI_API_KEY", {})).rejects.toThrow(/owner_only/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

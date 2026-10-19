@@ -39,6 +39,7 @@
     "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
+    "build:runtime": "node scripts/bundle-runtime.mjs",
     "start": "node dist/index.js",
     "prepare:runner-vendor": "node scripts/prepare-runner-vendor.mjs",
     "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"

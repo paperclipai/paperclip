@@ -563,6 +563,9 @@ for (const execution of executions) {
     page,
     request,
   }, testInfo) => {
+    test.skip(execution.suite.id === "first-task" && execution.profile.id === "runner-acpx-claude"
+      && (process.platform !== "darwin" || process.arch !== "arm64"),
+    "Ordinary native Claude onboarding is qualified on Apple Silicon only in this delivery.");
     test.setTimeout(
       execution.task.flow === "warm_three_turn"
         ? deadlineMs

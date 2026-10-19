@@ -479,6 +479,18 @@ function isZstdCompressionSupported(): boolean {
   return typeof zlib.createZstdCompress === "function";
 }
 
+async function hasCompressedHeader(sourcePath: string): Promise<boolean> {
+  const file = await fs.open(sourcePath, "r");
+  try {
+    const header = Buffer.alloc(4);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    return (bytesRead === 4 && header.readUInt32LE(0) === 0xfd2fb528)
+      || (bytesRead >= 3 && header[0] === 0x1f && header[1] === 0x8b && header[2] === 8);
+  } finally {
+    await file.close();
+  }
+}
+
 /**
  * Stream-compress `sourcePath` to a new file with zstd at
  * {@link ZSTD_COMPRESSION_LEVEL}, never buffering the whole file in memory.
@@ -781,6 +793,7 @@ async function syncInFileMappings(input: {
         for (const plan of compressCandidates) {
           let hostTempDir: string | null = null;
           try {
+            if (await hasCompressedHeader(plan.mapping.sourcePath)) continue;
             const compressed = await compressFileToHostTemp(plan.mapping.sourcePath);
             hostTempDir = compressed.dir;
             compressBytesIn += plan.sourceSize;

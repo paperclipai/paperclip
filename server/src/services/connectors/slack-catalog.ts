@@ -18,8 +18,9 @@ import type {
   ToolGatewaySession,
 } from "../tool-gateway.js";
 import {
-  resolveSlackTaskAuthority,
+  resolveSlackTaskAuthorization,
   slackEndpointCandidates,
+  type SlackTaskAuthorization,
 } from "./slack-authority.js";
 const catalogDefinitions = SLACK_TOOLS.map(tool => ({
   tool,
@@ -208,9 +209,9 @@ async function slackToolsForEndpoint(
   endpointId: string,
 ): Promise<ToolGatewayDescriptor[]> {
   if (!session.agentId || !session.runId || !session.issueId) return [];
-  let authority;
+  let authority: SlackTaskAuthorization;
   try {
-    authority = await resolveSlackTaskAuthority(db, {
+    authority = await resolveSlackTaskAuthorization(db, {
       endpointId,
       companyId: session.companyId,
       agentId: session.agentId,

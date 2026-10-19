@@ -12,7 +12,7 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
-  acpx: "claude-sonnet-5",
+  acpx: "claude-opus-5-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 

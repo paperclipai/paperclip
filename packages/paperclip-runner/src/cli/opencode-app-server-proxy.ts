@@ -471,6 +471,9 @@ function shutdown(exitCode = 0): Promise<void> {
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
     await eventPump?.catch(() => {});
+    // A failed turn can be the last frame before a fatal exit. Pipe writes
+    // are asynchronous on some platforms, so let it reach runnerd first.
+    await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
   })().finally(() => process.exit(exitCode));
   return shutdownPromise;
 }

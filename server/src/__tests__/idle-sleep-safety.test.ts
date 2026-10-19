@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agentInstructionWorkingCopies, agents, agentApiKeys, agentWakeupRequests, companies, companySecretProposals, createDb,
   adapterAuthSessions, environments, environmentLeases, executionWorkspaces,
+  feedbackExports, feedbackVotes,
   heartbeatRuns, issues, issueWatchdogs, issueThreadInteractions, issueQuestionResponseDeliveries,
   projects, projectWorkspaces, routines, routineTriggers, toolApplications, toolConnections, workspaceOperations, executionWorkspaceRuntimeLeases, type Db,
 } from "@paperclipai/db";
@@ -185,6 +186,42 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
     return { companyId, agentId, runId };
   }
+
+  async function feedbackHistory(status: string, change: Partial<typeof feedbackExports.$inferInsert> = {}) {
+    const f = await seed();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Finished fixture", status: "done" }).returning();
+    const [vote] = await db.insert(feedbackVotes).values({ companyId: f.companyId, issueId: issue.id,
+      targetType: "issue", targetId: issue.id, authorUserId: "fixture-user", vote: "up" }).returning();
+    await db.insert(feedbackExports).values({ companyId: f.companyId, feedbackVoteId: vote.id,
+      issueId: issue.id, authorUserId: "fixture-user", targetType: "issue", targetId: issue.id,
+      vote: "up", status, targetSummary: {}, ...change });
+  }
+
+  it("permits saved private feedback without sharing or deleting its history", async () => {
+    await feedbackHistory("local_only");
+    expect(await read()).toEqual(none);
+    expect(await db.select({ status: feedbackExports.status }).from(feedbackExports)).toEqual([{ status: "local_only" }]);
+  });
+
+  it("permits an acknowledged feedback upload and preserves its receipt", async () => {
+    await feedbackHistory("sent", { exportedAt: new Date(now), failureReason: null });
+    expect(await read()).toEqual(none);
+    expect(await db.select({ status: feedbackExports.status, exportedAt: feedbackExports.exportedAt }).from(feedbackExports))
+      .toEqual([{ status: "sent", exportedAt: new Date(now) }]);
+  });
+
+  it.each(["pending", "failed", "unfamiliar"])("keeps %s feedback work awake even with an old completion stamp", async status => {
+    await feedbackHistory(status, { exportedAt: new Date(now), failureReason: null });
+    expect(await read()).toEqual(present);
+  });
+
+  it.each([
+    { exportedAt: null, failureReason: null },
+    { exportedAt: new Date(now), failureReason: "unconfirmed delivery" },
+  ])("keeps inconsistent sent feedback awake: %j", async change => {
+    await feedbackHistory("sent", change);
+    expect(await read()).toEqual(present);
+  });
 
   async function scheduledRoutine(at = now + 600_000) {
     const fixture = await seed();
@@ -592,13 +629,13 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     },
   );
 
-  it("retains remote MCP connections alongside inert AI credentials", async () => {
+  it("allows saved outbound MCP connections alongside inert AI credentials", async () => {
     const { companyId, connection } = await seedAiConnection();
     await db.insert(toolConnections).values({
       companyId, applicationId: connection.applicationId, name: "Remote tools", uid: randomUUID(),
       connectionPurpose: "tool", transport: "mcp_remote", status: "active", enabled: true,
     });
-    expect(await read()).toEqual(present);
+    expect(await read()).toEqual(none);
   });
 
   async function seedFinishedFailedLease() {

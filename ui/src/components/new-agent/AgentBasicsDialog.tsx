@@ -225,8 +225,6 @@ export function AgentBasicsDialog({
                       placeholder="Choose a native harness…"
                       onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
                       options={[
-                        { value: "codex", label: "Codex (Paperclip Runner)" },
-                        { value: "claude", label: "Claude Code (Paperclip Runner)" },
                         { value: "grok", label: "Grok Build (Paperclip Runner)" },
                         { value: "opencode", label: "OpenCode (Paperclip Runner)" },
                       ]} />

@@ -168,13 +168,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
-  enablePipelines: {
-    title: "Pipelines",
-    description: "Enable pipeline definitions and pipeline-driven case production surfaces.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableCases: {
     title: "Cases",
     description:

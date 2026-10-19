@@ -159,6 +159,15 @@
         "high",
         "max"
       ]
+    },
+    "claudeEffort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
     }
   },
   "allOf": [
@@ -175,6 +184,26 @@
           },
           "agent": {
             "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "claudeEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "claude"
           }
         },
         "required": [

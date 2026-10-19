@@ -1,3 +1,4 @@
+import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
 import { eligibleIssueMonitorWait } from "../issue-monitors.js";
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -53,7 +54,7 @@ import {
   readNativeBoardResponseWaitSource,
 } from "./native-board-response-wait.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { reportRunFailure } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import {
   authorizeNativeChatReviewPresentation,
@@ -719,9 +720,12 @@ async function projectCommittedRun(input: {
     )
     .returning();
   // Metadata repairs can preserve the terminal status. Only a genuine status
-  // transition should emit another terminal event.
+  // transition should emit another terminal event. A failed run that leaves a
+  // pending retry still needs its first failure report.
   if (updatedRun && updatedRun.status !== input.run.status) {
     await emitAgentTaskRun(input.db, updatedRun);
+    void reportRunFailure(input.db, updatedRun);
+  } else if (updatedRun && isNewTerminalRunFailure(input.run, updatedRun)) {
     void reportRunFailure(input.db, updatedRun);
   }
 }
@@ -1184,6 +1188,10 @@ export async function finalizeNativeRun(input: {
       });
     }
     await resolveCommittedFinalizationRecovery(input.db, run, coordinator.issueId);
+    if (input.projectRunStatus) {
+      const [projectedRun] = await input.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      if (projectedRun) await reconcileMuseNativeTerminalRun(input.db, projectedRun);
+    }
     return coordinator;
   }
   const [resultRow, contractRow] = await Promise.all([
@@ -1590,6 +1598,7 @@ export async function finalizeNativeRun(input: {
         });
       }
       if (finalizationPhase === "committed") await resolveCommittedFinalizationRecovery(input.db, run, coordinator.issueId);
+      if (input.projectRunStatus && updatedRun) await reconcileMuseNativeTerminalRun(input.db, updatedRun);
       return {
         ...coordinator,
         phase: finalizationPhase,

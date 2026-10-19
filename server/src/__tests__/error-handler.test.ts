@@ -51,6 +51,15 @@ describe("errorHandler", () => {
     telemetryMocks.trackErrorHandlerCrash.mockReset();
   });
 
+  it("passes only authenticated run identity to Sentry for a run-related server error", () => {
+    const req = makeReq();
+    req.actor = { type: "agent", runId: "run", companyId: "company", agentId: "agent" };
+    const error = new Error("run request failed");
+    errorHandler(error, req, makeRes(), vi.fn());
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, { runId: "run", companyId: "company", agentId: "agent" });
+    expect(JSON.stringify(captureExceptionMock.mock.calls)).not.toContain('"a":1');
+  });
+
   it("attaches the original Error to res.err for 500s", () => {
     const req = makeReq();
     const res = makeRes() as any;

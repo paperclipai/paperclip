@@ -158,6 +158,26 @@ describe("TaskMessageScroller", () => {
     expect(viewport.scrollTop).toBe(500);
   });
 
+  it("does not replace a saved reading position with a hidden route's geometry", async () => {
+    function mount(restore: boolean) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key: "hidden-route-entry", hash: "", restore }}>
+          <TaskMessageScroller contentKey="saved-thread">
+            <div ref={(node) => { if (node) fakeGeometry(node.parentElement!); }}>Saved messages</div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    mount(false);
+    const viewport = scroller();
+    await scrollTo(viewport, 150);
+    Object.defineProperty(viewport, "clientHeight", { value: 0, configurable: true });
+    await scrollTo(viewport, 0);
+    flushSync(() => root.render(null));
+    mount(true);
+    expect(scroller().scrollTop).toBe(150);
+  });
+
   it("renders children inside the scroll container, pill hidden, scrolled to bottom on mount", () => {
     render();
     const el = scroller();

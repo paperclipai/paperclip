@@ -45,15 +45,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Reco
 
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
+Claude native setup uses the existing Anthropic API-key or subscription connection
+flow. Record the selected account separately from successful execution; unavailable
+models/authentication and unsupported Legacy-only options must fail visibly.
+
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
 
 Choose Codex as the harness; the UI displays its name/icon for both runners.
 Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
-Only new Codex agents default to the native runner on supported macOS or GNU/Linux
+New Codex agents default to the native runner on supported macOS or GNU/Linux
 targets; the [shared selection contract](../../packages/shared/src/agent-runner.ts)
 and [runtime prerequisites](../../packages/paperclip-runner/README.md) define the
-platform/libc boundary. Windows and Alpine/musl remain Legacy; other harness
-defaults are unchanged. Disabled adapters, external overrides, and selected-target
+platform/libc boundary. Windows and Alpine/musl remain Legacy. Claude follows
+its qualified rollout described above. Disabled adapters, external overrides, and selected-target
 qualification also affect availability.
 On a fresh forced-Kubernetes instance without an environment row, inspect discovery
 and create with automatic selection. Both must retain Legacy without provisioning;
@@ -148,6 +152,7 @@ state. Readiness observes shutdown; resumed startup cannot reactivate ingress
 after close. These are lifecycle controls, separate from installed provider proof.
 The real daemon readiness and recovery controls require their existing native
 fixtures in hosted CI; passing credential-free controls does not qualify them.
+A primary setup timeout remains a failure even when teardown also fails.
 
 For remote setup shutdown, verify that each durable-state read respects the
 remaining suspension deadline. A late result cannot establish suspension or

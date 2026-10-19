@@ -24,7 +24,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
     try {
       await writeFile(path.join(root, "continued"), "ready");
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-        name: "Recovery fixture", role: "engineer", adapterType: "claude_local",
+        name: "Recovery fixture", role: "engineer", adapterType: "claude_local", runner: "legacy",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
           // The ACP fixture has no provider login. Use a fixture key to keep setup offline.

@@ -8,7 +8,7 @@ import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { describeGitAuthFailure, scrubGitCredentialText, type GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFailure } from "./git-connection-failure.js";
 import { isWorkspaceGitScanError, WorkspaceGitScanError } from "./workspace-git-operation-scheduler.js";
-import { measureRunPhase } from "./execution-preparation-timing.js";
+import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-preparation-timing.js";
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
 
 const execFile = promisify(execFileCallback);
@@ -65,23 +65,34 @@ export async function materializeManagedProjectWorkspace(
     : `${cwd}.clone-`);
   const cloneSource = input.localSource ?? input.repoUrl;
   let objectCache = input.objectCacheCompanyDirectory && !input.localSource
-    ? await measureRunPhase("workspace.checkout.cache_lookup", () => resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth)) : null;
-  const reference = objectCache ? await measureRunPhase("workspace.checkout.cache_lookup", () => readRepositoryObjectCache(objectCache!)) : null;
+    ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
+      const cache = await resolveRepositoryObjectCache(input.objectCacheCompanyDirectory!, input.repoUrl!, auth);
+      if (!cache) recordRepositoryObjectCacheDetail({ outcome: "disabled" });
+      return cache;
+    }) : null;
+  const reference = objectCache ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
+    const cached = await readRepositoryObjectCache(objectCache!);
+    recordRepositoryObjectCacheDetail({ outcome: cached ? "hit" : "miss" });
+    return cached;
+  }) : null;
   try {
     await input.beforeCopy?.(cloneTmpDir);
     try {
-      const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", () => execFile(
-        "git",
-        [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
-        {
-          env: {
-            ...sanitizeRuntimeServiceBaseEnv(process.env),
-            GIT_TERMINAL_PROMPT: "0",
-            ...(auth?.env ?? {}),
+      const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", () => {
+        recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
+        return execFile(
+          "git",
+          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
+          {
+            env: {
+              ...sanitizeRuntimeServiceBaseEnv(process.env),
+              GIT_TERMINAL_PROMPT: "0",
+              ...(auth?.env ?? {}),
+            },
+            timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
           },
-          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-        },
-      ));
+        );
+      });
       try { await clone(reference); }
       catch (error) {
         if (!reference) throw error;

@@ -29,7 +29,7 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
   return { ...actual, redactCurrentUserText: mockRedactCurrentUserText };
 });
 
-import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { controllerLeaseLossCancellation } from "../run-cancellation.js";
 import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
@@ -979,6 +979,26 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     expect(mockCaptureRunFailure.mock.calls[0][0].errorMessage)
       .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("waits for the terminal write when a native run is failed pending a same-run retry", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "retryable_failure" }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "terminal_failure" }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("treats leaving a pending native retry as a new terminal failure", () => {
+    const pending = { status: "failed", runtimeMode: "native", nativePhase: "retryable_failure" } as const;
+    expect(isNewTerminalRunFailure({ ...pending, status: "running", nativePhase: "observed" }, pending)).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "terminal_failure" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "committed" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, pending)).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, nativePhase: null }, { ...pending, nativePhase: "terminal_failure" })).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, runtimeMode: "legacy" }, { ...pending, runtimeMode: "legacy", nativePhase: null }))
+      .toBe(false);
   });
 
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { githubReviewAssessmentSchema } from "@paperclipai/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   chatDeliveries,
   chatMessageLinks,
@@ -21,7 +21,8 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "./tool-gateway.js";
-import { runContextSnapshotString } from "./tool-access-policy.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 
 const objectSchema = (
   properties: Record<string, unknown>,
@@ -333,8 +334,7 @@ export async function githubBotConnectionIdsForRun(
 ): Promise<Set<string>> {
   const [run] = await db
     .select({
-      issueId: heartbeatRuns.nativeIssueId,
-      snapshotIssueId: runContextSnapshotString("issueId"),
+      issueId: boundRunIssueIdSql(),
     })
     .from(heartbeatRuns)
     .where(
@@ -344,7 +344,7 @@ export async function githubBotConnectionIdsForRun(
         eq(heartbeatRuns.id, runId),
       ),
     );
-  const issueId = run?.issueId ?? run?.snapshotIssueId;
+  const issueId = run?.issueId;
   if (typeof issueId !== "string") return new Set();
   const rows = await db
     .select({
@@ -386,7 +386,16 @@ export async function githubGuestBotConnectionForSession(
 ): Promise<string | null> {
   if (!session.runId || !session.agentId || !session.issueId) return null;
   const [run] = await db
-    .select({ wakeCommentId: runContextSnapshotString("wakeCommentId") })
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: boundRunIssueIdSql(),
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId')`,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -395,7 +404,7 @@ export async function githubGuestBotConnectionForSession(
         eq(heartbeatRuns.id, session.runId),
       ),
     );
-  const commentId = run?.wakeCommentId;
+  const commentId = run ? await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" }) : null;
   if (typeof commentId !== "string") return null;
   const [source] = await db
     .select({

@@ -2,8 +2,8 @@ import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 
-/** ACP readiness checks do not authenticate a provider. Verify credentials with
- * the adapter's existing read-only CLI hello probe before calling setup connected. */
+/** Readiness alone does not authenticate a provider. Reuse the provider's key
+ * verification when present, otherwise retain the existing CLI hello probe. */
 export async function testAgentSetup(input: {
   companyId: string;
   agentId?: string;
@@ -34,7 +34,7 @@ export async function testAgentSetup(input: {
     runtime.checks.some(
       (check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE,
     ) ||
-    runtime.checks.some((check) => check.code.includes("hello_probe")) ||
+    runtime.checks.some((check) => check.code.includes("hello_probe") || check.code === "ai_connection_api_key_reverified") ||
     !["claude_local", "codex_local", "grok_local"].includes(input.providerAdapter)
   )
     return runtime;

@@ -418,6 +418,24 @@ describe("worker configChanged cross-tenant guard", () => {
     } finally { worker.stop(); }
   });
 
+  it.each([false, true])("advertises read-only inspection only when implemented: %s", async supported => {
+    let inspections = 0, mutations = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { mutations++; },
+      async onEnvironmentDestroyLease() { mutations++; },
+      ...(supported ? { async onEnvironmentInspectLease() { inspections++; return { providerLeaseId: "allocation", state: "destroyed" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentInspectLease")).toBe(supported);
+      const result = worker.callWorker("environmentInspectLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(result).resolves.toEqual({ providerLeaseId: "allocation", state: "destroyed" });
+      else await expect(result).rejects.toThrow();
+      expect(inspections).toBe(supported ? 1 : 0);
+      expect(mutations).toBe(0);
+    } finally { worker.stop(); }
+  });
+
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];
     const plugin = definePlugin({

@@ -189,6 +189,28 @@ describeEmbeddedPostgres("environmentService leases", () => {
     },
   );
 
+  it.each(["expired", "retained"] as const)("keeps cleanup completion fenced and atomic for %s leases", async status => {
+    const { companyId, environmentId, runId } = await seedEnvironment();
+    const attemptId = randomUUID();
+    const lease = await svc.acquireLease({ companyId, environmentId, heartbeatRunId: runId,
+      provider: "fake", leasePolicy: "reuse_by_environment" });
+    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 60_000, userNote: "preserve" },
+    }).where(eq(environmentLeases.id, lease.id));
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: randomUUID(),
+      cleanupStatus: "success" })).toBeNull();
+    expect(await svc.getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupInFlight: true, pendingCleanupAttemptId: attemptId } });
+    expect(await svc.releaseLease(lease.id, "pending_cleanup", { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "failed" })).toMatchObject({ metadata: { pendingCleanupInFlight: true } });
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "success" })).toMatchObject({ status, cleanupStatus: "success", metadata: {
+      pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
+      userNote: "preserve",
+    } });
+  });
+
   it("acquires and releases a lease for a run", async () => {
     const { companyId, environmentId, runId } = await seedEnvironment();
 

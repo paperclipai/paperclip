@@ -92,6 +92,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-execution-input.v5",
   "paperclip.native-execution-input.v7",
   "paperclip.native-execution-input.v8",
+  "paperclip.native-execution-input.v9",
   "paperclip.native-finalization.v1",
   "paperclip.native-finalization.v2",
   "paperclip.native-harness-backup-stamp.v1",

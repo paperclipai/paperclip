@@ -6,6 +6,7 @@ dist/
 dist-preview/
 dist-flow-preview/
 server/ui-dist/
+server/dist-runtime/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
 ui/storybook/generated/

@@ -76,7 +76,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
-  const codexReasoningEffort = config.modelReasoningEffort ?? schemaValues.modelReasoningEffort ?? schemaValues.reasoningEffort;
+  const configuredEffort = typeof v.thinkingEffort === "string"
+    ? v.thinkingEffort.trim()
+    : schemaValues.modelReasoningEffort || schemaValues.reasoningEffort || schemaValues.effort;
   for (const unsupportedKey of [
     "engine",
     "agentCommand",
@@ -232,13 +234,19 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   ]) {
     delete schemaValues[normalizedKey];
   }
+  if (provider === "codex" || (provider === "acpx" && acpxAgent === "claude")) {
+    delete config.reasoningEffort;
+    delete config.effort;
+    delete schemaValues.reasoningEffort;
+    delete schemaValues.effort;
+  }
   return {
     ...config,
     ...schemaValues,
     provider,
     ...(provider === "codex"
       ? { model: resolvePaperclipRunnerModel("codex", config.model),
-          ...(codexReasoningEffort !== undefined ? { modelReasoningEffort: codexReasoningEffort } : {}) }
+          ...(configuredEffort ? { modelReasoningEffort: configuredEffort } : {}) }
       : {}),
     codexPermissionMode: "never",
     opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
@@ -259,6 +267,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     ...(provider === "acpx"
       ? {
           acpxAgent,
+          ...(acpxAgent === "claude" && configuredEffort ? { modelReasoningEffort: configuredEffort } : {}),
           ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
           ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),

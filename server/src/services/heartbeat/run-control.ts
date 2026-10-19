@@ -5,6 +5,9 @@ import {
   type WakeupOptions,
 } from "./run-preparation.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
+import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { preserveNativeFailedWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
+import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import {
   nativeRetryCancellationCommitCondition,
@@ -230,6 +233,8 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 export type CancelRunOptions = {
+    /** Return null if a parked retry was promoted or settled before this cancellation. */
+    expectedStatus?: "scheduled_retry";
     budgetEnforcement?: BudgetEnforcementScope;
     /** Optional board request identity, atomically reserved for native Stop. */
     cancellationRequestId?: string;
@@ -288,10 +293,24 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // Recovery can finish workspace copy-back outside the executor's finally.
     // Successful copy-back does not earn warm retention for a failed turn.
     const status = leaseOwnerRun?.status ?? input.status;
-    const providerResourceDisposition = providerResourceDispositionForTerminalRun(
+    let providerResourceDisposition = providerResourceDispositionForTerminalRun(
       input.providerResourceDisposition,
       status,
     );
+    if (leaseOwnerRun?.runtimeMode === "native" && status === "cancelled"
+      && readNativeWorkspaceSyncReference(leaseOwnerRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
+      && !nativeRunHasNoWorkspaceAccess(leaseOwnerRun)) {
+      try {
+        const preserved = await preserveNativeFailedWorkspace(db, leaseOwnerRun, { allowPreterminal: true });
+        if (!preserved || !hasRequiredWorkspaceRecovery(preserved.resultJson)) return;
+      } catch {
+        // Keep the active source eligible for the bounded retention sweep.
+        // Teardown must not release it after retention lost a lock or DB write.
+        logger.warn({ runId: input.runId }, "Deferred cancelled workspace teardown until file retention is recorded");
+        return;
+      }
+      providerResourceDisposition = "stop_and_retain";
+    }
     if (providerResourceDisposition === "destroy") {
       const closeResult = await (
         options.closeWarmNativeSessionsForRun ??
@@ -687,7 +706,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
   async function releaseIssueExecutionAndPromote(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
-    options: { suppressImmediateRecovery?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] } = {},
+    options: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] } = {},
   ) {
     try {
       const source = await getRun(run.id);
@@ -698,6 +717,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // A durable authentication card owns recovery. This covers the review path,
         // while continuation classification blocks periodic generic retries.
         suppressImmediateRecovery: options.suppressImmediateRecovery || isAiAuthenticationBlocked(source),
+        ...(options.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}),
       });
       if (options.deferredPostCommitEffects) {
         options.deferredPostCommitEffects.push(...postCommitEffects);
@@ -881,6 +901,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   ) {
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
+    if (options.expectedStatus && run.status !== options.expectedStatus) return null;
     if (options.cancellationRequestId) {
       run = await claimCancellationRequest(db, runId, run.companyId, options.cancellationRequestId, options.cancellationRequestedByUserId ?? null);
     }
@@ -911,7 +932,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
-    const cancellation = requestedRunCancellation(options.resultJson ?? {}, reason);
+    const cancellation = (options.expectedStatus && run.resultJson?.startupCancellation
+      ? readRunCancellation(run.resultJson) : null) ?? requestedRunCancellation(options.resultJson ?? {}, reason);
 
     const pendingProcessCancellation = processRunCancellationSettlements.get(
       run.id,
@@ -934,7 +956,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (options.budgetEnforcement || (!options.cancellationRequestId && (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)))) {
+    if (options.expectedStatus || options.budgetEnforcement || (!options.cancellationRequestId && (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)))) {
       const fence = async (tx: Db) => {
         const [fenced] = await tx.update(heartbeatRuns).set({
           // Record handoff intent before native cancellation can finalize and release
@@ -945,13 +967,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             ${JSON.stringify({ cancellation })}::jsonb ||
             jsonb_build_object('startupCancellation', jsonb_build_object(
               'requestedAt', ${new Date().toISOString()}::text,
+              'errorCode', ${errorCode}::text,
               'beforeNativeSelection', ${heartbeatRuns.runtimeMode} = 'legacy'
                 and ${heartbeatRuns.runtimeModeResolvedAt} is null
                 and ${heartbeatRuns.executionStage} = 'preparing'
                 and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
             ))`,
         }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
-          pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+          options.expectedStatus ? [options.expectedStatus] : pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
         ))).returning();
         return fenced ?? null;
       };
@@ -966,7 +989,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       }
       if (!fenced) {
         stopOwnership?.release();
-        return getRun(runId);
+        return options.expectedStatus ? null : getRun(runId);
       }
       run = fenced;
     }

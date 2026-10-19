@@ -428,7 +428,7 @@ it("pins channel tools only when the current task run is bound to that bot", asy
 
 it("pins a voice tool only when the current requester can call through that assigned endpoint", async () => {
   serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
-  const limit = vi.fn().mockResolvedValue([{ contextSnapshot: { issueId: "task-1" }, activeIdentityContextId: "identity-1" }]);
+  const limit = vi.fn().mockResolvedValue([{ issueId: "task-1", activeIdentityContextId: "identity-1" }]);
   const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
   const input = { db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
   expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();

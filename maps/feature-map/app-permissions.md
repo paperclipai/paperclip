@@ -42,6 +42,19 @@ rollback, and concurrent AI adoption. The owning lifecycle plugin can read
 standing assignments through `ctx.agents.getRuntime`; this does not grant tool
 execution access or replace task-specific authorization.
 
+[Tool-definition runtime tests](../../server/src/__tests__/agent-runtime-tool-definitions.test.ts)
+cover catalog invalidation, scoped policy/profile-entry recipients, ignored
+bookkeeping, profile-entry edits concurrent with setup finalization, and profile
+replacement concurrent with application deletion using PostgreSQL. They do not
+qualify live provider access.
+
+[Connector access runtime tests](../../server/src/__tests__/agent-runtime-connector-access.test.ts)
+cover grants, delegation, membership cleanup, referenced vault changes, and
+agent-scoped secret bindings. OAuth and Railway tests exercise the corresponding
+credential lock order. Slack search and membership cleanup tests cover lock
+contention and complete transaction retries. Provider calls use fixtures; no live credentials are
+qualified by this coverage.
+
 Manual: Grant one agent access, leave another excluded, and exercise off, ask, and allowed states for a harmless action. Reload between changes. Verify actual denied calls stay denied and ask-first creates a decision rather than executing early.
 
 ### `test-and-maintain`

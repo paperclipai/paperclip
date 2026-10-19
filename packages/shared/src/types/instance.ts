@@ -84,7 +84,6 @@ export interface InstanceExperimentalSettings {
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
-  enablePipelines: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */

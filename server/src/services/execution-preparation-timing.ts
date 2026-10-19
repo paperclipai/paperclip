@@ -84,6 +84,26 @@ type RunScope = { runId: string; parent?: Context; ended: boolean; details: Map<
 const ownership = new AsyncLocalStorage<RunScope>();
 const endpointEnabled = () => Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 
+const repositoryCacheOutcomes = ["disabled", "hit", "miss", "published", "already_present", "contended", "capacity", "budget", "invalid", "error"] as const;
+export type RepositoryObjectCacheOutcome = typeof repositoryCacheOutcomes[number];
+
+export function recordRepositoryObjectCacheDetail(detail: {
+  outcome?: RepositoryObjectCacheOutcome;
+  referenceSupplied?: boolean;
+}): void {
+  const owned = ownership.getStore();
+  if (!endpointEnabled() || !owned?.parent || owned.ended) return;
+  try {
+    const span = trace.getSpan(owned.parent);
+    if (detail.outcome && repositoryCacheOutcomes.includes(detail.outcome)) {
+      span?.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.repositoryCacheOutcome, detail.outcome);
+    }
+    if (typeof detail.referenceSupplied === "boolean") {
+      span?.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.repositoryCacheReferenceSupplied, detail.referenceSupplied);
+    }
+  } catch {}
+}
+
 export function getRunExecutionTraceContext(runId: string): Context | undefined {
   const owned = ownership.getStore();
   return endpointEnabled() && owned?.runId === runId && !owned.ended ? owned.parent : undefined;

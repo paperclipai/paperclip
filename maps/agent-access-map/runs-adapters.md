@@ -44,6 +44,11 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
+qualified selection, not successful authentication or task execution. Native
+Claude retains existing account grants and company/responsible-user boundaries.
+Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
 
@@ -52,7 +57,7 @@ reports supported runners/effective default for the selected company/environment
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
 server-owned immutable sandbox facts without provisioning. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
-other harness defaults remain unchanged. The board inventory does not grant a
+Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
 [probe restrictions](./execution-environments.md#probe) for acquiring qualification.
 An absent forced-Kubernetes environment is an unqualified sandbox target, never
@@ -239,6 +244,13 @@ is suppressed for the validated report; process-death and controller/native
 ownership checks still apply. No agent gains session or recovery control.
 PostgreSQL regressions cover valid native/Legacy callbacks and rejected bindings;
 revised live execution and actor authorization remain `not-run`.
+
+Scoped source-only evidence: [configuration changes](../../server/src/services/agent-configuration.ts)
+and [native execution/recovery](../../server/src/services/native-runtime/native-session-executor.ts)
+retain existing execution on unrelated edits and use recorded run configuration
+for active/recovered runs. Explicit runner changes use revisions and session
+invalidation. Verify saved configuration, current versus historical run identity,
+restart and follow-up without granting session-reset authority to an agent.
 
 Scoped Evidence: `source-only` — the
 [native transport](../../packages/paperclip-runner/src/live/runnerd-codex-transport.ts)

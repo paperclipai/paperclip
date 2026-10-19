@@ -32,6 +32,14 @@ docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
+The image starts the server from a runtime bundle, `server/dist-runtime/index.mjs`,
+with plain `node`. The build creates it from the server's `tsc` output with
+`pnpm --filter @paperclipai/server build:runtime` (`server/scripts/bundle-runtime.mjs`),
+compiling in the workspace packages that otherwise load as TypeScript source.
+This avoids transpiling them through the tsx loader on every boot. To check a
+build boots, run `scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs`;
+PR CI runs the same check after `pnpm build`.
+
 ## Standard images and downstream composition
 
 The Docker workflow publishes the standard `production` target for Linux AMD64

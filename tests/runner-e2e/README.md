@@ -624,6 +624,16 @@ pnpm test:e2e:runner:unit
 pnpm test:e2e:runner:typecheck
 ```
 
+The unit command removes ambient `NODE_PATH` and `NODE_OPTIONS` when it starts
+the actual Vitest and Node test processes. It invokes Vitest's JavaScript entry
+directly so pnpm's generated bin shim cannot inject `NODE_PATH` again. Installed
+CLI guards still reject ambient injection and repository-only resolution. Test
+file filters and Vitest options can follow `pnpm test:e2e:runner:unit`; the Node
+prerequisite tests still run after Vitest succeeds. Missing dependencies or an
+unavailable/terminated test process produce a `launcher/environment failure`
+diagnostic and exit 2. Assertion failures retain the test runner's exit status
+and output; assess installed-product failures from those assertions separately.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:
@@ -1086,13 +1096,12 @@ model. Configured and provider-observed model identities are reported separately
 There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 `runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
 production wizard, omits the runner override, and verifies the saved native
-configuration without changing runners afterward. `legacy-codex` selects
-Legacy runner in Advanced before authentication and creation. Both are labeled
-`production-wizard`. Claude's creation default is unchanged: `legacy-claude`
-retains its wizard configuration, while `runner-acpx-claude` explicitly changes
-runtime through the public API before its first task and is labeled
-`post-onboarding-runtime-switch`. Persona, managed instructions, skills, seeded
-question, and task invocation are preserved. The native path removes the legacy
+configuration without changing runners afterward. `runner-acpx-claude` does the
+same for Claude on its qualified default targets and inspects the saved ACPX
+Claude profile directly. Both Legacy profiles select Legacy runner in Advanced
+before authentication and creation. All four paths are labeled
+`production-wizard`; there is no post-onboarding runner switch. Persona,
+managed instructions, skills, seeded question, and task invocation are preserved. The native path removes the legacy
 Paperclip operational skill because Runner supplies that contract through its
 protocol; other assigned skills, including `/first-task`, are retained.
 Each isolated onboarding company has a $5 task budget. Setup probes have a
@@ -1454,9 +1463,10 @@ prompts, onboarding defaults, or provider permissions are changed.
 
 For native onboarding qualification, select `first-task` with profiles
 `runner-codex,runner-acpx-claude` (26 cells). Codex verifies the production
-creation default with the experimental flag disabled. Claude still uses the
-existing public-API runtime switch before provider work; that case does not
-qualify a native Claude creation default.
+creation default with the experimental flag disabled. Claude also inspects its
+wizard's saved native default with the experimental flag disabled; select that
+profile on a qualified default target. Retained results from the former API-switch
+definition do not establish that the current creation-default journey passed.
 
 Current proof and remaining decisions are recorded in
 [the 21 September qualification report](QUALIFICATION-2026-09-21.md). In particular,
@@ -2221,6 +2231,22 @@ Private traces and database files must not be published. Unconfirmed cleanup
 always preserves recovery state regardless of this optional diagnostic flag.
 
 The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.
+
+
+## Claude default rollout acceptance
+
+The Claude first-task onboarding case asserts the wizard's saved native profile
+directly. It must not patch a Legacy agent into native execution after creation.
+Ordinary native defaults are qualified by execution target: the first rollout
+enables Apple Silicon only. API-key acceptance requires a useful downloadable
+file, a follow-up revision, independent downloads of both versions, persisted
+configuration and session continuity after reload/restart. Subscription setup
+uses the existing connection tools and receives separate task/follow-up proof.
+
+Keep exact source, runtime executable digests and reports for each candidate.
+Effort or runtime changes require affected acceptance reruns. No automatic paid
+retry campaign is permitted under the separate $50 Claude qualification ceiling.
+Docker and expensive Rust builds run in cloud CI, never on the local Mac.
 
 ## Projectless task workspaces (explicit-only)
 

@@ -1,5 +1,7 @@
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
@@ -144,10 +146,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           eq(heartbeatRuns.agentId, session.agentId),
         ),
       );
-    const taskId =
-      run?.nativeIssueId ??
-      run?.contextSnapshot?.issueId ??
-      run?.contextSnapshot?.taskId;
+    const taskId = run ? boundRunIssueId(run) : null;
     if (
       !run ||
       taskId !== session.issueId ||
@@ -155,7 +154,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       (publishing && !["running", "succeeded"].includes(run.status))
     )
       throw forbidden("This task run is no longer authorized");
-    const commentId = run.contextSnapshot?.wakeCommentId;
+    const commentId = await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" });
     const [source] =
       typeof commentId === "string"
         ? await db

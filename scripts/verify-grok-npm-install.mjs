@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { packConcurrency, packStagedPackages, packTimings } from './pack-staged-packages.mjs';
 import { materializePublishManifest } from './prepare-bundled-package.mjs';
 import { publicInstallClosure } from './public-install-closure.mjs';
-import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from './grok-public-install-sandbox.mjs';
+import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedClaudeProbeSource, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from './grok-public-install-sandbox.mjs';
 import { startPrefetch, stopPrefetches } from './prefetch-child.mjs';
 import { retainRunnerQualificationPackages } from './retain-runner-qualification-packages.mjs';
 import { bundledInstallTimings, startBundledInstalls } from './stage-bundled-packages.mjs';
@@ -85,6 +85,7 @@ async function verifyMacConsumer(packageDirectory, sourceRevision, receiptPath) 
     const probe = (name, source) => { const file = join(root, name); writeFileSync(file, source); return JSON.parse(run(process.execPath, [file]).trim()); };
     const daemon = probe('daemon-probe.mjs', installedDaemonProbeSource(installed, consumer, sourceRevision));
     const codex = probe('codex-probe.mjs', installedCodexProbeSource(join(installed, 'index.js'), consumer, undefined, { nativeCodex: true }));
+    const claude = probe('claude-probe.mjs', installedClaudeProbeSource(join(installed, 'index.js')));
     const startupScript = macInstalledStartupProbeSource(consumer, server, daemon.sha256, join(repo, 'tests/runner-e2e/installed-cli.ts'));
     const startupFile = join(root, 'startup-probe.mts'); writeFileSync(startupFile, startupScript);
     const startup = JSON.parse(run(process.execPath, ['--import', 'tsx', startupFile], join(repo, 'server')).trim());
@@ -92,7 +93,7 @@ async function verifyMacConsumer(packageDirectory, sourceRevision, receiptPath) 
       cleanNpmInstall: true, packageCount: manifest.archives.length, codexPackedPayloadsOmitted: true,
       consumerLockPreserved: true, lifecycleSentinelVerified: true, lifecycleNodeHeadersVerified: true, lifecycleNodeVersion: process.versions.node,
       lifecycleNetwork: 'sandbox-exec denied (loopback negative control)',
-      ...daemon, ...codex, startup, providerCalls: 0 };
+      ...daemon, ...codex, claude, startup, providerCalls: 0 };
     writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
     console.log(JSON.stringify(receipt));
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -161,6 +162,7 @@ async function verifyLinuxArmConsumer(packageDirectory, sourceRevision, receiptP
     const hostServer = join(consumer, 'node_modules/@paperclipai/server'), hostInstalled = join(hostServer, 'dist/vendor/paperclip-runner');
     const hostDaemon = () => hostProbe('host-daemon-probe.mjs', installedDaemonProbeSource(hostInstalled, consumer, sourceRevision));
     const hostCodex = () => hostProbe('host-codex-probe.mjs', installedCodexProbeSource(join(hostInstalled, 'index.js'), consumer, undefined, { nativeCodex: true }));
+    const claude = hostProbe('host-claude-probe.mjs', installedClaudeProbeSource(join(hostInstalled, 'index.js')));
     const digest = value => createHash('sha256').update(value).digest('hex');
     const beforeCodex = hostCodex();
     const before = { lockSha256: digest(lock), runnerSha256: hostDaemon().sha256.slice(7), codexCommandSha256: beforeCodex.codexCommandSha256, codexNativeExecutableSha256: beforeCodex.codexNativeExecutableSha256 };
@@ -182,7 +184,7 @@ async function verifyLinuxArmConsumer(packageDirectory, sourceRevision, receiptP
       startupEnvironment: 'native host, same installed graph, isolated empty homes',
       startupHost: { nodeVersion: process.versions.node, nodeModulesAbi: process.versions.modules, glibcVersionRuntime: hostHeader.glibcVersionRuntime, kernelRelease: hostHeader.osRelease },
       installedIdentityBefore: before, installedIdentityAfter: after,
-      ...daemon, ...codex, startup, providerCalls: 0 };
+      ...daemon, ...codex, claude, startup, providerCalls: 0 };
     writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
     console.log(JSON.stringify(receipt));
   } finally { rmSync(root, { recursive: true, force: true }); }

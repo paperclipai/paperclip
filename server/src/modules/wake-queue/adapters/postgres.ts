@@ -3,7 +3,7 @@ import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
-import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -213,7 +213,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .then((rows) => rows[0] ?? null);
       if (!agent) return null;
       const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
-      return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
+      return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable,
+        paused: !invokability.invokable && invokability.reason === "paused" };
     },
 
     async findNextDeferredWake({ companyId, issueId, excludedWakeIds }) {
@@ -1051,6 +1052,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           throw new Error(`wake-queue: run ${input.runId} was not found while releasing issue execution`);
         }
         const runSnapshot = toRunSnapshot(run);
+        if (input.resumeStrandedQueue && (!run.finishedAt || !["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status))) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         const contextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
 
         // Lock the context issue (if any) and every issue that still references this
@@ -1077,6 +1081,19 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
                 for update
               `,
         );
+
+        if (input.resumeStrandedQueue && run.runtimeMode === "native") {
+          const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
+            ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+                eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id),
+                eq(nativeRunFinalizations.issueId, run.nativeIssueId), eq(nativeRunFinalizations.phase, "committed"),
+              )).limit(1)
+            : [];
+          if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+        if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
 
         const candidateIssues = await tx
           .select()
@@ -1159,11 +1176,14 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // agent's review participation retains its separate recovery path.
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.agentId, run.agentId),
-          sql`${heartbeatRuns.id} <> ${run.id}`,
+          input.resumeStrandedQueue ? undefined : eq(heartbeatRuns.agentId, run.agentId),
+          input.resumeStrandedQueue ? undefined : sql`${heartbeatRuns.id} <> ${run.id}`,
           or(eq(heartbeatRuns.nativeIssueId, issueRow.id),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
-          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          or(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+            input.resumeStrandedQueue ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (
+              SELECT source.created_at, source.id FROM heartbeat_runs source
+              WHERE source.company_id = ${input.companyId} AND source.id = ${run.id})` : undefined),
         )).limit(1);
         if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
 

@@ -52,6 +52,8 @@ import type {
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
@@ -163,6 +165,7 @@ export interface EnvironmentEventRecord {
     | "resumeLease"
     | "releaseLease"
     | "stopLease"
+    | "inspectLease"
     | "destroyLease"
     | "realizeWorkspace"
     | "execute"
@@ -190,6 +193,7 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
     onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onStopLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt>;
+    onInspectLease?: (params: PluginEnvironmentInspectLeaseParams) => Promise<PluginEnvironmentLeaseObservation>;
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
@@ -217,6 +221,8 @@ export interface EnvironmentTestHarness extends TestHarness {
   releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Stop and preserve an allocation independently of its release policy. */
   stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt>;
+  /** Observe an allocation without starting or modifying it. */
+  inspectLease(params: PluginEnvironmentInspectLeaseParams): Promise<PluginEnvironmentLeaseObservation | undefined>;
   /** Invoke the environment driver's destroyLease hook. */
   destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Invoke the environment driver's realizeWorkspace hook. */
@@ -2774,6 +2780,9 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async stopLease(params) {
       return callHook("stopLease", driver.onStopLease, params, "onStopLease");
+    },
+    async inspectLease(params) {
+      return callHook("inspectLease", driver.onInspectLease, params, "onInspectLease");
     },
     async destroyLease(params) {
       return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");

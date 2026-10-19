@@ -62,7 +62,7 @@ const NATIVE_TURN_FAILURE_RUNNER_CODES: ReadonlySet<string> = new Set([
  * Closed vocabulary for a failed Codex turn that no classifier above claims.
  * It explains generic `Native session failed` reports without provider text.
  */
-export interface NativeTurnFailureDiagnostic {
+export interface NativeCodexTurnFailureDiagnostic {
   provider: "codex";
   category: "turn_failed";
   /** A known `CodexErrorInfo` kind, `unrecognized`, or `absent`. */
@@ -72,17 +72,79 @@ export interface NativeTurnFailureDiagnostic {
   runnerFailureCode?: string;
 }
 
+/**
+ * `error.code` values the OpenCode driver writes when it fails a turn itself.
+ * Other OpenCode failures carry provider error objects and stay `unrecognized`.
+ */
+const OPENCODE_TURN_FAILURE_RUNNER_CODES: ReadonlySet<string> = new Set([
+  "opencode_server_exited", "opencode_event_stream_lost", "provider_terminal_error_missing",
+]);
+const OPENCODE_STREAM_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  "server_exited", "connection_failed", "http_error", "stream_closed", "stream_error",
+]);
+const OPENCODE_CONNECTION_ERRORS: ReadonlySet<string> = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH",
+  "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT", "unrecognized",
+]);
+/** POSIX, Linux and macOS signal names; any other `signal` value is dropped. */
+const OPENCODE_EXIT_SIGNALS: ReadonlySet<string> = new Set([
+  "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGBUS", "SIGEMT", "SIGFPE",
+  "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT", "SIGCHLD",
+  "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU", "SIGXFSZ", "SIGVTALRM",
+  "SIGPROF", "SIGWINCH", "SIGIO", "SIGPOLL", "SIGPWR", "SIGINFO", "SIGLOST", "SIGSYS", "SIGUNUSED",
+]);
+
+/** Closed vocabulary for a failed OpenCode turn, including a lost `opencode serve`. */
+export interface NativeOpenCodeTurnFailureDiagnostic {
+  provider: "opencode";
+  category: "turn_failed";
+  /** A known runner-issued failure code, or `unrecognized` for any other code. */
+  runnerFailureCode?: string;
+  /** How the driver lost its event stream, when it failed the turn itself. */
+  streamFailure?: string;
+  exitCode?: number;
+  signal?: string;
+  connectionError?: string;
+  httpStatus?: number;
+}
+
+export type NativeTurnFailureDiagnostic = NativeCodexTurnFailureDiagnostic | NativeOpenCodeTurnFailureDiagnostic;
+
 function httpStatusField(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
     ? { httpStatus: value } : {};
 }
 
-function runnerFailureCodeField(value: unknown) {
+function runnerFailureCodeField(value: unknown, codes: ReadonlySet<string> = NATIVE_TURN_FAILURE_RUNNER_CODES) {
   if (typeof value !== "string") return {};
-  return { runnerFailureCode: NATIVE_TURN_FAILURE_RUNNER_CODES.has(value) ? value : "unrecognized" };
+  return { runnerFailureCode: codes.has(value) ? value : "unrecognized" };
 }
 
-function codexErrorInfoFields(value: unknown): Pick<NativeTurnFailureDiagnostic, "codexErrorInfo" | "httpStatus"> {
+function openCodeStreamFailureFields(value: unknown): Omit<NativeOpenCodeTurnFailureDiagnostic, "provider" | "category" | "runnerFailureCode"> {
+  const entry = record(value);
+  const kind = entry.kind ?? entry.streamFailure;
+  if (typeof kind !== "string" || !OPENCODE_STREAM_FAILURE_KINDS.has(kind)) return {};
+  const { exitCode, signal, connectionError } = entry;
+  return {
+    streamFailure: kind,
+    ...(typeof exitCode === "number" && Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255 ? { exitCode } : {}),
+    ...(typeof signal === "string" && OPENCODE_EXIT_SIGNALS.has(signal) ? { signal } : {}),
+    ...(typeof connectionError === "string" && OPENCODE_CONNECTION_ERRORS.has(connectionError) ? { connectionError } : {}),
+    ...httpStatusField(entry.httpStatus),
+  };
+}
+
+function openCodeTurnFailure(failure: Record<string, unknown>): NativeOpenCodeTurnFailureDiagnostic {
+  return {
+    provider: "opencode",
+    category: "turn_failed",
+    ...runnerFailureCodeField(failure.code, OPENCODE_TURN_FAILURE_RUNNER_CODES),
+    ...openCodeStreamFailureFields(failure.opencodeFailure),
+  };
+}
+
+function codexErrorInfoFields(value: unknown): Pick<NativeCodexTurnFailureDiagnostic, "codexErrorInfo" | "httpStatus"> {
   if (value === undefined || value === null) return { codexErrorInfo: "absent" };
   if (typeof value === "string") return { codexErrorInfo: CODEX_ERROR_INFO_KINDS.has(value) ? value : "unrecognized" };
   const entry = record(value);
@@ -95,6 +157,15 @@ function codexErrorInfoFields(value: unknown): Pick<NativeTurnFailureDiagnostic,
 export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailureDiagnostic | null {
   try {
     const entry = record(value);
+    if (entry.provider === "opencode") {
+      if (entry.category !== "turn_failed") return null;
+      return {
+        provider: "opencode",
+        category: "turn_failed",
+        ...runnerFailureCodeField(entry.runnerFailureCode, OPENCODE_TURN_FAILURE_RUNNER_CODES),
+        ...openCodeStreamFailureFields(entry),
+      };
+    }
     const kind = entry.codexErrorInfo;
     if (entry.provider !== "codex" || entry.category !== "turn_failed" || typeof kind !== "string" ||
         (kind !== "absent" && kind !== "unrecognized" && !CODEX_ERROR_INFO_KINDS.has(kind))) return null;
@@ -115,10 +186,15 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
   return {
     observe(event: PrpEvent) {
-      if (provider.kind !== "codex" ||
+      if ((provider.kind !== "codex" && provider.kind !== "opencode") ||
           event.sourceKind !== "runner" || event.eventType !== "turn.failed" || !event.turnId) return;
       const payload = record(event.payload);
       const failure = record(payload.error);
+      if (provider.kind === "opencode") {
+        // OpenCode has no classifier above, so every failed turn is diagnosed.
+        if (payload.status === "failed") failedTurns.set(event.turnId, openCodeTurnFailure(failure));
+        return;
+      }
       if (payload.status === "failed") {
         failedTurns.set(event.turnId, {
           provider: "codex",

@@ -32,12 +32,18 @@ import {
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
   referencedSourceContentSignature,
+  resolveStalledToolTimeoutMs,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpStopActivity,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
-import { ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS, ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
+import {
+  ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS,
+  ACPX_HANDSHAKE_TIMEOUT_MS,
+  ACPX_STALLED_TOOL_MARGIN_MS,
+  ACPX_STALLED_TOOL_TIMEOUT_MS,
+} from "./constants.js";
 import { sessionCodec } from "./session-codec.js";
 import { runChildProcess } from "../server-utils.js";
 import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
@@ -3505,6 +3511,331 @@ describe("ACP activity diagnostics", () => {
     const diagnostics = Object.fromEntries(Object.entries(result.resultJson ?? {}).filter(([key]) => key.startsWith("acp")));
     expect(JSON.stringify(diagnostics)).not.toContain("private");
   }, 15_000);
+
+  it("ends the turn as a failure when a pending tool call stops receiving updates", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const cancelReasons: Array<string | undefined> = [];
+    const logs: string[] = [];
+    const permissionDecisions: unknown[] = [];
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolTimeoutMs: 5000,
+      stalledToolCheckIntervalMs: 5,
+      createRuntime: (options) => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            // A live subagent keeps its Task call fresh, but one of its tool
+            // calls never gets another update. Only the Task call's permission
+            // request reaches the host.
+            permissionDecisions.push(await options.onPermissionRequest?.({
+              sessionId: "session-1",
+              raw: { sessionId: "session-1", toolCall: { toolCallId: "private-task" }, options: [] },
+              inferredKind: "think",
+            } as never, { signal: new AbortController().signal }));
+            yield { type: "tool_call", toolCallId: "private-task", title: "private task", kind: "think", status: "in_progress" };
+            for (const toolCallId of ["private-peer-asked", "private-peer-shell"]) {
+              await options.onPermissionRequest?.({
+                sessionId: "session-1",
+                raw: { sessionId: "session-1", toolCall: { toolCallId }, options: [] },
+                inferredKind: "other",
+              } as never, { signal: new AbortController().signal });
+            }
+            yield { type: "tool_call", toolCallId: "private-peer-asked", kind: "other", status: "completed" };
+            yield { type: "tool_call", toolCallId: "private-peer-silent", kind: "other", status: "failed" };
+            yield { type: "tool_call", toolCallId: "private-peer-shell", kind: "execute", status: "completed" };
+            yield { type: "tool_call", toolCallId: "private-call", title: "private lookup", kind: "other", status: "pending" };
+            currentNow = 7000;
+            yield { type: "tool_call", tag: "tool_call_update", toolCallId: "private-task", status: "in_progress" };
+            await turnCancelled;
+            yield { type: "tool_call", tag: "tool_call_update", toolCallId: "private-call", status: "cancelled" };
+          })(),
+          result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+          cancel: async ({ reason }: { reason?: string }) => {
+            cancelReasons.push(reason);
+            releaseTurn?.();
+          },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "stalled-tool", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async (_stream: string, text: string) => { logs.push(text); },
+    } as never);
+    expect(cancelReasons).toEqual(["paperclip stalled tool watchdog"]);
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_tool_stalled");
+    expect(result.errorMessage).toContain("kind other");
+    expect(result.resultJson).toMatchObject({
+      status: "failed",
+      acpStalledToolKind: "other",
+      acpStalledToolSilentMs: 6000,
+      acpLastEventAgeAtStopMs: 0,
+      acpOldestPendingToolAgeAtStopMs: 6000,
+      acpPendingToolKinds: "other,think",
+      acpStalledToolPermissionRequested: false,
+      acpPendingToolPermissionRequestedCount: 1,
+      acpSettledSameKindToolCount: 2,
+      acpSettledSameKindToolPermissionRequestedCount: 1,
+    });
+    // The host only observes the request; ACPX's permission mode decides it.
+    expect(permissionDecisions).toEqual([undefined]);
+    expect(logs.join("")).toContain(
+      "[paperclip] A pending tool call (kind other) had no update for 6s; ending the turn. Its permission request did not reach Paperclip.",
+    );
+    const diagnostics = Object.fromEntries(Object.entries(result.resultJson ?? {}).filter(([key]) => key.startsWith("acp")));
+    expect(JSON.stringify(diagnostics)).not.toContain("private");
+    expect(result.errorMessage).not.toContain("private");
+  }, 15_000);
+
+  it("ends a stalled turn within the cancel deadline when the agent ignores the cancel", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    const closeStreamReasons: Array<string | undefined> = [];
+    let endEvents: (() => void) | null = null;
+    const eventsEnded = new Promise<void>((resolve) => { endEvents = resolve; });
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolTimeoutMs: 5000,
+      stalledToolCheckIntervalMs: 5,
+      duplexLossCancelDeadlineMs: 25,
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "tool_call", toolCallId: "call-1", kind: "other", status: "pending" };
+            currentNow = 9000;
+            await eventsEnded;
+          })(),
+          // The agent never answers: neither the cancel nor the result settles.
+          result: new Promise<never>(() => {}),
+          cancel: async () => {},
+          closeStream: async ({ reason }: { reason?: string }) => {
+            closeStreamReasons.push(reason);
+            endEvents?.();
+          },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "stalled-tool-silent-agent", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async () => {},
+    } as never);
+    expect(closeStreamReasons).toEqual(["paperclip stalled tool cancel deadline"]);
+    expect(result.errorCode).toBe("acpx_tool_stalled");
+    expect(result.resultJson).toMatchObject({
+      status: "failed",
+      stopReason: "paperclip_stalled_tool_deadline",
+      acpStalledToolKind: "other",
+    });
+  }, 15_000);
+
+  it("records that a stalled tool call's permission request reached the host", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolTimeoutMs: 5000,
+      stalledToolCheckIntervalMs: 5,
+      createRuntime: (options) => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "tool_call", toolCallId: "call-1", kind: "other", status: "pending" };
+            // The request can reach the host after the relay saw the call.
+            await options.onPermissionRequest?.({
+              sessionId: "session-1",
+              raw: { sessionId: "session-1", toolCall: { toolCallId: "call-1" }, options: [] },
+              inferredKind: "other",
+            } as never, { signal: new AbortController().signal });
+            currentNow = 7000;
+            await turnCancelled;
+          })(),
+          result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+          cancel: async () => { releaseTurn?.(); },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "stalled-tool-after-permission", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async (_stream: string, text: string) => { logs.push(text); },
+    } as never);
+    expect(result.errorCode).toBe("acpx_tool_stalled");
+    expect(result.resultJson).toMatchObject({
+      acpStalledToolKind: "other",
+      acpStalledToolPermissionRequested: true,
+      acpPendingToolPermissionRequestedCount: 1,
+      acpSettledSameKindToolCount: 0,
+      acpSettledSameKindToolPermissionRequestedCount: 0,
+    });
+    expect(logs.join("")).toContain("Its permission request reached Paperclip.");
+  }, 15_000);
+
+  it("leaves a turn alone while its long-running tool keeps receiving updates", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    const cancelReasons: Array<string | undefined> = [];
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolTimeoutMs: 5000,
+      stalledToolCheckIntervalMs: 5,
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "tool_call", toolCallId: "task-1", kind: "think", status: "in_progress" };
+            // The tool runs far past the bound in total, but each heartbeat
+            // arrives within it, and the watchdog checks between them.
+            for (let step = 0; step < 4; step += 1) {
+              currentNow += 4000;
+              await tick();
+              yield { type: "tool_call", tag: "tool_call_update", toolCallId: "task-1", status: "in_progress" };
+            }
+            yield { type: "tool_call", tag: "tool_call_update", toolCallId: "task-1", status: "completed" };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async ({ reason }: { reason?: string }) => { cancelReasons.push(reason); },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "live-tool", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async () => {},
+    } as never);
+    expect(cancelReasons).toEqual([]);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(result.resultJson).not.toHaveProperty("acpStalledToolKind");
+  }, 15_000);
+
+  it("leaves a queued tool call alone while earlier tool calls keep finishing", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    const cancelReasons: Array<string | undefined> = [];
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolTimeoutMs: 5000,
+      stalledToolCheckIntervalMs: 5,
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            // The queued call gets no update until the slow calls ahead of it
+            // finish, one by one, each within the bound.
+            yield { type: "tool_call", toolCallId: "queued", kind: "edit", status: "pending" };
+            for (let step = 0; step < 4; step += 1) {
+              yield { type: "tool_call", toolCallId: `slow-${step}`, kind: "execute", status: "in_progress" };
+              currentNow += 4000;
+              await tick();
+              yield { type: "tool_call", tag: "tool_call_update", toolCallId: `slow-${step}`, status: "completed" };
+            }
+            yield { type: "tool_call", tag: "tool_call_update", toolCallId: "queued", status: "completed" };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async ({ reason }: { reason?: string }) => { cancelReasons.push(reason); },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "queued-tool", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd },
+      context: {}, onMeta: async () => {}, onLog: async () => {},
+    } as never);
+    expect(cancelReasons).toEqual([]);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+  }, 15_000);
+
+  it("does not watch tool calls when the stalled-tool bound is disabled", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    let currentNow = 1000;
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const cancelReasons: Array<string | undefined> = [];
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      stalledToolCheckIntervalMs: 5,
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "tool_call", toolCallId: "call-1", kind: "other", status: "pending" };
+            currentNow = 10_000_000;
+            await turnCancelled;
+          })(),
+          result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+          cancel: async ({ reason }: { reason?: string }) => {
+            cancelReasons.push(reason);
+            releaseTurn?.();
+          },
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "stall-watchdog-off", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: {
+        agent: "claude", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd,
+        stalledToolTimeoutSec: 0, timeoutSec: 1,
+      },
+      context: {}, onMeta: async () => {}, onLog: async () => {},
+    } as never);
+    // Only the wall-clock timeout ended this turn.
+    expect(cancelReasons).toHaveLength(1);
+    expect(cancelReasons[0]).not.toBe("paperclip stalled tool watchdog");
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("acpx_timeout");
+  }, 15_000);
+});
+
+describe("resolveStalledToolTimeoutMs", () => {
+  it("watches Claude turns with a bound above Claude's own tool bounds", () => {
+    expect(resolveStalledToolTimeoutMs({}, {}, "claude")).toBe(ACPX_STALLED_TOOL_TIMEOUT_MS);
+    expect(resolveStalledToolTimeoutMs({}, { MCP_TOOL_TIMEOUT: String(ACPX_CLAUDE_MCP_TOOL_TIMEOUT_MS) }, "claude"))
+      .toBe(ACPX_STALLED_TOOL_TIMEOUT_MS);
+    expect(resolveStalledToolTimeoutMs({}, { MCP_TOOL_TIMEOUT: "3600000" }, "claude"))
+      .toBe(3_600_000 + ACPX_STALLED_TOOL_MARGIN_MS);
+    expect(resolveStalledToolTimeoutMs({}, { BASH_MAX_TIMEOUT_MS: "7200000", MCP_TOOL_TIMEOUT: "not-a-number" }, "claude"))
+      .toBe(7_200_000 + ACPX_STALLED_TOOL_MARGIN_MS);
+  });
+
+  it("leaves other agents unwatched unless the adapter config sets a bound", () => {
+    expect(resolveStalledToolTimeoutMs({}, {}, "codex")).toBe(0);
+    expect(resolveStalledToolTimeoutMs({ stalledToolTimeoutSec: 600 }, {}, "codex")).toBe(600_000);
+  });
+
+  it("lets the adapter config override or disable the bound", () => {
+    expect(resolveStalledToolTimeoutMs({ stalledToolTimeoutSec: 120 }, { MCP_TOOL_TIMEOUT: "3600000" }, "claude")).toBe(120_000);
+    expect(resolveStalledToolTimeoutMs({ stalledToolTimeoutSec: 0 }, {}, "claude")).toBe(0);
+    expect(resolveStalledToolTimeoutMs({ stalledToolTimeoutSec: -1 }, {}, "claude")).toBe(0);
+    expect(resolveStalledToolTimeoutMs({ stalledToolTimeoutSec: "120" }, {}, "claude")).toBe(ACPX_STALLED_TOOL_TIMEOUT_MS);
+  });
 });
 
 describe("summarizeAcpStopActivity", () => {

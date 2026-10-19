@@ -3,13 +3,17 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 const cells = runnerMatrix.filter(e => e.profile.id === "runner-acpx-pi");
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+beforeEach(() => {
+  vi.stubEnv("NODE_PATH", undefined);
+  vi.stubEnv("NODE_OPTIONS", undefined);
+});
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2e-installed-cli-"))); roots.push(root);
@@ -186,4 +190,9 @@ it.skipIf(process.platform === "win32")("installed startup rejects stale daemon/
   const wrong = await startupFixture("wrong-model");
   await expect(probeInstalledCodexStartup({ consumerRoot: wrong.root, serverRoot: wrong.server, expectedRunnerSha256: wrong.expectedRunnerSha256 })).rejects.toThrow("matching native identity");
   expect(await readFile(wrong.observations, "utf8").then(JSON.parse)).toMatchObject({ calls: ["open", "session-close"] });
+});
+
+it("installed startup rejects ambient Node injection before launching", async () => {
+  vi.stubEnv("NODE_PATH", "/untrusted/test-path");
+  await expect(probeInstalledCodexStartup({ consumerRoot: "/unused", serverRoot: "/unused", expectedRunnerSha256: "0".repeat(64) })).rejects.toThrow("forbids NODE_PATH");
 });

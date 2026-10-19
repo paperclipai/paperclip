@@ -1845,9 +1845,11 @@ export function agentRoutes(
           "OpenAI Dot is experimental and disabled on this instance.",
           { code: "paperclip_runner_dot_disabled" },
         );
+      } else if (asRecord(config)?.provider === "muse") {
+        if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse is experimental and disabled on this instance.", { code: "paperclip_runner_muse_disabled" });
       } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enablePublicMcp !== true || experimental.enableNativeRunner !== true)) {
         throw unprocessable("Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
-      } else if (!([undefined, "codex"].includes(asRecord(config)?.provider as string | undefined)) && experimental.enableNativeRunner !== true) {
+      } else if (!([undefined, "codex"].includes(asRecord(config)?.provider as string | undefined)) && agentHarnessType("paperclip_runner", asRecord(config) ?? {}) !== "claude_local" && experimental.enableNativeRunner !== true) {
         throw unprocessable(
           "Paperclip Runner is experimental and disabled on this instance.",
           { code: "paperclip_runner_rollout_disabled" },
@@ -1915,7 +1917,7 @@ export function agentRoutes(
     ) {
       return input.nextAdapterConfig;
     }
-    if (input.nextAdapterConfig.provider === "openai_dot") return input.nextAdapterConfig;
+    if (["openai_dot", "muse"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
     if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
@@ -2253,12 +2255,12 @@ export function agentRoutes(
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
     if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
-    const harness = agentHarnessType(adapterType ?? "", adapterConfig) === "codex_local" ? "codex_local" : adapterType ?? "";
+    const harness = agentHarnessType(adapterType ?? "", adapterConfig);
     const credentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[harness];
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
-    if (!parent || parent.companyId !== companyId || (harness === "codex_local" ? agentHarnessType(parent.adapterType, parent.adapterConfig) !== harness : parent.adapterType !== adapterType)) return noInheritance;
+    if (!parent || parent.companyId !== companyId || agentHarnessType(parent.adapterType, parent.adapterConfig) !== harness) return noInheritance;
     // Managed parents must not pass stale legacy credential references to hires.
     if (aiRuntimeConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
@@ -2267,7 +2269,7 @@ export function agentRoutes(
     const existingEnv = asRecord(adapterConfig.env);
     const claudeCredentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS.claude_local;
     const childHasClaudeCredential =
-      adapterType === "claude_local" &&
+      harness === "claude_local" &&
       existingEnv !== null &&
       claudeCredentialKeys.some((key) => existingEnv[key] !== undefined);
     if (childHasClaudeCredential) return noInheritance;
@@ -2568,7 +2570,7 @@ export function agentRoutes(
   ) {
     if (req.actor.type === "agent" && hasOwn(adapterConfig, "homeMode"))
       throw forbidden("Only an operator can configure Runner homeMode.");
-    if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId"].some(key => hasOwn(adapterConfig, key)))
+    if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId", "museBindingId", "museGeneration", "museConnection"].some(key => hasOwn(adapterConfig, key)))
       throw forbidden("Only an operator can configure external-agent pairing, attachment access, or workspace access.");
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
@@ -2628,11 +2630,13 @@ export function agentRoutes(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     allowPlainCredentials = false,
+    harnessConfig = adapterConfig,
   ) {
-    if (req.actor.type !== "agent" || !adapterType.endsWith("_local")) return;
+    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
+    const harness = agentHarnessType(adapterType, harnessConfig);
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
       adapterConfig[key] !== undefined &&
-      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env, allowPlainCredentials)),
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(harness, adapterConfig.env, allowPlainCredentials)),
     );
     if (changedKeys.length === 0) return;
     throw forbidden(
@@ -4096,7 +4100,7 @@ export function agentRoutes(
     const existingRollbackProvider = asRecord(existing.adapterConfig)?.provider;
     if (rollbackAdapterType !== existing.adapterType || (rollbackAdapterType === "paperclip_runner"
       && rollbackAdapterConfig.provider !== existingRollbackProvider
-      && (rollbackAdapterConfig.provider === "openai_dot" || existingRollbackProvider === "openai_dot"))) {
+      && (["openai_dot", "muse"].includes(String(rollbackAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRollbackProvider))))) {
       await assertSelectableAdapterType(rollbackAdapterType, rollbackAdapterConfig);
     }
     assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
@@ -5327,6 +5331,8 @@ export function agentRoutes(
           req,
           requestedAdapterType,
           changingAdapterType ? rawEffectiveAdapterConfig : (requestedAdapterConfig ?? {}),
+          false,
+          rawEffectiveAdapterConfig,
         );
       }
       const existingRunnerProvider =
@@ -5337,7 +5343,7 @@ export function agentRoutes(
       // selection. Preserve historical edits within the general Runner rollout.
       if (!changingAdapterType && requestedAdapterType === "paperclip_runner"
         && rawEffectiveAdapterConfig.provider !== existingRunnerProvider
-        && (rawEffectiveAdapterConfig.provider === "openai_dot" || existingRunnerProvider === "openai_dot")) {
+        && (["openai_dot", "muse"].includes(String(rawEffectiveAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRunnerProvider)))) {
         await assertSelectableAdapterType(requestedAdapterType, rawEffectiveAdapterConfig);
       }
       if (

@@ -193,9 +193,10 @@ async function callFirstPaperclipTool() {
 async function callTerminalTool(promptBody) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
+  const monitored = String(prompt.message ?? "").includes("monitor-default");
   const result = {
     schema: "paperclip.run_result.v1",
-    reportedWorkDisposition: blocked ? "blocked" : "done",
+    reportedWorkDisposition: blocked ? "blocked" : monitored ? "yielded" : "done",
     summary: blocked
       ? "Fake provider is blocked."
       : "Fake provider completed the task.",

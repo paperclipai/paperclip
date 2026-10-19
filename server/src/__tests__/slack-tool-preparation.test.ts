@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import {
   agents, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, companies,
   companyMemberships, createDb, heartbeatRuns, issues, toolApplications, toolConnections,
@@ -79,6 +80,34 @@ describeDatabase("Slack tool preparation", () => {
       [...new Set((await slackToolsForSession(db, binding)).map(tool => String(tool.providerMetadata?.endpointId)))],
   };
 
+  it("does not compute an unused revision when preparing the session catalog", async () => {
+    const f = await fixture();
+    const queries: string[] = [];
+    const measured = drizzle(db.$client, { logger: { logQuery: query => queries.push(query) } }) as typeof db;
+    const registration = createSlackTaskAuthorityRegistration(measured, {
+      resolveCredentials: createChatCredentials(measured, { secrets: { resolveSecretValue: f.resolveSecretValue } } as unknown as Parameters<typeof createChatCredentials>[1]).resolveCredentials,
+      authorizeInboundWakeup: async () => { throw new Error("This is an ordinary task"); },
+    });
+    try {
+      const tools = await slackToolsForSession(measured, f.binding);
+      expect([...new Set(tools.map(tool => tool.providerMetadata?.endpointId))].sort()).toEqual(f.endpoints.map(endpoint => endpoint.id).sort());
+      expect(queries.filter(query => query.includes("row_to_json(revision_row)"))).toHaveLength(0);
+      queries.length = 0;
+      const authority = await resolveSlackTaskAuthority(measured, { ...f.binding, endpointId: f.endpoints[1].id });
+      expect(authority.revision).toMatch(/^[0-9a-f]{64}$/);
+      expect(queries.filter(query => query.includes("row_to_json(revision_row)"))).toHaveLength(1);
+      await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.id, f.links[0].id));
+      queries.length = 0;
+      f.resolveSecretValue.mockClear();
+      expect([...new Set((await slackToolsForSession(measured, f.binding)).map(tool => tool.providerMetadata?.endpointId))]).toEqual([f.endpoints[1].id]);
+      expect(f.resolveSecretValue).toHaveBeenCalledTimes(1);
+      expect(queries.filter(query => query.includes("row_to_json(revision_row)"))).toHaveLength(0);
+    } finally {
+      registration.unregisterSlackTaskAuthority();
+      f.unregisterSlackTaskAuthority();
+    }
+  });
+
   it.each(Object.entries(paths))("overlaps two independent endpoint checks for %s", async (_name, prepare) => {
     const f = await fixture();
     const gate = deferred();
@@ -129,6 +158,22 @@ describeDatabase("Slack tool preparation", () => {
       await expect(resolveSlackTaskAuthority(db, binding)).rejects.toBe(error);
       f.resolveSecretValue.mockResolvedValueOnce("");
       await expect(resolveSlackTaskAuthority(db, binding)).rejects.toMatchObject({ status: 403 });
+    } finally { f.unregisterSlackTaskAuthority(); }
+  });
+
+  it.each(Object.entries(paths))("rechecks bot credential availability for %s", async (_name, prepare) => {
+    const f = await fixture();
+    try {
+      expect((await prepare(f.binding)).sort()).toEqual(f.endpoints.map(endpoint => endpoint.id).sort());
+      const error = new Error("Bot credential is revoked");
+      f.resolveSecretValue.mockClear();
+      f.resolveSecretValue.mockRejectedValue(error);
+      await expect(prepare(f.binding)).rejects.toBe(error);
+      expect(f.resolveSecretValue).toHaveBeenCalledTimes(2);
+      f.resolveSecretValue.mockClear();
+      f.resolveSecretValue.mockResolvedValue("");
+      expect(await prepare(f.binding)).toEqual([]);
+      expect(f.resolveSecretValue).toHaveBeenCalledTimes(2);
     } finally { f.unregisterSlackTaskAuthority(); }
   });
 
