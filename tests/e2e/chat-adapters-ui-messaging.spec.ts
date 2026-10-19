@@ -872,10 +872,18 @@ test.describe("Board send delivery refresh", () => {
       );
       expect(JSON.parse(retainedBeforeReload!).publication.id).toBe(anchor);
       const readsBeforeReload = statusReads.length;
+      // The read fires only after the reloaded app boots and restores the
+      // anchor, so wait for that response itself rather than a fixed clock
+      // that starts at reload. The route handler counts before it responds.
+      const anchorReread = page.waitForResponse(
+        (response) =>
+          response.request().method() === "GET" &&
+          new URL(response.url()).pathname ===
+            `${publicationsPath}/${anchor}/status` &&
+          statusReads.length > readsBeforeReload,
+      );
       await page.reload();
-      await expect
-        .poll(() => statusReads.length)
-        .toBeGreaterThan(readsBeforeReload);
+      await anchorReread;
       expect(
         await page.evaluate((key) => sessionStorage.getItem(key), storageKey),
       ).toBe(retainedBeforeReload);
@@ -1210,10 +1218,17 @@ test.describe("Board send delivery refresh", () => {
           .toBeGreaterThan(0);
         await expectRetainedFiles();
         const readsBeforeReload = reads;
+        // The read fires only after the reloaded app boots and restores the
+        // anchor, so wait for that response itself rather than a fixed clock
+        // that starts at reload. The route handler counts before it responds.
+        const batchReread = page.waitForResponse(
+          (response) =>
+            response.request().method() === "GET" &&
+            new URL(response.url()).pathname === statusPath &&
+            reads > readsBeforeReload,
+        );
         await page.reload();
-        await expect
-          .poll(() => reads, { timeout: 8_000 })
-          .toBeGreaterThan(readsBeforeReload);
+        await batchReread;
         expect(sends).toBe(1);
       }
       await expect.poll(() => reads, { timeout: 8_000 }).toBeGreaterThan(0);
