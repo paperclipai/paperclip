@@ -6,6 +6,14 @@ import { test, expect, type APIResponse } from "@playwright/test";
 import { and, eq } from "../../server/node_modules/drizzle-orm/index.js";
 import { createDb, closeRegisteredClients, heartbeatRuns, issueRecoveryActions, issues, issueComments, agentWakeupRequests, authUsers, companyMemberships } from "../../packages/db/src/index.ts";
 
+// The first assertion after a navigation covers app boot, the issue read, and
+// reads that wait on the issue's id (the task runs list, which the Retry button
+// needs), then a render of the whole task page. On a loaded CI runner that took
+// about 8 s, past the 5 s expect default, which starts once
+// page.goto returns at the load event. Other specs give a first render after
+// navigation 15-30 s.
+const FIRST_RENDER_TIMEOUT_MS = 30_000;
+
 async function json(response: APIResponse) {
   expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
   return response.json();
@@ -76,7 +84,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       await page.goto(action === "inbox_retry" ? `/${company.issuePrefix}/inbox/all` : taskUrl);
       if (action === "task_retry") {
         const notice = page.getByRole("status", { name: "Task recovery" });
-        await expect(notice).toContainText("Server restarted during startup");
+        await expect(notice).toContainText("Server restarted during startup", { timeout: FIRST_RENDER_TIMEOUT_MS });
         await expect(notice).toContainText("Automatic recovery stopped.");
         await expect(notice.getByRole("link", { name: "Inspect run" }))
           .toHaveAttribute("href", new RegExp(`/agents/${agent.id}/runs/${sourceRunId}$`));
@@ -91,7 +99,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       }
       if (action === "queued_interrupt") {
         const interrupt = page.getByRole("button", { name: "Interrupt", exact: true });
-        await expect(interrupt).toBeEnabled();
+        await expect(interrupt).toBeEnabled({ timeout: FIRST_RENDER_TIMEOUT_MS });
         await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, sourceRunId));
         await interrupt.click();
       } else if (action === "automatic_message") {
@@ -129,7 +137,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       }
       if (action === "message") expect(prompts).toContain("Please continue the pending follow-up.");
       await page.reload();
-      await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible();
+      await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: FIRST_RENDER_TIMEOUT_MS });
     } finally {
       await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
       await closeRegisteredClients(url);
