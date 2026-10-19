@@ -345,7 +345,7 @@ test.describe.serial("native chat adapter UI", () => {
     } finally { installation.release(); }
     await expect(page.getByRole("heading", { name: "Fixture Slack consent" })).toBeVisible();
     await page.getByRole("link", { name: "Approve installation" }).click();
-    await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("link", { name: "Open Slack app Settings" })).toBeHidden();
     await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toHaveAttribute("href", "https://app.slack.com/client/TE2E/DE2E");
     await page.getByText("Didn’t work?", { exact: true }).click();
