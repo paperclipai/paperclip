@@ -449,77 +449,83 @@ test("plan approval hands the preserved revision to an assigned project task", a
   }
 });
 
-test("shared questions resume and existing project reuse creates no project card", async ({
-  page,
-  request,
-}) => {
-  const f = await setup(request);
-  try {
-    const project = await json(
-      await request.post(`/api/companies/${f.company.id}/projects`, {
-        data: { name: "Garden club" },
-      }),
-    );
-    await page.goto(f.route);
-    await send(page, { action: "question" });
-    await expect(
-      page.getByRole("radio", { name: "Garden club", exact: true }).last(),
-    ).toBeVisible();
-    await page
-      .getByRole("radio", { name: "Garden club", exact: true })
-      .last()
-      .click();
-    await page
-      .getByRole("button", { name: "Submit answers", exact: true })
-      .last()
-      .click();
-    const chat = await idle(request, f.chatPath, 2);
-    await expect(
-      page.getByText("Reply generation 0: Clarification received.", {
-        exact: true,
-      }),
-    ).toBeVisible();
-    await send(page, { action: "handoff", projectId: project.id });
-    await idle(request, f.chatPath, 3);
-    await expect
-      .poll(
-        async () =>
-          (
-            await json(
-              await request.get(`/api/companies/${f.company.id}/issues`),
-            )
-          ).length,
-      )
-      .toBe(1);
-    const task = (
-      await json(await request.get(`/api/companies/${f.company.id}/issues`))
-    )[0];
-    expect(task.projectId).toBe(project.id);
-    expect(task.parentId).toBeNull();
-    expect(
-      await json(await request.get(`/api/companies/${f.company.id}/projects`)),
-    ).toHaveLength(1);
-    await expect(
-      page.getByRole("article", { name: /Project created:/ }),
-    ).toHaveCount(0);
-    const ordinaryChild = await json(
-      await request.post(`/api/companies/${f.company.id}/issues`, {
-        data: { title: "Ordinary delegation still works", parentId: task.id },
-      }),
-    );
-    expect(ordinaryChild.parentId).toBe(task.id);
-    // The delegated task finishes on its own and wakes the conversation with
-    // a completion reporting turn. Wait for that turn to post its reply and
-    // settle before reading status, or this read can catch the conversation
-    // mid-turn.
-    await idle(request, f.chatPath, 4);
-    expect(
-      (await json(await request.get(`/api/issues/${chat.id}`))).status,
-    ).toBe("in_review");
-  } finally {
-    await f.restore();
-  }
-});
+// The question arrives from an agent run, so the card appears only after the
+// provider starts, asks and its turn settles. Wait for that turn like every
+// other step here instead of racing it against the 5 s expect timeout; the
+// delayed variant models a provider that starts slowly.
+for (const delayMs of [0, 6_000])
+  test(`shared questions resume and existing project reuse creates no project card${delayMs ? " (question asked after a slow start)" : ""}`, async ({
+    page,
+    request,
+  }) => {
+    const f = await setup(request);
+    try {
+      const project = await json(
+        await request.post(`/api/companies/${f.company.id}/projects`, {
+          data: { name: "Garden club" },
+        }),
+      );
+      await page.goto(f.route);
+      await send(page, { action: "question", ...(delayMs ? { delayMs } : {}) });
+      await idle(request, f.chatPath);
+      await expect(
+        page.getByRole("radio", { name: "Garden club", exact: true }).last(),
+      ).toBeVisible();
+      await page
+        .getByRole("radio", { name: "Garden club", exact: true })
+        .last()
+        .click();
+      await page
+        .getByRole("button", { name: "Submit answers", exact: true })
+        .last()
+        .click();
+      const chat = await idle(request, f.chatPath, 2);
+      await expect(
+        page.getByText("Reply generation 0: Clarification received.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await send(page, { action: "handoff", projectId: project.id });
+      await idle(request, f.chatPath, 3);
+      await expect
+        .poll(
+          async () =>
+            (
+              await json(
+                await request.get(`/api/companies/${f.company.id}/issues`),
+              )
+            ).length,
+        )
+        .toBe(1);
+      const task = (
+        await json(await request.get(`/api/companies/${f.company.id}/issues`))
+      )[0];
+      expect(task.projectId).toBe(project.id);
+      expect(task.parentId).toBeNull();
+      expect(
+        await json(await request.get(`/api/companies/${f.company.id}/projects`)),
+      ).toHaveLength(1);
+      await expect(
+        page.getByRole("article", { name: /Project created:/ }),
+      ).toHaveCount(0);
+      const ordinaryChild = await json(
+        await request.post(`/api/companies/${f.company.id}/issues`, {
+          data: { title: "Ordinary delegation still works", parentId: task.id },
+        }),
+      );
+      expect(ordinaryChild.parentId).toBe(task.id);
+      // The delegated task finishes on its own and wakes the conversation with
+      // a completion reporting turn. Wait for that turn to post its reply and
+      // settle before reading status, or this read can catch the conversation
+      // mid-turn.
+      await idle(request, f.chatPath, 4);
+      expect(
+        (await json(await request.get(`/api/issues/${chat.id}`))).status,
+      ).toBe("in_review");
+    } finally {
+      await f.restore();
+    }
+  });
 
 test("shared history loads older messages without replacing the latest turn", async ({
   page,
@@ -569,11 +575,20 @@ test("disabling the experiment lets an active turn settle and keeps idle history
   const f = await setup(request);
   try {
     await page.goto(f.route);
-    await send(page, { action: "delayed" });
+    // The default 5 s wait starts at the Send click, before the chat and its
+    // message exist, and the process provider then takes about 3.5 s to post
+    // its first comment, so that wait raced the provider. Wait for
+    // the turn instead, and hold it open long enough that it is still running
+    // when the experiment is disabled.
+    await send(page, { action: "delayed", holdMs: 15_000 });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     const chat = await json(await request.get(f.chatPath));
+    expect(
+      (await json(await request.get(`/api/issues/${chat.id}/live-runs`)))
+        .length,
+    ).toBeGreaterThan(0);
     await json(
       await request.patch("/api/instance/settings/experimental", {
         data: { enableAgentChat: false },
@@ -584,6 +599,7 @@ test("disabling the experiment lets an active turn settle and keeps idle history
         (await json(await request.get(`/api/issues/${chat.id}/comments`))).some(
           (c: any) => c.body === "Active turn settled after feature disable.",
         ),
+        { timeout: 30_000 },
       )
       .toBe(true);
     await expect

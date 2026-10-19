@@ -92,7 +92,10 @@ if (command.action === "hold") {
   setInterval(() => console.log("Streaming discussion"), 250);
 } else if (command.action === "delayed") {
   await comment("Turn started before feature disable.");
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  // The turn must still run when the test disables the experiment. A test
+  // passes holdMs to cover the browser's render of the first comment instead
+  // of depending on the runner's speed.
+  await new Promise((resolve) => setTimeout(resolve, command.holdMs ?? 3000));
   await comment("Active turn settled after feature disable.");
 } else if (command.action === "project" || command.action === "handoff") {
   try {
@@ -157,6 +160,11 @@ if (command.action === "hold") {
     });
   await comment("The draft plan is ready for discussion.");
 } else if (command.action === "question") {
+  // A provider that starts slowly asks later; a test models that with delayMs
+  // instead of depending on the runner's speed. The only caller is a
+  // spec's own fixture command, so the fixture trusts it: no guards, and an
+  // omitted delayMs is Node's minimum timer.
+  await new Promise((resolve) => setTimeout(resolve, command.delayMs));
   await api(`/issues/${task.id}/interactions`, "POST", {
     kind: "ask_user_questions",
     idempotencyKey: current.id,
