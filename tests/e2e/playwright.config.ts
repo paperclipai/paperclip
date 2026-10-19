@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
+import { LIVE_FEED_LOG_NAME, liveFeedLogPath } from "./fixtures/live-feed-log";
 
 // Use a dedicated port so e2e tests always start their own server in local_trusted mode,
 // even when the dev server is running on :3100 in authenticated mode.
@@ -29,6 +30,11 @@ process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
 process.env.PAPERCLIP_DECISION_SIGNING_SECRET = PAPERCLIP_DECISION_SIGNING_SECRET;
 process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
+// The webServer's live-feed guard records here and global-teardown.ts reads it.
+// Workers keep the main process's path; an inherited value is kept only when it
+// is a path this config creates.
+process.env.PAPERCLIP_E2E_LIVE_FEED_LOG =
+  liveFeedLogPath(process.env.PAPERCLIP_E2E_LIVE_FEED_LOG) ?? path.join(PAPERCLIP_HOME, LIVE_FEED_LOG_NAME);
 
 export default defineConfig({
   testDir: ".",
@@ -43,6 +49,7 @@ export default defineConfig({
   // which UI variant renders. Run files serially so a flag flip in one spec
   // can't change the wizard/thread under another spec mid-flight.
   workers: 1,
+  globalTeardown: "./global-teardown.ts",
   use: {
     baseURL: BASE_URL,
     headless: true,
@@ -79,7 +86,7 @@ export default defineConfig({
       ...process.env,
       NODE_ENV: "test",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")}`,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/no-live-announcement-feed.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_API_URL: BASE_URL,
@@ -92,6 +99,9 @@ export default defineConfig({
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
+      // Never load Paperclip's live announcement feed: its well can cover the
+      // UI under test, and a test must not depend on a live external feed.
+      PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
     },
   },
   outputDir: "./test-results",
