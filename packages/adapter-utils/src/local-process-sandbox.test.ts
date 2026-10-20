@@ -103,6 +103,32 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it.runIf(process.platform === "linux")("runs an executable reached through a symlinked directory by its real path", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-symlinked-bin-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const packageRoot = path.join(root, "versions", "1.2.3", "lib", "tool");
+    await fs.mkdir(workspace);
+    await fs.mkdir(path.join(packageRoot, "bin"), { recursive: true });
+    await fs.mkdir(path.join(root, "versions", "1.2.3", "bin"));
+    await fs.writeFile(path.join(packageRoot, "package.json"), "{}");
+    await fs.writeFile(path.join(packageRoot, "bin", "tool.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
+    await fs.symlink("../lib/tool/bin/tool.sh", path.join(root, "versions", "1.2.3", "bin", "tool"));
+    await fs.symlink("1.2.3", path.join(root, "versions", "1"));
+    const viaAlias = path.join(root, "versions", "1", "bin", "tool");
+    const realTool = await fs.realpath(viaAlias);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: viaAlias,
+      args: ["--flag"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+
+    expect(target.args.slice(-2)).toEqual([realTool, "--flag"]);
+    expect(target.args).toContain(await fs.realpath(packageRoot));
+  });
+
   it.runIf(process.platform === "linux")("binds a confined absolute alias to the synchronized workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
     cleanup.push(root);
@@ -332,6 +358,39 @@ describe("local process sandbox", () => {
 
       expect(result.exitCode, result.stderr).toBe(0);
       await expect(fs.readFile(path.join(workspace, "workspace-ok.txt"), "utf8")).resolves.toBe("ok");
+    },
+  );
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
+    "starts an executable whose path goes through a symlinked version directory",
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-symlinked-bin-integration-"));
+      cleanup.push(root);
+      const workspace = path.join(root, "workspace");
+      const packageRoot = path.join(root, "versions", "1.2.3", "lib", "tool");
+      await fs.mkdir(workspace);
+      await fs.mkdir(path.join(packageRoot, "bin"), { recursive: true });
+      await fs.mkdir(path.join(root, "versions", "1.2.3", "bin"));
+      await fs.writeFile(path.join(packageRoot, "package.json"), "{}");
+      await fs.writeFile(path.join(packageRoot, "bin", "tool.sh"), "#!/bin/sh\necho tool-ok > tool-ok.txt\n", { mode: 0o755 });
+      await fs.symlink("../lib/tool/bin/tool.sh", path.join(root, "versions", "1.2.3", "bin", "tool"));
+      await fs.symlink("1.2.3", path.join(root, "versions", "1"));
+
+      const result = await runChildProcess("filesystem-sandbox-symlinked-bin-test", path.join(root, "versions", "1", "bin", "tool"), [], {
+        cwd: workspace,
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        localProcessSandbox: {
+          workspaceDir: workspace,
+          filesystemScope: "workspace",
+          command: process.env.PAPERCLIP_TEST_BWRAP,
+        },
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      await expect(fs.readFile(path.join(workspace, "tool-ok.txt"), "utf8")).resolves.toBe("tool-ok\n");
     },
   );
 
