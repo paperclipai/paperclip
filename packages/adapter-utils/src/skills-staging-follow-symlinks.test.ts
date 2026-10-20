@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoAdaptersDir = path.resolve(__moduleDir, "../../adapters");
@@ -38,23 +38,28 @@ function parseSkillsAssetFollowSymlinksValues(source: string): boolean[] {
  * — a test that only checks a hand-picked list, or a fabricated string,
  * cannot. It also catches a site whose `key` and `followSymlinks`
  * properties appear in either order.
+ *
+ * Synchronous, and run once per file (below): about 200 files, 24-915 ms for
+ * the whole file across 43 CI runs, but one loaded run awaited its ~250 fs
+ * calls past vitest's 5000 ms default. Synchronous calls do not wait in the
+ * libuv threadpool queue.
  */
-async function findSkillsStagingSites(): Promise<Map<string, boolean[]>> {
+function findSkillsStagingSites(): Map<string, boolean[]> {
   const sites = new Map<string, boolean[]>();
 
-  async function walk(dir: string): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
+  function walk(dir: string): void {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name === "node_modules" || entry.name === "dist") continue;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(fullPath);
+        walk(fullPath);
         continue;
       }
       if (!entry.isFile()) continue;
       if (!fullPath.endsWith(".ts") || fullPath.endsWith(".test.ts")) continue;
 
-      const source = await fs.readFile(fullPath, "utf8");
+      const source = fs.readFileSync(fullPath, "utf8");
       const followSymlinksValues = parseSkillsAssetFollowSymlinksValues(source);
       if (followSymlinksValues.length === 0) continue;
 
@@ -66,7 +71,7 @@ async function findSkillsStagingSites(): Promise<Map<string, boolean[]>> {
     }
   }
 
-  await walk(repoAdaptersDir);
+  walk(repoAdaptersDir);
   return sites;
 }
 
@@ -93,8 +98,14 @@ const EXPECTED_SKILLS_STAGING_SITES: Record<string, boolean> = {
 };
 
 describe("remote skills staging sites (real source scan)", () => {
-  it("matches the reviewed followSymlinks setting at every known site, and finds no unlisted site", async () => {
-    const discoveredSites = await findSkillsStagingSites();
+  // One scan for both tests. The hook's 30 s limit is about 30 times the
+  // slowest whole-file run measured on CI, so a loaded runner never trips it.
+  let discoveredSites: Map<string, boolean[]>;
+  beforeAll(() => {
+    discoveredSites = findSkillsStagingSites();
+  }, 30_000);
+
+  it("matches the reviewed followSymlinks setting at every known site, and finds no unlisted site", () => {
 
     for (const [relativePath, followSymlinksValues] of discoveredSites) {
       expect(
@@ -121,12 +132,11 @@ describe("remote skills staging sites (real source scan)", () => {
     }
   });
 
-  it("stages the remote Claude ACP skill bundle without following a symlink", async () => {
+  it("stages the remote Claude ACP skill bundle without following a symlink", () => {
     // The one site this change owns: the materialized skill bundle must
     // never be staged with tar's `-h` flag. A regression here would let a
     // symlink planted in the bundle directory after it was built escape
     // into the sandbox.
-    const discoveredSites = await findSkillsStagingSites();
     const claudeAcpValues = discoveredSites.get(
       "claude-local/src/server/acp.ts",
     );
