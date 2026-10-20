@@ -441,6 +441,42 @@ describe("OpenCode version guard", () => {
     expect(args).not.toContain("--variant");
   });
 
+  it("uses a standalone server when a run projects provider config", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    await callExecute({ OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {} }) });
+    expect(lastExecutionArgs()).toContain("--standalone");
+  });
+
+  it("uses a standalone server on Windows V2 so the UTF-8 shell plugin loads", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      await callExecute();
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    }
+    expect(lastExecutionArgs()).toContain("--standalone");
+  });
+
+  it("keeps the shared OpenCode service when no provider config is projected", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      await callExecute();
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    }
+    expect(lastExecutionArgs()).not.toContain("--standalone");
+  });
+
+  it("never passes --standalone to OpenCode V1", async () => {
+    versionProbeMock.mockResolvedValue({ version: "1.18.34", major: 1, minor: 18, patch: 34, supported: true });
+    await callExecute({ OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {} }) });
+    expect(lastExecutionArgs()).not.toContain("--standalone");
+  });
+
   it.each(["1.18.34", "2.0.26"])("auto-approves permissions on the run by default (%s)", async (version) => {
     const [major, minor, patch] = version.split(".").map(Number);
     versionProbeMock.mockResolvedValue({ version, major, minor, patch, supported: true });

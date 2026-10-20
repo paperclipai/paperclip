@@ -5,6 +5,9 @@ import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 import {
   PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME,
   PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE,
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_DIR,
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_PACKAGE_JSON,
+  PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_SOURCE,
 } from "./windows-utf8.js";
 
 type PreparedOpenCodeRuntimeConfig = {
@@ -246,25 +249,44 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  // Windows PowerShell 5.1, the default OpenCode shell host on Windows, writes
-  // child output in the legacy OEM code page and initializes `$OutputEncoding`
-  // to US-ASCII. Both settings corrupt non-ASCII text. Inject a plugin that
-  // forces UTF-8 on every shell command, and register it for this run. Remote
-  // targets are already excluded above.
+  // Windows PowerShell 5.1 (OpenCode's default shell host on Windows) corrupts
+  // non-ASCII text: it writes child output in the legacy OEM code page,
+  // initializes `$OutputEncoding` to US-ASCII, and encodes an
+  // Invoke-RestMethod/Invoke-WebRequest string body as ASCII unless the content
+  // type carries a charset. Inject a plugin that forces UTF-8 on every shell
+  // command. V1 and V2 use different plugin APIs, so the installed shape must
+  // match the CLI major. Remote targets are already excluded above.
   if (platform === "win32") {
-    const pluginPath = path.join(runtimeConfigDir, PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME);
-    await fs.writeFile(pluginPath, PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE, "utf8");
-    // A relative reference resolves against the config file and stays valid after
-    // the config directory is copied to a remote execution target, where an
-    // absolute host path would not exist.
-    const pluginRef = `./${PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME}`;
-    const existingPlugin = Array.isArray(nextConfig.plugin)
-      ? (nextConfig.plugin as unknown[]).filter((entry) => entry !== pluginRef)
-      : [];
-    nextConfig.plugin = [...existingPlugin, pluginRef];
-    notes.push(
-      "Injected the Windows UTF-8 shell plugin so agent shell output keeps non-ASCII text.",
-    );
+    if (input.openCodeV2) {
+      const pluginDir = path.join(runtimeConfigDir, "plugins", PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_DIR);
+      await fs.mkdir(pluginDir, { recursive: true });
+      await fs.writeFile(path.join(pluginDir, "package.json"), PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_PACKAGE_JSON, "utf8");
+      await fs.writeFile(path.join(pluginDir, "index.ts"), PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_SOURCE, "utf8");
+      // V2 loads a plugin entry by directory, and a relative reference resolves
+      // against the config file.
+      const pluginRef = `./plugins/${PAPERCLIP_WINDOWS_UTF8_PLUGIN_V2_DIR}`;
+      const existingPlugins = Array.isArray(nextConfig.plugins)
+        ? (nextConfig.plugins as unknown[]).filter((entry) => entry !== pluginRef)
+        : [];
+      nextConfig.plugins = [...existingPlugins, pluginRef];
+      notes.push(
+        "Injected the OpenCode 2 Windows UTF-8 shell plugin so agent shell text keeps non-ASCII characters.",
+      );
+    } else {
+      const pluginPath = path.join(runtimeConfigDir, PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME);
+      await fs.writeFile(pluginPath, PAPERCLIP_WINDOWS_UTF8_PLUGIN_SOURCE, "utf8");
+      // A relative reference resolves against the config file and stays valid after
+      // the config directory is copied to a remote execution target, where an
+      // absolute host path would not exist.
+      const pluginRef = `./${PAPERCLIP_WINDOWS_UTF8_PLUGIN_FILENAME}`;
+      const existingPlugin = Array.isArray(nextConfig.plugin)
+        ? (nextConfig.plugin as unknown[]).filter((entry) => entry !== pluginRef)
+        : [];
+      nextConfig.plugin = [...existingPlugin, pluginRef];
+      notes.push(
+        "Injected the Windows UTF-8 shell plugin so agent shell output keeps non-ASCII text.",
+      );
+    }
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
