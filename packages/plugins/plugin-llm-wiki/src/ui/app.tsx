@@ -798,14 +798,23 @@ function useRefreshOnGitMirrorSync(refresh: () => void, companyId: string | null
  * A query result plus `refreshing`: a refetch of the params whose data is already shown. A view keeps showing
  * (and editing) that data meanwhile instead of unmounting into its loading state; the host bridge keeps `data`
  * and sets `loading` on every refetch, and a first load or a change of params is not a refresh.
+ *
+ * The bridge also keeps `data` across a change of params, and reports `loading` only from its next render. So
+ * each answer is tied to the params current when it arrived (a new `data` is always the answer to the current
+ * params), and data from other params counts as loading: a changed page, company or space shows its loading state.
  */
 function useRefreshingQuery<T>(query: PluginDataResult<T>, params: Record<string, unknown> | undefined) {
   const paramsKey = JSON.stringify(params ?? null);
-  const settledKey = useRef<string | null>(null);
+  const answered = useRef<{ data: T; paramsKey: string } | null>(null);
   useEffect(() => {
-    if (!query.loading && query.data !== null) settledKey.current = paramsKey;
+    if (!query.loading && query.data !== null && query.data !== answered.current?.data) {
+      answered.current = { data: query.data, paramsKey };
+    }
   }, [query.loading, query.data, paramsKey]);
-  return { ...query, refreshing: query.loading && query.data !== null && settledKey.current === paramsKey };
+  const previous = answered.current;
+  const fromOtherParams = query.data !== null && previous?.data === query.data && previous.paramsKey !== paramsKey;
+  if (fromOtherParams) return { ...query, loading: true, refreshing: false };
+  return { ...query, refreshing: query.loading && query.data !== null && previous?.data === query.data };
 }
 
 function useOverview(companyId: string | null) {

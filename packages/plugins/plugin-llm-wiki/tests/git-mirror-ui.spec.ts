@@ -8,6 +8,7 @@ import { WikiPage } from "../src/ui/index.js";
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const PAGE_PATH = "wiki/projects/control-plane/index.md";
 const NOTES_PATH = "wiki/notes/draft.md";
+const OTHER_PATH = "wiki/projects/other.md";
 
 type BridgeGlobal = typeof globalThis & {
   __paperclipPluginBridge__?: {
@@ -68,6 +69,12 @@ function respond(worker: Worker, key: string, params?: Record<string, unknown>):
         sources: [],
       };
     case "page-content":
+      if (params?.path === OTHER_PATH) {
+        return {
+          wikiId: "default", path: OTHER_PATH, contents: "Body of the other page", title: "Other page", pageType: "projects",
+          backlinks: [], sourceRefs: [], updatedAt: null, hash: "other",
+        };
+      }
       if (inNotes) {
         return {
           wikiId: "default", path: NOTES_PATH, contents: worker.notes, title: "Draft", pageType: "notes",
@@ -330,5 +337,27 @@ describe("Git mirror banner", () => {
     await flush();
     await flush();
     expect(container.textContent).toContain("New body from commit bbbbbbb");
+  });
+
+  it("shows the loading state, not the page it left, while another page loads", async () => {
+    await render();
+    expect(container.textContent).toContain("Old body from commit aaaaaaa");
+
+    let release = () => undefined as void;
+    gates["page-content"] = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pathname = `/PAP/wiki/page/${OTHER_PATH}`;
+    await render();
+
+    // The other page's request is in flight: the bridge still holds the first page's data and reports loading.
+    expect(container.textContent).toContain(`Loading ${OTHER_PATH}`);
+    expect(container.textContent).not.toContain("Old body from commit aaaaaaa");
+
+    release();
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("Body of the other page");
+    expect(container.textContent).not.toContain(`Loading ${OTHER_PATH}`);
   });
 });
