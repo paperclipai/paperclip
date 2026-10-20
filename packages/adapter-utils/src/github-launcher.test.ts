@@ -181,5 +181,7 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
-  });
+    // About 20 sequential node and git process launches: 4.8 s on an idle
+    // machine, 11-13 s with the CPUs busy, so the 5 s default is too tight.
+  }, 20_000);
 });
