@@ -109,6 +109,7 @@ import {
   type AcpRuntimeTurnResult,
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
+  type AcpSessionStore,
 } from "acpx/runtime";
 import {
   ACP_TOOL_KINDS,
@@ -1603,6 +1604,12 @@ function isCompatibleSession(
   if (!savedCwd || path.resolve(savedCwd) !== path.resolve(runtime.cwd)) return false;
   const savedRemote = parseObject(params.remoteExecution);
   return stableJson(savedRemote) === stableJson(runtime.remoteExecutionIdentity ?? {});
+}
+
+export async function evictStaleSessionRecord(store: AcpSessionStore, sessionKey: string): Promise<void> {
+  const stale = await store.load(sessionKey);
+  if (!stale || stale.acpx?.reset_on_next_ensure === true) return;
+  await store.save({ ...stale, acpx: { ...stale.acpx, reset_on_next_ensure: true } });
 }
 
 function buildSessionParams(input: {
@@ -4615,6 +4622,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         try {
           if (!handle) {
+            if (!resumeSessionId) await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
             try {
               // Step 7 — acp.handshake: ACP session establishment (session/new or
               // resume). A throwing handshake still reports its duration before the
@@ -4656,6 +4664,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 "stdout",
                 `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
               );
+              await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
               // Fresh-session retry: the runtime was already constructed on the
               // first attempt (never re-created), so this event reports only its
               // own `ensureSessionMs` — no `createRuntimeMs`.
