@@ -693,12 +693,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (modelArg) args.push("--model", modelArg);
       if (!openCodeV2 && variant) args.push("--variant", variant);
       if (autoApprovePermissions) args.push("--auto");
-      // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
-      // workspace unless the operator already selected a directory explicitly.
+      // OpenCode resolves its project root from PWD before the spawned cwd.
+      // V2 dropped the `run --dir` flag ("Unrecognized flag: --dir"), so pin
+      // PWD to the realized workspace there; V1 still takes the explicit flag.
       const optionTerminator = extraArgs.indexOf("--");
       const extraOptionArgs = optionTerminator === -1 ? extraArgs : extraArgs.slice(0, optionTerminator);
       if (!extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
-        args.push("--dir", effectiveExecutionCwd);
+        if (openCodeV2) preparedRuntimeConfig.env.PWD = effectiveExecutionCwd;
+        else args.push("--dir", effectiveExecutionCwd);
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;

@@ -294,10 +294,14 @@ describe("opencode remote execution", () => {
       `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
     );
     expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
-    expect(runCall?.[2].slice(-4)).toEqual(["--dir", managedRemoteWorkspace, "--", "--dir"]);
+    // OpenCode V2 has no `run --dir`; PWD carries the realized workspace instead.
+    // The only `--dir` left is the operator-supplied argument after `--`.
+    expect(runCall?.[2].slice(-2)).toEqual(["--", "--dir"]);
+    expect(runCall?.[2].filter((arg) => arg === "--dir" || arg.startsWith("--dir="))).toHaveLength(1);
     const call = runCall as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[3].env.PWD).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     if (managed) {
       const home = `${managedRemoteWorkspace}/.paperclip-runtime/opencode/managed-auth/run-1`;
