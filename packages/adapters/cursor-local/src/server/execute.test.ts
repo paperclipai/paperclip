@@ -281,6 +281,9 @@ exit 7
     }
   });
 
+  // Every runner command here runs as a real child process (the managed-runtime
+  // restore's shell protocol): about 1.8 s on a developer machine and 3.9 s on a
+  // CI runner, where it went over the 5 s default once.
   it("reruns sandbox command resolution after managed runtime setup and keeps the original sandbox home", async () => {
     setPrepareCursorSandboxCommand.mockReset();
     const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
@@ -439,7 +442,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       else process.env.HOME = previousHome;
       await fs.rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("rebuilds the full assignment after an unknown-session resume", async () => {
     setPrepareCursorSandboxCommand.mockReset();
