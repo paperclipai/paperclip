@@ -18,6 +18,12 @@ export interface ExecutionBlocker {
   workspaceReconstructionPending?: boolean;
   workspaceRecoveryStatusVersion?: number;
   savedMessageCount?: number;
+  workspaceRecovery?: {
+    status: "queued" | "recovering" | "blocked" | "recovered";
+    stage: "verifying_stop" | "restoring_files" | "saving_receipts";
+    canRetry: boolean;
+    message: string;
+  };
 }
 
 /** Presentation of existing execution records, not a second task status machine. */

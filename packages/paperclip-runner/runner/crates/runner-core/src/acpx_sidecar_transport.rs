@@ -258,6 +258,33 @@ impl AcpxSidecarTransport {
         if agent == "claude" {
             keys.extend_from_slice(&[
                 "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_ENABLE_TELEMETRY",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                "ENABLE_ENHANCED_TELEMETRY_BETA",
+                "OTEL_LOGS_EXPORTER",
+                "OTEL_TRACES_EXPORTER",
+                "OTEL_METRICS_EXPORTER",
+                "OTEL_RESOURCE_ATTRIBUTES",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "OTEL_EXPORTER_OTLP_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+                "OTEL_LOG_USER_PROMPTS",
+                "OTEL_LOG_ASSISTANT_RESPONSES",
+                "OTEL_LOG_TOOL_DETAILS",
+                "OTEL_LOG_TOOL_CONTENT",
+                "OTEL_LOG_RAW_API_BODIES",
                 "CLAUDE_CODE_USE_BEDROCK",
                 "AWS_REGION",
                 "AWS_DEFAULT_REGION",
@@ -268,6 +295,13 @@ impl AcpxSidecarTransport {
                 "ANTHROPIC_DEFAULT_SONNET_MODEL",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                 "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
+        }
+        if agent == "codex" {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
             ]);
         }
         let pi_keys = if agent == "pi" {

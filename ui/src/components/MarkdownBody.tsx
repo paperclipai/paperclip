@@ -1,4 +1,5 @@
-import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
+import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
@@ -795,6 +796,7 @@ function MarkdownBodyImpl({
   resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  const streamWords = useContext(MarkdownWordStreaming);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
@@ -1035,6 +1037,7 @@ function MarkdownBodyImpl({
     >
       <Markdown
         remarkPlugins={remarkPlugins}
+        rehypePlugins={streamWords ? [rehypeStreamingWords] : undefined}
         components={components}
         urlTransform={safeMarkdownUrlTransform}
       >

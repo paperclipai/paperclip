@@ -788,6 +788,7 @@ async function resolveCloudTenantActorOnce(
     // company-scoped. Turning the flag off de-elevates on the next request —
     // there is no role row to clean up.
     isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
+    canManageExperimentalSettings: stackRole === "admin",
     source: "cloud_tenant",
   };
 }

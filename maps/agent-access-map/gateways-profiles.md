@@ -97,6 +97,22 @@ approvals and revocation checks remain independent. Regression coverage lives in
 [assigned-tool tests](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts);
 these fixtures do not certify a live external-client journey.
 
+Native assigned tools return bounded input-schema repair guidance after argument
+validation fails. Rejection creates no execution receipt and discloses no submitted
+values or unknown keys. Corrected calls keep the same authorization checks.
+[Runner regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/tests/provider_assigned_tool_validation.rs)
+cover discovery repair and unauthorized calls; the
+[Codex transport fixture](../../packages/paperclip-runner/runner/crates/runner-core/tests/support/codex_assigned_tool_validation.rs)
+covers rejection, corrected dispatch, and completion with a simulated provider.
+This does not establish live model or GitHub access.
+
+Remote invocation regressions preserve access to authorized sibling tools after
+a fetch failure, timeout, non-authentication HTTP error, or JSON-RPC rejection.
+HTTP 401/403 and insufficient-scope errors keep their connection gates. The
+gateway records each failed invocation and never automatically replays it.
+This covers the gateway service with synthetic providers and a local HTTP
+server, not a live external provider or all client surfaces.
+
 ## `tokens`
 
 Review: `baseline`.

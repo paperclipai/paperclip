@@ -417,6 +417,48 @@ describe("agent skill routes", () => {
     );
   }, 10_000);
 
+  it("round-trips latest assignments without inventing beta version pins", async () => {
+    const existing = "github/fixture/existing";
+    const added = "github/fixture/added";
+    const resolvedVersionId = "22222222-2222-4222-8222-222222222222";
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [existing] } },
+    });
+    // Adapters describe the resolved runtime version. It is not an assignment pin.
+    mockAdapter.listSkills.mockResolvedValue({
+      ...skillSnapshot(), desiredSkills: [existing],
+      desiredSkillEntries: [{ key: existing, versionId: resolvedVersionId }],
+    });
+    mockAdapter.syncSkills.mockResolvedValue({
+      ...skillSnapshot(), desiredSkills: [existing, added],
+      desiredSkillEntries: [{ key: existing, versionId: resolvedVersionId }, { key: added, versionId: resolvedVersionId }],
+    });
+    const app = await createApp();
+    const snapshot = await requestApp(app, baseUrl => request(baseUrl)
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"));
+    expect(snapshot.status).toBe(200);
+    const saved = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: [...snapshot.body.desiredSkillEntries, { key: added, versionId: null }], mode: "replace" }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.desiredSkillEntries).toEqual([{ key: existing, versionId: null }, { key: added, versionId: null }]);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1].adapterConfig.paperclipSkillSync.desiredSkills).toEqual([existing, added]);
+  });
+
+  it("keeps explicit historical assignment pins in skill snapshots", async () => {
+    const key = "github/fixture/pinned";
+    const pinnedVersionId = "22222222-2222-4222-8222-222222222222";
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
+    mockAgentService.getById.mockResolvedValue({ ...makeAgent("claude_local"),
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [{ key, versionId: pinnedVersionId }] } } });
+    mockAdapter.listSkills.mockResolvedValue({ ...skillSnapshot(), desiredSkills: [key], desiredSkillEntries: [{ key, versionId: null }] });
+    const snapshot = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"));
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body.desiredSkillEntries).toEqual([{ key, versionId: pinnedVersionId }]);
+  });
+
   it("lists skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
       env: {

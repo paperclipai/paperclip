@@ -61,7 +61,10 @@ Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettin
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
 
 Cloud staging: On a managed `*.staging.paperclip.app` instance, verify experiments
-are visible and editable by an instance admin, and changes survive reload.
+are visible and editable by a Cloud stack Admin or instance admin, and changes survive reload.
+As a stack Admin, verify a harmless experiment saves while general instance
+settings and task-drain operations remain denied. Demote that user to Member
+and verify the next experimental write is denied.
 Production keeps its hidden controls and managed feature values. Staging retains
 other Cloud restrictions. [Settings policy tests](../../server/src/__tests__/instance-settings-managed-overlay.test.ts),
 [route tests](../../server/src/__tests__/instance-settings-routes.test.ts), and

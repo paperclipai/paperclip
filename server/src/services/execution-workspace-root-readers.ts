@@ -16,6 +16,14 @@ export const rootReaderRunColumns = {
   responsibleUserId: heartbeatRuns.responsibleUserId, nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId', 'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy')`,
 };
+type ReaderRunIdentity = Pick<typeof heartbeatRuns.$inferSelect, "nativeIssueId" | "issueId" | "contextSnapshot">;
+
+// A wake for another task can coalesce into a running run and replace its context
+// task after admission. The run's bound task still identifies its retained reader.
+export function runRetainsIssueIdentity(run: ReaderRunIdentity, issueId: string) {
+  return issueId === (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId)
+    || issueId === (run.nativeIssueId ?? run.issueId);
+}
 
 // This snapshot belongs to one guarded operation. Never retain it across admissions
 // or publications: identities and permissions must be read again next time.
@@ -46,7 +54,7 @@ export async function loadRepositoryRootReaders<T extends ReaderEntry>(db: Reade
     const agent = entry.agentId ? agentRows.get(entry.agentId) : undefined;
     const issue = entry.issueId ? issueRows.get(entry.issueId) : undefined;
     if (!run || !agent || !issue || run.agentId !== entry.agentId || run.responsibleUserId !== entry.responsibleUserId
-      || (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId) !== entry.issueId) {
+      || !runRetainsIssueIdentity(run, issue.id)) {
       throw forbidden("Repository root retains a reader whose identity is no longer available");
     }
     const actor: AuthorizationActor = { type: "agent", source: "agent_jwt", companyId,
@@ -68,8 +76,7 @@ export function requiresAnonymousRepositoryAcquisition(input: {
 }) {
   const { companyId, issue, agent, project, workspaceSourceProject, run, agentId, runId } = input;
   if (agentId && !agent) throw forbidden("Task repository agent is unavailable");
-  if (runId && (!run || (input.explicitRunId && run.agentId !== agentId)
-    || (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId) !== issue.id)) {
+  if (runId && (!run || (input.explicitRunId && run.agentId !== agentId) || !runRetainsIssueIdentity(run, issue.id))) {
     throw forbidden("Task repository run identity is unavailable");
   }
   const trust = resolveCoreTrustPreset({ companyId, agent, project, workspaceSourceProject, issue,

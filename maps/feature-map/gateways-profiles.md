@@ -41,6 +41,12 @@ endpoint authorization independently of whether the admin UI is visible.
 
 Automated: [gateway service](../../server/src/__tests__/tool-gateway-service.test.ts), [connect client dialog](../../ui/src/pages/apps/gateways/ConnectClientDialog.test.tsx), and [token panel](../../ui/src/pages/apps/gateways/panels/TokensPanel.test.tsx) cover service/UI contracts.
 
+Gateway regressions also cover a failed remote call followed by a successful
+sibling tool call. Transient failures preserve the catalog. Authentication
+failures retain their access gates. Real HTTP timeout fixtures verify an explicit
+retry starts a fresh MCP session without replaying the failed action. These
+checks do not establish a live provider journey.
+
 Manual: Create a disposable gateway with one harmless tool, connect a client using its provided configuration, discover/call that tool, and inspect activity. Revoke the client token and confirm the same call fails. Test a tool outside the allowed set.
 
 ### `access-profile`

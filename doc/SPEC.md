@@ -775,8 +775,9 @@ opt-in plugin. See [the experimental contract](connections/AI-CONNECTION-ROUTERS
 
 The Audit → Commentary tab exposes searchable suggestions and complaints,
 with agent/type filters, message previews and full attributed context. The viewer
-preserves company, audit-permission and task-privacy boundaries independently
-of the agent submission path.
+preserves company, commentary-permission and task-privacy boundaries independently
+of the agent submission path. All human company members can read commentary by
+default, including viewers, without receiving agent-action audit access.
 
 `agent_commentary` stores company-scoped, attributed complaints and suggestions
 as free-form text in the instance database. Legacy agents use the default

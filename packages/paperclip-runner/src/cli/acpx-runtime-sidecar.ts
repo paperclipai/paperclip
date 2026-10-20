@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
@@ -1531,7 +1532,7 @@ function safeText(value: unknown, maxBytes = 8_192): string {
 }
 
 function redactSecrets(value: string): string {
-  return value.replace(
+  return redactObservabilityDiagnostic(value, process.env).replace(
     /(key|token|secret|password|authorization)\s*[:=]\s*[^\s,}\]]+/gi,
     "$1=[REDACTED]",
   );

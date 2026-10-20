@@ -177,7 +177,8 @@ vi.mock("./InlineEntitySelector", () => ({
   ),
 }));
 
-vi.mock("./Identity", () => ({
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
   Identity: ({ name }: { name: string }) => <span>{name}</span>,
 }));
 

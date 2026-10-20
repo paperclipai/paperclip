@@ -175,7 +175,10 @@ API: `present` — `GET /api/companies/{companyId}/agent-commentary` and
 Agent access: `restricted` — the browsing API is board-only. Agent submission
 continues through the existing POST and native submit tools.
 
-Policy: Company membership, `audit:view_agent_actions`, and source-task visibility. Counts and previews
+Policy: Company membership, `commentary:view`, and source-task visibility. All human company roles,
+including viewers, receive the permission by default, with an upgrade grant for existing active human members.
+Human invitation approval adds the default to older saved grant lists without widening existing scopes.
+Agent-action audit access remains separate. Counts and previews
 use the same visibility predicate as full messages; cross-company IDs return 404.
 Feedback stays hidden after source-task deletion, even when its task foreign key clears.
 

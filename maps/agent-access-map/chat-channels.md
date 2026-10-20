@@ -110,6 +110,16 @@ not task completion. Source:
 PostgreSQL-backed provider fixtures; this entry does not claim live provider
 qualification for the new retry path.
 
+GitHub main-response identity (2026-10-19): PR requests share a company-, App-,
+repository- and PR-bound comment. Agents still supply no comment destination.
+Current sender, assignee, repository and publication authority are checked before
+edits, including maintenance failure notices. Leading mentions for another
+recipient are filtered before task work; explicit mentions of this bot still
+follow normal access checks. Provider-fixture coverage is not live GitHub proof.
+Native terminal reconciliation resolves the accepted run identity through the
+existing chat provenance resolver; an older run's reply cannot complete a newer
+request merely because both requests share the same PR comment.
+
 Speko browser sessions use `POST /api/companies/{companyId}/voice-sessions`,
 with GET inspection/notification and POST `/{sessionId}/end` operations below
 that collection. These routes require board identity; ordinary agent credentials

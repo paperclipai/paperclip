@@ -1,3 +1,4 @@
+import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
@@ -167,6 +168,7 @@ import {
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
 import { inspectRemoteWarmSessionRecovery, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
@@ -441,6 +443,7 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  observabilityCompatibilityKey?: string;
   runId: string;
   instructionWorkingCopy?: NativeInstructionWorkingCopy;
   // Keep the admitted physical root independent of the per-run collection
@@ -492,6 +495,7 @@ const closingWarmNativeSessions = new Map<string, Promise<void>>();
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
  * task guidance. The final execution/configuration fence still owns admission. */
 export async function claimWarmNativeInstructionCopy(input: {
+  observabilityCompatibilityKey?: string;
   priorExecution: NativeExecutionInput;
   companyId: string;
   agentId: string;
@@ -524,7 +528,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     } finally { entry.busy = false; }
   };
   try {
-    const preparationChanged = input.forceRetirement === true || entry.githubAccess?.ready === false || entry.instructionWorkingCopy.preparationKey !== input.preparationKey;
+    const preparationChanged = input.forceRetirement === true || entry.observabilityCompatibilityKey !== input.observabilityCompatibilityKey || entry.githubAccess?.ready === false || entry.instructionWorkingCopy.preparationKey !== input.preparationKey;
     // The prior capability may close over an expired remote lease. Rebind
     // collection authority first; adoption itself grants no reuse permission.
     const adopted = await input.adopt(entry.instructionWorkingCopy.runId);
@@ -559,6 +563,7 @@ function instructionTargetIdentity(target?: AdapterExecutionTarget | null): stri
  * A persisted conversation alone is not proof that a working tree is reusable. */
 export async function reserveWarmNativeInstructionDirectory(input: {
   companyId: string; agentId: string; previousRunId: string; runId: string; target?: AdapterExecutionTarget | null;
+  observabilityCompatibilityKey?: string;
   canReuse: () => Promise<boolean>;
 }): Promise<{ reuseRunId: string; adopt: (root: string, collectStopped: () => Promise<void>) => void; release: () => Promise<void> } | null> {
   for (const [id, entry] of warmNativeSessions) {
@@ -580,7 +585,7 @@ export async function reserveWarmNativeInstructionDirectory(input: {
     };
     let reusable = false;
     const targetProven = input.target?.kind !== "remote" || input.target.transport !== "sandbox" || Boolean(input.target.sandboxLeaseAcquisition?.providerLeaseId);
-    try { reusable = targetProven && !entry.closeOnReleaseReason && entry.instructionCopy.targetIdentity === instructionTargetIdentity(input.target) && await input.canReuse(); }
+    try { reusable = targetProven && entry.observabilityCompatibilityKey === input.observabilityCompatibilityKey && !entry.closeOnReleaseReason && entry.instructionCopy.targetIdentity === instructionTargetIdentity(input.target) && await input.canReuse(); }
     finally {
       if (!reusable) {
         await retire("managed agent files changed or environment replaced");
@@ -6073,6 +6078,7 @@ function warmNativeProcessConfigDigest(input: Parameters<typeof executePaperclip
   return nativeSha256({
     environment: configuredEnvironment(input.runnerEnvironment),
     managedAiCredentialIdentity: input.managedAiCredentialIdentity ?? null,
+    observabilityCompatibilityKey: input.observability?.compatibilityKey ?? null,
     githubAuthenticationMode: input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ?? null,
     networkAccess: input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
   });
@@ -7520,6 +7526,7 @@ export async function executePaperclipNativeSession(input: {
   managedGitHub?: boolean;
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   dotWorkspaceRoot?: string;
+  observability?: ProviderObservabilityLaunch;
   runnerEnvironment?: NodeJS.ProcessEnv;
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
@@ -7557,6 +7564,18 @@ export async function executePaperclipNativeSession(input: {
     input = { ...input, execution: { ...input.execution,
       binding: { ...input.execution.binding, agentKeyId },
     } };
+  }
+  if (input.observability) {
+    const preconfiguredCodex = input.observability.kind === "codex" && "homeMode" in input.execution && input.execution.homeMode === "preconfigured";
+    if (preconfiguredCodex) {
+      await input.onLog?.("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
+      input = { ...input, observability: undefined };
+    } else {
+      const environment = { ...resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment) };
+      applyObservabilityEnvironment(environment, input.observability);
+      if (input.execution.provider.kind === "acpx" && input.observability.kind === "codex") environment.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG = JSON.stringify(input.observability.otelConfig);
+      input = { ...input, runnerEnvironment: environment };
+    }
   }
   const runId = input.execution.binding.runId;
   if (nativeSessionStartups.has(runId)) {
@@ -7759,6 +7778,10 @@ async function executePaperclipNativeSessionWithinScope(
     startedAtMs: preparationStarts.runStartedAtMs,
     onEvent: input.onEvent,
   });
+  await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));
+  if (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") {
+    await emitStartupReuse(input.onEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });
+  }
   const toolTrace = createNativeToolTrace(trace);
   const taskPrepareScope = trace.start("task.prepare", {
     parentName: "task.provider_session",
@@ -8267,12 +8290,16 @@ async function executePaperclipNativeSessionWithinScope(
         ) {
           sessionStartedAtMs = milestoneAtMs;
           sessionStartupMode = "bootstrap";
+          await emitStartupReuse(input.onEvent, "provider_session", { state: "fresh", reason: "created" });
           await trace.record({
             name: "runner.session.bootstrap",
             parentName: "runner.session.startup",
             startedAtMs: nativeSessionExecuteStartedAtMs,
             endedAtMs: milestoneAtMs,
           });
+        }
+        if (event.eventType === "session.resumed") {
+          await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
         }
         if (
           event.eventType === "turn.submitted" &&
@@ -8541,6 +8568,7 @@ async function executePaperclipNativeSessionWithinScope(
         input.refreshTools === true ||
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
+        entry.observabilityCompatibilityKey !== input.observability?.compatibilityKey ||
         entry.configuredEnvironmentDigest !== configuredEnvironmentDigest ||
         entry.instructionRoot !== input.instructionWorkingCopy?.root ||
         entry.managedAiCredentialIdentity !== input.managedAiCredentialIdentity ||
@@ -8591,6 +8619,8 @@ async function executePaperclipNativeSessionWithinScope(
         if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
         entry.idleTimer = null;
         existingWarmSession = entry.session;
+        await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
+        await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
         githubAccess = entry.githubAccess;
       }
     } else {
@@ -8760,6 +8790,8 @@ async function executePaperclipNativeSessionWithinScope(
       if (!recovered?.recovered || !recovered.session) throw new Error("runner_state_identity_mismatch: remote_warm_session_unproven");
       if (remoteWarmRecovery.reuseProcess) {
         existingWarmSession = recovered.session;
+        await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
+        await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
         persistedWarmSession = null;
       } else {
         await recovered.session.close({ reason: "recovered warm session requires current process configuration" });
@@ -8811,6 +8843,8 @@ async function executePaperclipNativeSessionWithinScope(
               runnerdBackend ??
               createNativeSessionBackend(input.execution, {
                 runnerInstanceId: input.runnerInstanceId,
+                observability: input.observability,
+                environment: input.runnerEnvironment,
                 onSpawn: input.onSpawn,
                 opencodeEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
                 acpxEnvironment: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
@@ -8989,6 +9023,7 @@ async function executePaperclipNativeSessionWithinScope(
                     session,
                     ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
+                    observabilityCompatibilityKey: input.observability?.compatibilityKey,
                     configuredEnvironmentDigest,
                     ownerScope: nativeSessionOwnerScope(
                       input.execution, input.runnerExecutionTarget?.environmentId ?? null,
@@ -11324,6 +11359,7 @@ export async function createRunnerdBackend(input: {
     startedAt: string;
   }) => Promise<void>;
   dotWorkspaceRoot?: string;
+  observability?: ProviderObservabilityLaunch;
   runnerEnvironment?: NodeJS.ProcessEnv;
   prepareRunnerEnvironment?: () => Promise<NodeJS.ProcessEnv | undefined>;
   /** Private grant materialization; never a user-configured host path. */
@@ -12980,6 +13016,7 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerInstanceId:
       retainedTransition?.runnerInstanceId ?? input.runnerInstanceId,
     environment: effectiveRunnerEnvironment,
+    observability: input.observability,
     workingDirectoryAuthority: remoteTarget
       ? "remote_runner"
       : "local_filesystem",
@@ -13128,6 +13165,7 @@ async function createRunnerdBackendWithinSessionClaim(
           : undefined,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
         environment: effectiveRunnerEnvironment,
+        observability: input.observability,
         onDiagnostic: (message) => {
           void input.onLog?.(
             "stderr",

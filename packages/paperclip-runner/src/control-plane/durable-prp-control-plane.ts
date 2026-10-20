@@ -1,3 +1,4 @@
+import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
@@ -3479,7 +3480,7 @@ function runnerEnvironment(
   // already-sanitized environment for this run. Never inherit them implicitly
   // from the server process.
   if (explicitSource !== undefined) {
-    for (const key of runnerExplicitProviderEnvironmentKeys) {
+    for (const key of [...runnerExplicitProviderEnvironmentKeys, ...AGENT_OBSERVABILITY_ENV_KEYS]) {
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }

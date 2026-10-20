@@ -23,6 +23,13 @@ Agent access: [companion](../agent-access-map/recovery.md).
   permitted operator action; it does not claim an automatic path is still live.
 - `workspace`: workspace divergence/export failures show the applicable repair,
   reconcile, or isolated reissue action with evidence and authority checks.
+  Retained-file recovery runs in the harness with observed task progress and a
+  Retry recovery action only after transient failures. It preserves newer files,
+  keeps uncertain sources held, and delivers saved human input through ordinary
+  admission. The task does not expose infrastructure-certification forms or a
+  workspace link when the destination is disabled. Local PostgreSQL and real
+  filesystem regressions cover native and legacy recovery and one-time delivery;
+  hosted provider recovery remains separate acceptance.
 - `unknown-outcome`: uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: saved user messages after a stop are reconsidered once
@@ -64,6 +71,16 @@ confirmation; unavailable actions must explain the gate or remain absent.
 After a stop, send a new instruction on the same task or inspect one already
 saved while cleanup was pending. Observe the waiting message, continuation, and
 eventual result rather than manually changing the task status to look complete.
+
+A continuation denied before startup by an existing execution hold remains a
+wait. Once the original hold clears, the server verifies the dispatch receipt
+and absence of execution evidence, ignores any historical false incident for
+that unused admission, and reconsiders saved input through normal admission.
+No infrastructure-certification form is needed. The
+[database regressions](../../server/src/__tests__/heartbeat-undispatched-execution-wait.test.ts)
+cover incident prevention, retained audit history, concurrent restart admission,
+ordered messages, contradictory execution evidence, and unchanged pause and
+task gates. These tests do not qualify a live provider or prove task completion.
 
 ### `browser-reconnect`
 

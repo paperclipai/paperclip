@@ -9,6 +9,8 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { agentCommentaryReader } from "../services/agent-commentary-reader.js";
 import { agentCommentaryRoutes } from "../routes/agent-commentary.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { accessService } from "../services/access.js";
+import { grantsForHumanRole } from "../services/company-member-roles.js";
 
 describe("agent commentary browsing", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -113,7 +115,7 @@ describe("agent commentary browsing", () => {
     expect((await reader.list(companyId, query({ q: "Deleted private task feedback" }), eq(issues.id, visibleTaskId))).total).toBe(0);
   });
 
-  it("enforces board membership, audit permission and filter bounds at the HTTP boundary", async () => {
+  it("enforces board membership, commentary permission and filter bounds at the HTTP boundary", async () => {
     let actor: Record<string, unknown> = { type: "board", source: "local_implicit", userId: "operator" };
     const app = express();
     app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); });
@@ -130,11 +132,39 @@ describe("agent commentary browsing", () => {
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).get(`${url}/${firstId}`)).status).toBe(403);
     actor = { type: "board", source: "session", userId: "viewer", companyIds: [companyId] };
-    expect((await request(app).get(url)).status).toBe(403);
+    const denied = await request(app).get(url).expect(403);
+    expect(denied.body.error).toContain("commentary:view");
+    await request(app).get(`${url}/${firstId}`).expect(403);
     actor = { type: "board", source: "session", userId: "operator", isInstanceAdmin: true, companyIds: [foreignCompanyId] };
     expect((await request(app).get(url)).status).toBe(403);
   });
-  it("applies actual task privacy to HTTP previews, counts, searches and details for audit-authorized board users", async () => {
+  it.each(["owner", "admin", "operator", "viewer"] as const)("lets a default %s read commentary independently of audit access", async (role) => {
+    const userId = randomUUID();
+    const access = accessService(db);
+    await access.ensureMembership(companyId, "user", userId, role);
+    await access.setPrincipalGrants(companyId, "user", userId, grantsForHumanRole(role), null);
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId, companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", agentCommentaryRoutes(db));
+    app.use(errorHandler);
+    const url = `/api/companies/${companyId}/agent-commentary`;
+    expect((await request(app).get(url).expect(200)).body.total).toBe(3);
+    expect((await request(app).get(`${url}/${firstId}`).expect(200)).body.body).toBe(longBody);
+    await expect(access.canUser(companyId, userId, "audit:view_agent_actions")).resolves.toBe(role === "operator");
+    await request(app).get(`/api/companies/${foreignCompanyId}/agent-commentary`).expect(403);
+    await request(app).get(`${url}/${foreignId}`).expect(404);
+
+    await access.setPrincipalGrants(companyId, "user", userId, [
+      { permissionKey: "audit:view_agent_actions", scope: null },
+    ], null);
+    expect((await request(app).get(url).expect(403)).body.error).toContain("commentary:view");
+    await request(app).get(`${url}/${firstId}`).expect(403);
+  });
+
+  it("applies actual task privacy to HTTP previews, counts, searches and details for commentary-authorized board users", async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     const userId = randomUUID(), ownerId = randomUUID();
     await db.insert(authUsers).values([userId, ownerId].map((id) => ({
@@ -145,7 +175,7 @@ describe("agent commentary browsing", () => {
       companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "viewer",
     });
     await db.insert(principalPermissionGrants).values({
-      companyId, principalType: "user", principalId: userId, permissionKey: "audit:view_agent_actions",
+      companyId, principalType: "user", principalId: userId, permissionKey: "commentary:view",
     });
     await db.update(issues).set({ visibility: "private", privacyRootIssueId: privateTaskId, responsibleUserId: ownerId }).where(eq(issues.id, privateTaskId));
     const app = express();

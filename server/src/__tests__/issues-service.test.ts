@@ -604,6 +604,112 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect((await svc.getById(issueId))?.executionPolicy).toEqual(cancellation);
   });
 
+  it("promotes prepared backlog tasks only at the observed status version", async () => {
+    const companyId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Prepared task", status: "backlog" });
+    const original = (await svc.getById(issueId))!;
+    const results = await Promise.allSettled([
+      svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }),
+      svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }),
+    ]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(result => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason)
+      .toMatchObject({ status: 409, details: { code: "issue_status_version_changed" } });
+    expect(await svc.getById(issueId)).toMatchObject({ status: "todo", statusVersion: original.statusVersion + 1 });
+  });
+
+  it("rejects guarded writes outside backlog promotion without changing the task", async () => {
+    const companyId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Active task", status: "in_progress" });
+    const original = (await svc.getById(issueId))!;
+    await expect(svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion, title: "Replaced" }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(await svc.getById(issueId)).toMatchObject({ title: "Active task", status: "in_progress", statusVersion: original.statusVersion });
+  });
+
+  it.each(["status", "assignment"])("rejects a prepared promotion after a %s decision returns to its old value", async (change) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, agentId);
+    await seedCodexCoder(db, companyId, otherAgentId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Prepared task", status: "backlog", assigneeAgentId: agentId });
+    const original = (await svc.getById(issueId))!;
+    if (change === "status") {
+      await svc.update(issueId, { status: "cancelled" });
+      await svc.update(issueId, { status: "backlog" });
+    } else {
+      await svc.update(issueId, { assigneeAgentId: otherAgentId });
+      await svc.update(issueId, { assigneeAgentId: agentId });
+    }
+    const current = (await svc.getById(issueId))!;
+    expect(current.statusVersion).toBeGreaterThan(original.statusVersion);
+    await expect(svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }))
+      .rejects.toMatchObject({ status: 409, details: { code: "issue_status_version_changed" } });
+    expect((await svc.getById(issueId))!).toMatchObject({ status: "backlog", assigneeAgentId: agentId, statusVersion: current.statusVersion });
+  });
+
+  it.each(["release", "force release", "direct agent round trip", "direct human round trip"])(
+    "invalidates a prepared promotion after %s", async (change) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      await seedIssueCompany(db, companyId);
+      await seedCodexCoder(db, companyId, agentId);
+      await seedCodexCoder(db, companyId, otherAgentId);
+      const issueId = randomUUID();
+      const humanAssignment = change === "direct human round trip";
+      await db.insert(issues).values({
+        id: issueId, companyId, title: "Prepared ownership", status: "backlog",
+        assigneeAgentId: humanAssignment ? null : agentId,
+        assigneeUserId: humanAssignment ? "original-owner" : null,
+      });
+      const original = (await svc.getById(issueId))!;
+      if (change === "release") {
+        await svc.release(issueId, agentId);
+      } else if (change === "force release") {
+        await svc.adminForceRelease(issueId, { clearAssignee: true });
+      } else if (humanAssignment) {
+        await db.update(issues).set({ assigneeUserId: "another-owner" }).where(eq(issues.id, issueId));
+        await db.update(issues).set({ assigneeUserId: "original-owner" }).where(eq(issues.id, issueId));
+      } else {
+        await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, issueId));
+        await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+      }
+      const current = (await svc.getById(issueId))!;
+      expect(current.statusVersion).toBe(original.statusVersion + (change.startsWith("direct") ? 2 : 1));
+      await expect(svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }))
+        .rejects.toMatchObject({ status: 409, details: { code: "issue_status_version_changed" } });
+      expect(await svc.getById(issueId)).toMatchObject({
+        status: "backlog", assigneeAgentId: current.assigneeAgentId,
+        assigneeUserId: current.assigneeUserId, statusVersion: current.statusVersion,
+      });
+    },
+  );
+
+  it("keeps a prepared version when the stored assignee is unchanged", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, agentId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Same owner", status: "backlog", assigneeAgentId: agentId });
+    const original = (await svc.getById(issueId))!;
+    await db.update(issues).set({ assigneeAgentId: agentId, assigneeUserId: null }).where(eq(issues.id, issueId));
+    expect((await svc.getById(issueId))?.statusVersion).toBe(original.statusVersion);
+    await expect(svc.update(issueId, { status: "todo", expectedStatusVersion: original.statusVersion }))
+      .resolves.toMatchObject({ status: "todo", statusVersion: original.statusVersion + 1 });
+  });
+
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueThreadInteractions);

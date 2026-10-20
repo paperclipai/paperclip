@@ -16,6 +16,7 @@ import { hasConversationContinuationPolicy } from "./conversation-continuation.j
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
+import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
 
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
@@ -344,6 +345,7 @@ export async function buildExecutionContinuation(input: {
       },
     ),
   );
+  completedActions.push(...await githubRecoveryReceipts(db, companyId, issueId));
   const reconciliations = await db
     .select({
       id: issueRecoveryActions.id,

@@ -1699,6 +1699,14 @@ separate capability gap; these callback tests do not claim that export works.
 
 ### Remote native evidence and warm continuation
 
+Results can include a `startupReuse` entry for each run. The dashboard shows
+receipt-derived warmth, the environment/lease, workspace, Runner, provider
+process and session decisions, and observed provider launches. Private attempt
+evidence includes `snapshots/startup-reuse.json`. See the
+[run-log contract](../../doc/run-log-events.md#startup-reuse-evidence) for the
+closed states and reasons. Historical runs without receipts show unknown
+values. Provider-session continuity does not establish physical process reuse.
+
 All three native suites use an operator-published instruction file to withhold
 actual work until independent observers are armed inside the exact owned Daytona
 sandbox. The initial task only reads that file. Explicitly typed setup reads are

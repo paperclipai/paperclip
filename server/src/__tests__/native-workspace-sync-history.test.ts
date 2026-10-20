@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { summarizeStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -158,7 +159,8 @@ describe("native warm workspace Git history", () => {
           return result;
         },
       };
-      const second = (await prepareNativeWorkspaceSync({ ...input, runId: "second", target: {
+      const reuseEvents: import("@paperclipai/adapter-utils").AdapterRuntimeEvent[] = [];
+      const second = (await prepareNativeWorkspaceSync({ ...input, runId: "second", onEvent: async event => { reuseEvents.push(event); }, target: {
         ...target, runner: secondRunner, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" },
       } }))!;
       try {
@@ -167,6 +169,9 @@ describe("native warm workspace Git history", () => {
         if (invalidRunSeed) expect(invalidatedRunSeed).toBe(true);
         if (change === "remote_commit_corrupt_seed" || change === "remote_commit_missing_seed") expect(packClone).toHaveBeenCalled();
         expect(second.mode).toBe(change === "unchanged" ? "adopt_remote" : "host_current");
+        expect(summarizeStartupReuse(reuseEvents).layers.workspace).toEqual(change === "unchanged"
+          ? { state: "reused", reason: "verified_reuse" }
+          : { state: "fresh", reason: "workspace_changed" });
         expect(await readFile(path.join(remoteRepo, "file.txt"), "utf8")).toBe(expectedContents);
         if (change === "host_bytes_cache_refused") expect(await readFile(path.join(remote, "extra.txt"), "utf8")).toBe("new host file\n");
         expect(await git(remoteRepo, "rev-parse", "HEAD")).toBe(expectedHead);

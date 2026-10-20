@@ -2677,6 +2677,17 @@ export function agentRoutes(
     };
   }
 
+  function withAssignedSkillVersions(snapshot: AgentSkillSnapshot, adapterConfig: Record<string, unknown>): AgentSkillSnapshot {
+    const assignments = new Map(readPaperclipSkillSyncPreference(adapterConfig).desiredSkillEntries
+      .map(entry => [entry.key, entry.versionId]));
+    return {
+      ...snapshot,
+      // A resolved runtime version is not a stored assignment pin. Returning
+      // it here makes a read/save round trip silently pin Latest selections.
+      desiredSkillEntries: snapshot.desiredSkills.map(key => ({ key, versionId: assignments.get(key) ?? null })),
+    };
+  }
+
   // CEO and board-created onboarding chief-of-staff instructions assume the
   // core paperclip skills (board coordination, planning, hiring, memory).
   // Union them into these skills-capable hires/creates so their desired skills
@@ -3667,7 +3678,7 @@ export function agentRoutes(
       adapterType: agent.adapterType,
       config: connectorConfig,
     });
-    res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+    res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, agent.adapterConfig as Record<string, unknown>), connectorAssignments));
   });
 
   router.post(
@@ -3767,7 +3778,7 @@ export function agentRoutes(
         },
       });
 
-      res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+      res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, nextAdapterConfig), connectorAssignments));
     },
   );
 

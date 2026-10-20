@@ -20,7 +20,10 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/skills`.
 - `POST /api/companies/{companyId}/skills/import`.
 
-Agent access: `available` — REST / native call_api / CLI skills and sources.
+Agent access: `available` — REST / native call_api / CLI skills and sources. Queue
+and HTTP/2 sandbox callbacks also admit company skill detail and file reads;
+file paths travel in the existing `path` query parameter. Skill mutations stay
+subject to the existing bridge restrictions.
 
 Policy: Company skill policy by action/resource plus platform invariants; test execution
 additionally requires task-assignment authority.
@@ -135,6 +138,16 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Policy administration has an explicit agent grant branch; assigning agent skills
 also checks the target's config authority.
+
+The configuration-gated `GET /api/agents/{id}/skills` reads repository cache
+locations without materializing versions or validating their support files.
+Assignment mutations and run preparation retain their existing authorization.
+The [database-backed cache tests](../../server/src/__tests__/skill-version-cache.test.ts)
+cover latest/pinned reads and full validation during execution; they do not prove
+live agent access.
+Both skill-list and skill-sync responses preserve stored version pins rather than
+returning a resolved runtime version as a pin. Latest remains unpinned across an
+assignment round trip.
 
 ## `testing`
 

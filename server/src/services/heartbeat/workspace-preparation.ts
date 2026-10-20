@@ -975,9 +975,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];
   if (!isDotRun && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
-    const taskRepositories = await timeWorkspace("workspace_repository_admission", () => executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
-      issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
-      agentId: agent.id, runId: run.id, responsibleUserId }));
+    const taskRepositories = await timeWorkspace("workspace_repository_admission", async () => {
+      try {
+        return await executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
+          issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
+          agentId: agent.id, runId: run.id, responsibleUserId });
+      } catch (error) {
+        throw restrictedWorkspaceSourceFailure(error, issueId);
+      }
+    });
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
   if (executionWorkspace.projectId

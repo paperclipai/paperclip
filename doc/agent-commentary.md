@@ -75,7 +75,13 @@ URLs (`?entry=<message-id>` opens a message directly).
 The board-only read API is `GET /api/companies/:companyId/agent-commentary`
 (`agentId`, `kind`, `q`, `limit` up to 100, `offset`) and
 `GET /api/companies/:companyId/agent-commentary/:id`. Both require company access
-and `audit:view_agent_actions`. Source-task privacy filters previews, counts and
+and `commentary:view`. All human company roles, including viewers, receive this
+permission by default. The upgrade migration grants it to existing active human
+members without changing existing commentary grants. Human invitation approval
+adds the default to saved grant lists that omit it, including older invitations,
+while preserving an explicit commentary grant's scope. Commentary access does not
+grant agent-action audit access, detailed audit filters or audit CSV exports;
+those retain `audit:view_agent_actions`. Source-task privacy filters previews, counts and
 details. List results contain at most 280 characters
 per message; the full body is loaded only on opening a message. Feedback whose
 source task was deleted stays hidden, using the task binding retained on its run.

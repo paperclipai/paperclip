@@ -6089,6 +6089,20 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
       try {
+        if (options.materializeMissing === false && !options.snapshotLatest) {
+          // Agent settings enumerate the library, including unselected skills.
+          // Execution, rather than browsing, validates the repository bytes.
+          try {
+            await ensureSkillCacheDirectory(versionPath);
+            const entrypoint = await fs.lstat(path.join(versionPath, "SKILL.md"));
+            if (!entrypoint.isFile() || entrypoint.isSymbolicLink()) throw unprocessable("Unsafe skill cache entrypoint.");
+            return { status: "available", source: versionPath };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            return { status: "missing", source: versionPath,
+              detail: "The selected skill version will be materialized on the next run." };
+          }
+        }
         const versionSource = await materializeVersionSnapshot(companyId, skill, version);
         if (versionSource) return { status: "available", source: versionSource };
         return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };

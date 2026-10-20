@@ -860,6 +860,8 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Internal diagnostic only; the callback cannot grant admission. */
+    onExecutionDeferred?: (blockerCause: string) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;

@@ -23,6 +23,7 @@ import {
 export interface CodexNativeSessionBackendOptions {
   /** Effective provider environment, including the assigned workspace boundary. */
   environment?: NodeJS.ProcessEnv;
+  observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   runnerInstanceId?: string;
@@ -191,6 +192,7 @@ function createTransportBackedNativeSessionBackend(
       dynamicToolHandler: options.dynamicToolHandler,
       completionFeedback: options.completionFeedback,
       environment: options.environment,
+      observability: options.observability,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,
       capabilities: isCodex

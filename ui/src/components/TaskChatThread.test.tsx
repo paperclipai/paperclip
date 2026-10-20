@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
 import type {
+  Agent,
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
@@ -341,6 +342,61 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
+});
+
+it("defers initial history for a saved conversation with its own draft key", () => {
+  render(<TaskChatThread comments={[]} onAdd={async () => {}} issueId="saved-chat"
+    conversationMode draftKey="agent-chat:company:saved-agent" initialHistoryPending />);
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBeNull();
+  expect(container.querySelector('[data-testid="task-chat-composer-dock"]')?.hasAttribute("inert")).toBe(true);
+});
+
+it.each([true, false])("keeps an upload attached when a conversation draft becomes a saved task (mobile=%s)", async (mobile) => {
+  sidebarState.isMobile = mobile;
+  const onAdd = vi.fn().mockResolvedValue(undefined);
+  let resolveUpload!: (receipt: { id: string; contentPath: string; originalFilename: string }) => void;
+  const onAttachImage = vi.fn().mockReturnValue(new Promise(resolve => { resolveUpload = resolve; }));
+  const props = { comments: [], onAdd, onAttachImage, conversationMode: true, draftKey: "agent-chat:company:agent" };
+  render(<TaskChatThread {...props} issueId="" />);
+  const composer = container.querySelector('[data-testid="mock-editor"]');
+  const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const file = new File(["notes"], "chat-notes.txt", { type: "text/plain" });
+  Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(onAttachImage).toHaveBeenCalledExactlyOnceWith(file);
+  expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent).toContain("chat-notes.txt");
+
+  render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending />);
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+  expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent).toContain("chat-notes.txt");
+  expect(onAdd).not.toHaveBeenCalled();
+  const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+  await act(async () => { resolveUpload({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: file.name }); });
+  render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending={false} />);
+  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  const chip = container.querySelector('[data-testid="task-chat-composer-attachments"] [data-slot="attachment"]');
+  expect(chip?.getAttribute("data-state")).toBe("done");
+  const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
+  expect(send.disabled).toBe(false);
+  await act(async () => { send.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  expect(onAdd.mock.calls[0]?.[0]).toBe(`[chat-notes.txt](/api/attachments/${id}/content)`);
+  expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
+});
+
+it("does not claim the agent is working while a follow-up waits behind recovery", async () => {
+  const pending = { id: "optimistic-recovery", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body: "Confirm the existing result.", presentation: null, metadata: null,
+    createdAt: new Date(), updatedAt: new Date(), clientStatus: "pending" as const };
+  const show = (executionBlocked: boolean) => render(<TaskChatThread issueId="issue" issueStatus="blocked" executionBlocked={executionBlocked} comments={[pending]}
+    onAdd={async () => {}} issueAssigneeAgentId="agent"
+    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+  show(true);
+  expect(container.textContent).toContain("Confirm the existing result.");
+  expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Working");
+  show(false);
+  expect(container.textContent).toContain("Working");
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {
@@ -4105,7 +4161,7 @@ describe("TaskChatThread live transcript", () => {
     expect(tail!.textContent).toContain("Syncing workspace to environment");
     expect(tail!.textContent).not.toContain("Waiting for transcript...");
 
-    // Without a runtime status, the generic wait message still shows.
+    // Without a runtime status, the working indicator remains the only visible activity.
     renderThread({
       comments: [],
       onAdd: async () => {},
@@ -4115,7 +4171,8 @@ describe("TaskChatThread live transcript", () => {
     const tail2 = container.querySelector(
       '[data-testid="task-chat-live-transcript"]',
     );
-    expect(tail2!.textContent).toContain("Waiting for transcript...");
+    expect(tail2!.textContent).toContain("Working");
+    expect(tail2!.textContent).not.toContain("Waiting for transcript...");
   });
 
   it("does not send a workspace bootstrap failure to connection settings", () => {

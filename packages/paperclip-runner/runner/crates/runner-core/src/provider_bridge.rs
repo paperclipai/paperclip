@@ -43,6 +43,8 @@ const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. 
 const QUESTION_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Required fields: idempotencyKey, interactionKind, title, prompt, and continuationPolicy. For questions, use payload.version=1 and a complete payload.questionSet matching the authorized schema. Preserve the supplied question and option IDs.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
 const MONITOR_INPUT_SCHEMA_HINT: &str = "Invalid set_task_monitor arguments. Supply idempotencyKey and monitor: {nextCheckAt: <future UTC timestamp>, notes: <next check>}. Put all scheduling fields inside monitor, or use monitor: null to clear. Omit taskId for the current task. Correct the arguments and retry.";
+const API_INPUT_SCHEMA_HINT: &str = "Invalid call_api arguments. For responseText, use GET with offsetBytes >= 0 and responseText.limitBytes from 4 through 24576 bytes (default 24576). Follow nextOffsetBytes; null means complete. Correct the arguments and retry.";
+const TOOL_INPUT_SCHEMA_HINT: &str = "Invalid tool arguments. The tool was not executed. Match its authorized input schema. Correct the arguments and retry.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -246,7 +248,8 @@ impl ProviderBridgeError {
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
             "request_human_input" => Some(QUESTION_INPUT_SCHEMA_HINT),
             "set_task_monitor" => Some(MONITOR_INPUT_SCHEMA_HINT),
-            _ => None,
+            "call_api" => Some(API_INPUT_SCHEMA_HINT),
+            _ => Some(TOOL_INPUT_SCHEMA_HINT),
         };
         Self {
             message: format!("provider arguments for {operation_id} failed JSON Schema validation"),
@@ -255,8 +258,6 @@ impl ProviderBridgeError {
     }
 
     fn with_schema_locations(mut self, validator: &jsonschema::Validator, input: &Value) -> Self {
-        // Only the reserved tools above have a provider-safe hint. Report bounded paths
-        // into the authorized schema, never the submitted values or unknown keys.
         if let Some(message) = self.safe_provider_message.as_mut() {
             let locations = validator
                 .iter_errors(input)
@@ -1610,7 +1611,9 @@ mod tests {
         );
         let other = ProviderBridgeError::input_schema_validation("some_other_tool")
             .with_schema_locations(&validator, &json!({"a": 1}));
-        assert_eq!(other.safe_provider_message(), None);
+        let message = other.safe_provider_message().unwrap();
+        assert!(message.starts_with(TOOL_INPUT_SCHEMA_HINT));
+        assert!(message.contains("/properties/a/type"));
     }
 
     #[test]

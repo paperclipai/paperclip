@@ -1,3 +1,5 @@
+import { useDesignSandbox } from "@/context/DesignSandboxContext";
+import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
@@ -113,6 +115,7 @@ function isSkillsStoreRoute(
 }
 
 export function Layout() {
+  const designSandbox = useDesignSandbox();
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -636,18 +639,21 @@ export function Layout() {
           ) : (
             <SidebarShell
               open={sidebarOpen}
-              collapsed={collapsed}
-              peeking={peeking}
+              collapsed={designSandbox ? false : collapsed}
+              peeking={designSandbox ? false : peeking}
               resizable
+              storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : undefined}
               onPanelMouseEnter={handlePanelPointerEnter}
               onPanelMouseLeave={handlePanelPointerLeave}
               onPanelFocusCapture={collapsed ? handlePanelFocus : undefined}
               onPanelBlurCapture={collapsed ? handlePanelBlur : undefined}
             >
-              <div className="flex flex-1 min-h-0">
-                <Sidebar />
-              </div>
-              <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+              {designSandbox ? <DesignSandboxSidebar /> : <>
+                <div className="flex flex-1 min-h-0">
+                  <Sidebar />
+                </div>
+                <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+              </>}
             </SidebarShell>
           )}
 

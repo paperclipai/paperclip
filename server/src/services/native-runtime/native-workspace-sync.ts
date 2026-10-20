@@ -1,4 +1,6 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
+import { emitStartupReuse, type StartupReuseReason } from "@paperclipai/adapter-utils/startup-reuse";
+import type { AdapterRuntimeEvent } from "@paperclipai/adapter-utils";
 import type { WorkspaceCheckpointMetrics } from "@paperclipai/adapter-utils/workspace-checkpoint";
 import type { RuntimeSpanRunner } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import fs from "node:fs/promises";
@@ -881,6 +883,7 @@ export async function prepareNativeWorkspaceSync(input: {
   resourceDisposition?: NativeWorkspaceResourceDisposition;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
 }): Promise<PreparedNativeWorkspaceSync | null> {
   if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
@@ -908,6 +911,7 @@ export async function prepareNativeWorkspaceSync(input: {
   let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
   let descriptor: NativeWorkspaceSyncDescriptor;
   let mode: WorkspaceInboundMode = "host_current";
+  let reuseReason: StartupReuseReason = "created";
   const seedPaths = durableSeedPaths(input.runId);
   await measureRunPhase("workspace_sync.descriptor_directory", () => ensurePrivateDirectory(descriptorDirectory(input.runId)));
 
@@ -934,6 +938,7 @@ export async function prepareNativeWorkspaceSync(input: {
       sameRunRecovery: input.sameRunRecovery,
       sameProviderLease,
     });
+    reuseReason = sameProviderLease ? "verified_reuse" : "replacement";
     const durableSeed =
       mode === "durable_seed"
         ? existing.descriptor.seed
@@ -969,6 +974,7 @@ export async function prepareNativeWorkspaceSync(input: {
     };
   } else {
     const acquisition = target.sandboxLeaseAcquisition?.outcome ?? null;
+    reuseReason = acquisition === "resumed" ? "cache_miss" : acquisition === "replacement" ? "replacement" : "created";
     const priorStamp = leaseStamp({
       lease: input.lease,
       workspaceId: input.workspaceId,
@@ -1013,8 +1019,10 @@ export async function prepareNativeWorkspaceSync(input: {
         (await measureRunPhase("workspace_sync.warm_stamp", () => remoteStampMatches({ target, expected: priorStamp, gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories })));
       if (verifiedWarmAdoption) {
         mode = "adopt_remote";
+        reuseReason = "verified_reuse";
       } else {
         mode = "host_current";
+        reuseReason = "workspace_changed";
         let preparedSeed: WorkspaceDurableSeedPaths | undefined;
         try {
           preparedSeed = await measureRunPhase("workspace_sync.durable_seed_verify", () => verifiedDurableSeed({ runId: input.runId,
@@ -1075,6 +1083,10 @@ export async function prepareNativeWorkspaceSync(input: {
   const preparedRuntime = runtime;
   let reference = await measureRunPhase("workspace_sync.descriptor_write", () => writeDescriptor(descriptor));
   await measureRunPhase("workspace_sync.reference_write", () => persistRunReference(input.db, input.runId, reference));
+  await emitStartupReuse(input.onEvent, "workspace", {
+    state: mode === "adopt_remote" ? "reused" : "fresh",
+    reason: reuseReason,
+  });
   let restorePromise: Promise<void> | null = null;
   return {
     mode,

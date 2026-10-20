@@ -1,4 +1,5 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
@@ -11,6 +12,7 @@ import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeR
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
@@ -43,6 +45,7 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
 export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
+    not(preDispatchExecutionWaitRecoveryActionPredicate()),
     or(unreconciledNativeExportPredicate(), and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -100,7 +103,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
   )).limit(1) : [];
   const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));
-  const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace);
+  const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace && (!run || !await hasVerifiedWorkspaceRepair(db, run)));
+  const workspaceRecovery = workspaceRecoveryDisplay(action.evidence, runId);
   const reconstructableExport = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(action.cause);
   const exportSource = reconstructableExport ? readNativeWorkspaceSyncReference(run?.runnerProfileJson?.nativeWorkspaceSync) : null;
   const [exportLease] = exportSource ? await db.select().from(environmentLeases).where(and(
@@ -182,7 +186,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction: reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction,
+    nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
+    ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,

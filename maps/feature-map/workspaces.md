@@ -74,6 +74,20 @@ and [preparation tests](../../server/src/services/heartbeat/workspace-preparatio
 exercise the real Git isolation and lifecycle guards. They do not qualify live
 remote credentials or a provider deployment.
 
+For a task reusing the shared project checkout, add a private task worktree that
+the assigned agent cannot read. Continue the shared task and verify the
+task offers **Retry**, without a workspace picker or repair checklist. Before the
+click, no agent turn or automatic failure retry may start. Click Retry and verify
+that normal admission selects an isolated checkout from the configured remote,
+preserves the agent and environment, and leaves both tasks' old files intact.
+Private local branches and commits must not enter the new checkout. Repeated
+clicks request one retry; a paused project or pending approval must still block it.
+Repeat with fixed project branches, an existing task branch, and adapter branch
+overrides; Retry must choose a fresh branch while preserving setup and model settings.
+Add enough later comments to page the original notice out of view, reload, and
+verify Retry remains above the composer. This control does
+not depend on the workspace picker's visibility setting.
+
 For reconstructable Git expiration, finish a disposable task tree, run the
 internal lifecycle sweep after its 24-hour grace, and inspect candidate/reclaimed
 bytes. Advance its upstream first; use the ordinary task/workspace reopen control

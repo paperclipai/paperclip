@@ -89,6 +89,62 @@ describePostgres("immutable skill version cache", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it.each(["latest", "pinned"] as const)("does not materialize %s repository versions while listing agent skills", async selection => {
+    const f = await fixture();
+    const version = f.versions[selection === "pinned" ? 0 : 1]!;
+    const options = {
+      onlyKeys: new Set([f.key]),
+      materializeMissing: false,
+      ...(selection === "pinned" ? { versionSelections: new Map([[f.key, version.id]]) } : {}),
+    };
+    const paths = skillVersionCachePaths(f.companyId, f.skillId, version.id);
+    const service = companySkillService(db);
+    const upstream = vi.fn(() => Promise.reject(new Error("Upstream is unavailable")));
+    vi.stubGlobal("fetch", upstream);
+
+    const cold = await service.listRuntimeSkillEntries(f.companyId, options);
+    expect(cold).toMatchObject([{ key: f.key, versionId: version.id, sourceStatus: "missing" }]);
+    await expect(fs.stat(paths.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(paths.access)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const prepare = async () => {
+      const entries = await service.listRuntimeSkillEntries(f.companyId, { ...options, snapshotLatest: true });
+      expect(entries).toMatchObject([{ key: f.key, versionId: version.id, sourceStatus: "available" }]);
+      return entries[0]!;
+    };
+    const prepared = await prepare();
+    const accessed = await fs.readFile(paths.access, "utf8");
+    const read = vi.spyOn(fs, "readFile");
+    const warm = await service.listRuntimeSkillEntries(f.companyId, options);
+    expect(warm).toMatchObject([{ key: f.key, versionId: version.id, sourceStatus: "available", source: prepared.source }]);
+    // Browsing must not validate every repository file or extend cache use.
+    expect(read.mock.calls.some(([filename]) => String(filename).startsWith(paths.directory + path.sep))).toBe(false);
+    read.mockRestore();
+    expect(await fs.readFile(paths.access, "utf8")).toBe(accessed);
+
+    // Full validation remains at the execution boundary, including repair.
+    const marker = path.join(prepared.source, ".paperclip-repository/marker.bin");
+    await fs.chmod(marker, 0o644);
+    await fs.writeFile(marker, "corrupt");
+    await prepare();
+    expect(await fs.readFile(marker)).toEqual(Buffer.from([0, selection === "pinned" ? 1 : 2, 255]));
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlinked cache entrypoint during read-only listing", async () => {
+    const f = await fixture();
+    const version = f.versions[1]!;
+    const prepared = await f.resolve(version.id);
+    const entrypoint = path.join(prepared.source, "SKILL.md");
+    await fs.unlink(entrypoint);
+    await fs.symlink(path.join(prepared.source, ".paperclip-repository/scripts/example.sh"), entrypoint);
+    const entries = await companySkillService(db).listRuntimeSkillEntries(f.companyId, {
+      onlyKeys: new Set([f.key]), materializeMissing: false,
+    });
+    expect(entries).toMatchObject([{ key: f.key, sourceStatus: "missing", missingDetail: expect.stringContaining("Unsafe skill cache entrypoint") }]);
+    expect((await fs.lstat(entrypoint)).isSymbolicLink()).toBe(true);
+  });
+
   it("expires only idle old versions, reports dry-run candidates, and restores the evicted version", async () => {
     const f = await fixture();
     const old = await f.resolve(f.versions[0]!.id);

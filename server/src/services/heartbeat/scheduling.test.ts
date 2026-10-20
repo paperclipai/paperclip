@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
-  agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -199,6 +199,71 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     await f.scheduler.tickTimers(now);
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it("records bounded dispatch failure diagnostics while retaining the schedule", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockRejectedValue(new Error("PRIVATE_PROVIDER_FAILURE"));
+    await f.scheduler.tickTimers(now);
+    await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    expect(events.filter(event => event.action === "issue.monitor_dispatch_failed")).toHaveLength(1);
+    expect(events[0]?.details).toMatchObject({ reason: "monitor_dispatch_failed", nextCheckAt: dueAt.toISOString(), attemptCount: 0 });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_PROVIDER_FAILURE");
+  });
+
+  it("repeats a persistent diagnostic after its bounded quiet window", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockResolvedValue(null);
+    await f.scheduler.tickTimers(now);
+    await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(1);
+    await db.update(activityLog).set({ createdAt: new Date(Date.now() - 6 * 60_000) }).where(eq(activityLog.entityId, f.issue.id));
+    await f.scheduler.tickTimers(new Date(now.getTime() + 60_000));
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(2);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
+  });
+
+  it("does not copy an unrecognized blocker cause into monitor activity", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
+      options?.issueStateGuard?.onExecutionDeferred?.("PRIVATE_BLOCKER_CAUSE");
+      return null;
+    });
+    await f.scheduler.tickTimers(now);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    expect(events).toMatchObject([{ action: "issue.monitor_deferred", details: { reason: "execution_reconciliation_required" } }]);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
+  });
+
+  it("releases a monitor claim when diagnostic storage fails", async () => {
+    const f = await fixture();
+    await db.execute(sql`create function fail_monitor_diagnostic_test() returns trigger language plpgsql as $$
+      begin if new.action = 'issue.monitor_deferred' then raise exception 'Synthetic diagnostic storage failure'; end if; return new; end; $$`);
+    await db.execute(sql`create trigger fail_monitor_diagnostic_test before insert on activity_log
+      for each row execute function fail_monitor_diagnostic_test()`);
+    try {
+      f.deps.enqueueWakeup.mockResolvedValueOnce(null);
+      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    } finally {
+      await db.execute(sql`drop trigger fail_monitor_diagnostic_test on activity_log`);
+      await db.execute(sql`drop function fail_monitor_diagnostic_test()`);
+    }
+  });
+
+  it("does not attach old dispatch diagnostics to a replacement monitor", async () => {
+    const f = await fixture();
+    const replacement = new Date(now.getTime() + 60_000);
+    f.deps.enqueueWakeup.mockImplementationOnce(async () => {
+      await db.update(issues).set({ monitorNextCheckAt: replacement, monitorWakeRequestedAt: null }).where(eq(issues.id, f.issue.id));
+      return null;
+    });
+    await f.scheduler.tickTimers(now);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement });
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(0);
   });
 
   it("leaves monitors alone while a native run owns the issue", async () => {

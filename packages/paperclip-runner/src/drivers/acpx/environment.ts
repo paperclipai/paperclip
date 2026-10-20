@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
+import { providerObservabilityEnvironment } from "../agent-observability.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
 import { PRECONFIGURED_HOME_KEYS, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -103,7 +104,7 @@ export function createSanitizedAcpxSpawnInput(
 ): SanitizedAcpxSpawnInput {
   const source = environment ?? process.env;
   const candidate = isCandidate(agent);
-  const result: NodeJS.ProcessEnv = configuredEnvironment(environment);
+  const result: NodeJS.ProcessEnv = { ...configuredEnvironment(environment), ...providerObservabilityEnvironment(environment, agent) };
   const credentialNames = agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent];
   const allowed = new Set([
     "PATH",

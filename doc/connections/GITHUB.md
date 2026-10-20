@@ -241,7 +241,7 @@ recovery of the existing App instead of a second creation. Direct webhook and
 manual existing-App recovery remain available. Connecting does not prove that
 an agent runtime can execute a review.
 
-### One editable response per request
+### One main response per pull request
 
 A pull request task can retain both its main discussion and inline finding
 threads. Bot tool discovery lists each endpoint/catalog tool once across those
@@ -249,10 +249,13 @@ threads. Publishing an inline finding therefore does not duplicate the tool
 catalog on the task's next run. Both conversation mappings remain available for
 authorized follow-up replies.
 
-After accepting authorized GitHub work, Paperclip posts **Working on this…**
-before starting the agent. Issue and PR discussion comments use the same GitHub
-comment API; inline-review conversations receive an inline reply. Description
-mentions and automatic tasks also receive a working comment. No new eyes
+The main PR conversation shares one App-owned comment across pushes, mentions,
+and repeat reviews. A new request updates that comment to **Review queued…**;
+agent progress and the final assessment update the same comment. Its identity
+survives restarts and reconnects. Existing request comments can be adopted without
+creating another main comment. Issue conversations and inline-review threads
+retain one editable response per request. Description mentions and automatic
+tasks also receive an acknowledgement. No new eyes
 reaction is added; cleanup still handles receipts created by older versions.
 
 The agent's `update_comment` tool edits the current request's working comment.
@@ -275,7 +278,11 @@ App-owned markers recover uncertain creation without posting duplicates.
 Deleted or no-longer-owned comments are not recreated or edited. Coalesced runs
 settle a deleted earlier working comment without blocking the current response,
 review findings, or check publication. Failed runs
-update the same comment when no final reply is confirmed or unresolved. A run
+update the same comment when no final reply is confirmed or unresolved. Maintenance
+also reconciles acknowledged requests when recovery stops before a publication
+is staged. Requests saved on a blocked task report that work is paused and stay
+open for resumed progress or stopped-run cleanup. An older
+run cannot replace a newer run's response. A run
 that ends without a final reply clears a remaining working state honestly.
 Repository restrictions, person authorization and governed tool checks remain
 in effect for edits. Existing disabled or quarantined tools stay disabled.
@@ -290,14 +297,17 @@ Private images use the exact unchanged source's authenticated GitHub rendering;
 repository/thread identity and body hashes remain bound across restarts. Signed
 image URLs and credentials are never added to durable attachment descriptors.
 
-A manual message naming another connected GitHub bot in the same company does
-not wake this bot through its thread subscription. Paperclip filters that
+A manual message beginning with another recipient's @mention does not wake this
+bot through its thread subscription, including Apps outside Paperclip such as
+`@greptile review`. Mentions of other connected GitHub bots are also filtered
+elsewhere in the body. Paperclip filters that
 delivery before creating task work or adding an acknowledgement. Explicitly
 mentioning both bots allows both to receive the request, subject to their normal
 authorization and repository checks.
 
-Unaddressed follow-ups, human mentions and unknown handles retain the existing
-subscription behavior. The routing rule does not change automatic issue or PR
+Unaddressed follow-ups and incidental human or unknown mentions retain the existing
+subscription behavior. Explicitly mentioning this bot admits a request even when
+another recipient is named. The routing rule does not change automatic issue or PR
 event policies. Archived bots and identities from other companies or providers
 are excluded from the routing lookup.
 

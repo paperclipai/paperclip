@@ -39,6 +39,17 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
 
+Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
+keeps an in-flight attachment through first-chat creation on desktop and mobile,
+while initial history for an existing conversation stays deferred. The
+[first-upload browser journey](../../tests/e2e/agent-chat-projects.spec.ts)
+checks the visible file chip, server attachment, no premature agent run, and
+attachment count after send and reload. That journey uses a simulated agent.
+
+Manual: In a conversation with no messages, attach a file before the first
+send. Confirm the same file stays in the composer after the chat is created.
+Send it once, reload, and confirm the file and message remain.
+
 Manual: Start a conversation, send a recognizable request, and inspect its reply.
 Navigate away and reopen the same history. Use `/new` for a fresh session within
 the same standing conversation. Test an unavailable historical agent and an

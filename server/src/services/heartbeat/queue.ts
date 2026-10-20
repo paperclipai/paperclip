@@ -3123,6 +3123,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const deferBlockedExecution = async (
             executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
           ) => {
+            opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
             const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
             if (executionWaitRequestId) {
               await tx.update(agentWakeupRequests).set({

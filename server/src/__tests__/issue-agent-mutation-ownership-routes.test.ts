@@ -163,11 +163,13 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockResolveDefaultIssueExecutionPolicy = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
+const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
+  vi.doMock("../services/workspace-recovery.js", () => ({ requestWorkspaceRecovery: mockRequestWorkspaceRecovery }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -2052,6 +2054,30 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(202);
     expect(mockRetryWorkspaceExport).toHaveBeenCalledWith(expect.objectContaining({ companyId, issueId, runId: ownerRunId, actionId: recoveryActionId, actorId: "board-user" }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("lets a task editor request safe recovery without runtime certification", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({ allowed: ["issue:read", "issue:mutate"].includes(action) }));
+    mockRequestWorkspaceRecovery.mockResolvedValue({ actionId: recoveryActionId, status: "queued" });
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/recover-workspace`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockRequestWorkspaceRecovery).toHaveBeenCalledWith(expect.objectContaining({ companyId, issueId,
+      actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId, actorId: "board-user" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["agent", "viewer", "certification"])("rejects an unauthorized or fabricated recovery request: %s", async kind => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      allowed: action === "issue:read" || (kind === "certification" && action === "issue:mutate"), explanation: "Read-only task access",
+    }));
+    const res = await request(await createApp(kind === "agent" ? ownerActor() : boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/recover-workspace`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId,
+        ...(kind === "certification" ? { providerStopped: true, workspaceRepairEvidence: "I claim the missing files were repaired." } : {}) });
+    expect(res.status).toBe(kind === "certification" ? 400 : 403);
+    expect(mockRequestWorkspaceRecovery).not.toHaveBeenCalled();
   });
 
   it.each(["agent", "viewer"])("rejects %s export-only retries before admission", async kind => {

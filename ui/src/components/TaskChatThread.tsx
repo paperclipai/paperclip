@@ -1,3 +1,4 @@
+import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -2636,6 +2637,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const optimisticRunnerStartup =
     assigneeUsesPaperclipRunner &&
+    !props.executionBlocked &&
     !tailRunId &&
     (runnerSubmissionPending ||
       commentItems.some(
@@ -2924,12 +2926,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
         : Boolean(logErrorsByRun?.has(run.id)),
     );
-  const [revealedIssue, setRevealedIssue] = useState<string | null | undefined>(
-    () => (historyPending ? undefined : issueId),
+  const historyKey = conversationMode && draftKey ? draftKey : issueId;
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(
+    () => (historyPending ? undefined : historyKey),
   );
-  const historyRevealed = revealedIssue === issueId;
-  const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ issueId: typeof issueId } | null>(null);
-  const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.issueId === issueId;
+  const historyRevealed = revealedHistoryKey === historyKey;
+  const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
+  const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
   const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
   // Supporting requests can stall without rejecting. Bound the first reveal
   // independently of their pending states so saved conversation and the
@@ -2937,19 +2940,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useEffect(() => {
     if (historyRevealed) return;
     const timer = window.setTimeout(() => {
-      setExpiredHistoryWait({ issueId });
-      setRevealedIssue(issueId);
+      setExpiredHistoryWait({ historyKey });
+      setRevealedHistoryKey(historyKey);
     }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [historyRevealed, issueId]);
+  }, [historyRevealed, historyKey]);
   // Mount and measure the real thread while concealed, then reveal in one
   // commit. A frame also lets ancestor navigation scroll restoration finish.
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
+    const frame = requestAnimationFrame(() => setRevealedHistoryKey(historyKey));
     return () => cancelAnimationFrame(frame);
-  }, [historyPending, historyRevealed, issueId]);
+  }, [historyPending, historyRevealed, historyKey]);
   useEffect(() => {
     if (!historyRevealed || !issueId) return;
     scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
@@ -3124,7 +3127,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       }
                                     />
                                   ) : (
-                                    <>
+                                    <TaskChatShimmerScope items={tailItems}>
                                       <TaskChatLiveRunPill
                                         status={tailStatus}
                                         execution={
@@ -3151,7 +3154,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                                 : "Waiting for transcript...")
                                         }
                                       />
-                                    </>
+                                    </TaskChatShimmerScope>
                                   )}
                                 </div>
                               ) : null}

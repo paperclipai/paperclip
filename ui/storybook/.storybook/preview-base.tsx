@@ -29,6 +29,7 @@ import { SidebarProvider } from "@/context/SidebarContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { ToastProvider } from "@/context/ToastContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AvatarInitialProvider } from "@/components/ui/avatar-initials";
 import {
   storybookAgents,
   storybookApprovals,
@@ -849,7 +850,7 @@ const preview: Preview = {
         ? Number.parseInt(width, 10) : undefined;
       return (
         <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth} initialEntries={context.parameters.initialEntries}>
-          <Story />
+          {context.parameters.paperclip?.home === "design-proposals" && context.parameters.designProposalTheme !== false ? <AvatarInitialProvider><div className="design-proposal-theme"><Story /></div></AvatarInitialProvider> : <Story />}
         </StorybookProviders>
       );
     },

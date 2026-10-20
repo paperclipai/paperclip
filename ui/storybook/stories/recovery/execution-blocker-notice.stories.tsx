@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import { RecoveryNoticeFixture } from "../../support/workspace-file-recovery/fixture";
 import { ExecutionBlockerNotice } from "@/components/ExecutionBlockerNotice";
@@ -43,6 +44,52 @@ const noRepairForm: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   await expect(canvas.getByRole("link", { name: "Inspect run" })).toBeVisible();
 };
 export const FileRecovery: Story = { args: { blocker: fileHold }, play: noRepairForm };
+export const RecoveringSavedWork: Story = {
+  args: { blocker: { ...fileHold, savedMessageCount: 1, workspaceRecovery: {
+    status: "recovering", stage: "restoring_files", canRetry: false, message: "Recovering saved work…",
+  } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Recovering saved work…")).toBeVisible();
+    await expect(canvas.getByText("Your message is saved and will continue after recovery.")).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Retry recovery" })).not.toBeInTheDocument();
+    await expect(canvas.queryByText("Working")).not.toBeInTheDocument();
+  },
+};
+export const RetrySavedWork: Story = {
+  args: { blocker: { ...fileHold, savedMessageCount: 1, workspaceRecovery: {
+    status: "blocked", stage: "restoring_files", canRetry: true, message: "Recovery couldn’t finish. Your message is saved.",
+  } } },
+  render: function RetryJourney(args) {
+    const [queued, setQueued] = useState(false);
+    return <>
+      <TaskChatBubble item={{ id: "saved-request", kind: "message", author: "human", authorName: "Alex",
+        text: "Confirm the existing review and finish the task. Do not publish another review." }} />
+      <ExecutionBlockerNotice {...args} blocker={queued ? { ...args.blocker, workspaceRecovery: {
+        status: "queued", stage: "verifying_stop", canRetry: false, message: "Recovering saved work…",
+      } } : args.blocker} onRetried={() => setQueued(true)} />
+    </>;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Retry recovery" }));
+    await expect(canvas.getByText("Recovering saved work…")).toBeVisible();
+    await expect(canvas.getByText("Your message is saved and will continue after recovery.")).toBeVisible();
+    await expect(canvas.queryByRole("textbox")).not.toBeInTheDocument();
+  },
+};
+export const PreviousSessionUnverified: Story = {
+  args: { blocker: { ...fileHold, savedMessageCount: 1, workspaceRecovery: {
+    status: "blocked", stage: "verifying_stop", canRetry: false,
+    message: "Paperclip couldn’t verify that the previous session stopped. This task needs service attention.",
+  } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/couldn’t verify that the previous session stopped/)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Retry recovery" })).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("checkbox")).not.toBeInTheDocument();
+  },
+};
 export const FileRecoveryReadOnly: Story = { args: { blocker: fileHold, canManage: false }, play: noRepairForm };
 // Preserve existing story IDs for saved inspection links.
 export const FileRecoveryRecorded: Story = { args: { blocker: fileHold }, parameters: { recoveryState: "recorded" }, play: noRepairForm };

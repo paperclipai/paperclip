@@ -183,3 +183,25 @@ success receipt, timeout and recorded usage.
 
 Gaps: No agent configuration/test path. An acknowledgement is not completed task
 work. Live native, provider and agent access remain unverified.
+
+## `agent-observability`
+
+Review: `baseline`.
+
+API: `present` — representative operation IDs:
+
+- `GET /api/companies/{companyId}/observability`.
+- `PUT /api/companies/{companyId}/observability`.
+- `DELETE /api/companies/{companyId}/observability`.
+- `POST /api/companies/{companyId}/observability/test`.
+
+Agent access: `operator-only` — configuration and tests require board context.
+
+Policy: Company access and Manage connections permission; non-managing board readers receive no settings.
+Credentials are write-only and stored through company secret bindings.
+
+Evidence: `source-only` — [routes](../../server/src/routes/agent-observability.ts).
+
+Verification: `not-run` — exercise board management, restricted board, agent denial, and cross-company denial.
+
+Gaps: Direct agent management and independent personal harness enrollment are outside v1.

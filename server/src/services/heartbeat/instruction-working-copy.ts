@@ -53,6 +53,7 @@ export function createHeartbeatInstructionCopyRelease(
 }
 
 interface InstructionWorkingCopyInput {
+  observabilityCompatibilityKey?: string;
   db: Db;
   instructionCopies: Copies;
   // The executor replaces its run row before preparation. Callbacks must see it.
@@ -144,11 +145,13 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
         if (warmFiles && taskSessionForRun?.lastRunId) {
           nativeInstructionReservation = await reserveWarmNativeInstructionDirectory({ companyId: agent.companyId, agentId: agent.id,
             previousRunId: taskSessionForRun.lastRunId, runId: readRun().id, target: executionTarget,
+            observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             canReuse: () => instructionCopies.canReuseWarm(agent.companyId, agent.id, taskSessionForRun!.lastRunId!),
           });
         }
         if (!warmFiles && nativeRuntimeResolution.kind === "native" && priorWorkingCopy.kind === "agent_files" && taskSession) {
           releaseWarmInstructionPreparation = await claimWarmNativeInstructionCopy({
+            observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             priorExecution: parseNativeExecutionInput(priorFileInput), companyId: agent.companyId, agentId: agent.id,
             executionWorkspaceId: persistedExecutionWorkspace?.id ?? readRun().id, workspace: executionWorkspace,
             environmentId: executionTarget?.environmentId ?? null, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,

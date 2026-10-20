@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
+import { summarizeStartupReuse } from "../startup-reuse.js";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeStore, type AcpRuntimeOptions, type AcpSessionRecord, type AcpSessionStore } from "acpx/runtime";
 import type { AdapterExecutionContext, AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
@@ -182,6 +184,7 @@ async function runExecutor(
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     agentIdentity?: AdapterExecutionContext["agentIdentity"];
+    observability?: AdapterExecutionContext["observability"];
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
@@ -229,6 +232,7 @@ async function runExecutor(
       executionTransport: options.executionTransport,
       authToken: options.authToken,
       agentIdentity: options.agentIdentity,
+      observability: options.observability,
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
       startupTraceContext: options.startupTraceContext,
@@ -373,6 +377,7 @@ const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set<string>([
   A.rootWorkMs,
   A.rootDiffMs,
   A.coldStart,
+  A.warmth,
   A.region,
   A.imageId,
   A.sandboxId,
@@ -594,6 +599,66 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(runtimeCreateCount).toBe(2);
     expect(secondOnSpawn).toHaveBeenCalledOnce();
     expect(turnStartedBeforeProcessIdentity).toBe(false);
+  });
+
+  it("keeps company export config outside ACPX Codex argv and caller-owned home files", async () => {
+    const root = await makeTempRoot();
+    const home = path.join(root, "caller-codex-home");
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "config.toml"), 'model = "caller-model"\n');
+    const { logs, meta } = await runExecutor({ agent: "codex", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state"), env: { CODEX_HOME: home } }, {
+      observability: { kind: "codex", compatibilityKey: "fixture-revision", otelConfig: { exporter: { "otlp-http": { endpoint: "https://collector.example/v1/logs", protocol: "binary", headers: { authorization: "Bearer export-secret-canary" } } } }, environment: { OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000" } },
+    });
+    expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toBe('model = "caller-model"\n');
+    expect(logs.some(row => row.text.includes("caller-owned Codex home"))).toBe(true);
+    expect(JSON.stringify(meta)).not.toContain("export-secret-canary");
+  });
+
+  it.each([true, false])("applies company export to a server-managed Codex credential home (enabled=%s)", async (enabled) => {
+    const root = await makeTempRoot();
+    const home = path.join(root, "server-credential-projection", "provider");
+    const original = 'model = "managed-model"\n[model_providers.paperclip]\nname = "Managed provider"\n[mcp_servers.fixture]\nurl = "https://tools.example.test/mcp"\n';
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "config.toml"), original);
+    await fs.writeFile(path.join(home, "auth.json"), '{"OPENAI_API_KEY":"fake-managed-provider-key"}');
+    const otelConfig = enabled ? {
+      log_user_prompt: true,
+      exporter: { "otlp-http": { endpoint: "https://collector.example.test/v1/logs", protocol: "binary", headers: { authorization: "Bearer export-secret-canary" } } },
+    } : { exporter: "none", trace_exporter: "none", metrics_exporter: "none", log_user_prompt: false };
+    const run = await runExecutor({
+      agent: "codex", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: home }, managedAiConnection: { provider: "openai", method: "api_key", identity: "server-resolved-credential" },
+      paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] },
+    }, { observability: { kind: "codex", compatibilityKey: enabled ? "enabled" : "disabled", otelConfig, environment: {} } });
+    expect(run.result.exitCode).toBe(0);
+    const env = (run.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.CODEX_HOME).not.toBe(home);
+    const config = parseToml(await fs.readFile(path.join(env.CODEX_HOME!, "config.toml"), "utf8"));
+    expect(config.otel).toEqual(otelConfig);
+    expect(config.model).toBe("managed-model");
+    expect(config.model_providers).toEqual({ paperclip: { name: "Managed provider" } });
+    expect(config.mcp_servers).toEqual({ fixture: { url: "https://tools.example.test/mcp" } });
+    expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toBe(original);
+    expect(await fs.realpath(path.join(env.CODEX_HOME!, "auth.json"))).toBe(await fs.realpath(path.join(home, "auth.json")));
+    expect(JSON.stringify(run.meta)).not.toContain("export-secret-canary");
+    expect(run.logs.some(row => row.text.includes("caller-owned Codex home"))).toBe(false);
+  });
+
+  it("changes the ACPX Codex configuration home while resuming the same conversation after export changes", async () => {
+    const root = await makeTempRoot();
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip"));
+    vi.stubEnv("CODEX_HOME", path.join(root, "source"));
+    try {
+      const config = { agent: "codex", agentCommand: "node ./fake-acp.js", cwd: root, stateDir: path.join(root, "state"), paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+      const launch = (key: string) => ({ kind: "codex" as const, compatibilityKey: key, otelConfig: { exporter: "none", trace_exporter: "none", metrics_exporter: "none" }, environment: {} });
+      const first = await runExecutor(config, { observability: launch("first") });
+      const second = await runExecutor(config, { observability: launch("second"), runtime: { sessionParams: first.result.sessionParams } });
+      const firstEnv = (first.sessionInputs[0]?.sessionOptions as { env: Record<string, string> }).env;
+      const secondEnv = (second.sessionInputs[0]?.sessionOptions as { env: Record<string, string> }).env;
+      expect(firstEnv.CODEX_HOME).not.toBe(secondEnv.CODEX_HOME);
+      expect(second.sessionInputs[0]?.resumeSessionId).toBe(first.result.sessionId);
+      expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
@@ -5855,8 +5920,9 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       expect(Number.isFinite(rootSpan!.attributes[key] as number)).toBe(true);
     }
     expect(rootSpan!.attributes[A.rootWorkMs] as number).toBeGreaterThanOrEqual(0);
-    // A cold start (no warm handle) and the clamped provider family.
-    expect(rootSpan!.attributes[A.coldStart]).toBe(true);
+    // Missing lease/process evidence must not manufacture a cold label.
+    expect(rootSpan!.attributes).not.toHaveProperty(A.coldStart);
+    expect(rootSpan!.attributes[A.warmth]).toBe("unknown");
     expect(rootSpan!.attributes[A.provider]).toBe("plugin");
     // The lease id rides only as a non-reversible hash, never the raw value.
     expect(rootSpan!.attributes[A.leaseId]).toMatch(/^[0-9a-f]{12}$/);
@@ -6530,6 +6596,43 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     }
   });
 
+  it.each([true, false])("derives warmth from physical reuse when the provider session stays continuous: cached=%s", async cached => {
+    const root = await makeTempRoot();
+    const warmHandles = new Map();
+    const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+    let runtimeOptions: AcpRuntimeOptions;
+    const runtime = buildRuntime(undefined, () => {
+      // Exercise the real engine spawn observer, including a second launch in
+      // the same ensure call. A session ID cannot hide either startup cost.
+      void runtimeOptions.onAgentSpawn?.({ pid: process.pid, startedAt: new Date().toISOString() });
+      void runtimeOptions.onAgentSpawn?.({ pid: process.pid, startedAt: new Date().toISOString() });
+    });
+    const execute = createAcpxEngineExecutor({ warmHandles, createRuntime: options => {
+      runtimeOptions = options;
+      return runtime as never;
+    } });
+    const base = { agent: { id: "agent-1", companyId: "company-1" },
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), mode: "persistent" },
+      context: {}, onLog: async () => {}, onMeta: async () => {} };
+    const first = await execute({ ...base, runId: "reuse-first", runtime: {} } as never);
+    const params = first.sessionParams!;
+    if (cached) warmHandles.set(params.sessionKey, { runtime,
+      handle: { backendSessionId: first.sessionId, agentSessionId: "agent-session", runtimeSessionName: "runtime-session" },
+      fingerprint: params.configFingerprint, lastUsedAt: Date.now(),
+      processIdentitySink: { current: undefined, latest: null },
+      childStderrState: { logPath: null, pendingLiveLine: "" } });
+    const second = await execute({ ...base, runId: "reuse-second", runtime: { sessionParams: params },
+      onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => { events.push(event); },
+    } as never);
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(summarizeStartupReuse(events)).toMatchObject({
+      warmth: cached ? "warm" : "partial_reuse", providerLaunchCount: cached ? 0 : 2,
+      layers: { provider_session: { state: "reused" }, provider_process: { state: cached ? "reused" : "fresh" } },
+    });
+  });
+
   it("runs a fresh acp.handshake on a compatible second run (host lane re-creates, no warm hit)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -6654,48 +6757,86 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
     expect(result.summary).toContain("createRuntime boom");
   });
 
-  it("test_runtime_create_failure_stops_bridges_and_releases_staging_lease", async () => {
-    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
-    const paperclipStop = vi.fn(async () => {});
-    const processStop = vi.fn(async () => {});
-    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
-      async () => ({ env: {}, stop: paperclipStop }) as never,
-    );
-    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
-      async () => ({ agentCommand: null, stop: processStop }) as never,
-    );
-    const stagingLocks = new Map<string, Promise<unknown>>();
-    const execute = createAcpxEngineExecutor({
-      stagingLocks,
-      warmHandles: new Map(),
-      stagedRuntimes: new Map(),
-      createRuntime: () => {
-        throw new Error("createRuntime boom");
-      },
-    });
+  it.each(["create_failure", "relay_respawn", "stalled_receipt"])(
+    "keeps remote provider evidence unknown and releases the staging lease on %s", async (scenario) => {
+      const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+      const paperclipStop = vi.fn(async () => {});
+      const processStop = vi.fn(async () => {});
+      vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
+        async () => ({ env: {}, stop: paperclipStop }) as never,
+      );
+      vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
+        async () => ({ agentCommand: null, stop: processStop }) as never,
+      );
+      const stagingLocks = new Map<string, Promise<unknown>>();
+      const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+      let releaseReceipt!: () => void;
+      const receiptGate = new Promise<void>((resolve) => { releaseReceipt = resolve; });
+      let receiptStarted!: () => void;
+      const receiptReady = new Promise<void>((resolve) => { receiptStarted = resolve; });
+      const execute = createAcpxEngineExecutor({
+        stagingLocks,
+        warmHandles: new Map(),
+        stagedRuntimes: new Map(),
+        createRuntime: (options) => {
+          // The bridge models an already-started sandbox provider. This observer
+          // sees only the host relay, including relay respawns.
+          expect(startAdapterExecutionTargetProcessSessionBridge).toHaveBeenCalledTimes(1);
+          expect(stagingLocks.size).toBe(1);
+          if (scenario === "create_failure") throw new Error("createRuntime boom");
+          return buildRuntime(undefined, () => {
+            void options.onAgentSpawn?.({ pid: process.pid, startedAt: new Date().toISOString() });
+            void options.onAgentSpawn?.({ pid: process.pid, startedAt: new Date().toISOString() });
+          }) as never;
+        },
+      });
 
-    const result = await execute({
-      runId: "run-create-fail-remote",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
-      context: {},
-      authToken: "real-run-jwt",
-      executionTarget,
-      onLog: async () => {},
-      onMeta: async () => {},
-      onEvent: async () => {},
-    } as never);
+      const execution = execute({
+        runId: "run-create-fail-remote",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+        context: {},
+        authToken: "real-run-jwt",
+        executionTarget,
+        onLog: async () => {},
+        onMeta: async () => {},
+        onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
+          events.push(event);
+          if (event.eventType === "run.startup.reuse" && event.payload?.layer === "provider_process"
+            && (scenario !== "stalled_receipt" || processStop.mock.calls.length > 0)) {
+            receiptStarted();
+            if (scenario === "stalled_receipt") await receiptGate;
+          }
+        },
+      } as never);
 
-    expect(result.exitCode).toBe(1);
-    expect(result.resultJson?.phase).toBe("create_runtime");
-    // Both live bridges stop exactly once.
-    expect(paperclipStop).toHaveBeenCalledTimes(1);
-    expect(processStop).toHaveBeenCalledTimes(1);
-    // The per-session staging lease released, so the lock map does not strand the
-    // next same-session run.
-    expect(stagingLocks.size).toBe(0);
-  });
+      let completed = false;
+      void execution.then(() => { completed = true; }, () => {});
+      try {
+        await Promise.race([receiptReady, execution]);
+        // Keep the persistence await open while checking real cleanup and return.
+        await expect.poll(() => completed, { timeout: 500 }).toBe(true);
+        expect(stagingLocks.size).toBe(0);
+      } finally {
+        releaseReceipt();
+        await execution;
+      }
+      const result = await execution;
+      expect(result.exitCode).toBe(scenario === "create_failure" ? 1 : 0);
+      if (scenario === "create_failure") expect(result.resultJson?.phase).toBe("create_runtime");
+      expect(summarizeStartupReuse(events)).toMatchObject({
+        providerLaunchCount: null,
+        layers: { provider_process: { state: "unknown", reason: "evidence_missing" } },
+      });
+      // Both live bridges stop exactly once.
+      expect(paperclipStop).toHaveBeenCalledTimes(1);
+      expect(processStop).toHaveBeenCalledTimes(1);
+      // The per-session staging lease released, so the lock map does not strand the
+      // next same-session run.
+      expect(stagingLocks.size).toBe(0);
+    },
+  );
 
   it.each(["prompt", "metadata", "dispatch"])("records whether provider work could have started on %s failure", async (failure) => {
     const root = await makeTempRoot();

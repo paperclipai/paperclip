@@ -225,6 +225,17 @@ provider has stopped or change native cancellation acknowledgement.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
+A queued legacy run denied by that final gate is still a wait. Its matching
+dispatch-gate receipt, task identity, and absence of runtime selection, execution
+ownership, environment leases, coordinator, or execution events prove that it
+never started. Recovery must not create another unknown-outcome incident for
+that admission denial. Historical incidents with the same verified evidence are
+nonblocking without deleting their audit records. The original hold and any
+workspace repair obligation remain effective until their own recovery completes.
+Once all current gates clear, startup and periodic queue recovery reconsider the
+saved input through normal admission. The cancelled admission is not replayed,
+and the user need not certify infrastructure state in a reconciliation form.
+
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
@@ -434,6 +445,14 @@ An external wait counts as a live or waiting path only when the next move surviv
 
 A one-shot issue monitor consumes its persisted `nextCheckAt` when it dispatches the assignee wake. If that monitor-consuming run is lost before it records a new disposition or future monitor, Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
 
+A due monitor remains scheduled when queue admission defers it. Execution recovery
+holds still prevent provider work until the existing reconciliation path clears
+those holds. `issue.monitor_deferred` activity records that decision and a safe
+blocker cause when available. Unexpected admission failures retain the schedule
+and record `issue.monitor_dispatch_failed`, with no raw provider error. Repeated
+identical diagnostics for one schedule are limited to one per five minutes.
+Diagnostics never authorize execution or consume a monitor attempt.
+
 Native `set_task_monitor` arguments put scheduling fields inside `monitor`:
 `{ "idempotencyKey": "check-ci", "monitor": { "nextCheckAt": "<future UTC timestamp>", "notes": "Check pending CI." } }`.
 Use `monitor: null` to clear a schedule. A runner schema rejection executes no
@@ -441,6 +460,21 @@ Paperclip mutation. It returns bounded schema locations and repair guidance,
 without submitted values. Correct the arguments and retry; the rejection is not
 evidence that the scheduling service is unavailable. Confirm the persisted
 receipt before reporting a scheduled wait.
+
+Native `call_api` text windows use `responseText.limitBytes` from 4 through
+24576 bytes, with a default of 24576. Follow `nextOffsetBytes` until it is null.
+Rejected API fallback arguments return the same bounded schema locations as
+monitor calls, with no submitted values. Correct the arguments before retrying;
+validation does not dispatch an HTTP request or relax route permissions.
+
+This validation feedback applies to every authorized native tool, including
+`paperclip_search_assigned_tools`, `paperclip_call_assigned_tool`, and direct app
+tools. Invalid arguments return repair guidance and at most three locations in
+the authorized input schema, within 512 bytes. Feedback excludes submitted values
+and unknown input keys. A rejected call creates no execution receipt; corrected
+arguments can be submitted again. `retryable: false` prevents automatic replay
+of the invalid call. Unauthorized tools still receive a generic rejection, and
+corrected calls retain the same permission and approval checks.
 
 A native provider may omit `continuation` (or send `null`) when it reports
 `yielded` after saving a monitor. The controller reads current authorized task
@@ -1268,6 +1302,36 @@ the exact source retained. A later run must pass the normal workspace repair
 gate. This shutdown join does not reconstruct an interrupted legacy export
 after process death. Native runner ownership keeps its existing restart path.
 
+Retained-file recovery has a separate, source-bound maintenance path. It uses
+the existing physical copyback lock and durable controller receipt. It verifies
+the exact stopped allocation and immutable workspace descriptor, resumes only
+that allocation for export, preserves newer host edits through the normal merge,
+and obtains a fresh stop receipt. An interrupted legacy run does not need an
+accepted native result. A successful `workspace_recovery` operation and matching
+recovery record prove persistence; adapter output or a user repair note cannot.
+The failed run and unknown external effects remain historical facts.
+
+Startup and periodic recovery discover these obligations through the retained
+workspace index. Two background exports per server keep unrelated recovery
+responsive. Automatic file recovery has three total attempts with a 30-second
+delay. An idempotent board request through
+`POST /api/issues/:id/recovery-actions/recover-workspace` admits one additional
+attempt after a transient failure. It requires task mutation access, accepts no
+infrastructure certification, and grants no agent or provider execution authority.
+Restarts do not reset the attempt limit. Missing stop or descriptor proof keeps
+the source allocated and exposes the specific service blocker.
+
+File recovery alone never requests another agent turn. Existing saved human
+messages re-enter ordinary admission once, with the original authors and current
+pause, approval, budget and assignment checks. Historical conversational adapters
+can continue through Paperclip Runner only after their saved adapter identity and
+file receipt are verified. Known GitHub publication receipts enter continuation
+context with their repository, PR and reviewed commit; they authorize no writes
+and settle no other action. Cleanup is a later obligation and can destroy the
+source only after verified persistence and an original `destroy` disposition.
+The task shows observed recovery progress and never presents a pending message
+as agent activity or asks its user to certify process termination or file repair.
+
 Real gates still apply: company and task ownership, active provider ownership, budget limits, agent availability, dependencies, pending approval/review paths, and explicit pause holds. Native runner reattachment and finalization retain their existing ownership protocol. Process, HTTP, and gateway adapters retain their recovery rules because invoking those adapters can itself repeat an external action rather than start a conversation turn.
 
 A source that already stopped and was released remains fenced until its export settles; restart reconciliation scans these released sources too. Both provider reuse and destruction check the physical allocation for a shutdown fence or file-repair pin, including historical lease rows.
@@ -1499,6 +1563,17 @@ The legacy task recovery notice shows “Automatic recovery of this task stopped
 a bordered container with Retry for a failed or timed-out run. A failed Retry
 shows its error in the same container. New user messages and saved undelivered
 messages pass normal admission independently of automatic recovery exhaustion.
+
+When preparation fails because a shared repository retains an unreadable task
+workspace, the task offers Retry. Resolving that recovery schedules an isolated
+repository selection with a fresh task-owned branch only when the latest failed run records bootstrap failure
+with no provider work. Normal admission applies the selection, resets the old
+session, and checks the configured remote with the current Git identity. It
+preserves the task's agent, model, environment, and execution gates. The previous
+workspace remains retained; its local files and Git objects are neither copied
+nor deleted. The Retry control stays above the composer even when the original notice is
+outside the loaded conversation. The user does not need to select a workspace
+or grant access to the other task. An explicit pending workspace choice takes precedence over recovery.
 
 ### Operator identity and permission for manual dispatch
 

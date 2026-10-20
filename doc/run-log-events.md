@@ -5,6 +5,38 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Startup reuse evidence
+
+`run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
+one layer: `environment` (the lease), `workspace`, `runner`, `provider_process`,
+or `provider_session`. Its state is `reused`, `fresh`, `unknown`, or
+`not_applicable`. Reasons use a closed set: `verified_reuse`, `created`,
+`replacement`, `not_found`, `expired`, `identity_mismatch`, `resume_failed`,
+`configuration_changed`, `tools_changed`, `workspace_changed`, `cache_miss`,
+`not_applicable`, and `evidence_missing`. No paths, identifiers, configuration
+values, or exception messages enter these fields.
+
+Provider-process receipts carry a cumulative `providerLaunchCount` for the run.
+`null` means unobserved; zero requires a physical launch observer. Direct ACPX
+processes count initial launches and respawns, including launches during retries.
+On the remote process-session bridge, ACPX observes the host relay rather than
+the sandbox provider. Provider-process reuse and launch counts stay unknown on
+that transport. Native Runner session events establish session continuity, but
+do not establish provider-process reuse or its launch count. Those values stay
+unknown without physical evidence. The final ACPX receipt does not wait for
+persistence, so a stalled diagnostic sink cannot hold the staging lease.
+The existing successful `runner.process.launch` performance receipt establishes
+a fresh Runner process, independently of provider-session continuity.
+
+The Product E2E result stores `startupReuse` by run, and its dashboard displays
+each layer, its reason, and the launch count. `warm` requires all applicable
+layers to be reused and zero observed provider launches. `cold` requires all
+applicable layers to be fresh. Some reuse with other fresh or missing evidence
+is `partial_reuse`; otherwise the label is `unknown`. Fresh decisions dominate
+later reuse receipts within a run. Legacy runs without receipts retain unknown
+layers and a null launch count. Session IDs and follow-up turns never establish
+warmth. These events stay in the local run log; they add no first-party Telemetry.
+
 ## Ordinary event persistence
 
 Events without a native source identity or retry-exhaustion receipt use one
@@ -556,3 +588,10 @@ retries cleanup. This event preserves the run outcome and does not claim a file
 save; `instruction_save` remains authoritative for collection. The event contains
 no raw exception, host path, file contents, or lock-owner metadata. Failure to
 write the warning must not replace the provider outcome or stop lease release.
+
+## Agent observability availability
+
+`agent_observability.unavailable` is one warning for a preparation snapshot that
+cannot apply company export settings. Its payload contains only a closed reason
+and the settings revision. It carries no endpoint, credential, secret reference
+or resolver error. Recording the diagnostic never contacts a destination.

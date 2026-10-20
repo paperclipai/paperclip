@@ -1,3 +1,4 @@
+import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
@@ -489,6 +490,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
         // durable runtime state. Keep this identical to the proven native
         // Codex isolation policy: broader shell-environment filtering can
         // also affect provider startup and belongs at the launch boundary.
+        ...(input.environment?.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG ? [codexObservabilityToml(JSON.parse(input.environment.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG))] : []),
         "[features]",
         "shell_snapshot = false",
         ...(input.environment?.PAPERCLIP_AGENT_KEY_ID || taskEnvironmentKeys.length > 0 ? [
@@ -499,7 +501,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
             ...taskEnvironmentKeys,
             // Unselected provider/config secrets keep Codex's default shell exclusions;
             // only Paperclip's scoped API token is required by Bash/curl skills.
-            ...Object.keys(input.environment ?? {}).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+            ...Object.keys(input.environment ?? {}).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
           ])])}`,
         ] : []),
         "",

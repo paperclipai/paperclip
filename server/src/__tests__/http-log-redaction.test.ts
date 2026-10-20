@@ -12,7 +12,7 @@ import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
-  it.each([200, 400, 500])("keeps Slack setup credentials and provider echoes out of %i logs", async status => {
+  it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
@@ -20,6 +20,7 @@ describe("HTTP logger redaction", () => {
     app.use(express.json());
     app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
     app.use((req, res, next) => {
+      if (req.path.includes("observability")) res.setHeader("x-provider-echo", canaries[0]);
       if (status === 500) { next(new Error(canaries.join(" "))); return; }
       res.status(status).json({ ok: status === 200 });
     });
@@ -31,6 +32,14 @@ describe("HTTP logger redaction", () => {
       }));
     }
     responses.push(await request(app).get("/api/chat-slack/oauth/callback").query({ code: canaries[4], error_description: canaries[5] }));
+    responses.push(await request(app).put("/api/companies/company/observability").query({ unexpected: canaries[2] }).set("x-diagnostic", canaries[3]).send({
+      credentials: { mode: "replace", apiKey: canaries[0] },
+      unexpected: canaries[1],
+    }));
+    responses.push(await request(app).put("/api/companies/company/observability").send({
+      credentials: { mode: "replace", headers: [{ name: "x-custom", value: canaries[1] }] },
+      unexpected: canaries[0],
+    }));
     for (const response of responses) expect(response.status).toBe(status);
     const output = JSON.stringify({ logs: chunks, responses: responses.map(response => response.body) });
     for (const canary of canaries) expect(output).not.toContain(canary);

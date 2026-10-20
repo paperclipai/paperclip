@@ -6,7 +6,7 @@ export const taskWorkspaceSelectionSchema = z.discriminatedUnion("kind", [
 ]);
 export const taskWorkspaceIntentSchema = z.object({
   version: z.literal(1), request: z.object({ key: z.string().min(1).max(200), expectedBindingRevision: z.number().int().nonnegative() }).strict().optional(), selection: taskWorkspaceSelectionSchema,
-  source: z.enum(["explicit", "parent", "channel", "project", "operator_cwd", "task_default", "legacy"]),
+  source: z.enum(["explicit", "parent", "channel", "project", "operator_cwd", "task_default", "legacy", "recovery"]),
 }).strict();
 export const selectTaskWorkspaceSchema = z.object({
   selection: taskWorkspaceSelectionSchema,

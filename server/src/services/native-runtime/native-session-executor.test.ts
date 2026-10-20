@@ -7938,6 +7938,26 @@ describe("native warm session supervision", () => {
       return { base, next, run };
     }
 
+    it.each([false, true])("compares export process compatibility without changing conversation identity (changed: %s)", async changed => {
+      const { base } = fixture(`observability-${changed}`);
+      const next = { ...base, binding: { ...base.binding, runId: `observability-${changed}-next` } };
+      const close = vi.fn(async () => undefined);
+      const shared = { close };
+      const observability = (key: string) => ({ kind: "codex" as const, compatibilityKey: key, otelConfig: { exporter: "none", trace_exporter: "none", metrics_exporter: "none" }, environment: {} });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.(shared); return result;
+      }).mockImplementationOnce(async options => {
+        expect(options.input.session.normalizedSessionId).toBe(base.session.normalizedSessionId);
+        expect(options.existingSession).toBe(changed ? undefined : shared);
+        if (changed) expect(close).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
+        else expect(close).not.toHaveBeenCalled();
+        return result;
+      });
+      await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner", observability: observability("revision-one") });
+      await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner", observability: observability(changed ? "revision-two" : "revision-one") });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
     it("replaces an older warm process before the first turn with cryptographic identity", async () => {
       const { base } = fixture("identity-key-upgrade");
       const next = { ...base, binding: { ...base.binding, runId: "identity-key-next" } };

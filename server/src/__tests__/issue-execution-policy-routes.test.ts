@@ -301,6 +301,91 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects a stale status version before changing or waking a task", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 8, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo", statusVersion: 9 });
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "issue_status_version_changed" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a checkout when a prepared task became active before promotion", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "in_progress", statusVersion: 8, title: "Active task", identifier: "TEST-1",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.assertCheckoutOwner.mockResolvedValueOnce({ adoptedFromRunId: "previous-run" });
+    const res = await request(await createApp({
+      type: "agent", agentId: issue.assigneeAgentId, companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    })).patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("forwards a matching status version to the locked update", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 7, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: null, assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo", statusVersion: 8 });
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+      status: "todo", expectedStatusVersion: 7,
+    });
+  });
+
+  it("does not audit or wake a promotion rejected by the locked version check", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 7, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: null, assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const { conflict } = await import("../errors.js");
+    mockIssueService.update.mockRejectedValueOnce(conflict("The task changed", { code: "issue_status_version_changed" }));
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "issue_status_version_changed" });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "done" }, { status: "cancelled" }, { title: "Changed" },
+    { assigneeAgentId: "33333333-3333-4333-8333-333333333333" },
+    { comment: "Start work" }, { interrupt: true }, { executionPolicy: null },
+  ])("rejects mixed version-guarded promotions before execution effects: %j", async (fields) => {
+    const res = await request(await createApp()).patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "todo", expectedStatusVersion: 0, ...fields });
+    expect(res.status).toBe(422);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

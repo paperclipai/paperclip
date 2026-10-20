@@ -487,12 +487,14 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
   body?: unknown;
   rawBody?: string;
   delayMs?: number;
+  bodyDelayMs?: number;
 }> | {
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
   rawBody?: string;
   delayMs?: number;
+  bodyDelayMs?: number;
 }) {
   const requests: FakeMcpRequest[] = [];
   const server = createServer(async (req, res) => {
@@ -516,10 +518,15 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
       for (const [key, value] of Object.entries(response.headers ?? {})) {
         res.setHeader(key, value);
       }
+      if (response.bodyDelayMs) {
+        res.setHeader("content-type", "application/json");
+        res.flushHeaders();
+        await new Promise((resolve) => setTimeout(resolve, response.bodyDelayMs));
+      }
       if (response.rawBody !== undefined) {
         res.end(response.rawBody);
       } else {
-        res.setHeader("content-type", "application/json");
+        if (!res.headersSent) res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(response.body ?? {
           jsonrpc: "2.0",
           id: body?.id ?? "test",
@@ -4439,6 +4446,20 @@ rl.on("line", (line) => {
 
   const perCallResponseFailures = [
     {
+      name: "a tool call timeout",
+      reasonCode: "tool_timeout",
+      status: 504,
+      timeoutMs: 300,
+      response: () => ({ delayMs: 1_000, body: {} }),
+    },
+    {
+      name: "a response body timeout",
+      reasonCode: "tool_timeout",
+      status: 504,
+      timeoutMs: 300,
+      response: () => ({ bodyDelayMs: 1_000, body: {} }),
+    },
+    {
       name: "an oversized response",
       reasonCode: "mcp_remote_response_too_large",
       response: () => ({ headers: { "content-type": "application/json" }, rawBody: "x".repeat(1_200_000) }),
@@ -4494,12 +4515,13 @@ rl.on("line", (line) => {
           sessionToken: session.token,
           tool: connectedTool!.name,
           parameters: { key: "everything" },
+          timeoutMs: scenario.timeoutMs,
         }).then(
           () => {
             throw new Error("Expected the remote MCP call to fail");
           },
           (error) => {
-            expectGatewayError(error, 502, scenario.reasonCode);
+            expectGatewayError(error, scenario.status ?? 502, scenario.reasonCode);
             scenario.check?.(error as ToolGatewayHttpError);
           },
         );
@@ -4507,6 +4529,13 @@ rl.on("line", (line) => {
         await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections).where(
           eq(toolConnections.id, connection.id),
         )).resolves.toEqual([{ healthStatus: "ok" }]);
+
+        expect(toolCallCount).toBe(1);
+        const [failedInvocation] = await db.select().from(toolInvocations);
+        expect(failedInvocation).toMatchObject({
+          status: scenario.status === 504 ? "timed_out" : "failed",
+          errorCode: scenario.reasonCode,
+        });
 
         const nextSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
         await expect(gateway.listToolsForSession(nextSession.token)).resolves.toEqual(

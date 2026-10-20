@@ -51,6 +51,8 @@ import { AgentLifecycleStatus, useAgentLifecycleStatus } from "../components/Age
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { IssueRow } from "../components/IssueRow";
+import { TaskSummaryList } from "../components/TaskSummaryList";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
@@ -1735,6 +1737,7 @@ export function AgentOverview({
   skillNames: string[];
   agentRouteId: string;
 }) {
+  const designSandbox = useDesignSandbox();
   const issuesById = useMemo(() => {
     const map = new Map<string, (typeof assignedIssues)[number]>();
     for (const issue of assignedIssues) map.set(issue.id, issue);
@@ -1857,7 +1860,7 @@ export function AgentOverview({
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            {assignedIssues.slice(0, 6).map((issue) => (
+            {designSandbox ? <TaskSummaryList issues={assignedIssues.slice(0, 6)} /> : assignedIssues.slice(0, 6).map((issue) => (
               <IssueRow
                 key={issue.id}
                 issue={issue}

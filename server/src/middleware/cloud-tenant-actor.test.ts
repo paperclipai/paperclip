@@ -270,6 +270,34 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
   });
 
+  it.each(["admin", "member", "support"])(
+    "grants experimental settings access only to the admin stack role (%s)",
+    async (stackRole) => {
+      const { db, insertedTables } = createFakeDb();
+      const actor = await resolveCloudTenantActor(
+        db,
+        fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+      );
+      expect(actor?.canManageExperimentalSettings).toBe(stackRole === "admin");
+      expect(actor?.isInstanceAdmin).toBe(false);
+      expect(insertedTables).not.toContain(instanceUserRoles);
+    },
+  );
+
+  it("removes experimental settings access on the next request after a stack admin is demoted", async () => {
+    const { db } = createFakeDb();
+    const admin = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "admin" }),
+    );
+    const member = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(admin?.canManageExperimentalSettings).toBe(true);
+    expect(member?.canManageExperimentalSettings).toBe(false);
+  });
+
   describe("company membership union", () => {
     // The primary company id is derived from the stack id; resolve it once
     // through the same code path instead of duplicating the hash here.

@@ -17,8 +17,8 @@ export function agentCommentaryRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
-      && (!req.actor.userId || !await access.canUser(companyId, req.actor.userId, "audit:view_agent_actions"))) {
-      throw forbidden("Missing permission: audit:view_agent_actions");
+      && (!req.actor.userId || !await access.canUser(companyId, req.actor.userId, "commentary:view"))) {
+      throw forbidden("Missing permission: commentary:view");
     }
     return issueReadSqlCondition(db, req.actor);
   }

@@ -1,3 +1,6 @@
+import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
+import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
+import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
@@ -777,7 +780,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
   let stagedCodexHomeDir: string | null = null;
+  let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
+  let observabilityPreparationFailed = false;
   try {
+    if (ctx.observability) {
+      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+        try {
+          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
+            launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
+        } catch {
+          observabilityPreparationFailed = true;
+          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
+        }
+      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
+    }
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
@@ -838,7 +854,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -996,6 +1012,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
@@ -1073,6 +1090,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+    if (observabilityProfile) {
+      let qualified = false;
+      try {
+        const version = await runAdapterExecutionTargetProcess(`${runId}-observability-version`, executionTarget, command, ["--version"], {
+          cwd, env: runtimeEnv, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+        });
+        qualified = version.exitCode === 0 && /^codex-cli 0\.160\.0\s*$/.test(version.stdout.trim());
+      } catch { /* Export qualification must not block baseline work. */ }
+      if (!qualified) {
+        await observabilityProfile.cleanup();
+        observabilityProfile = null;
+        await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not the qualified 0.160.0 release.\n");
+      }
+    }
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
@@ -1257,6 +1288,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       );
       const args = execArgs.args;
+      if (observabilityProfile) replaceCodexProfileArgs(args, observabilityProfile.name);
+      else if (observabilityPreparationFailed) disableCodexObservabilityArgs(args);
       const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
       if (ctx.agentIdentity) {
         const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
@@ -1698,6 +1731,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // If the process dies before reaching this, the next
     // prepareCodexRuntimeConfig restores the original from the pre-run backup
     // written at prepare time.
+    await observabilityProfile?.cleanup();
     await preparedRuntimeConfig.cleanup();
   }
 }

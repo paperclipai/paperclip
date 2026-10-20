@@ -6,6 +6,9 @@ import { HttpError } from "../errors.js";
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
 }));
+vi.mock("../services/execution-blocker.js", () => ({
+  getExecutionBlocker: vi.fn(async () => null),
+}));
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),

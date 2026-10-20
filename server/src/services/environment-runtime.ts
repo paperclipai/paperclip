@@ -2945,7 +2945,7 @@ function createSandboxEnvironmentDriver(
       if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager || !pluginId || !providerKey
         || !input.lease.providerLeaseId || input.lease.environmentId !== input.environment.id
         || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentResumeLease")
-        || (hasNativeWorkspaceExportResume(input.lease) && !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentStopLease"))) {
+        || (hasStopOnlyCleanup(input.lease) && !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentStopLease"))) {
         throw new Error("The exact sandbox lease cannot be resumed by its verified provider.");
       }
       // This is a lifecycle resume, never acquisition: no replacement, host

@@ -86,6 +86,16 @@ necessarily shared server preferences.
 
 Review: `baseline`.
 
+Agent REST callers can promote a prepared backlog task with
+`PATCH /api/issues/{id}` and exactly `{ "status": "todo", "expectedStatusVersion": N }`.
+The optional nonnegative integer version comes from the current task response.
+The server checks both the version and backlog state under the task row lock;
+status or ownership changes, including changes back to their earlier values,
+return `409` without promoting or waking the task. Mixed mutation fields return
+`422`. Existing company, task, assignment and run authority still apply.
+Route and real-PostgreSQL service tests cover the contract; no live agent journey
+or dedicated native tool is claimed.
+
 API: `present` — representative operation IDs:
 
 - `PATCH /api/issues/{id}`.
@@ -120,12 +130,25 @@ regressions in [ownership tests](../../server/src/__tests__/issue-agent-mutation
 cover a human handoff and stop enforcement for other actors, runtimes and targets;
 they use mocked services and do not claim live execution proof.
 
+Queue and HTTP/2 sandbox callbacks admit `GET /api/issues/{id}/diagnostics/wakes`
+and `POST /api/issues/{id}/monitor/check-now`. The controller still checks task
+read access or monitor-management permission and assignment ownership. Recovery
+resolution and scheduled-retry controls remain outside this bridge surface.
+
 Monitor verification: submit flat scheduling fields, observe the schema rejection
 and unchanged task, then retry with the nested `monitor` object and the same
 idempotency key. Inspect the saved schedule and audit, yield, and verify exactly
 one `issue_monitor_due` wake. [Scheduler integration coverage](../../server/src/__tests__/issue-monitor-scheduler.test.ts)
 uses real PostgreSQL, the native tool authority, and the heartbeat scheduler with
 a no-op process agent. It does not prove live model recovery.
+
+Monitor deferral diagnostics: an unresolved execution-recovery hold keeps a due
+schedule intact and prevents execution. Read `issue.monitor_deferred` activity
+for the safe blocker cause; unexpected dispatch failures record
+`issue.monitor_dispatch_failed`. Repeated identical diagnostics are throttled for
+five minutes. The scheduler regression proves that a held source does not replay
+and that clearing the hold permits one later wake. This is local PostgreSQL
+evidence, not live provider recovery.
 
 Gaps: Dedicated tools differ in scope and fields. Generic `call_api` forwards
 status, assignment and dependency fields to existing route authorization.

@@ -1,5 +1,8 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
+import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
+import { AGENT_OBSERVABILITY_ENV_KEYS, applyObservabilityEnvironment } from "../agent-observability.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -232,6 +235,7 @@ type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
  * in-sandbox staged workspace + home, which this cache reuses.
  */
 export interface StagedRuntimeCacheEntry {
+  observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
    * The env keys the per-adapter managed-home seam mutated when it staged (e.g.
@@ -1315,6 +1319,7 @@ async function prepareCodexSkillRuntime(input: {
   env: Record<string, string>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  observability?: AdapterExecutionContext["observability"];
   // Step-timing seam: threaded from `buildRuntime` so the nested
   // `skills.reconcile` boundary (step 3) can emit its own `run.startup.step`
   // event at its call-site. Both optional — a caller without an event sink or
@@ -1353,6 +1358,17 @@ async function prepareCodexSkillRuntime(input: {
       apiKey,
       onLog: input.onLog,
     });
+  let launchCodexHome = effectiveCodexHome;
+  if (input.observability?.otelConfig) {
+    // Managed AI connections project a server-owned credential home into env.
+    // Only a caller override lacks this server-supplied connection attribution.
+    if (configuredCodexHome && !input.config.managedAiConnection) await input.onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
+    else {
+      try {
+        launchCodexHome = await prepareAcpxCodexObservabilityHome(effectiveCodexHome, input.observability, input.agentId);
+      } catch { await input.onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues without company export.\n"); }
+    }
+  }
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
@@ -1396,7 +1412,7 @@ async function prepareCodexSkillRuntime(input: {
   }
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
 
-  input.env.CODEX_HOME = effectiveCodexHome;
+  input.env.CODEX_HOME = launchCodexHome;
 
   return {
     identity: {
@@ -1806,6 +1822,7 @@ async function disposeFreshStagedRuntime(input: {
 
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
+  onWorkspaceReuse?: (reused: boolean, compatible: boolean) => Promise<void>;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
   // The run resource ledger. `executeAcpxEngine` creates the one ledger for the
@@ -2078,6 +2095,9 @@ async function buildRuntime(input: {
     resolvedAdapterEnv.ANTHROPIC_CUSTOM_HEADERS = env.ANTHROPIC_CUSTOM_HEADERS;
   }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (input.ctx.observability) {
+    applyObservabilityEnvironment(env, input.ctx.observability);
+  }
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -2106,7 +2126,7 @@ async function buildRuntime(input: {
         "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
         // Preserve Codex's default secret-name exclusions. The short-lived
         // Paperclip API token is required by the agent skill's Bash/curl calls.
-        ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+        ...Object.keys(env).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
       ])] } : {}),
       requestedModel,
       requestedThinkingEffort,
@@ -2167,6 +2187,7 @@ async function buildRuntime(input: {
         agentId: agent.id,
         config,
         env,
+        observability: input.ctx.observability,
         moduleDir: input.engine.moduleDir,
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,
@@ -2391,6 +2412,7 @@ async function buildRuntime(input: {
       target: remoteTarget,
       env,
       isCompatibleResume,
+      observabilityCompatibilityKey: input.ctx.observability?.compatibilityKey,
       stage: (assets) =>
         stageAcpRemoteRuntime({
           runId,
@@ -2509,6 +2531,7 @@ async function buildRuntime(input: {
     await sandboxSite.placeWorkspace({ sessionKey } as unknown as AcpRunContext);
     await emitRunPhaseTiming(input.ctx, "place_workspace", nowMs() - placeWorkspaceStart, "ok");
     const placedStaged = sandboxSite.staged;
+    await input.onWorkspaceReuse?.(placedStaged?.reused === true, isCompatibleResume);
     stagedRuntime = placedStaged?.stagedRuntime ?? null;
     remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
     remoteStagingDispose = placedStaged?.dispose ?? null;
@@ -3670,10 +3693,12 @@ function saveStagedRuntimeAfterCleanTurn(input: {
   handles: Map<string, StagedRuntimeCacheEntry>;
   prepared: AcpxPreparedRuntime;
   now: number;
+  observabilityCompatibilityKey?: string;
 }) {
   const { prepared } = input;
   if (!prepared.stagedRuntime || prepared.remoteStagingEnvDelta === null) return;
   input.handles.set(prepared.sessionKey, {
+    observabilityCompatibilityKey: input.observabilityCompatibilityKey,
     stagedRuntime: prepared.stagedRuntime,
     envDelta: prepared.remoteStagingEnvDelta,
     teardown: prepared.remoteManagedHomeTeardown,
@@ -4065,6 +4090,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? startupExecutionTarget
         : null;
     const targetsRemoteSandbox = sandboxTarget !== null;
+    const reuseEvents: import("../types.js").AdapterRuntimeEvent[] = [];
+    const onReuseEvent: NonNullable<AdapterExecutionContext["onEvent"]> = async event => {
+      reuseEvents.push(event);
+      await ctx.onEvent?.(event);
+    };
+    let providerLaunchCount: number | null = null;
+    let reusedProviderProcess = false;
+    let providerProcessReason: StartupReuseReason = "evidence_missing";
     const tracing =
       targetsRemoteSandbox && ctx.startupTraceContext
         ? ctx.startupTraceContext
@@ -4165,6 +4198,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } },
       };
+      await emitStartupReuse(onReuseEvent, "environment", environmentStartupReuse(startupExecutionTarget));
+      // ACPX has no separate native Runner process. Its runtime object is not
+      // evidence that a provider process or a staged workspace was reused.
+      await emitStartupReuse(onReuseEvent, "runner", { state: "not_applicable", reason: "not_applicable" });
+      if (!startupExecutionTarget || startupExecutionTarget.kind === "local") {
+        await emitStartupReuse(onReuseEvent, "workspace", { state: "not_applicable", reason: "not_applicable" });
+      }
       // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
       // consults the staged cache to decide whether a compatible resume may reuse
       // an already-staged runtime — an expired entry must not be reused.
@@ -4179,22 +4219,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // the parallel steps saved). Every step reports its wall time through
       // `onWallMs`; a skipped step adds zero.
       let stepWallSumMs = 0;
-      // Whether this bring-up is a cold start (no warm handle). Set once the warm-
-      // handle lookup runs below; it stays undefined on an early build failure, so
-      // the root span omits the attribute (fail open).
-      let coldStart: boolean | undefined;
-      const rootSpan = openStartupRootSpan(tracing, now, runRootSpan.parentContext, () => ({
-        workMs: stepWallSumMs,
-        context: {
-          coldStart,
+      const rootSpan = openStartupRootSpan(tracing, now, runRootSpan.parentContext, () => {
+        const warmth = summarizeStartupReuse(reuseEvents).warmth;
+        return {
+          workMs: stepWallSumMs,
+          context: {
+            warmth,
+            coldStart: warmth === "cold" ? true : warmth === "warm" ? false : undefined,
           // The provider key and the lease id are the only low-cardinality
           // context values this provider-agnostic layer holds. The region, the
           // image id, and the sandbox id are not threaded here, so the root span
           // omits them (fail open). The lease id rides only as a hash.
-          provider: sandboxTarget?.providerKey ?? undefined,
-          leaseId: sandboxTarget?.leaseId ?? undefined,
-        },
-      }));
+            provider: sandboxTarget?.providerKey ?? undefined,
+            leaseId: sandboxTarget?.leaseId ?? undefined,
+          },
+        };
+      });
       const spanParent: Pick<
         StartupStepMeasureOptions,
         "tracer" | "parentContext" | "contextWithSpan" | "onWallMs"
@@ -4346,6 +4386,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
             buildRuntime({
               ctx: startupCancellation.context,
+              onWorkspaceReuse: (reused, compatible) => emitStartupReuse(onReuseEvent, "workspace", {
+                state: reused ? "reused" : "fresh",
+                reason: reused ? "verified_reuse" : compatible ? "cache_miss" : "identity_mismatch",
+              }),
               engine,
               deps,
               ledger: runResourceLedger,
@@ -4403,10 +4447,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // the reused runtime cannot expire under its own timer while this run uses
         // it (today's `clearWarmHandleTimer(cached)` after the reuse decision).
         let cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
-        if (cached && (ctx.context.refreshTools === true
+        providerProcessReason = canResume ? "cache_miss" : Object.keys(previousParams).length ? "identity_mismatch" : "created";
+        if (cached && (cached.observabilityCompatibilityKey !== ctx.observability?.compatibilityKey || ctx.context.refreshTools === true
           || asString(previousParams.mcpFingerprint, "") !== shortHash(prepared.mcpIdentity)
           // MCP bearer credentials are run-scoped, even for an unchanged catalog.
           || prepared.mcpServers.length > 0)) {
+          providerProcessReason = cached.observabilityCompatibilityKey !== ctx.observability?.compatibilityKey
+            ? "configuration_changed" : "tools_changed";
           await hostStore.discard(prepared.sessionKey);
           cached = undefined;
         }
@@ -4419,6 +4466,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        // The process-session bridge starts its provider inside the sandbox.
+        // ACPX observes only the host relay on that lane, so neither its spawn
+        // callback nor a cached relay establishes physical provider reuse.
+        const observesProviderProcess = !prepared.processSessionBridge;
+        providerLaunchCount = observesProviderProcess ? 0 : null;
+        reusedProviderProcess = observesProviderProcess && Boolean(cached?.handle);
+        processIdentitySink.onLaunch = observesProviderProcess
+          ? () => { providerLaunchCount = (providerLaunchCount ?? 0) + 1; }
+          : undefined;
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
@@ -4458,6 +4514,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? (chunk) => routeChildStderr(childStderrState, chunk)
             : undefined,
           onAgentSpawn: async (meta) => {
+            processIdentitySink.onLaunch?.();
             processIdentitySink.latest = meta;
             processIdentitySink.localProcess = prepared.processSessionBridge ? undefined : captureLocalProcess(meta.pid);
             await processIdentitySink.current?.({
@@ -4477,9 +4534,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
         // split reports nothing for it.
         let createRuntimeMs: number | undefined;
-        // A warm handle reuses the running ACP runtime; a miss constructs one. The
-        // root span records this as `cold_start`.
-        coldStart = !cached?.runtime;
+        // Runtime construction alone does not establish startup warmth.
         if (cached?.runtime) {
           runtime = cached.runtime;
         } else {
@@ -4645,6 +4700,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resumedSession = false;
             clearSession = true;
           }
+          if (handle) await emitStartupReuse(onReuseEvent, "provider_session", {
+            state: resumedSession ? "reused" : "fresh",
+            reason: resumedSession ? "verified_reuse" : clearSession ? "resume_failed" : providerProcessReason,
+          });
+          await emitStartupReuse(onReuseEvent, "provider_process", {
+            state: providerLaunchCount !== null && providerLaunchCount > 0 ? "fresh" : reusedProviderProcess ? "reused" : "unknown",
+            reason: providerLaunchCount !== null && providerLaunchCount > 0 ? providerProcessReason : reusedProviderProcess ? "verified_reuse" : "evidence_missing",
+          }, providerLaunchCount);
           // A compatible warm handle reuses the already-running ACP agent and does
           // not emit another spawn event. Persist its known identity on this run
           // before the next prompt starts so every running heartbeat is adoptable.
@@ -5688,7 +5751,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         settleReuse: (slots, decision) => timedPhase("settle_reuse", async () => {
           if (!slots.has("staged_runtime")) return;
           if (decision.kind === "save" && decision.savedId === "staged_runtime") {
-            saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
+            saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now(), observabilityCompatibilityKey: ctx.observability?.compatibilityKey });
             return;
           }
           await discardStagedRuntime({ handles: stagedRuntimes, prepared });
@@ -5817,6 +5880,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       return await runAttempt(plan);
     } finally {
+      // Record the in-memory evidence synchronously, but never let diagnostic
+      // persistence hold the staging lease or delay the completed run's return.
+      // The emitter catches sink failures, including a later rejection.
+      void emitStartupReuse(onReuseEvent, "provider_process", {
+        state: providerLaunchCount !== null && providerLaunchCount > 0 ? "fresh" : reusedProviderProcess ? "reused" : "unknown",
+        reason: providerLaunchCount !== null && providerLaunchCount > 0 ? providerProcessReason : reusedProviderProcess ? "verified_reuse" : "evidence_missing",
+      }, providerLaunchCount);
       clearTimeout(stopTimer);
       removeStopListener?.();
       removeLossListener?.();

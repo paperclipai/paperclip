@@ -73,6 +73,19 @@ export function readStopOnlyCleanup(lease: Lease) {
 /** Persist before provider dispatch so an older worker or a restart cannot turn
  * an explicit stop into ordinary destructive release. Invalid pins stay pending. */
 export async function prepareSandboxStopAndRetain(db: Db, lease: Lease) {
+  return prepareStopAndRetain(db, lease, "active");
+}
+
+/** A repair-only resume invalidates the old stop receipt atomically. This is
+ * separate from ordinary release; a released timestamp alone cannot grant it. */
+export async function prepareStoppedSandboxForRecovery(db: Db, lease: typeof environmentLeases.$inferSelect) {
+  if (!hasRemoteTerminationReceipt(lease) || lease.status !== "released"
+    || (lease.metadata?.remoteExecutionTermination as { state?: string })?.state !== "stopped"
+    || !["retain_on_failure", "ephemeral"].includes(lease.leasePolicy)) return null;
+  return prepareStopAndRetain(db, lease, "released");
+}
+
+async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" | "released") {
   const requestId = randomUUID(), now = new Date();
   const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId,
     companyId: lease.companyId, runId: lease.heartbeatRunId, leaseId: lease.id,
@@ -87,7 +100,7 @@ export async function prepareSandboxStopAndRetain(db: Db, lease: Lease) {
       pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupRetryCapWarned: false,
     })}::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
-    eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!), eq(environmentLeases.status, "active"),
+    eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!), eq(environmentLeases.status, fromStatus),
     sql`${environmentLeases.provider} is not distinct from ${lease.provider}`,
     sql`${environmentLeases.providerLeaseId} is not distinct from ${lease.providerLeaseId}`,
     sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`,

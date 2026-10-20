@@ -13,7 +13,7 @@ vi.mock("../lib/router", () => ({
 }));
 vi.mock("../api/agents", () => ({ agentsApi: { retryFailedRun: vi.fn() } }));
 vi.mock("../api/activity", () => ({ activityApi: { runsForIssue: vi.fn() } }));
-vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: vi.fn(), listAttachments: vi.fn(), reconstructWorkspace: vi.fn() } }));
+vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: vi.fn(), listAttachments: vi.fn(), reconstructWorkspace: vi.fn(), recoverWorkspace: vi.fn() } }));
 
 describe("stopped task recovery notice", () => {
   let root: Root;
@@ -37,6 +37,28 @@ describe("stopped task recovery notice", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
   });
   afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
+  it.each(["queued", "recovering", "blocked"] as const)("shows observed workspace recovery state: %s", async status => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" canRecover onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "failed-run", agentId: "agent", cause: "native_continuation_requires_reconciliation",
+        nextAction: "Recover the retained source", workspaceRepairRequired: true, savedMessageCount: 1,
+        workspaceRecovery: { status, stage: "restoring_files", canRetry: status === "blocked",
+          message: "Recovery couldn’t finish. Your message is saved." },
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).not.toContain("operator attention");
+    if (status === "blocked") {
+      expect(container.textContent).toContain("Recovery couldn’t finish");
+      vi.mocked(issuesApi.recoverWorkspace).mockResolvedValue({ actionId: "recovery", status: "queued" });
+      await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(issuesApi.recoverWorkspace).toHaveBeenCalledWith("task", expect.objectContaining({ actionId: "recovery", runId: "failed-run", idempotencyKey: expect.any(String) }));
+      expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
+    } else {
+      expect(container.textContent).toContain("Recovering saved work…");
+      expect(container.textContent).toContain("Your message is saved and will continue after recovery.");
+      expect(container.querySelector("button")).toBeNull();
+    }
+  });
   it("keeps the recovery guidance and an inspection link alongside Retry", () => {
     const notice = container.querySelector('[role="status"][aria-label="Task recovery"]')!;
     expect(notice.textContent).toContain("Recorded work is preserved");
@@ -111,11 +133,11 @@ describe("stopped task recovery notice", () => {
         nextAction: "The original sandbox is retained. Recover the missing files and record workspace repair evidence.",
       }} />
     </QueryClientProvider>));
-    expect(container.textContent).toContain("The workspace needs operator attention");
+    expect(container.textContent).toContain("Paperclip must recover the saved workspace");
     // The hold also covers unsafe archives and local runs, so the notice must not promise retries or a kept sandbox.
     expect(container.textContent).not.toContain("retrying");
     expect(container.textContent).not.toContain("no work is lost");
-    expect(container.querySelector("details")?.textContent).toContain("Recover the missing files");
+    expect(container.textContent).not.toContain("record workspace repair evidence");
     expect(container.querySelector("button")).toBeNull();
     expect(container.querySelector("textarea, input")).toBeNull();
     expect(container.querySelector("a")?.textContent).toBe("Inspect run");

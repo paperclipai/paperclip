@@ -59,15 +59,16 @@ function readOwner(value: unknown): Owner | null {
  * There is deliberately no wall-clock timeout that can steal a slow export.
  */
 export async function withNativeWorkspaceFinalizationOwnership<T>(
-  input: { db: Db; companyId: string; runId: string },
+  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
-): Promise<{ acquired: false } | { acquired: true; value: T }> {
+): Promise<{ acquired: false; reason?: "owner_unverified" } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
   const owner: Owner = {
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
     processStartedAt: identity.processStartedAt.toISOString(), worker: currentWorkspaceWorker(),
   };
-  const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.runtimeMode, "native"));
+  const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
   const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
   let claimed = false;
   let actionPromise: Promise<T> | undefined;
@@ -79,7 +80,9 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
       if (rows[0]?.acquired !== true) return { acquired: false } as const;
       return withWorkspaceLockKeepalive(lock as unknown as Db, Number(rows[0].idle_timeout_ms), async () => {
         // Reads and durable progress use the ordinary pool, not the lock transaction.
-        const [run] = await input.db.select({ profile: heartbeatRuns.runnerProfileJson, issueId: heartbeatRuns.nativeIssueId, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(scope).limit(1);
+        const [run] = await input.db.select({ profile: heartbeatRuns.runnerProfileJson,
+          issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
+          agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(scope).limit(1);
         if (!run) throw new Error("native_workspace_finalization_binding_missing");
         const rawPrior = run.profile?.[OWNER_KEY];
         const prior = readOwner(rawPrior);
@@ -95,6 +98,16 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
             eq(issues.companyId, input.companyId), eq(issues.id, run.issueId),
           )).for("update");
           const [currentRun] = await db.select().from(heartbeatRuns).where(scope).for("update");
+          if (input.retainedRepairActionId) {
+            const [repair] = await db.select().from(issueRecoveryActions).where(and(
+              eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, run.issueId),
+              eq(issueRecoveryActions.id, input.retainedRepairActionId),
+            )).for("update");
+            return currentRun && issue && repair && repair.evidence.runId === currentRun.id
+              && repair.evidence.workspaceRecovery && !coordinator?.leaseOwner
+              && ["failed", "interrupted", "timed_out", "cancelled", "succeeded"].includes(currentRun.status)
+              && !issue.executionRunId && !issue.checkoutRunId ? repair : null;
+          }
           return coordinator && issue && currentRun ? currentNativeWorkspaceRecoveryResult(db, {
             companyId: input.companyId, coordinator, issue, run: currentRun,
           }) : null;
@@ -102,6 +115,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
         let platformProof: WorkspaceWorkerStopProof | null = null;
         if (rawPrior != null) {
           const requireStopVerification = async () => {
+            if (input.retainedRepairActionId) return { acquired: false, reason: "owner_unverified" } as const;
             const fingerprint = nativeSha256({ runId: input.runId, owner: rawPrior });
             const nextAction = "Verify the previous controller and its workspace-copyback processes have stopped, then release only this exact workspace owner receipt using doc/native-workspace-finalization-recovery.md. Resume workspace finalization without another provider turn.";
             const recovery = issueRecoveryActionService(input.db);
@@ -145,7 +159,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
               owner: { leaseOwner: prior.token, leaseExpiresAt: new Date(0), controllerPid: prior.pid,
                 controllerProcessStartedAt: new Date(prior.processStartedAt) }, now: new Date(),
             });
-            if (!takeover.allowed) return { acquired: false } as const;
+            if (!takeover.allowed) return requireStopVerification();
             // A dead parent may have orphaned tar/Git children. Only a durable
             // completed-copyback barrier proves they joined; otherwise board proof
             // is required even on the same host. Both callers reuse this barrier.

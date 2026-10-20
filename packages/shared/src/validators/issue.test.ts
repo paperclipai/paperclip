@@ -16,6 +16,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("retains an optional nonnegative integer version for prepared-task promotion", () => {
+    expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
+    expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();
+    for (const version of [-1, 0.5, null, "0"]) {
+      expect(updateIssueSchema.safeParse({ status: "todo", expectedStatusVersion: version }).success).toBe(false);
+    }
+  });
   it("preserves the exact expected execution policy snapshot without defaults", () => {
     const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
     expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);

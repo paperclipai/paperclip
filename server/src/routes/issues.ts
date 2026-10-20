@@ -1,4 +1,5 @@
 import { parseObject } from "../adapters/utils.js";
+import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
@@ -97,6 +98,7 @@ import {
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   retryWorkspaceExportSchema,
+  recoverWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
@@ -9552,6 +9554,18 @@ export function issueRoutes(
     });
   });
 
+  router.post("/issues/:id/recovery-actions/recover-workspace", validate(recoverWorkspaceSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const { requestWorkspaceRecovery } = await import("../services/workspace-recovery.js");
+    const receipt = await requestWorkspaceRecovery({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId });
+    res.status(202).json(receipt);
+  });
+
   router.post("/issues/:id/recovery-actions/resume-workspace-finalization", validate(resumeWorkspaceFinalizationSchema), async (req, res) => {
     assertBoard(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
@@ -9771,6 +9785,10 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        const workspaceRetry = outcome === "restored" && sourceIssueStatus === "todo"
+          ? await prepareRestrictedWorkspaceRetry(tx as unknown as Db, lockedIssue, activeRecoveryAction)
+          : null;
+        if (workspaceRetry) assertBoard(req);
         let repairedWorkspaceSettings: Record<string, unknown> | undefined;
         if (workspaceBaseRef) {
           const currentSettings = parseObject(lockedIssue.executionWorkspaceSettings);
@@ -9835,12 +9853,12 @@ export function issueRoutes(
         if (
           outcome === "restored" &&
           sourceIssueStatus === "todo" &&
-          (activeRecoveryAction.kind === "deliberate_wait_without_target" || workspaceBaseRef)
+          (activeRecoveryAction.kind === "deliberate_wait_without_target" || workspaceBaseRef || workspaceRetry)
         ) {
           if (
             lockedIssue.status !== "blocked" ||
             activeRecoveryAction.ownerType !== "board" ||
-            (!workspaceBaseRef && activeRecoveryAction.wakePolicy?.type !== "board_escalation") ||
+            (!workspaceBaseRef && !workspaceRetry && activeRecoveryAction.wakePolicy?.type !== "board_escalation") ||
             !activeRecoveryAction.returnOwnerAgentId ||
             lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
           ) {
@@ -10005,6 +10023,14 @@ export function issueRoutes(
             });
           } else {
             await requireRecoverySourceMutationAuthority(req, lockedIssue);
+          }
+
+          if (workspaceRetry?.selection) {
+            await executionWorkspaceServiceDirect(tx as unknown as Db).selectTaskWorkspace({
+              companyId: lockedIssue.companyId, issueId: lockedIssue.id, actor: req.actor,
+              selection: workspaceRetry.selection, expectedBindingRevision: lockedIssue.workspaceBindingRevision,
+              requestKey: activeRecoveryAction.id, source: "recovery",
+            });
           }
 
           if (
@@ -13688,6 +13714,15 @@ export function issueRoutes(
 
   router.patch(
     "/issues/:id",
+    (req, _res, next) => {
+      if (req.body?.expectedStatusVersion !== undefined && (
+        req.body.status !== "todo" ||
+        Object.keys(req.body).some(key => key !== "status" && key !== "expectedStatusVersion")
+      )) {
+        throw unprocessable("expectedStatusVersion requires a status-only backlog-to-todo promotion");
+      }
+      next();
+    },
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
       // Snapshot-guarded writes are policy-only. Do not admit task-control
@@ -13707,6 +13742,13 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      if (req.body.expectedStatusVersion !== undefined && (
+        existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
+      )) {
+        throw conflict("The task status or assignment changed. Read the task again before starting work.", {
+          code: "issue_status_version_changed",
+        });
+      }
       if (req.body.parentId) {
         const parent = await svc.getById(req.body.parentId);
         if (!parent || parent.companyId !== existing.companyId || !(await assertIssueReadAllowed(req, res, parent))) {
@@ -13785,6 +13827,7 @@ export function issueRoutes(
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
         expectedExecutionPolicy,
+        expectedStatusVersion,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13976,6 +14019,7 @@ export function issueRoutes(
         });
       const effectiveMoveToTodoRequested =
         !assigneeSelfCommentOnTerminal &&
+        !(isBlocked && !!commentBody && (await getExecutionBlocker(db, existing.companyId, existing.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
           (!!commentBody &&
             shouldImplicitlyMoveCommentedIssueToTodo({
@@ -14150,7 +14194,9 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
-      const transition = applyIssueExecutionPolicyTransition({
+      const transition: ReturnType<typeof applyIssueExecutionPolicyTransition> = expectedStatusVersion !== undefined
+        ? { patch: {} }
+        : applyIssueExecutionPolicyTransition({
         issue: existing,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
@@ -14530,6 +14576,7 @@ export function issueRoutes(
         ...updateFields,
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
+        expectedStatusVersion,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -18456,6 +18503,7 @@ export function issueRoutes(
         });
       const effectiveMoveToTodoRequested =
         !assigneeSelfCommentOnTerminal &&
+        !(isBlocked && (await getExecutionBlocker(db, issue.companyId, issue.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
           shouldImplicitlyMoveCommentedIssueToTodo({
             issueStatus: issue.status,

@@ -75,6 +75,9 @@ task. Reload and confirm the persisted monitor. After the agent yields, verify
 one later wake and a consumed schedule. For malformed-call recovery, use the
 [agent access recipe](../agent-access-map/tasks.md#properties) and verify that
 schema feedback supports a corrected call before a wait is claimed.
+For a due monitor held by execution recovery, confirm that the schedule remains
+and task activity explains the deferral. Repeated checks must not replay the held
+work. Resolve the hold through its existing recovery action, then verify one wake.
 
 Manual: Add an ordinary Board comment while a task retry is queued or running.
 Confirm that the same execution keeps working and receives the saved message,

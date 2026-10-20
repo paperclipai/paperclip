@@ -520,6 +520,60 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
+  describe("Cloud stack admin experimental settings access", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    const stackAdmin = {
+      type: "board",
+      userId: "stack-admin-1",
+      source: "cloud_tenant",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+      canManageExperimentalSettings: true,
+    };
+
+    it("allows a Cloud stack admin to enable fast responses and audits the change", async () => {
+      const app = createApp(stackAdmin);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableFastResponses: true });
+      expect(mockLogActivity).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+        actorId: "stack-admin-1",
+        action: "instance.settings.experimental_updated",
+        details: expect.objectContaining({ changedKeys: ["enableFastResponses"] }),
+      }));
+    });
+
+    it.each([
+      ["patch", "/api/instance/settings", { defaultEnvironmentId: null }],
+      ["patch", "/api/instance/settings/general", { censorUsernameInLogs: true }],
+      ["post", "/api/instance/task-drain", {}],
+    ] as const)("keeps %s %s restricted to instance admins", async (method, path, body) => {
+      const app = createApp(stackAdmin);
+      await request(app)[method](path).send(body).expect(403);
+    });
+
+    it.each([
+      { ...stackAdmin, source: "session" },
+      { ...stackAdmin, source: "mcp_oauth" },
+      { ...stackAdmin, type: "agent" },
+      { ...stackAdmin, canManageExperimentalSettings: false },
+    ])("rejects actors without trusted Cloud experimental authority (%j)", async (actor) => {
+      const app = createApp(actor);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("keeps operator-hidden experimental settings locked for stack admins", async () => {
+      vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental.enableFastResponses");
+      const app = createApp(stackAdmin);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+  });
+
   it("allows local board users to read and update general settings", async () => {
     const app = await createApp(localAdminActor());
 
@@ -878,7 +932,10 @@ describe("instance settings routes", () => {
       vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
       vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.staging.paperclip.app");
       vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental,instance.experimental.*,instance.general.censorUsernameInLogs");
-      const app = createApp({ type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true });
+      const app = createApp({
+        type: "board", userId: "admin-1", source: "cloud_tenant",
+        isInstanceAdmin: false, canManageExperimentalSettings: true,
+      });
       await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true }).expect(200);
       expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
       await request(app).patch("/api/instance/settings/general").send({ censorUsernameInLogs: true }).expect(403);
@@ -895,7 +952,7 @@ describe("instance settings routes", () => {
       expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
     });
 
-    it("still requires instance admin access on staging", async () => {
+    it("still denies ordinary board members on staging", async () => {
       vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
       vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.staging.paperclip.app");
       const app = createApp({ type: "board", userId: "member-1", source: "session", isInstanceAdmin: false });

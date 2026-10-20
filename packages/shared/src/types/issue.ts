@@ -839,6 +839,7 @@ export type IssueSummary = Pick<
 };
 
 export interface Issue {
+  statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;

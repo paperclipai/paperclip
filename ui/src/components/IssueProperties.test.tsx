@@ -131,7 +131,8 @@ vi.mock("../lib/assignees", () => ({
   },
 }));
 
-vi.mock("./StatusIcon", () => ({
+vi.mock("./StatusIcon", async importOriginal => ({
+  ...await importOriginal<typeof import("./StatusIcon")>(),
   StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
     <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
@@ -141,7 +142,8 @@ vi.mock("./PriorityIcon", () => ({
   PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
 }));
 
-vi.mock("./Identity", () => ({
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
   Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
@@ -2019,7 +2021,8 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows only the workspace detail link for non-default workspaces", async () => {
+  it.each([false, true])("shows the workspace detail link only when its destination is enabled: %s", async enabled => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: enabled });
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -2036,12 +2039,12 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    const workspaceLink = Array.from(container.querySelectorAll("a")).find(
-      (link) => link.textContent?.trim() === "View workspace",
-    );
     expect(container.textContent).not.toContain("View workspace tasks");
-    expect(workspaceLink).not.toBeUndefined();
-    expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+    await vi.waitFor(() => {
+      const workspaceLink = Array.from(container.querySelectorAll("a")).find(link => link.textContent?.trim() === "View workspace");
+      if (enabled) expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+      else expect(workspaceLink).toBeUndefined();
+    });
 
     act(() => root.unmount());
   });
@@ -3580,7 +3583,7 @@ describe("IssueProperties", () => {
     }, ["workspaces.isolation"]);
     await flush();
     expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
-    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    await vi.waitFor(() => expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull());
     expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
   });

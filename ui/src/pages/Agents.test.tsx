@@ -8,7 +8,7 @@ import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/s
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
-import { Agents } from "./Agents";
+import { Agents, filterAgents, filterOrgTree } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
@@ -294,6 +294,27 @@ function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | 
   return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
 }
 
+describe("agent search", () => {
+  it("combines case-insensitive name, title and role words with status and built-in filters", () => {
+    const alpha = makeAgent({ id: "alpha", name: "Alpha", role: "engineer", status: "active", title: "Connector engineer" });
+    const beta = makeAgent({ id: "beta", name: "Beta", role: "designer", status: "paused", title: "Design reviewer" });
+    const hidden = makeAgent({ id: "hidden", name: "Beta", status: "terminated" });
+    const agents = [alpha, beta, hidden];
+    expect(filterAgents(agents, "all", new Set(), " BETA   design ")).toEqual([beta]);
+    expect(filterAgents(agents, "active", new Set(), "beta")).toEqual([]);
+    expect(filterAgents(agents, "paused", new Set(), "reviewer")).toEqual([beta]);
+    expect(filterAgents(agents, "builtin", new Set([alpha.id]), "connector")).toEqual([alpha]);
+    expect(filterAgents(agents, "all", new Set(), "   ")).toEqual([alpha, beta]);
+  });
+
+  it("retains the hierarchy above a matching report and promotes reports of hidden agents", () => {
+    const child = { id: "child", name: "Designer", role: "designer", status: "paused", reports: [] };
+    const root = { id: "root", name: "CEO", role: "ceo", status: "active", reports: [child] };
+    expect(filterOrgTree([root], "all", new Set(), new Set([child.id]))).toEqual([root]);
+    expect(filterOrgTree([root], "all", new Set(), new Set())).toEqual([]);
+    expect(filterOrgTree([{ ...root, status: "terminated" }], "all", new Set(), new Set([child.id]))).toEqual([child]);
+  });
+});
 function renderAgentsView(root: ReturnType<typeof createRoot> | null, queryClient: QueryClient) {
   root!.render(
     <QueryClientProvider client={queryClient}>
@@ -367,6 +388,27 @@ describe("Agents", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("filters the rendered roster and clears search without changing its status route", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "alpha", name: "Alpha", role: "engineer" }),
+      makeAgent({ id: "beta", name: "Beta", role: "designer" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => root!.render(<QueryClientProvider client={queryClient}><ToastProvider><Agents /></ToastProvider></QueryClientProvider>));
+    await flushReact();
+    await flushReact();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "beta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(findAgentRow(container, "Beta")).not.toBeNull();
+    expect(findAgentRow(container, "Alpha")).toBeNull();
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click());
+    expect(findAgentRow(container, "Alpha")).not.toBeNull();
+    expect(mockRouterState.navigate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -449,7 +491,8 @@ describe("Agents", () => {
     expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("md:min-h-0")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("h-(--sz-calc-38)")).toBe(false);
-    expect(orgViewport?.parentElement?.parentElement?.classList.contains("h-full")).toBe(true);
+    expect(orgViewport?.closest('[data-slot="tabs"]')?.classList.contains("h-full")).toBe(true);
+    expect(orgViewport?.closest('[role="tabpanel"]')?.classList.contains("flex-1")).toBe(true);
     expect(orgViewport?.parentElement?.parentElement?.classList.contains("min-h-0")).toBe(true);
     expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
@@ -513,7 +556,6 @@ describe("Agents", () => {
     expect(row?.textContent).not.toContain("Run with provider trace");
     expect(row?.textContent).not.toContain("Pause");
   });
-
 
 
   it("shows effective environment and sandbox provider beside agents", async () => {
@@ -842,7 +884,7 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("1 agent");
+    expect(container.textContent).not.toContain("1 agent");
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");

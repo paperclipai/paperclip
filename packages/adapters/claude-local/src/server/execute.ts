@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
+import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -487,7 +488,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
-  let loggedEnv = initialLoggedEnv;
+  if (ctx.observability) applyObservabilityEnvironment(env, ctx.observability);
+  let loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv: initialLoggedEnv,
+    includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+    resolvedCommand,
+  });
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,

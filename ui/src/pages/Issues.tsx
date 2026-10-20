@@ -1,4 +1,6 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
+import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
@@ -91,11 +93,12 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
  * get the same Views control in their toolbar, so the switch reads as one page.
  */
 export function Issues() {
+  const designSandbox = useDesignSandbox();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {

@@ -1075,9 +1075,17 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     },
   );
 
-  it("blocks a reused shared-checkout workspace with the owner action once a restricted task worktree shares it", async () => {
+  it.each(["git_worktree", "project_primary"] as const)("blocks a reused %s workspace with the owner action once a restricted task worktree shares it", async (strategyType) => {
     vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
     const seeded = await seedRetainedSourceRun("deleted");
+    if (strategyType === "project_primary") {
+      await db.update(projectWorkspaces).set({ cwd: seeded.owner, repoUrl: seeded.repoUrl }).where(eq(projectWorkspaces.id, seeded.newWorkspaceId));
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace", strategyType,
+        projectWorkspaceId: seeded.newWorkspaceId, cwd: seeded.owner, providerRef: null,
+        providerType: "local_fs", branchName: null, metadata: null }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      await db.update(issues).set({ projectWorkspaceId: seeded.newWorkspaceId,
+        executionWorkspaceSettings: { mode: "shared_workspace" } }).where(eq(issues.id, seeded.issueId));
+    }
     const [privateIssue] = await db.insert(issues).values({ companyId: seeded.companyId, projectId: seeded.projectId,
       title: "Private work", visibility: "private" }).returning();
     const privateCwd = path.join(seeded.owner, ".paperclip", "worktrees", "restricted-task");
@@ -1101,10 +1109,12 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue).toMatchObject({ status: "blocked", executionRunId: null, executionWorkspaceId: seeded.executionWorkspaceId });
     const comments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments.map(comment => comment.body).join("\n")).toContain("shared project checkout that also holds another task's workspace");
+    expect(comments.map(comment => comment.body).join("\n")).toContain("The task couldn’t start.");
     const actions = await db.select({ nextAction: issueRecoveryActions.nextAction }).from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
-    expect(actions.map(action => action.nextAction).join("\n")).toContain("select a new workspace");
+    expect(actions).toHaveLength(1);
+    expect(actions.map(action => action.nextAction).join("\n")).toContain("Retry the task.");
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(1);
     expect(await readFile(path.join(seeded.worktree, "retained.txt"), "utf8")).toBe("unexported original task edits\n");
   });
 

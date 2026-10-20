@@ -14,6 +14,7 @@ import { captureNativeDefault, gradeNativeDefault, nativeCompletionWorkspaceDige
 import { gradeNativeCompletion, gradeNativeCompletionFinalAnswer } from "./native-completion-scoring.js";
 import { assertNativeBlockerReply } from "./native-blocker-visible.js";
 import { warmManagedFileEvidence } from "./warm-managed-files.js";
+import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
 import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
@@ -639,6 +640,7 @@ for (const execution of executions) {
     };
     let firstTaskEvidence: RunnerE2EResult["firstTask"];
     let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
+    let startupReuse: RunnerE2EResult["startupReuse"];
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
     let primaryError: unknown;
@@ -2755,6 +2757,9 @@ for (const execution of executions) {
         }
       }
 
+      startupReuse = runEventsByRun.map(captured => ({ runId: captured.runId,
+        ...summarizeStartupReuse(captured.error ? [] : captured.events) }));
+      await writeSanitizedJson(snapshotsDir, "startup-reuse.json", startupReuse, secrets);
       await writeSanitizedJson(
         snapshotsDir,
         "api-state.json",
@@ -3143,6 +3148,7 @@ for (const execution of executions) {
         issueIdentifier: issue?.identifier ?? null,
         runIds: selectedRuns.map((run) => run.id),
         ...(turnTimings ? { turnTimings } : {}),
+        ...(startupReuse ? { startupReuse } : {}),
         startedAt,
         finishedAt: new Date(finishedAtMs).toISOString(),
         durationMs: finishedAtMs - startedAtMs,

@@ -2597,7 +2597,7 @@ export function recoveryService(
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON
-                      ? "Push any unpublished work from this task's workspace, then select a new workspace for the task, or have an owner grant access to the restricted task. Then retry the original assignee."
+                      ? "Retry the task."
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(

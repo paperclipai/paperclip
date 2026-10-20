@@ -21,7 +21,7 @@ import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
-import { loadRepositoryRootReaders, requiresAnonymousRepositoryAcquisition, rootReaderRunColumns } from "./execution-workspace-root-readers.js";
+import { loadRepositoryRootReaders, requiresAnonymousRepositoryAcquisition, rootReaderRunColumns, runRetainsIssueIdentity } from "./execution-workspace-root-readers.js";
 
 import { canonicalRepositoryRoot, resolveRepositoryRoots, repositoryRootsOverlap, legacyRepositoryRootMayMatch, configuredWorkspaceRoot, verifiedIsolatedWorktree, unusedIsolatedCopyTarget, isolatedWorkspaceSourceRoots, type WorkspaceSourceCopyKind } from "./execution-workspace-source-roots.js";
 export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
@@ -420,8 +420,7 @@ async function assertRootProjectTrust(db: Db | DbTransaction, input: {
   const workspaceId = input.sourceWorkspaceId ?? issue?.executionWorkspaceId;
   const [workspace] = workspaceId ? await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, input.companyId))) : [];
   const [source] = workspace?.projectId ? await db.select().from(projects).where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, input.companyId))) : [];
-  if ((agentId && !agent) || (runId && (!run || run.agentId !== agentId || !issue
-    || (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.issueId) !== issue.id))) throw incompatible();
+  if ((agentId && !agent) || (runId && (!run || run.agentId !== agentId || !issue || !runRetainsIssueIdentity(run, issue.id)))) throw incompatible();
   const retainedPolicy = run?.contextSnapshot?.executionPolicy;
   const current = resolveCoreTrustPreset({ companyId: input.companyId, agent, project, workspaceSourceProject: source, issue,
     run: run ? { companyId: input.companyId, executionPolicy: retainedPolicy } : null });

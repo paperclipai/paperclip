@@ -311,6 +311,40 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
   });
 
+  it("explains held monitor dispatch without replaying uncertain execution", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+    const sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId,
+      runtimeMode: "legacy", status: "interrupted", errorCode: "process_lost",
+      finishedAt: new Date(), contextSnapshot: { issueId } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId,
+      evidence: { runId: sourceRunId }, nextAction: "Inspect the interrupted execution before continuing." }).returning();
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect((await heartbeat.tickTimers(tickAt)).enqueued).toBe(0);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 30_000))).enqueued).toBe(0);
+    const [waiting] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(waiting.monitorNextCheckAt).toEqual(nextCheckAt);
+    expect(waiting.monitorWakeRequestedAt).toBeNull();
+    expect(waiting.monitorAttemptCount).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+    const diagnostics = (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
+      .filter(row => row.action === "issue.monitor_deferred");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.details).toMatchObject({ nextCheckAt: nextCheckAt.toISOString(),
+      reason: "execution_reconciliation_required", blockerCause: "legacy_execution_requires_reconciliation", attemptCount: 0 });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0]?.status).toBe("active");
+    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(),
+      evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } } }).where(eq(issueRecoveryActions.id, hold!.id));
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 60_000))).enqueued).toBe(1);
+    expect((await heartbeat.tickTimers(new Date(tickAt.getTime() + 90_000))).enqueued).toBe(0);
+    const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(triggered.monitorAttemptCount).toBe(1);
+    expect(triggered.monitorNextCheckAt).toBeNull();
+  });
+
   it("recovers a rejected native monitor call and delivers the corrected schedule once", async () => {
     const { companyId, issueId, agentId } = await seedFixture();
     const runId = randomUUID();

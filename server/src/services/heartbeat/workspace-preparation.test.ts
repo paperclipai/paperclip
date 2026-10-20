@@ -26,6 +26,15 @@ import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
 import { issueService } from "../issues.js";
 import { trace } from "@opentelemetry/api";
+import { buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
+import { prepareRestrictedWorkspaceRetry } from "../restricted-workspace-retry.js";
+import express from "express";
+import request from "supertest";
+import { issueRoutes } from "../../routes/issues.js";
+import { errorHandler } from "../../middleware/error-handler.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
+import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 
 const execFile = promisify(execFileCallback);
@@ -206,7 +215,7 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     }
   });
 
-  it.each(["create", "failed-save", "shared-retry-after-failed-save", "literal-branch", "legacy-explicit-source", "inherited-source", "legacy-untyped-source", "changed-source-intent", "context-source"] as const)("preserves restricted source isolation during %s", async scenario => {
+  it.each(["create", "retry-restricted", "retry-fixed-branch", "retry-existing-branch", "retry-adapter-branch", "failed-save", "shared-retry-after-failed-save", "literal-branch", "legacy-explicit-source", "inherited-source", "legacy-untyped-source", "changed-source-intent", "context-source"] as const)("preserves restricted source isolation during %s", async scenario => {
     const { input, source, issue: originalIssue } = await fixture(true);
     await db.update(companies).set({ issueCounter: 1 }).where(eq(companies.id, originalIssue.companyId));
     const issue = await issueService(db).create(originalIssue.companyId, {
@@ -260,6 +269,73 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
       return { cwd, warning: null };
     });
     const isolatedSource = isolatedRemoteSourcePath(issue.companyId, issue.id);
+    if (scenario.startsWith("retry-")) {
+      const fixedBranch = scenario === "retry-fixed-branch";
+      const existingBranch = scenario === "retry-existing-branch";
+      const projectPolicy = { enabled: true, defaultMode: "isolated_workspace" as const,
+        workspaceStrategy: { type: "git_worktree" as const, baseRef: "main", provisionCommand: "true",
+          ...(fixedBranch ? { branchTemplate: "fixed-project-branch" } : {}) } };
+      await db.update(projects).set({ executionWorkspacePolicy: projectPolicy }).where(eq(projects.id, issue.projectId!));
+      input.policy.projectExecutionWorkspacePolicy = projectPolicy;
+      const [oldWorkspace] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
+        projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId, sourceIssueId: issue.id,
+        name: "Original files", cwd: source, repoUrl: remoteUrl, mode: "shared_workspace",
+        strategyType: "project_primary", providerType: "local", status: "idle" }).returning();
+      await writeFile(join(source, "unfinished.txt"), "Keep my original files\n");
+      await db.update(heartbeatRuns).set({ status: "failed", contextSnapshot: { issueId: issue.id, projectId: issue.projectId },
+        resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, run.id));
+      await db.update(issues).set({ status: "blocked", executionWorkspaceId: oldWorkspace.id, executionWorkspacePreference: "reuse_existing",
+        assigneeAdapterOverrides: scenario === "retry-adapter-branch" ? { adapterConfig: { model: "preserved-model", workspaceStrategy: { type: "git_worktree", baseRef: "main", branchTemplate: "fixed-adapter-branch" } } } : null,
+        executionWorkspaceSettings: { mode: "shared_workspace", environmentId: input.environment.localEnvironment.id,
+          ...(existingBranch ? { workspaceStrategy: { type: "git_worktree", baseRef: "main", existingBranch: "restricted-task" } } : {}) },
+      }).where(eq(issues.id, issue.id));
+      const service = executionWorkspaceService(db);
+      const actor = { type: "board" as const, source: "local_implicit" as const };
+      const action = await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId: issue.companyId, sourceIssueId: issue.id, kind: "configuration_validation",
+        ownerType: "board", returnOwnerAgentId: input.agent.id, cause: "configuration_incomplete",
+        fingerprint: `restricted:${run.id}`, evidence: { latestRunId: run.id }, nextAction: "Retry the task.",
+      });
+      const retryPlan = await prepareRestrictedWorkspaceRetry(db, await readIssue(issue.id), action);
+      expect(retryPlan?.selection).toEqual({ kind: "configured_source", projectWorkspaceId: issue.projectWorkspaceId!, mode: "managed_isolated" });
+      const enqueue = vi.fn(async () => null);
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", issueRoutes(db, createStorageService(createLocalDiskStorageProvider(join(home, "storage"))), {
+        recoveryActionEnqueueWakeup: enqueue,
+      }));
+      app.use(errorHandler);
+      const retry = () => request(app).post(`/api/issues/${issue.id}/recovery-actions/resolve`)
+        .send({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" });
+      const failedResult = (await readRun(run.id)).resultJson!;
+      await db.update(heartbeatRuns).set({ resultJson: { ...failedResult, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } })
+        .where(eq(heartbeatRuns.id, run.id));
+      expect((await retry()).status).toBe(409);
+      expect((await readIssue(issue.id)).workspacePendingSelection).toBeNull();
+      expect(enqueue).not.toHaveBeenCalled();
+      await db.update(heartbeatRuns).set({ resultJson: failedResult }).where(eq(heartbeatRuns.id, run.id));
+      await db.update(projects).set({ pausedAt: new Date() }).where(eq(projects.id, issue.projectId!));
+      expect((await retry()).status).toBe(409);
+      expect((await readIssue(issue.id)).workspacePendingSelection).toBeNull();
+      expect(enqueue).not.toHaveBeenCalled();
+      await db.update(projects).set({ pausedAt: null }).where(eq(projects.id, issue.projectId!));
+      const responses = await Promise.all([retry(), retry()]);
+      for (const response of responses) expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect((await readIssue(issue.id)).workspacePendingSelection?.intent.source).toBe("recovery");
+      expect((await readIssue(issue.id)).executionWorkspaceId).toBe(oldWorkspace.id);
+      await service.applyPendingTaskWorkspaceSelection({ companyId: issue.companyId, issueId: issue.id, runId: run.id, actor });
+      const selected = await readIssue(issue.id);
+      input.task.issueRef = selected;
+      input.task.workspaceSelection = selected.workspaceSelection;
+      input.policy.issueExecutionWorkspaceSettings = selected.executionWorkspaceSettings;
+      input.config.mergedConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy,
+        issueSettings: selected.executionWorkspaceSettings, mode: "isolated_workspace", legacyUseProjectWorkspace: null,
+        adapterConfigOverrides: selected.assigneeAdapterOverrides?.adapterConfig as Record<string, unknown> | undefined });
+      if (scenario === "retry-adapter-branch") expect(input.config.mergedConfig.model).toBe("preserved-model");
+    }
     if (["literal-branch", "legacy-explicit-source", "inherited-source", "legacy-untyped-source", "changed-source-intent", "context-source"].includes(scenario)) {
       const selectedBranch = scenario === "literal-branch" ? "feature/literal-pin" : `test-${issue.identifier}`;
       await execFile("git", ["-C", source, "checkout", "-b", selectedBranch]);
@@ -317,6 +393,11 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(await readFile(join(result.executionWorkspace.cwd, "README.md"), "utf8")).toBe("source content\n");
     await expect(access(join(result.executionWorkspace.cwd, "private-work"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(clone).toHaveBeenCalledOnce();
+    if (scenario.startsWith("retry-")) {
+      expect((await readIssue(issue.id)).executionWorkspaceSettings).toMatchObject({ mode: "isolated_workspace", environmentId: input.environment.localEnvironment.id });
+      expect(await readFile(join(source, "unfinished.txt"), "utf8")).toBe("Keep my original files\n");
+      await expect(access(join(result.executionWorkspace.cwd, "unfinished.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
     await expect(execFile("git", ["-C", isolatedSource, "cat-file", "-e", privateCommit])).rejects.toBeDefined();
     await expect(execFile("git", ["-C", isolatedSource, "rev-parse", "--verify", "refs/heads/restricted-task"])).rejects.toBeDefined();
     expect(await realpath(join(isolatedSource, ".git"))).not.toBe(await realpath(join(source, ".git")));

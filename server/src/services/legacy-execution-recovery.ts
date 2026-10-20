@@ -1,6 +1,7 @@
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
+import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
@@ -56,11 +57,12 @@ export function legacyExecutionNeedsReconciliation(
   );
 }
 
-/** Review-wait receipts are only exempt after retained execution evidence agrees.
+/** Admission-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
   return await hasUnrestoredRemoteWorkspace(db, run) ||
-    (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run)));
+    (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
+      && !(await isPreDispatchExecutionWaitVerified(db, run)));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */

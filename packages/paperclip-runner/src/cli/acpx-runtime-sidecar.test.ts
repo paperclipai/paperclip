@@ -1,4 +1,5 @@
 import { acpxProfileActivity } from "../drivers/acpx/profile-activity.js";
+import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { appendSemanticToolReceipt, readNativeSemanticReceipt, semanticInputSha256 } from "../drivers/semantic-tool-receipt.js";
 import { startRunnerToolBridge, type RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
@@ -85,6 +86,7 @@ import {
 const children = new Set<SidecarProcess>();
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all([...children].map((child) => child.close()));
   children.clear();
 });
@@ -433,6 +435,8 @@ describe("qualified ACPX runtime sidecar", () => {
   it.each(["success", "accepted-false", "error", "cancel", "timeout", "receiver-rejected"])(
     "commits normalized delivery only after the actual tool.resolve handler succeeds: %s",
     async mode => {
+      const credentialCanary = "custom-observability-credential-canary";
+      if (mode === "error") vi.stubEnv("OTEL_EXPORTER_OTLP_LOGS_HEADERS", `x-custom=${credentialCanary}`);
       const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [{ ref: mode === "receiver-rejected" ? "x".repeat(300 * 1024) : "fixture" }], verification: [],
         completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [], remainingWork: [] } };
       const validation = validatePrpStructuredRunResult(raw);
@@ -461,7 +465,7 @@ describe("qualified ACPX runtime sidecar", () => {
         if (mode === "success" || mode === "accepted-false") {
           await expect(commands.resolve(params)).resolves.toEqual({ resolved: true });
         } else if (mode === "error") {
-          await expect(commands.resolve({ ...params, result: undefined, error: { message: "Receiver rejected completion" } })).resolves.toEqual({ resolved: true });
+          await expect(commands.resolve({ ...params, result: undefined, error: { message: `Receiver rejected completion: ${credentialCanary}` } })).resolves.toEqual({ resolved: true });
         } else if (mode === "cancel") {
           const cancelled = await fetch(bridge.url, { method: "POST", headers,
             body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 3 } }) });
@@ -473,6 +477,10 @@ describe("qualified ACPX runtime sidecar", () => {
           expect(Buffer.byteLength(wire.writes[0]!)).toBeLessThan(ACPX_SIDECAR_MAX_FRAME_BYTES);
         }
         const body = await (await response).json();
+        if (mode === "error") {
+          expect(JSON.stringify(body)).not.toContain(credentialCanary);
+          expect(JSON.stringify(body)).toContain("[REDACTED]");
+        }
         const delivered = mode === "success" || mode === "accepted-false";
         const receipt = readNativeSemanticReceipt({ contents: body.result.content });
         expect(receipt).toMatchObject({ normalizedInputSha256: delivered ? semanticInputSha256(validation.result) : null,
@@ -1390,7 +1398,7 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
   const start = source.indexOf("async function dispatch("), end = source.indexOf("\nasync function pumpTurn(", start);
   const safeStart = source.indexOf("function safeText("), safeEnd = source.indexOf("\nfunction safeMessage(", safeStart);
   if (start < 0 || end < 0 || safeStart < 0 || safeEnd < 0) throw new Error("Actual sidecar command dispatcher not found");
-  const dispatcher = new Function("tools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", `
+  const dispatcher = new Function("tools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", "redactObservabilityDiagnostic", `
     let turnId="test-turn", requestId=0;
     ${stripTypeScriptTypes(source.slice(safeStart, safeEnd))}
     ${stripTypeScriptTypes(source.slice(start, end))}
@@ -1398,6 +1406,6 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
       resolve: params => dispatch(parseAcpxSidecarRequest({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++requestId, command: "tool.resolve", params })),
       setTurn: value => { turnId=value; }
     };
-  `)(tools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION);
+  `)(tools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
   return dispatcher;
 }

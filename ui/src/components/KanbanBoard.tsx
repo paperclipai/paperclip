@@ -29,6 +29,7 @@ import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HorizontalScrollViewport } from "./HorizontalScrollViewport";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -155,6 +156,8 @@ interface KanbanBoardProps {
   collapsedStatuses?: string[];
   initialVisibleCount?: number;
   revealIncrement?: number;
+  /** Proposed clipping indicators, with a single horizontal scroll owner. */
+  showOverflowFades?: boolean;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -391,6 +394,7 @@ export function KanbanBoard({
   collapsedStatuses = [],
   initialVisibleCount = KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
   revealIncrement = KANBAN_COLUMN_REVEAL_INCREMENT,
+  showOverflowFades = false,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -455,6 +459,28 @@ export function KanbanBoard({
     // Could be used for visual feedback; keeping simple for now
   }
 
+  const columns = boardStatuses.map((status) => (
+    <KanbanColumn
+      key={status}
+      status={status}
+      issues={columnIssues[status] ?? []}
+      agents={agents}
+      liveIssueIds={liveIssueIds}
+      subtreeLiveCounts={subtreeLiveCounts}
+      compactCards={compactCards}
+      // Compact mode also collapses empty lanes to labeled rails.
+      collapsed={collapsedStatusSet.has(status) || (collapsedStatusSet.size > 0 && columnIssues[status].length === 0)}
+      visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
+      revealIncrement={revealIncrement}
+      onShowMore={() => {
+        setVisibleState((current) => {
+          const counts = current.paginationKey === paginationKey ? current.counts : {};
+          return { paginationKey, counts: { ...counts, [status]: (counts[status] ?? initialVisibleCount) + revealIncrement } };
+        });
+      }}
+    />
+  ));
+
   return (
     <DndContext
       sensors={sensors}
@@ -462,37 +488,9 @@ export function KanbanBoard({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
-          <KanbanColumn
-            key={status}
-            status={status}
-            issues={columnIssues[status] ?? []}
-            agents={agents}
-            liveIssueIds={liveIssueIds}
-            subtreeLiveCounts={subtreeLiveCounts}
-            compactCards={compactCards}
-            // Compact mode (any lane explicitly collapsed) also collapses
-            // empty lanes to the same labeled rail, so an empty In Progress
-            // reads like the other rails instead of a lone expanded column.
-            collapsed={collapsedStatusSet.has(status) || (collapsedStatusSet.size > 0 && columnIssues[status].length === 0)}
-            visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
-            revealIncrement={revealIncrement}
-            onShowMore={() => {
-              setVisibleState((current) => {
-                const counts = current.paginationKey === paginationKey ? current.counts : {};
-                return {
-                  paginationKey,
-                  counts: {
-                    ...counts,
-                    [status]: (counts[status] ?? initialVisibleCount) + revealIncrement,
-                  },
-                };
-              });
-            }}
-          />
-        ))}
-      </div>
+      {showOverflowFades
+        ? <HorizontalScrollViewport label="Task board columns" contentClassName="flex gap-3 pb-4 px-2">{columns}</HorizontalScrollViewport>
+        : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (
           <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />

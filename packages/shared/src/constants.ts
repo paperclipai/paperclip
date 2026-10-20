@@ -1011,6 +1011,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_profiles",
   "tools:view_audit",
   "audit:view_agent_actions",
+  "commentary:view",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",

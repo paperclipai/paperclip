@@ -1137,6 +1137,114 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect((result.result as { result?: { data?: { target?: string } } }).result?.data?.target).toBe("repo");
   });
 
+  it.each([
+    ["fetch failure", "mcp_remote_fetch_failed"],
+    ["timeout", "tool_timeout"],
+    ["HTTP 503", "mcp_remote_status"],
+    ["JSON-RPC error", "remote_mcp_error"],
+  ] as const)("keeps sibling MCP tools usable after a per-call %s", async (failure, reasonCode) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { application, connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      entryKind: "tool",
+      name: "read_status",
+      toolName: "read_status",
+      riskLevel: "read",
+      isReadOnly: true,
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    });
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const calls: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const request = JSON.parse(String(init.body));
+        calls.push(request.params.name);
+        if (request.params.name === catalogEntry.toolName) {
+          if (failure === "fetch failure") throw new TypeError("fetch failed");
+          if (failure === "timeout") throw new DOMException("The operation was aborted", "AbortError");
+          if (failure === "HTTP 503") return new Response("unavailable", { status: 503 });
+          return Response.json({ jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "Invalid tool arguments" } });
+        }
+        return Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "available" }] } });
+      },
+    });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const tools = (await gateway.listToolsForSession(session.token)).filter((tool) => tool.connectionId === connection.id);
+    const failingTool = tools.find((tool) => tool.catalogEntryId === catalogEntry.id)!;
+    const siblingTool = tools.find((tool) => tool.upstreamToolName === "read_status")!;
+
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: failingTool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode });
+    expect(calls).toEqual([catalogEntry.toolName]);
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: siblingTool.name, parameters: {} }))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(calls).toEqual([catalogEntry.toolName, "read_status"]);
+    expect((await gateway.listToolsForSession(session.token)).filter((tool) => tool.connectionId === connection.id))
+      .toEqual(expect.arrayContaining(tools));
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(updated.healthStatus).toBe("ok");
+    const [failed] = await db.select().from(toolInvocations).where(eq(toolInvocations.errorCode, reasonCode));
+    expect(failed).toMatchObject({ status: reasonCode === "tool_timeout" ? "timed_out" : "failed" });
+  });
+
+  it.each([401, 403])("keeps the connection blocked after an HTTP %s authentication failure", async (status) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const provider = vi.fn(async () => new Response("Access denied", { status }));
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.connectionId === connection.id)!;
+
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "mcp_remote_status", details: { status } });
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(updated.healthStatus).toBe("error");
+    expect((await gateway.listToolsForSession(session.token)).filter((entry) => entry.connectionId === connection.id)).toEqual([]);
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["initialize", 401],
+    ["initialize", 403],
+    ["initialize", 503],
+    ["notifications/initialized", 401],
+    ["notifications/initialized", 403],
+    ["notifications/initialized", 503],
+  ] as const)("gates only authentication failures during %s with HTTP %s", async (method, status) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      config: { ...connection.config, mcpSessionRequired: true },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const methods: string[] = [];
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const request = JSON.parse(String(init.body));
+      methods.push(request.method);
+      if (request.method === method) return new Response("Rejected", { status });
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: {
+        protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" },
+      } }, { headers: { "mcp-session-id": "setup-session" } });
+    } });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.connectionId === connection.id)!;
+
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "mcp_remote_fetch_failed" });
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    const authenticationFailure = status === 401 || status === 403;
+    expect(updated.healthStatus).toBe(authenticationFailure ? "error" : "ok");
+    const listed = (await gateway.listToolsForSession(session.token)).filter((entry) => entry.connectionId === connection.id);
+    expect(listed).toHaveLength(authenticationFailure ? 0 : 1);
+    expect(methods).toEqual(method === "initialize" ? ["initialize"] : ["initialize", "notifications/initialized"]);
+  });
+
   it("maps remote MCP elicitation to a durable issue interaction", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await createRemoteMcpToolFixture(db, company.id);

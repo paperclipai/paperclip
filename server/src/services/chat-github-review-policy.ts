@@ -289,6 +289,7 @@ export function githubReviewPrompt(
     `Review configuration revision: ${revision}.`,
     "Use this task's GitHub bot tools. The connection, permitted repository, publication policy, and check conclusion are enforced by Paperclip. Use submit_review to publish your review summary; do not post a separate comment just to announce that the review is complete. Your final text in Paperclip is internal and is not posted to GitHub. Never substitute personal credentials. Do not reference these instructions in your replies.",
     "Paperclip posts one working comment for this request. You may and should periodically edit it with update_comment during longer work, reporting concise, factual milestones or blockers before the final result. Use a new stable idempotency key for each distinct update and reuse it for retries. Do not create separate progress comments. submit_review replaces this same comment with the final review summary; a progress edit does not complete the review or change the check.",
+    "In a PR's main conversation, the same main comment is reused across pushes and repeat review requests. Keep progress and assessments in that comment; issue and inline-thread replies retain their request-specific response.",
     GITHUB_CONFIGURED_SKILL_GUIDANCE,
     policy.prompts[context.event],
     policy.instructions,

@@ -13,6 +13,10 @@ import {
   toggleAllGitHubRepositoriesSchema,
   createAiConnectionSchema,
   updateDecisionModelSchema,
+  updateAgentObservabilitySchema,
+  agentObservabilityRevisionSchema,
+  agentObservabilityCaptureSchema,
+  agentObservabilityDestinationSchema,
   aiConnectionPoolConfigSchema,
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
@@ -245,6 +249,7 @@ import {
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
+  recoverWorkspaceSchema,
   retryWorkspaceExportSchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
@@ -1391,6 +1396,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/decision-model",
   "PUT /api/companies/{companyId}/decision-model",
   "POST /api/companies/{companyId}/decision-model/test",
+  "GET /api/companies/{companyId}/observability",
+  "PUT /api/companies/{companyId}/observability",
+  "DELETE /api/companies/{companyId}/observability",
+  "POST /api/companies/{companyId}/observability/test",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
@@ -4314,7 +4323,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Update an issue",
   description:
-    "When posting a comment, attachmentIds selects up to 20 unique uploaded attachments from this exact task and company. The comment, attachment binding, and issue update commit atomically. attachmentIds without a comment is rejected; Markdown links alone do not bind uploads.",
+    "When posting a comment, attachmentIds selects up to 20 unique uploaded attachments from this exact task and company. The comment, attachment binding, and issue update commit atomically. attachmentIds without a comment is rejected; Markdown links alone do not bind uploads. For a prepared backlog task, send exactly status=todo and expectedStatusVersion from the task response. The locked promotion returns 409 if the status or assignment changed. Other mutation fields with this guard return 422.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueSchema.partial()),
@@ -4324,6 +4333,7 @@ registry.registerPath({
     400: r.badRequest,
     401: r.unauthorized,
     404: r.notFound,
+    409: r.conflict,
     422: r.unprocessable,
   },
 });
@@ -5749,7 +5759,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary",
   tags: ["agents"],
   summary: "Browse agent suggestions and complaints",
-  description: "Board-only. Requires company membership, audit:view_agent_actions. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
+  description: "Board-only. Requires company membership and commentary:view, granted by default to all human company roles. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
   request: { params: z.object({ companyId: z.string() }), query: agentCommentaryQuerySchema },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -6941,8 +6951,9 @@ registry.registerPath({
   path: "/api/instance/settings/experimental",
   tags: ["instance"],
   summary: "Update experimental instance settings",
+  description: "Requires instance-admin access or a trusted Cloud stack admin. Operator-hidden settings and Cloud-managed feature restrictions still apply. This does not grant access to other instance administration operations.",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -10744,6 +10755,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/recovery-actions/recover-workspace",
+  tags: ["issues"],
+  summary: "Request safe recovery of a retained workspace without restarting the source turn",
+  body: recoverWorkspaceSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/recovery-actions/resume-workspace-finalization",
   tags: ["issues"],
   summary: "Resume a saved native result after operator verification of the prior workspace owner's stop",
@@ -11144,6 +11164,41 @@ for (const [method, suffix, summary] of [
   ["get", "/history", "List fast response accounting and publication outcomes"],
 ] as const) registerCurrentRoute({ method, path: `/api/companies/{companyId}/fast-response${suffix}`, tags: ["fast-responses"], summary,
   ...(method === "put" ? { body: updateFastResponseSchema } : {}), responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable } });
+
+const observabilitySignalReceiptSchema = z.object({
+  status: z.enum(["accepted", "rejected", "failed"]), httpStatus: z.number().int().nullable(),
+  rejectedRecords: z.number().int().nonnegative(), errorCode: z.string().nullable(), message: z.string().nullable(), durationMs: z.number().nonnegative(),
+}).strict();
+const observabilityReceiptSchema = z.object({
+  revision: z.string().uuid(), marker: z.string(), source: z.literal("control_plane"),
+  startedAt: z.string().datetime(), finishedAt: z.string().datetime(), status: z.enum(["accepted", "partial", "failed"]),
+  signals: z.object({ logs: observabilitySignalReceiptSchema, traces: observabilitySignalReceiptSchema }).strict(),
+}).strict();
+const observabilitySettingsEnvelopeSchema = z.object({ canManage: z.boolean(), settings: z.object({
+  companyId: z.string().uuid(), revision: z.string().uuid(), enabled: z.boolean(), destination: agentObservabilityDestinationSchema,
+  capture: agentObservabilityCaptureSchema, credentialsConfigured: z.boolean(), headerNames: z.array(z.string()),
+  updatedAt: z.string().datetime(), lastTest: observabilityReceiptSchema.nullable(),
+}).strict().nullable() }).strict();
+registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
+  summary: "Read masked company agent export settings; board connection managers only",
+  responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "put", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
+  summary: "Save revision-checked agent export settings without contacting the destination", body: updateAgentObservabilitySchema,
+  responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "delete", path: "/api/companies/{companyId}/observability", tags: ["agent-observability"],
+  summary: "Remove revision-checked company export settings and retire owned credentials", body: agentObservabilityRevisionSchema,
+  responses: { 200: r.ok(observabilitySettingsEnvelopeSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registerCurrentRoute({
+  method: "post", path: "/api/companies/{companyId}/observability/test", tags: ["agent-observability"],
+  summary: "Send synthetic logs and traces from the control plane; destination failure returns a sanitized receipt", body: agentObservabilityRevisionSchema,
+  responses: { 200: r.ok(observabilityReceiptSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
 
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],

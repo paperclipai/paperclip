@@ -14,6 +14,7 @@ import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { TaskChatShimmerScope, useTaskChatShimmer } from "./TaskChatShimmer";
 import {
   buildTurnTimelineRows,
   isTerminalRunStatus,
@@ -87,16 +88,9 @@ function RunnerTurnStatus({
 
   const failed = terminalStatusFailed(status);
   const label = terminal ? (failed ? "Stopped" : "Worked") : waitingLabel ?? "Working";
-  const semanticLabel = terminal
-    ? elapsed
-      ? `${label} ${failed ? "after" : "for"} ${elapsed}`
-      : label
-    : waitingLabel
-      ? `${label}${elapsed ? ` · ${elapsed}` : ""}`
-      : `${label} for ${elapsed ?? "0s"}`;
-  const visibleLabel = continuedAfterSteering
-    ? `Continued after steering · ${semanticLabel}`
-    : semanticLabel;
+  const suffix = terminal
+    ? elapsed ? ` ${failed ? "after" : "for"} ${elapsed}` : ""
+    : waitingLabel ? elapsed ? ` · ${elapsed}` : "" : ` for ${elapsed ?? "0s"}`;
 
   return (
     <span
@@ -106,15 +100,17 @@ function RunnerTurnStatus({
       aria-live="polite"
       aria-atomic="true"
     >
-      {visibleLabel}
+      {continuedAfterSteering ? <span data-conversation-meta="">Continued after steering · </span> : null}
+      {label}<span data-conversation-meta="">{suffix}</span>
     </span>
   );
 }
 
 function RunnerCurrentActivityTail({ status, waitingLabel }: { status: string; waitingLabel?: string | null }) {
+  const shimmer = useTaskChatShimmer("working");
   if (isTerminalRunStatus(status)) return null;
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
-    <span className={waitingLabel ? undefined : "shimmer-text shimmer-text-muted"} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? "Thinking"}</span>
+    <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? "Thinking"}</span>
   </div>;
 }
 
@@ -208,7 +204,7 @@ export function TaskChatRunnerTurn({
   );
 
   return (
-    <div
+    <TaskChatShimmerScope items={items}><div
       className="flex min-w-0 flex-col"
       data-testid="task-chat-runner-turn"
       data-phase={status === "queued" ? "startup" : undefined}
@@ -288,6 +284,6 @@ export function TaskChatRunnerTurn({
         </div>
       ) : null}
       {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
-    </div>
+    </div></TaskChatShimmerScope>
   );
 }

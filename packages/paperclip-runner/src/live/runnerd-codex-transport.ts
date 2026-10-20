@@ -1,3 +1,4 @@
+import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
@@ -1238,6 +1239,7 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
+  observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   homeMode?: "isolated" | "preconfigured";
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
@@ -3267,7 +3269,7 @@ function withRunnerdProviderTrace(
   }
   return result;
 }
-export function createCapabilityRunnerdProviderEnvironment(input: {
+function createCapabilityRunnerdProviderEnvironmentBase(input: {
   provider: NonNullable<CapabilityRunnerdCodexTransportOptions["provider"]>;
   options: CapabilityRunnerdCodexTransportOptions;
   identity: DurableRecoveryIdentity;
@@ -3361,6 +3363,10 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     if (apiKey?.trim()) environment[key] = apiKey;
   }
   return environment;
+}
+
+export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typeof createCapabilityRunnerdProviderEnvironmentBase>[0]): NodeJS.ProcessEnv {
+  return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
 }
 
 export function resolveRunnerdAcpxPermissionMode(
@@ -4818,6 +4824,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
+        observability: this.options.observability,
         sourceCodexHome:
           this.options.sourceCodexHome ??
           resolveSourceCodexHome(this.options.environment),
@@ -5763,6 +5770,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
+        observability: this.options.observability,
         sourceCodexHome:
           this.options.sourceCodexHome ??
           resolveSourceCodexHome(this.options.environment),
@@ -7188,6 +7196,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #diagnostic(message: string): void {
+    message = redactObservabilityDiagnostic(message, this.options.environment, this.options.observability?.otelConfig);
     this.#evidence.diagnostics.push(message);
     if (this.#evidence.diagnostics.length > 64)
       this.#evidence.diagnostics.shift();

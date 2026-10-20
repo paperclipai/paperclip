@@ -414,16 +414,16 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[aria-label="App filters"]')?.textContent).toBe("PaperclipComposioArcadeInstalledAll");
     expect(container.querySelector('[data-app-slug="remote-app"]')).toBeNull();
     await search("Remote App");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("All");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("All");
     expect(container.querySelector('[data-app-slug="remote-app"]')).toBeTruthy();
     await search("");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Paperclip");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Paperclip");
     await clickButton("Arcade", container);
     await search("Remote App");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Arcade");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Arcade");
     expect(container.textContent).toContain("No connectors match");
     await clickButton("Clear search", container);
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Arcade");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Arcade");
   });
 
   it.each(["composio", "arcade"] as const)("scopes %s to its catalog and accounts without native catalog overlaps", async (provider) => {
@@ -445,7 +445,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="other-app"]')).toBeNull();
 
     await search("Notion");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe(providerName);
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe(providerName);
     expect(container.textContent).toContain("No connectors match");
     await clickButton("All", container);
     expect(container.querySelector('[data-app-slug="notion"]')?.textContent).toContain("Native Notion");
@@ -1068,7 +1068,7 @@ describe("Connectors landing page", () => {
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
     expect(container.querySelector("header")?.classList).toContain(
-      "items-start",
+      "items-center",
     );
     expect(container.querySelector("header")?.classList).not.toContain(
       "justify-end",

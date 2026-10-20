@@ -3198,6 +3198,9 @@ export function buildInvocationEnvForLogs(
       redactCommandTextForLogs(resolvedCommand);
   }
 
+  for (const key of ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG"]) {
+    if (key in merged) merged[key] = "[REDACTED]";
+  }
   return redactEnvForLogs(merged);
 }
 

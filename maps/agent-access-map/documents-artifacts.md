@@ -85,6 +85,10 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Queue and HTTP/2 sandbox callbacks admit `GET /api/assets/{assetId}/content`,
+including screenshot references in task descriptions. The controller still checks
+company and task visibility before opening storage.
+
 Gaps: Native API uploads are bounded; attachment reading has target/provider and
 permission conditions.
 

@@ -1,5 +1,5 @@
 {
-  "id": "fdc86e0b-68d3-4102-95b8-fc7b2549e5d0",
+  "id": "529b178d-2192-4a6a-8906-2068e5d077af",
   "prevId": "043fa318-32fd-4ed6-955f-bf5437ace611",
   "version": "7",
   "dialect": "postgresql",
@@ -14752,12 +14752,6 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
           "type": "boolean",
@@ -15072,6 +15066,110 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.company_observability": {
+      "name": "company_observability",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "destination": {
+          "name": "destination",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capture": {
+          "name": "capture",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credentials_secret_id": {
+          "name": "credentials_secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "header_names": {
+          "name": "header_names",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "last_test": {
+          "name": "last_test",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "company_observability_company_id_companies_id_fk": {
+          "name": "company_observability_company_id_companies_id_fk",
+          "tableFrom": "company_observability",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "company_observability_credentials_secret_id_company_secrets_id_fk": {
+          "name": "company_observability_credentials_secret_id_company_secrets_id_fk",
+          "tableFrom": "company_observability",
+          "tableTo": "company_secrets",
+          "columnsFrom": [
+            "credentials_secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -46541,12 +46639,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

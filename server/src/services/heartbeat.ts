@@ -2593,7 +2593,7 @@ export function heartbeatService(
         policy: { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory },
         environment: { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput },
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
-        onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = readSecrets; },
+        onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
         onManagedAiRuntimeAcquired: (runtime) => { managedAiRuntime = runtime; },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));
@@ -2601,7 +2601,7 @@ export function heartbeatService(
       const {
         mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, useHostGitHub,
         resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest,
-        runtimeSkillEntries, nativeRunnerPreparationSpans, agentIdentity,
+        runtimeSkillEntries, nativeRunnerPreparationSpans, agentIdentity, observability,
       } = executionConfiguration;
       let { runtimeConfig } = executionConfiguration;
       const resolvedFailureSecrets = readFailureReportSecrets();
@@ -2700,6 +2700,7 @@ export function heartbeatService(
         },
       }));
       const preparedInstructions = instructionWorkingCopy = createHeartbeatInstructionWorkingCopy({
+        observabilityCompatibilityKey: observability?.compatibilityKey,
         db, instructionCopies, readRun: () => run!, agent, context,
         session: { taskSession, taskSessionForRun, sessionConfigMetadata },
         workspace: { executionTarget, executionWorkspace, persistedExecutionWorkspace },
@@ -3325,6 +3326,7 @@ export function heartbeatService(
             configuredTaskEnvironment,
             adapterEnv,
             agentIdentity,
+            observability,
             managedAiRuntime,
             runtimeEnv,
             useHostGitHub,

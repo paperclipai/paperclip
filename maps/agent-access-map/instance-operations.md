@@ -64,6 +64,8 @@ API: `present` — representative operation IDs:
 
 - `GET /api/instance/settings`.
 - `PATCH /api/instance/settings`.
+- `GET /api/instance/settings/experimental`.
+- `PATCH /api/instance/settings/experimental`.
 
 Agent access: `restricted` — Board/admin instance settings; CLI configure/env; local
 configuration files.
@@ -81,15 +83,22 @@ own policy and access review.
 Gaps: Settings APIs cover parts of configuration; pre-start database/binding/storage
 configuration is local operator tooling.
 
-Cloud staging exposes experimental controls to instance admins and permits saved
-overrides of Cloud feature defaults. This exception requires a managed instance
+Cloud stack Admins may update experimental settings through the trusted Cloud
+actor without receiving other instance-admin powers. This uses the current
+stack role on each request; company membership alone does not grant it.
+Members, Support users, agents, and ordinary self-hosted sessions remain denied.
+Cloud staging exposes experimental controls to instance admins and stack Admins.
+It permits saved overrides of Cloud feature defaults. This exception requires a managed instance
 and a provisioner-supplied `*.staging.paperclip.app` primary hostname; request
 headers do not establish staging. Ordinary board members and agents still cannot
-mutate instance settings. Only an explicit feature allowlist is editable. Cloud
+mutate instance settings. Only an explicit feature allowlist is editable on staging. Cloud
 owner-admin elevation and managed-sandbox execution policy remain managed, and
 production policy and other Cloud floors remain.
 Local [route tests](../../server/src/__tests__/instance-settings-routes.test.ts)
-cover staging admin access, non-admin denial and a spoofed request hostname;
+cover stack Admin experiment access and auditing, denial for other instance
+controls and actor sources, hidden-setting restrictions, and a spoofed request hostname;
+the [Cloud actor tests](../../server/src/middleware/cloud-tenant-actor.test.ts)
+cover role changes and preserved instance-admin isolation;
 no live Cloud or agent-credential verification is claimed.
 
 ## `diagnostics`

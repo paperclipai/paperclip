@@ -682,6 +682,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let repair_assigned_discovery = args
+        .iter()
+        .any(|value| value == "--repair-assigned-discovery");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -932,6 +935,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 split_event_suffix_lifecycle.as_deref(),
                 send,
             )?;
+            continue;
+        }
+        if repair_assigned_discovery
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("discovery-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("discovery response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("discovery rejection omitted guidance")?;
+                if !hint.contains("Correct the arguments and retry")
+                    || !hint.contains("/properties/query/type")
+                    || hint.contains("PRIVATE_QUERY")
+                {
+                    return Err("discovery rejection lacks safe repair guidance".into());
+                }
+                log_call(call_log.as_deref(), "discovery:repair-guidance")?;
+                send(
+                    json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                        "arguments":{"query":"github"}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result != json!({"tools":[{"name":"app_github_read_pull_request"}]})
+                {
+                    return Err("corrected discovery did not return assigned tools".into());
+                }
+                log_call(call_log.as_deref(), "discovery:success")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
             continue;
         }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
@@ -1656,6 +1698,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }))?;
                 } else if exit_after_turn_start {
                     return Ok(());
+                } else if repair_assigned_discovery {
+                    send(
+                        json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                            "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
+                        }}),
+                    )?;
                 } else if emit_tool_call {
                     send(json!({
                         "id": "tool-request-1",

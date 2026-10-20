@@ -1,4 +1,6 @@
 import { AgentIdentity } from "../components/AgentIdentity";
+import { TaskSummaryList } from "../components/TaskSummaryList";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import {
@@ -25,6 +27,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { ActivityRow } from "../components/ActivityRow";
+import { ActivityList } from "../components/ActivityList";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -71,6 +74,7 @@ export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgen
 }
 
 export function Dashboard() {
+  const designSandbox = useDesignSandbox();
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const location = useLocation();
@@ -397,8 +401,9 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className={cn("grid grid-cols-2 xl:grid-cols-4", designSandbox ? "gap-4" : "gap-1 sm:gap-2")}>
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
@@ -412,6 +417,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={CircleDot}
               value={data.tasks.inProgress}
               label="Tasks In Progress"
@@ -424,6 +430,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
@@ -437,6 +444,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
@@ -487,7 +495,7 @@ export function Dashboard() {
                   Recent Activity
                 </h3>
                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
+                  {designSandbox ? <ActivityList events={recentActivity} agentMap={agentMap} userProfileMap={userProfileMap} entityNameMap={entityNameMap} entityTitleMap={entityTitleMap} rowClassName={event => animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined} /> : recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
                       event={event}
@@ -512,7 +520,9 @@ export function Dashboard() {
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </Card>
               ) : (
-                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
+                designSandbox ? <Card className="block overflow-hidden py-0">
+                  <TaskSummaryList issues={recentIssues.slice(0, 10)} />
+                </Card> : <Card className="@container block py-0 divide-y divide-border overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}

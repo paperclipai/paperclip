@@ -94,7 +94,7 @@ export function canIsolateRemoteWorkspaceSource(input: {
     && !/\{\{\s*(?:issue\.(?:id|identifier|title)|slug)\s*\}\}/.test(branchTemplate);
   if (input.trustPresetKind !== "standard" || !isRestrictedWorkspaceSourceDenial(input.error)
     || input.reuseExisting || input.hasExistingWorkspace || input.strategy.existingBranch || selectsFixedBranch
-    || (input.selection && !["project", "task_default"].includes(input.selection.source))
+    || (input.selection && !["project", "task_default", "recovery"].includes(input.selection.source))
     || (input.selectedProjectWorkspaceId && (input.selection?.selection.kind !== "configured_source"
       || input.selection.selection.projectWorkspaceId !== input.selectedProjectWorkspaceId))) return false;
   if (!input.repoUrl) return false;

@@ -56,7 +56,7 @@ Fresh standard-trust tasks with an implicit repository default can use an owned
 remote clone when the shared default source fails the restricted-task workspace
 guard. This does not grant access to the private local checkout or its Git metadata.
 The normal admitted Git identity must already authorize the configured remote.
-Creation of a fallback source is unavailable for explicit, parent/channel, reused
+Creation of an automatic fallback source is unavailable for explicit, parent/channel, reused
 or low-trust selections, or branch templates without a task-derived placeholder;
 an existing verified owned source remains reusable. Literal branch selections
 retain the original denial without cloning or replacing their unpublished commits.
@@ -64,8 +64,19 @@ New implicit Git defaults record project-source provenance. Untyped explicit,
 inherited and older ambiguous checkout bindings retain the denial; admission reads
 the current company-scoped binding before considering the fallback.
 A retained denial blocks the task as `configuration_incomplete`
-(`workspace_source_restricted`) before dispatch; it grants no access and names the
-owner action on the task.
+(`workspace_source_restricted`) before dispatch; it grants no access and offers Retry.
+The same blocker applies when shared project workspace repository admission finds
+the restricted source. The existing binding and files stay intact; no provider
+starts and no automatic failure retry is queued.
+An authorized board recovery through `POST /api/issues/{id}/recovery-actions/resolve`
+can schedule a server-owned `recovery` selection for the latest restricted-source
+failure only when its saved evidence proves provider work never started. The
+selection requires task mutation and configured-source access and applies at normal
+admission. It keeps task environment settings and never reads or deletes the denied
+checkout. Pause, budget, approval, interaction, dependency, and ownership gates
+remain effective. Repeated resolution of the same action does not enqueue another
+run. Agents cannot mint recovery provenance through the workspace selection API;
+they can observe the existing recovery action and request board recovery.
 Local paths, unsupported transports and credential-bearing URLs are not fallback
 sources. Company/task/remote bindings, real paths, Git storage and the exact origin
 are revalidated for reuse, cleanup and reopening. A failed save removes only the

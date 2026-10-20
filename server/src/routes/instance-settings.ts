@@ -96,6 +96,17 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+function assertCanManageExperimentalSettings(req: Request) {
+  if (
+    req.actor.type === "board"
+    && req.actor.source === "cloud_tenant"
+    && req.actor.canManageExperimentalSettings
+  ) {
+    return;
+  }
+  assertCanManageInstanceSettings(req);
+}
+
 // A task-drain start or stop reads the live drain state, writes an audit
 // transaction, and only then mutates the process-local drain state. The
 // audit write is an async gap: two overlapping requests can commit their
@@ -252,9 +263,6 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    // Experimental settings are readable by any authenticated org member
-    // or instance admin. Updating them remains instance-admin only because
-    // this payload includes instance-wide operational controls.
     assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
   });
@@ -263,7 +271,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
     "/instance/settings/experimental",
     validate(patchInstanceExperimentalSettingsSchema),
     async (req, res) => {
-      assertCanManageInstanceSettings(req);
+      assertCanManageExperimentalSettings(req);
       // Hiding the whole Experimental page floors every toggle; otherwise
       // only individually hidden keys are floored.
       const hidden = getHiddenSettings();

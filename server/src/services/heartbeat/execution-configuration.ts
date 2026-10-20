@@ -1,3 +1,7 @@
+import { agentHarnessType } from "@paperclipai/shared";
+import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
+import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
+import { agentObservabilityLaunch } from "../agent-observability-launch.js";
 import { withSkillActor } from "../skill-access.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { eq, sql } from "drizzle-orm";
@@ -90,6 +94,19 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         homeMode: bindHeartbeatRunnerHomeMode(parseObject(agent.adapterConfig), persistedNativeExecutionInput).homeMode }
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
+  const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);
+  const unsupportedObservability = !["codex_local", "claude_local"].includes(initialHarness)
+    ? "unsupported_harness" as const : preconfiguredHome && initialHarness === "codex_local" ? "unsupported_home_mode" as const : undefined;
+  const observabilitySnapshot: ResolvedAgentObservability = await agentObservabilityService(db).resolve(agent.companyId, { runId: run.id, agentId: agent.id, responsibleUserId, issueId, unavailableReason: unsupportedObservability })
+    .catch(() => unavailableAgentObservability(agent.companyId, "configuration_invalid"));
+  const identityRedactor = createAgentIdentityRedactor();
+  const earlyObservability = unsupportedObservability === undefined && (initialHarness === "codex_local" || initialHarness === "claude_local")
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: initialHarness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  identityRedactor.values.push(...observabilitySecretValues(earlyObservability));
+  onIdentityRedactorPrepared(identityRedactor);
+  // The executor keeps these values in its failure redactor before any later
+  // preparation step can fail. Subsequent provider/identity values extend it.
+  onFailureSecretsResolved(() => []);
   const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
   const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
@@ -300,13 +317,30 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const agentIdentity = supportsManagedAgentIdentity(agent.adapterType, agent.adapterConfig, run.runtimeMode === "native" ? run.driverKind : undefined)
     ? await time("configuration_agent_identity", () => agentIdentityService(db).ensureAgentIdentity(agent.companyId, agent.id))
     : undefined;
-  const identityRedactor = createAgentIdentityRedactor(agentIdentity?.privateKeyPem);
+  identityRedactor.values.push(...createAgentIdentityRedactor(agentIdentity?.privateKeyPem).values);
+  const harness = agentHarnessType(agent.adapterType, runtimeConfig);
+  const observability = unsupportedObservability !== "unsupported_home_mode" && (harness === "codex_local" || harness === "claude_local")
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: harness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  identityRedactor.values.push(...observabilitySecretValues(observability));
+  identityRedactor.values.sort((a, b) => b.length - a.length);
+  if (observabilitySnapshot.state === "unavailable") {
+    logger.warn({ runId: run.id, reason: observabilitySnapshot.reason }, "Agent observability unavailable; execution continues without export");
+    const reason = observabilitySnapshot.reason;
+    await appendRunEvent(run, { eventType: "agent_observability.unavailable", stream: "system", level: "warn",
+      message: reason === "unsupported_home_mode"
+        ? "Company observability was not applied: automatic configuration of caller-owned Codex homes is unsupported."
+        : reason === "unsupported_harness" ? "Company observability was not applied: this harness is not supported."
+          : "Company observability is unavailable. Execution continues without company export.",
+      payload: { reason, revision: observabilitySnapshot.revision } }).catch(() => {
+        logger.warn({ runId: run.id }, "Could not record the agent observability availability diagnostic");
+      });
+  }
   onIdentityRedactorPrepared(identityRedactor);
   if (agentIdentity) secretKeys.add("PAPERCLIP_AGENT_PRIVATE_KEY");
   return {
     prepared: true as const,
     mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, useHostGitHub,
     resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest,
-    runtimeSkillEntries, nativeRunnerPreparationSpans, runtimeConfig, agentIdentity,
+    runtimeSkillEntries, nativeRunnerPreparationSpans, runtimeConfig, agentIdentity, observability,
   };
 }

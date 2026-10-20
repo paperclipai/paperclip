@@ -42,6 +42,8 @@ describe("ACPX runtime sandbox", () => {
     const pages = { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "task-pages-secret", CUSTOM_TOKEN: "task-service-secret" };
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "codex", environment: {
       PATH: process.env.PATH, OPENAI_API_KEY: "provider-secret", HOST_SECRET: "unselected-secret",
+      PAPERCLIP_OBSERVABILITY_CODEX_CONFIG: JSON.stringify({ exporter: "none", trace_exporter: "none", metrics_exporter: "none" }),
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20export-canary",
       ...configuredEnvironmentProjection(pages), ...(identity ? { PAPERCLIP_AGENT_KEY_ID: "agent-key" } : {}),
     } });
     const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
@@ -49,6 +51,9 @@ describe("ACPX runtime sandbox", () => {
     expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
     expect(keys).not.toContain("OPENAI_API_KEY");
     expect(keys).not.toContain("HOST_SECRET");
+    expect(keys).not.toContain("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");
+    expect(keys).not.toContain("OTEL_EXPORTER_OTLP_LOGS_HEADERS");
+    expect(sandbox.persistedEnvironment).not.toHaveProperty("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");
     expect(sandbox.launchEnvironment).toMatchObject(pages);
     for (const value of Object.values(pages)) expect(config).not.toContain(value);
   });

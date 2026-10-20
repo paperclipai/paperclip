@@ -18,6 +18,7 @@ import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext"
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { DesignSandboxProvider } from "./context/DesignSandboxContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
@@ -87,7 +88,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <CompanyVoiceCalls><App /></CompanyVoiceCalls>
+                                <DesignSandboxProvider><CompanyVoiceCalls><App /></CompanyVoiceCalls></DesignSandboxProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

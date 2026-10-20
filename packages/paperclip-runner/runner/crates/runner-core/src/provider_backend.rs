@@ -4999,7 +4999,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tool_results_expose_only_reserved_schema_guidance() {
+    fn invalid_tool_results_expose_authorized_schema_guidance() {
         let finish_result = schema_rejection(
             "paperclip_finish",
             json!({"secretSubmittedValue": "must-not-appear"}),
@@ -5052,10 +5052,9 @@ mod tests {
         assert_eq!(monitor_result.result["error"]["retryable"], false);
 
         let ordinary_result = schema_rejection("get_task_context", json!({}));
-        assert_eq!(
-            ordinary_result.result["error"]["message"],
-            GENERIC_INVALID_TOOL_CALL_MESSAGE
-        );
+        let ordinary_message = ordinary_result.result["error"]["message"].as_str().unwrap();
+        assert!(ordinary_message.contains("Correct the arguments and retry"));
+        assert!(ordinary_message.contains("/required (missing \"requiredField\")"));
 
         let unauthorized_error = ProviderToolBridge::default()
             .begin_call(
@@ -6539,3 +6538,11 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/provider_api_validation.rs"]
+mod api_validation_tests;
+
+#[cfg(test)]
+#[path = "tests/provider_assigned_tool_validation.rs"]
+mod assigned_tool_validation_tests;

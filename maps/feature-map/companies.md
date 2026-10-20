@@ -16,6 +16,7 @@ Agent access: [companion](../agent-access-map/companies.md).
 - `identity`: update company identity and configured settings.
 - `decision-models`: configure and test the company's decision model, then inspect invocation history and recorded usage.
 - `fast-responses`: configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
+- `agent-observability`: configure one company OTLP destination for Codex and Claude Code, test synthetic delivery, and disable export.
 - `archive`: archive and restore through the available controls without confusing archival with deletion.
 - `portability`: preview a company package and inspect imported agents, projects, skills, and conflicts.
 
@@ -107,3 +108,18 @@ Sources: Source: [CompanyImport.tsx](../../ui/src/pages/CompanyImport.tsx), [Com
 ### Documentation scope: Company and instance administration
 
 Core administration/import/export/operator workflows are mapped; cloud/self-hosted differences, migration/restore compatibility, and platform-specific service variants need deeper recipes.
+
+### `agent-observability`
+
+Use Company Settings → General → Agent observability. Select Braintrust or Custom OTLP,
+save credentials and capture settings, then test the saved destination. Saving is offline;
+the test originates at the control plane and does not prove remote runner reachability.
+
+Automated: shared validation, encrypted configuration service, receiver tests, runtime projection,
+and production settings stories cover their respective boundaries. Provider delivery requires a real run.
+
+Manual: configure a disposable company, reload, test, run Codex and Claude Code locally and remotely,
+inspect their unique markers at the destination, then disable and verify a new marker is absent.
+
+Storybook verification: `agent-observability-01-settings`, `agent-observability-02-states`,
+and `agent-observability-03-journey` mount production subjects with simulated APIs/providers.

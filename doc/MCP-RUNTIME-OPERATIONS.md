@@ -145,6 +145,18 @@ curl -fsS -X PATCH \
 
 ## Verify Recovery
 
+An individual remote MCP tool-call failure stays on its invocation. A network
+failure, timeout, non-authentication HTTP error, or JSON-RPC error does not change
+the connection's shared health or hide its other tools. HTTP 401/403 responses,
+missing credentials, and explicit insufficient-scope errors retain their access
+gates. Health checks and catalog refreshes still assess connection health.
+
+After a network failure or timeout, the next explicit call can start a fresh MCP
+session. The gateway never automatically replays the failed action: the provider
+may already have performed it. Check the outcome before retrying a write. If a
+connection was already marked unhealthy before upgrading, use the health check
+below to restore access after verifying the endpoint.
+
 1. Run the connection health check:
 
    ```sh
