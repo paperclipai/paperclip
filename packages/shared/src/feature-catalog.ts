@@ -281,7 +281,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableFastResponses: {
     title: "Experimental fast responses",
     description:
-      "Show Connections in company settings and allow short acknowledgements while agents begin work.",
+      "Allow short acknowledgements while agents begin work. Configure them in Settings → Connections.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

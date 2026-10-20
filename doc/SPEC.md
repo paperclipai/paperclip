@@ -2,6 +2,30 @@
 
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
+Experimental standalone cases provide persistent structured work records that can
+exist independently of execution. Prompt-driven handoffs move their primary
+ordinary task between agents while retaining case data and history. Existing task
+permissions, execution ownership, budgets, and review gates remain authoritative;
+the concrete contract is in `SPEC-implementation.md` and the persistent case
+handoff implementation plan.
+
+A terminal handoff to `done` explicitly requests case closure on accepted
+completion of its primary task. Existing completion and review gates remain
+authoritative; an open case alone never creates an execution requirement.
+
+Native agents have dedicated case creation/read/update and handoff tools.
+Native creation requires first-task kickoff and explicit `workflow_document_text`,
+stored as the primary task's `workflow` Markdown document, with optional additional
+initial documents. Recommend both a Mermaid `stateDiagram-v2` map and prose
+defining every transition's conditions, evidence, destination and wait/retry rules;
+the server does not parse graph labels as executable transition rules.
+Documents belong to ordinary tasks; cases surface authorized document references
+and history without copying bodies. Historical case document storage is retained.
+Case
+awareness is supplied by the harness; compatible session continuations carry
+fresh routing information and changed facts, with full context retained for
+new sessions and resume failure.
+
 ---
 
 ## 1. Company Model [DRAFT]
@@ -812,3 +836,23 @@ Recent-task navigation refreshes a bounded, authorized summary projection for
 its saved task IDs. The projection avoids full task/workspace enrichment and
 preserves company/task access rules. The HTTP contract is defined in
 `SPEC-implementation.md` section 10.4.
+
+### Filesystem access boundary (2026-10-20)
+
+Filesystem isolation belongs to the OS, execution environment, and storage layout.
+Paperclip authorizes the current task/run, company, explicitly selected configuration,
+execution policy, and repository credentials. It does not infer file permissions from
+other tasks or agents that previously used the same directory, overlapping roots,
+symlink aliases, or shared Git storage. Existing files under an authorized task root
+may be read subject to OS access and API path containment.
+
+Private task records, comments, attachments, run logs, full workspace metadata, and
+operation logs retain their app authorization. Workspace `_issuePrivacySources` and
+operation privacy metadata protect app-record disclosure; they do not grant or deny
+filesystem execution or task-bound file browsing. Current trust and sandbox policy,
+publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
+optionally classifies existing tool-result boundaries through a shared OpenRouter
+connection. Settings → Connections is permanent; valid model verdicts take
+precedence and dependency failures use the original built-in detector.

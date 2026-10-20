@@ -2,6 +2,8 @@
 
 Product map: [Hiring, agent configuration, and organization](../feature-map/agents.md).
 
+Feature ID: `agents`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -18,6 +20,8 @@ below. The original baseline commit above still governs unrelated entries; this
 update does not claim operation-complete review or live agent verification.
 
 ## `hire`
+
+Capability ID: `agents/hire`.
 
 Review: `baseline`.
 
@@ -81,6 +85,8 @@ qualification remains not run.
 
 ## `instructions`
 
+Capability ID: `agents/instructions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -106,6 +112,8 @@ Gaps: Canonical entry file, revision guard, company boundary, and protected-chan
 policy apply.
 
 ## `organization`
+
+Capability ID: `agents/organization`.
 
 Review: `baseline`.
 
@@ -133,6 +141,8 @@ authority.
 
 ## `lifecycle`
 
+Capability ID: `agents/lifecycle`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -140,6 +150,7 @@ API: `present` — representative operation IDs:
 - `POST /api/agents/{id}/pause`.
 - `POST /api/agents/{id}/resume`.
 - `POST /api/agents/{id}/terminate`.
+- `DELETE /api/agents/{id}` permanently purges an eligible terminated/rejected agent.
 - `POST /api/agents/{id}/lifecycle/retry`.
 - `GET /api/agents/{id}` returns the safe failed phase/step and action in `lifecycleError`.
 
@@ -148,6 +159,8 @@ change-grant authorization; pause and termination remain board-only.
 
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
+Permanent deletion is board-only. Retained case handoff references return
+`409 agent_case_history_retained` before dependency cleanup; keep the agent terminated.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L1395) at
 the reviewed commit above.
@@ -161,6 +174,8 @@ Gaps: Resume has a generic native REST path. Pause and termination remain
 enforced actor restrictions.
 
 ## `built-in`
+
+Capability ID: `agents/built-in`.
 
 Review: `baseline`.
 
@@ -193,6 +208,8 @@ saved settings; the general creation/access policy above still applies. This is
 source-only evidence at the scoped commit, not a live provisioning result.
 
 ## `primary-agent`
+
+Capability ID: `agents/primary-agent`.
 
 Review: `baseline`.
 
@@ -227,6 +244,8 @@ and Chat default resolution.
 
 ## `grok-bot`
 
+Capability ID: `agents/grok-bot`.
+
 Review: `baseline`.
 
 API: `present` — `POST /api/companies/{companyId}/grok-invitations`, operator-owned Grok invitations and agent-scoped `/grok-binding` setup, routine, verify, stop, recover and disconnect endpoints. Direct HTTPS `/mcp/runner` uses fixed named-agent OAuth. Grok tools expose durable assignment operations and task-bound upload/download grants.
@@ -240,3 +259,39 @@ Evidence: `source-only` — [routes](../../server/src/routes/grok-bot.ts), [shar
 Verification: `not-run` — deployed acceptance pending; focused protocol/authorization and actual Rust backend tests; run fresh/saved setup, assigned and proactive tasks, duplicate calls, stale sessions, restart, ambiguous delivery, stop and recovery through the real client on the serving managed candidate.
 
 Gaps: deployed two-way work and unattended first-time onboarding remain unqualified; remote termination, provider transcript streaming and usage accounting are unavailable.
+
+## `api-keys`
+
+Capability ID: `agents/api-keys`.
+
+Review: `baseline`.
+
+API: `present` — GET /api/agents/{id}/keys; POST /api/agents/{id}/keys; DELETE /api/agents/{id}/keys/{keyId}.
+
+Agent access: `restricted` — key listing and mutations require board identity and agent-management authority. The CLI token agent commands use authorized board context. Ordinary agent REST/native `call_api` and public assistant capabilities do not grant key-management authority.
+
+Policy: getAccessibleAgent checks company access and agents:create through the shared access evaluator for reads as well as mutations. Creation rejects pending_approval and terminated agents. Keys retain the creating person’s responsibleUserId; only a hash is stored and token plaintext is returned on creation. Revocation checks that the key belongs to the selected agent. Authentication separately applies agent state, revocation, scope, and responsible-user membership intersections.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Keys tab](../../ui/src/pages/AgentDetail.tsx), [key routes](../../server/src/routes/agents.ts), [key service](../../server/src/services/agents.ts), [authentication](../../server/src/middleware/auth.ts), and [CLI token commands](../../cli/src/commands/client/token.ts).
+
+Verification: `not-run` — Create a disposable key as a permitted authenticated board person, prove one harmless agent read, revoke, and retry the same bearer. Assert metadata persistence, once-only token display, activity, missing management permission, agent identity denial, cross-company/cross-agent IDs, ineligible targets, and missing responsible-user binding.
+
+Gaps: Local implicit key creation does not by itself prove a usable responsible-user binding. No ordinary-agent self-management or assistant delegation path is established; browser creation and actual bearer use need live evidence.
+
+## `managed-agent-setup`
+
+Capability ID: `agents/managed-agent-setup`.
+
+Review: `baseline`.
+
+API: `present` — GET and POST /api/companies/{companyId}/managed-agent-profiles. Provisioning separately calls Anthropic /v1/environments, /v1/agents, and /v1/agents/{id}/versions with operator provider credentials; --probe does not resolve a Paperclip client context or call the profile API.
+
+Agent access: `operator-only` — provider qualification/provisioning uses the explicit operator CLI. Persisted profile reads/writes require board/company identity; viewer writes are denied. This does not authorize a company agent to provision external provider resources.
+
+Policy: A profile uses an active same-company, company-scoped secret reference. Qualification requires the source-supported pinned model/version, no tools/MCP/skills/multiagent capability, and a locked no-network/no-packages environment with retention acknowledgement. Qualified configuration revisions are immutable; changed qualified configuration requires a new profile key. Provider API credentials and Paperclip profile authority are separate checks.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Managed-agent CLI](../../cli/src/commands/managed-agent.ts), [profile routes](../../server/src/routes/managed-agent-profiles.ts), [profile service](../../server/src/services/managed-agent-profiles.ts), and [runtime validation](./runs-adapters.md).
+
+Verification: `not-run` — Compare provider and Paperclip state before/after probe, then inspect a permitted create/adopt and repeated resource reuse. Reject missing acknowledgement, unsafe resources, invalid model/version/secret/company, and viewer/agent mutations. Separately run a bounded useful task with the saved qualified profile before claiming runtime readiness.
+
+Gaps: This is a provider-specific setup path, not qualification of every managed service or deployed environment. Mocked setup and source validation do not prove live retention, remote execution, or provider availability.

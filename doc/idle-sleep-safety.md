@@ -382,3 +382,31 @@ does not make existing in-memory-only debt survive an unplanned process crash.
 Related public PR #13413 adds runtime-service controller requirements and uses
 the same `purpose: "idle"` / `ownerId` vocabulary. This report conservatively
 blocks all retained runtime-service state instead of approving such services.
+
+## Muse maintenance
+
+Muse maintenance uses the shared delivery coordinator. Startup reconstructs
+existing work and marks incomplete receiver evidence once. Pairing, OAuth grant
+attachment/revocation/replay, qualification changes and new assignments notify
+the coordinator before their transaction writes. Nested writes wake it only
+after the outer transaction settles; uncertain outcomes retain the normal hold.
+
+Unrevoked qualifications schedule their saved expiration time. An instance with
+no Muse bindings, or with idle bindings and no qualification deadline, performs
+no recurring maintenance SQL after startup. Failed reconciliation retries in
+five seconds. Offered, claimed, accepted and not-yet-finalized settled assignments
+retain that five-second recovery cadence until settlement; this covers terminal
+run writers even when their direct reconciliation path fails. Retained finalized
+assignment history does not keep that cadence running. Direct SQL or independent
+process writers require explicit integration; startup still reconstructs state.
+
+Warm standby prevents maintenance SQL. An idle drain pauses ordinary dispatch
+and passive deadlines through the shared coordinator. Startup and notifications
+received during drain retain a memory-only wake until a sweep can run. The wait
+does not query the database. Producer uncertainty and
+outstanding assignment recovery retain its existing admission rules. Shutdown
+awaits the worker before flushing the receiver. The receiver's separate batching
+timer remains; an empty buffer performs no database work. Existing Muse durable
+sleep blockers, external worker stop evidence, and ingress requirements remain
+unchanged. This change establishes database quiet for inactive Muse, not host
+sleep eligibility for a configured Muse connection.

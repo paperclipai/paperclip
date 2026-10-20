@@ -2,6 +2,7 @@ import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
+  caseHandoffs,
   agents,
   heartbeatRunEvents,
   issueApprovals,
@@ -20,7 +21,7 @@ export type NativeEvidenceOutcome = "accepted" | "missing" | "rejected" | "unver
 
 export interface NativeEvidenceRefAssessment {
   ref: string;
-  kind: "event" | "work_product" | "approval" | "interaction" | "attachment" | "unknown";
+  kind: "event" | "work_product" | "approval" | "interaction" | "attachment" | "case_handoff" | "unknown";
   outcome: NativeEvidenceOutcome;
   reasonCode: string;
   durableRecordId: string | null;
@@ -67,9 +68,10 @@ export interface NativeEvidenceAssessment {
     scope: "current_track" | "task_wide";
   } | null;
   continuation: {
-    kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor";
+    kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor" | "case_handoff";
     summary: string;
     idempotencyKey: string;
+    handoffId?: string;
   } | null;
   /** Actionable, blocking requests only. */
   attentionRequests: PrpNormalizedAttentionRequest[];
@@ -107,6 +109,15 @@ async function classifyEvidenceRef(input: {
   runId: string;
   ref: string;
 }): Promise<NativeEvidenceRefAssessment> {
+  const handoffId = uuidRef(input.ref, ["case-handoff"]);
+  if (handoffId) {
+    const [row] = await input.db.select({ id: caseHandoffs.id, state: caseHandoffs.state }).from(caseHandoffs).where(and(
+      eq(caseHandoffs.id, handoffId), eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.issueId, input.issueId),
+      eq(caseHandoffs.sourceRunId, input.runId),
+    )).limit(1);
+    return { ref: input.ref, kind: "case_handoff", outcome: !row ? "missing" : row.state === "cancelled" ? "rejected" : "accepted",
+      reasonCode: !row ? "case_handoff_missing" : row.state === "cancelled" ? "case_handoff_cancelled" : "case_handoff_persisted", durableRecordId: row?.id ?? null };
+  }
   const eventMatch = /^event:(\d+)$/.exec(input.ref);
   if (eventMatch) {
     const cursor = Number(eventMatch[1]);
@@ -395,13 +406,14 @@ export async function classifyNativeEvidence(input: {
         }
       : null,
     continuation: reported === "yielded"
-      && ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"].includes(String(continuationKind))
+      && ["same_agent", "retry", "delegated_issue", "response_wake", "monitor", "case_handoff"].includes(String(continuationKind))
       && text(continuation.summary)
       && text(continuation.idempotencyKey)
       ? {
           kind: continuationKind as NativeEvidenceAssessment["continuation"] extends infer T ? T extends { kind: infer K } ? K : never : never,
           summary: text(continuation.summary)!,
           idempotencyKey: text(continuation.idempotencyKey)!,
+          ...(continuationKind === "case_handoff" && text(continuation.handoffId) ? { handoffId: text(continuation.handoffId)! } : {}),
         }
       : null,
     attentionRequests: actionableAttentionRequests,

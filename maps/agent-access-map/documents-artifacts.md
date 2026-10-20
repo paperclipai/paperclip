@@ -3,6 +3,8 @@
 Product map: [Documents, attachments, and work
 products](../feature-map/documents-artifacts.md).
 
+Feature ID: `documents-artifacts`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -11,6 +13,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `documents`
+
+Capability ID: `documents-artifacts/documents`.
 
 Review: `baseline`.
 
@@ -39,6 +43,8 @@ other-task tools cover additional scope.
 
 ## `annotations`
 
+Capability ID: `documents-artifacts/annotations`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -63,6 +69,8 @@ Gaps: Annotation operations exist without a special annotation tool; check revis
 anchors and resolver authority.
 
 ## `attachments`
+
+Capability ID: `documents-artifacts/attachments`.
 
 Review: `baseline`.
 
@@ -94,6 +102,8 @@ permission conditions.
 
 ## `work-products`
 
+Capability ID: `documents-artifacts/work-products`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -119,6 +129,8 @@ Gaps: A registered reference does not prove uploaded bytes, external delivery, o
 accepted review.
 
 ## `library`
+
+Capability ID: `documents-artifacts/library`.
 
 Review: `baseline`.
 

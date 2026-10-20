@@ -6,17 +6,20 @@ navigation: {"section":"Oversight and operation","sectionOrder":70,"order":40}
 
 An operator can install and run Paperclip, diagnose the instance, configure supported deployment settings, manage its service, and produce a recoverable database backup.
 
+Feature ID: `instance-operations`.
+
 Implementation: [CLI entry point](../../cli/src/index.ts), [instance settings](../../ui/src/pages/InstanceExperimentalSettings.tsx), [backup command](../../cli/src/commands/db-backup.ts).
 
 Agent access: [companion](../agent-access-map/instance-operations.md).
 
 ## Sub-features
 
-- `install-update`: inspect install channel/version and apply supported update or rollback operations.
-- `server-service`: start/stop the intended instance and inspect its service health.
-- `configuration`: configure database, server binding, storage, secrets, and available experimental settings.
-- `diagnostics`: use doctor/health output to distinguish readiness from a listening port.
-- `backup`: create and inspect backups and verify restore only into a separate disposable target.
+- `install-update`: `instance-operations/install-update` — inspect install channel/version and apply supported update or rollback operations.
+- `server-service`: `instance-operations/server-service` — start/stop the intended instance and inspect its service health.
+- `configuration`: `instance-operations/configuration` — configure database, server binding, storage, secrets, and available experimental settings.
+- `diagnostics`: `instance-operations/diagnostics` — use doctor/health output to distinguish readiness from a listening port.
+- `backup`: `instance-operations/backup` — create and inspect backups and verify restore only into a separate disposable target.
+- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets or import a release-matched Linux Pi companion into an owned published installation.
 
 ## How to get to it (user POV)
 
@@ -27,6 +30,10 @@ Use `paperclipai install`, `run`, `service`, `doctor`, `configure`, `channels`, 
 ### `settings-backup`
 
 Use currently visible instance settings for experiments/access and `paperclipai db:backup --help` for one-off backup. Some legacy general-settings URLs redirect.
+
+### `runtime-provisioning`
+
+On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -75,7 +82,17 @@ other Cloud restrictions. [Settings policy tests](../../server/src/__tests__/ins
 [health tests](../../server/src/__tests__/health.test.ts) exercise simulated Cloud
 identities and persistence; they do not establish a deployed staging walkthrough.
 
+### `runtime-provisioning`
+
+Automated: [Runtime commands](../../cli/src/__tests__/runtime.test.ts), [setup](../../cli/src/__tests__/runtime-setup.test.ts), [remote Pi companion](../../server/src/__tests__/remote-pi-companion.test.ts), and [Pi package provisioning](../../packages/paperclip-runner/scripts/provision-pi-package.test.mjs) cover parsing, fixtures, package identity, and integrity. They do not qualify every published installation or live provider.
+
+Manual: Use a disposable published installation and its exact runtime release. Run setup for the intended host runtime, inspect verified version/path, and repeat to confirm the existing installation is reused. Test a corrupt, linked, or foreign installation and verify rejection preserves unrelated files. Import a matching Linux x64 Pi companion with an independently trusted manifest digest; repeat for verified_existing, then alter manifest, inventory, source/profile identity, or target files and verify failure without replacing unrelated state. Inspect cleanup/cancellation. Finally use the selected adapter/account to run a bounded task separately: installed bytes do not prove model execution.
+
+Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypass](../../cli/src/index.ts), [Pi provisioning](../../packages/paperclip-runner/scripts/provision-pi.mjs), [Cursor provisioning](../../packages/paperclip-runner/scripts/provision-cursor.mjs), and [companion importer](../../server/src/services/native-runtime/remote-pi-companion.ts).
+
 ## Gotchas
+
+- Runtime setup operates on a published installation and verifies package assets. It is not a substitute for an account connection, environment qualification, or a useful task run.
 
 - Source-checkout update/check commands report manual update guidance; they do
   not qualify a managed installation. Rollback restores retained CLI payloads,
@@ -90,6 +107,8 @@ identities and persistence; they do not establish a deployed staging walkthrough
 
 #### `backup`
 
+Capability ID: `instance-operations/backup`.
+
 Scope: ui
 Storybook: Mount shipped InstanceGeneralSettings in CompanySettings with daily/weekly/monthly retention presets, selected values, saving/error/loading and cloud-hidden controls. Backup creation and restore remain separate CLI/operator checks.
 Production: PATCH /api/instance/settings/general must enforce instance settings authority and managed hidden fields, persist retention and survive reload. Separately inspect a real backup and restore a known record into a second disposable target; a successful write does not prove restoration.
@@ -97,12 +116,16 @@ Sources: Source: [InstanceGeneralSettings.tsx](../../ui/src/pages/InstanceGenera
 
 #### `install-update`
 
+Capability ID: `instance-operations/install-update`.
+
 Scope: cli
 Storybook: No authored story required for install, channel selection, update or rollback command execution.
 Production: Use an owned managed installation: check/dry-run, installed version, retained payload rollback and failure. Source-checkout guidance is a separate case; rollback does not undo database migrations.
 Sources: Source: [index.ts](../../cli/src/index.ts), [install.ts](../../cli/src/commands/install.ts), [update.ts](../../cli/src/commands/update.ts). Tests: [install-command.test.ts](../../cli/src/__tests__/install-command.test.ts), [update-command.test.ts](../../cli/src/__tests__/update-command.test.ts)
 
 #### `diagnostics`
+
+Capability ID: `instance-operations/diagnostics`.
 
 Scope: cli
 Storybook: No authored story required for doctor/health command results.

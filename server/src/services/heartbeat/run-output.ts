@@ -183,7 +183,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
       event = identityRedactor.redact(event);
       const eventType = event.eventType.trim();
-      if (!eventType) return;
+      // This namespace attests host-owned handoff cleanup. Legacy adapters do
+      // not carry nativeSource identities, so they must never author it.
+      if (!eventType || eventType.startsWith("legacy.case_handoff_")) return;
       await appendRunEvent(currentRun, {
         eventType: eventType.slice(0, 120),
         stream: event.stream,

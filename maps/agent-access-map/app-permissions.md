@@ -3,6 +3,8 @@
 Product map: [App access, action permissions, and
 testing](../feature-map/app-permissions.md).
 
+Feature ID: `app-permissions`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -11,6 +13,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `agent-access`
+
+Capability ID: `app-permissions/agent-access`.
 
 Review: `baseline`.
 
@@ -43,6 +47,8 @@ no grant credentials and do not authorize a task's tool calls. See the
 
 ## `action-policy`
 
+Capability ID: `app-permissions/action-policy`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -66,6 +72,8 @@ Gaps: An agent cannot authorize itself by editing the policy. Decide whether any
 explicitly delegated administration should be supported.
 
 ## `catalog-change`
+
+Capability ID: `app-permissions/catalog-change`.
 
 Review: `baseline`.
 
@@ -100,6 +108,8 @@ provider responses. They do not qualify a live Daytona account or agent model.
 
 ## `test-action`
 
+Capability ID: `app-permissions/test-action`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -123,6 +133,8 @@ Gaps: A board test performed as an agent is not proof the agent can manage or in
 testing endpoint.
 
 ## `account-maintenance`
+
+Capability ID: `app-permissions/account-maintenance`.
 
 Review: `baseline`.
 

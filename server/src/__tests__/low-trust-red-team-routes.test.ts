@@ -436,6 +436,8 @@ async function seedLowTrustFixture(db: Db) {
       defaultResponsibleUserId: "board-user",
     })
     .returning();
+  await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+  await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
   const [allowedProject] = await db
     .insert(projects)
     .values({
@@ -930,8 +932,6 @@ describeEmbeddedPostgres(
 
     it("allows the human-requested run through HTTP while rejecting attribution-only authority", async () => {
       const fixture = await seedLowTrustFixture(db);
-      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
       // The fixture already occupies the agent's sole execution slot. Let the
       // real board route enqueue work, then bind its queued run for HTTP checks.
       await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
@@ -995,8 +995,6 @@ describeEmbeddedPostgres(
 
     it("retains a board backlog assignment and rejects plugin-attributed wakes with forged board payloads", async () => {
       const fixture = await seedLowTrustFixture(db);
-      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
       await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
         .where(eq(agents.id, fixture.agents.lowTrust.id));
       const board = createApp(db, boardActor(fixture));

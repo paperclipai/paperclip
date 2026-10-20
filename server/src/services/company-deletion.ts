@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { agentObservabilityService } from "./agent-observability.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import type { Db } from "@paperclipai/db";
@@ -36,6 +37,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
   companySkills,
+  cases,
   documents,
   routineRuns,
   routineTriggers,
@@ -57,6 +59,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
@@ -65,6 +68,9 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
+        // Cases retain task and agent references. Their dependent handoffs and
+        // access sources cascade here before those task/agent records are removed.
+        await tx.delete(cases).where(eq(cases.companyId, id));
         // Delete from child tables in dependency order
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })

@@ -6,16 +6,18 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":40}
 
 A person can hold a persistent conversation with an agent, return to its history, and hand useful work into a project or task. The gated conference-room chat is a separate conversation surface.
 
+Feature ID: `agent-chat`.
+
 Implementation: [agent chat](../../ui/src/pages/AgentChat.tsx), [chat landing](../../ui/src/pages/AgentChats.tsx), [conference room](../../ui/src/pages/BoardChat.tsx).
 
 Agent access: [companion](../agent-access-map/agent-chat.md).
 
 ## Sub-features
 
-- `discovery`: find an agent and reopen an accessible recent conversation.
-- `history`: send messages, inspect replies/files, and return to the same conversation.
-- `handoff`: create or identify a project/task from chat and follow the resulting work.
-- `conference-room`: use the separately gated board chat without assuming parity with agent chat.
+- `discovery`: `agent-chat/discovery` — find an agent and reopen an accessible recent conversation.
+- `history`: `agent-chat/history` — send messages, inspect replies/files, and return to the same conversation.
+- `handoff`: `agent-chat/handoff` — create or identify a project/task from chat and follow the resulting work.
+- `conference-room`: `agent-chat/conference-room` — use the separately gated board chat without assuming parity with agent chat.
 
 ## How to get to it (user POV)
 
@@ -80,6 +82,8 @@ Manual: Check disabled access first, enable in the disposable instance, then sen
 ### Storybook verification
 
 #### `conference-room`
+
+Capability ID: `agent-chat/conference-room`.
 
 Scope: ui
 Storybook: Conference-room flag disabled, empty/history/reply, busy and explicit failure states.

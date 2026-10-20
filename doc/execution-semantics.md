@@ -453,6 +453,19 @@ and record `issue.monitor_dispatch_failed`, with no raw provider error. Repeated
 identical diagnostics for one schedule are limited to one per five minutes.
 Diagnostics never authorize execution or consume a monitor attempt.
 
+A native run's terminal provider status does not release its timer while
+finalization is unfinished. Scheduled and manual monitor dispatch wait for that
+finalization to settle. For an already-dispatched timer, recovery can settle the
+old saved monitor result when its server-issued scheduling receipt matches a
+durable wake and an admitted successor run. The old run must no longer own the
+task's checkout or execution. This settlement preserves the task and successor
+ownership, and neither re-arms the timer nor starts another provider turn.
+Workspace persistence must still succeed first.
+If a saved monitor expires during workspace recovery, settlement releases the
+old run into the still-persisted schedule. The scheduler then applies its timeout
+or attempt-limit recovery policy. Expiration still rejects new monitor-wait
+results; finalizing accepted work neither renews the deadline nor starts a turn.
+
 Native `set_task_monitor` arguments put scheduling fields inside `monitor`:
 `{ "idempotencyKey": "check-ci", "monitor": { "nextCheckAt": "<future UTC timestamp>", "notes": "Check pending CI." } }`.
 Use `monitor: null` to clear a schedule. A runner schema rejection executes no
@@ -1663,11 +1676,36 @@ runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
 
+Native assigned app tools save governed responses above 500,000 encoded bytes before returning
+a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
+UTF-8 pages under the same task, agent, and responsible-user access checks.
+Each encoded page fits within 500,000 bytes, including JSON escaping and metadata,
+leaving space for the PRP command envelope. Follow the next byte offset until EOF
+to reconstruct the full original JSON; paging never discards remaining content.
+Retrieval never repeats the upstream action. Storage failure after execution
+retains an uncertain result-delivery outcome, preserving the no-replay rule.
+Runner command and receipt size limits remain unchanged.
+
 Sparse remote workspace checkpoints capture at most eight regular files at once.
 Each file retains the content hash and mutation checks. A failed capture settles
 its active readers before closing the manifest and publishes no success receipt.
 
 ### Warm sandbox continuity
+
+Automatic GitHub review messages contain the current event and commit identifiers,
+not repeated review policy or the full PR description. The harness loads review
+instructions from the processed, company/task-bound delivery snapshot. Native
+GitHub sessions with a verified checkpoint and a complete inline comment batch
+receive only that batch and configuration not present in the previous turn.
+Configuration identity includes the endpoint, PR conversation, revision, and rendered
+instructions. A fresh session or failed resume receives the full bootstrap;
+incomplete batches, attachments, recovery, and interactions retain their existing
+framing. This prompt optimization does not change tool authorization or review
+publication checks. PR descriptions remain available through the metadata tool.
+Coalesced requests use the last accepted request's policy. Discussion turns retain
+the admitted configuration identity for the next automatic review.
+Board follow-ups with no new provider message restore the latest admitted review
+configuration from the same company, task, and bot binding.
 
 An active remote runner's health probe is an observation, not an exit receipt.
 Timed-out or rejected read-only probes retry within the existing 30-second

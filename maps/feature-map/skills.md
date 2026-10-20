@@ -6,17 +6,19 @@ navigation: {"section":"Agents and reusable capabilities","sectionOrder":30,"ord
 
 Operators discover or import skills, author and test them in Skill Studio, manage source versions, and decide which agents may use them.
 
+Feature ID: `skills`.
+
 Implementation: [skill library](../../ui/src/pages/CompanySkills.tsx), [studio](../../ui/src/pages/SkillStudio.tsx), [sources](../../ui/src/pages/SkillSources.tsx), [agent skills](../../ui/src/pages/agent-skills/AgentSkillsTab.tsx).
 
 Agent access: [companion](../agent-access-map/skills.md).
 
 ## Sub-features
 
-- `discovery`: browse installed/discover views and import a skill or source.
-- `authoring`: create/edit a writable skill or fork a read-only source.
-- `versions`: inspect revisions, source updates, diffs, and selected releases.
-- `policy`: apply agent enablement and skill usage policy independently from installation.
-- `testing`: run a bounded Studio test and inspect its result and interactions.
+- `discovery`: `skills/discovery` — browse installed/discover views and import a skill or source.
+- `authoring`: `skills/authoring` — create/edit a writable skill or fork a read-only source.
+- `versions`: `skills/versions` — inspect revisions, source updates, diffs, and selected releases.
+- `policy`: `skills/policy` — apply agent enablement and skill usage policy independently from installation.
+- `testing`: `skills/testing` — run a bounded Studio test and inspect its result and interactions.
 
 ## How to get to it (user POV)
 
@@ -128,6 +130,8 @@ Open Choose connection while a source is being refreshed. Select an authorized a
 ### Storybook verification
 
 #### `testing`
+
+Capability ID: `skills/testing`.
 
 Scope: ui
 Storybook: Studio test inputs/configuration, running, question/approval, result and failed test states.

@@ -2,6 +2,8 @@
 
 Product map: [Steering and queued messages](../feature-map/steering.md).
 
+Feature ID: `steering`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `queue`
+
+Capability ID: `steering/queue`.
 
 Review: `baseline`.
 
@@ -46,6 +50,8 @@ messages requires separate authority.
 
 ## `edit-order-discard`
 
+Capability ID: `steering/edit-order-discard`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -71,6 +77,8 @@ needed before granting one.
 
 ## `steer`
 
+Capability ID: `steering/steer`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -95,6 +103,8 @@ preserves this denial and cannot impersonate the steering user.
 
 ## `interrupt`
 
+Capability ID: `steering/interrupt`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -117,6 +127,8 @@ own policy and access review.
 Gaps: Explicit operator action is distinct from an agent yielding/blocking its own turn.
 
 ## `stop-and-pause`
+
+Capability ID: `steering/stop-and-pause`.
 
 Review: `baseline`.
 
@@ -143,6 +155,8 @@ generic agent management path.
 
 ## `drafts`
 
+Capability ID: `steering/drafts`.
+
 Review: `baseline`.
 
 API: `not-applicable` — No shared server draft resource for this presentation state;
@@ -164,6 +178,8 @@ Gaps: No shared server draft resource for this presentation state; cross-client 
 would be a deliberate new capability.
 
 ## `approval-queue`
+
+Capability ID: `steering/approval-queue`.
 
 Review: `baseline`.
 

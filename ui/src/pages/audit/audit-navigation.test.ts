@@ -3,6 +3,7 @@ import {
   agentAuditHref,
   auditScopeFromSearchParams,
   auditSectionHref,
+  caseAuditHref,
   routineAuditHref,
   runAuditHref,
 } from "./audit-navigation";
@@ -23,6 +24,7 @@ describe("audit navigation", () => {
     expect(routineAuditHref("routine-1")).toBe(
       "/activity?entityType=routine&entityId=routine-1",
     );
+    expect(caseAuditHref("case-1")).toBe("/activity?entityType=case&entityId=case-1");
     expect(runAuditHref("run-1", "agent-1")).toBe(
       "/activity?mode=agents&agentId=agent-1&runId=run-1",
     );

@@ -2,6 +2,8 @@
 
 Product map: [Onboarding and first work](../feature-map/onboarding.md).
 
+Feature ID: `onboarding`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -15,6 +17,8 @@ selected-runtime validation and draft restoration. Unrelated baseline entries
 retain the original source commit; no live agent verification is added.
 
 ## `instance`
+
+Capability ID: `onboarding/instance`.
 
 Review: `baseline`.
 
@@ -38,6 +42,8 @@ Gaps: Bootstrapping an instance cannot depend solely on an API served by that
 not-yet-running instance.
 
 ## `company`
+
+Capability ID: `onboarding/company`.
 
 Review: `baseline`.
 
@@ -65,6 +71,8 @@ Gaps: API building blocks exist; an ordinary agent cannot create its parent comp
 a company key.
 
 ## `adapter`
+
+Capability ID: `onboarding/adapter`.
 
 Review: `baseline`.
 
@@ -146,6 +154,8 @@ environment access separately. These agent-context checks remain `not-run`.
 
 ## `first-task`
 
+Capability ID: `onboarding/first-task`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -184,6 +194,8 @@ wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 
 ## `resume`
+
+Capability ID: `onboarding/resume`.
 
 Review: `baseline`.
 

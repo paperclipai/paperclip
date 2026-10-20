@@ -9,25 +9,32 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Feature ID: `connection-setup`.
+
 Agent access: [companion](../agent-access-map/connection-setup.md).
+
+Prompt Injection Prevention reuses shared OpenRouter API-key setup directly from
+Settings → Connections. It adds no Apps provider or transport. Credential ownership
+and audience rules are the existing connection rules; saving a connection alone
+does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
 ## Sub-features
 
-- `catalog`: find a provider, inspect its available methods, and open setup;
+- `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
   unavailable methods explain their prerequisite rather than silently switching.
-- `identity-and-access`: select personal/shared identity and eligible agents;
+- `identity-and-access`: `connection-setup/identity-and-access` — select personal/shared identity and eligible agents;
   an empty explicit selection and company-wide access must not be confused.
-- `credentials`: provider sign-in, key, or generic MCP URL follows its supported
+- `credentials`: `connection-setup/credentials` — provider sign-in, key, or generic MCP URL follows its supported
   setup method; credentials are not retained in browser draft storage.
-- `handoff`: provider popup/full-page callback returns to the correct setup
+- `handoff`: `connection-setup/handoff` — provider popup/full-page callback returns to the correct setup
   host with the original task intent and identity choice intact.
-- `draft-recovery`: cancel, Back, Save & exit, reload, Finish setup, and reconnect
+- `draft-recovery`: `connection-setup/draft-recovery` — cancel, Back, Save & exit, reload, Finish setup, and reconnect
   preserve the exact draft rather than creating duplicate connections.
-- `task-request`: only the addressed person resolves the requested connection;
+- `task-request`: `connection-setup/task-request` — only the addressed person resolves the requested connection;
   usable access releases the pending task request through normal continuation.
-- `channel-setup`: provider endpoint, represented agent, linked sender, and
+- `channel-setup`: `connection-setup/channel-setup` — provider endpoint, represented agent, linked sender, and
   communication instructions are configured before an external message is used.
-- `failure`: denied login, unreachable/private URL, expired credentials, and
+- `failure`: `connection-setup/failure` — denied login, unreachable/private URL, expired credentials, and
   permission errors leave an actionable state rather than a false success.
 
 ## How to get to it (user POV)
@@ -164,6 +171,7 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 
 ## Gotchas
 
+- For connecting an assistant to Paperclip itself, use [Assistant connections (MCP)](./assistant-connections.md). This recipe's MCP-link journey connects Paperclip to an external app server.
 - Private endpoint rejection depends on deployment: owned loopback MCP servers
   are supported in local-trusted/private instances. Public authenticated
   deployments apply the private-network restriction.

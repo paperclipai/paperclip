@@ -233,6 +233,14 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "cost.reported",
 ];
 
+const LIVENESS_BOOKKEEPING_EVENT_TYPES = [
+  "lifecycle",
+  "adapter.invoke",
+  "error",
+  "legacy.case_handoff_cleanup_intent",
+  "legacy.case_handoff_cleanup_verified",
+];
+
 export const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
@@ -2883,14 +2891,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt})`,
       })
       .from(heartbeatRunEvents)
       .where(
         and(
           eq(heartbeatRunEvents.companyId, run.companyId),
           eq(heartbeatRunEvents.runId, run.id),
+          notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_EVENT_TYPES),
         ),
       );
 

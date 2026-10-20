@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues,
+  completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,10 @@ import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "./scheduling.js";
 import { readIdleSleepSafety } from "../idle-sleep-safety.js";
+import { PaperclipRunnerToolAuthority } from "../native-runtime/paperclip-runner-tool-authority.js";
+import { finalizeNativeRun } from "../native-runtime/native-run-finalizer.js";
+import { nativeCompletionFeedback } from "../native-runtime/native-completion-feedback.js";
+import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -273,6 +277,93 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it("keeps a due monitor until a terminal native run finishes finalization", async () => {
+    const f = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
+      runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: f.issue.id },
+    }).returning();
+    await db.insert(nativeRunFinalizations).values({
+      companyId: f.company.id, issueId: f.issue.id, runId: run!.id, phase: "retryable_failure",
+    });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now })).rejects.toThrow("waiting for the previous run to settle");
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, run!.id));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["scheduled", "manual"] as const)("applies expired monitor recovery after workspace settlement without another turn (%s)", async (dispatch) => {
+    const f = await fixture();
+    const start = new Date();
+    const nextCheckAt = new Date(start.getTime() + 60_000).toISOString();
+    const timeoutAt = new Date(start.getTime() + 120_000).toISOString();
+    const [contract] = await db.insert(completionContracts).values({
+      companyId: f.company.id, issueId: f.issue.id, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test",
+      risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "test", criteria: [] }, canonicalSha256: randomUUID(),
+      createdByActorType: "system", createdByActorId: "test",
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
+      runtimeMode: "native", status: "running", completionContractId: contract!.id,
+      contextSnapshot: { issueId: f.issue.id },
+    }).returning();
+    await db.update(issues).set({ executionRunId: run!.id, checkoutRunId: run!.id }).where(eq(issues.id, f.issue.id));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId: f.company.id,
+      issueId: f.issue.id, agentId: f.agent.id, runId: run!.id });
+    await authority.execute({ tool: "set_task_monitor", callId: randomUUID(), arguments: {
+      idempotencyKey: "expires-during-workspace-save",
+      monitor: { nextCheckAt, timeoutAt, notes: "Check once saved", recoveryPolicy: "escalate_to_board" },
+    } });
+    const result: PrpStructuredRunResult = {
+      schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Wait for the check.",
+      completionClaim: { contractRevision: "test", objectiveSatisfied: false, criteria: [],
+        remainingWork: [{ description: "Check after saving", blocksCompletion: true }] },
+      continuation: { kind: "monitor", summary: "Wait for the saved check", idempotencyKey: "wait" },
+      evidence: [], verification: [], attentionRequests: [], artifacts: [],
+    };
+    await expect(nativeCompletionFeedback(db, run!.id, result)).resolves.toContain("issue_monitor_due");
+    const [saved] = await db.insert(nativeRunResults).values({
+      companyId: f.company.id, issueId: f.issue.id, runId: run!.id, completionContractId: contract!.id,
+      serverFingerprint: randomUUID(), canonicalSha256: randomUUID(), schemaStatus: "accepted",
+      resultJson: { result, terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded",
+        turnTerminalState: "completed", reportedWorkDisposition: "yielded" } },
+    }).returning();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.company.id, issueId: f.issue.id,
+      runId: run!.id, phase: "result_persisted", resultId: saved!.id });
+    await finalizeNativeRun({ db, runId: run!.id, workspaceFinalizeStatus: "failed" });
+    const expiredAt = new Date(start.getTime() + 180_000);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(expiredAt);
+    try {
+      await expect(nativeCompletionFeedback(db, run!.id, result)).rejects.toThrow("persisted, eligible monitor");
+      expect(await f.scheduler.tickTimers(expiredAt)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+      await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now: expiredAt })).rejects.toThrow("waiting for the previous run to settle");
+      await finalizeNativeRun({ db, runId: run!.id, workspaceFinalizeStatus: "succeeded" });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run!.id)))[0])
+        .toMatchObject({ phase: "committed", failureCode: null });
+      expect(await readIssue(f.issue.id)).toMatchObject({ executionRunId: null, checkoutRunId: null,
+        monitorNextCheckAt: new Date(nextCheckAt) });
+      if (dispatch === "manual") await f.scheduler.triggerIssueMonitor(f.issue.id, { now: expiredAt });
+      else await f.scheduler.tickTimers(expiredAt);
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null,
+        executionState: { monitor: { status: "cleared", clearReason: "timeout_exceeded" } } });
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(1);
+      await finalizeNativeRun({ db, runId: run!.id, workspaceFinalizeStatus: "succeeded" });
+      await f.scheduler.tickTimers(expiredAt);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(1);
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+      expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, saved!.id)))[0]!.resultJson).toEqual(saved!.resultJson);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips archived companies for both timers and monitors", async () => {

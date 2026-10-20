@@ -14,7 +14,7 @@ import {
   resolveSharedWorkspaceConcurrency,
   type ParsedExecutionWorkspaceMode,
 } from "../execution-workspace-policy.js";
-import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-source-access.js";
+import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import {
   findNativeChatWorkspaceScope,
@@ -64,7 +64,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     issueAssigneeOverrides: { adapterConfig: Record<string, unknown> | null } | null;
   };
   services: {
-    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getStoredById" | "validateSelection">;
+    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getStoredById" | "validateStoredSelectionForRun">;
     environmentsSvc: Pick<ReturnType<typeof environmentService>,
       "ensureLocalEnvironment" | "findManagedSandboxEnvironment" | "findKubernetesEnvironment" | "ensureKubernetesEnvironment" | "getById">;
     instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "get" | "getExperimental">;
@@ -132,10 +132,10 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     source: "agent_jwt" as const, runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
   if (!isDotRun && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const workspaceRequiringAccess = reusableExistingExecutionWorkspace ?? boundSourceWorkspace;
-    if (workspaceRequiringAccess) {
-      await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true, issueId });
+    if (workspaceRequiringAccess && issueId) {
+      await assertTaskWorkspaceExecutionAccess(db, workspaceAuthorizationActor, agent.companyId, { issueId, workspaceId: workspaceRequiringAccess.id });
     } else if (!isDotRun && executionProjectId && (hasSelectedWorkspaceSource || workspaceProjectContext?.hasWorkspace)) {
-      await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, sourceWorkspaceConfig) !== "git_worktree", issueId });
+      await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId);
     }
   }
   const requestedReusableExecutionWorkspaceConfig =
@@ -434,7 +434,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     }
   }
   if (!isDotRun && taskWorkspaceIntent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
-    await executionWorkspacesSvc.validateSelection({ companyId: agent.companyId,
+    await executionWorkspacesSvc.validateStoredSelectionForRun({ companyId: agent.companyId,
       actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
       selection: taskWorkspaceIntent.selection, issueId,
       preserveImplicitDefaultSettings: ["project", "task_default"].includes(taskWorkspaceIntent.source) });

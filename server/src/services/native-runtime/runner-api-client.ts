@@ -39,6 +39,8 @@ export interface RunnerApiIo {
   apiUrl: string;
   token: string;
   fetch?: typeof fetch;
+  /** Server-owned page size for the dedicated saved-result reader. */
+  responseTextPageBytes?: number;
   /** Revalidate server-owned authority after asynchronous file preparation. */
   beforeDispatch?(): Promise<void>;
   /** Reserve before spilling. Settle completed bytes; failed captures retain their reservation. */
@@ -120,6 +122,7 @@ export async function readBoundedResponse(response: Response, maxBytes = RUNNER_
 }
 
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
+  const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
@@ -127,7 +130,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   if (!io.token) throw new Error("Paperclip run authentication is unavailable");
   const headers = new Headers({ Authorization: `Bearer ${io.token}`, "X-Paperclip-Run-Id": context.runId });
   const textOffset = input.responseText?.offsetBytes ?? 0;
-  const textLimit = input.responseText?.limitBytes ?? RUNNER_API_INLINE_BYTES;
+  const textLimit = input.responseText?.limitBytes
+    ?? (input.responseText ? io.responseTextPageBytes : undefined) ?? RUNNER_API_INLINE_BYTES;
   const assetTextRange = operation.operationId === "GET /api/assets/{assetId}/content"
     ? { start: Math.max(0, textOffset - 1), end: Math.min(Number.MAX_SAFE_INTEGER, textOffset + textLimit) }
     : undefined;
@@ -195,12 +199,12 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
       timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
       bytes = await readBoundedResponse(response, textLimit + 2);
     } else {
-      captured = await captureRunnerApiResponse(response, RUNNER_API_INLINE_BYTES, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch, {
+      captured = await captureRunnerApiResponse(response, inlineBytes, controller, RUNNER_API_TIMEOUT_MS, io.beforeDispatch, {
         beforeSpill: async () => { settleCapture = await io.reserveResponseCapture?.(); },
       });
       // Read only the requested window (+ one UTF-8 lookahead byte) into memory.
       bytes = await captured.read(input.responseText && response.ok ? textOffset : 0,
-        input.responseText ? textLimit + 1 : RUNNER_API_INLINE_BYTES);
+        input.responseText ? textLimit + 1 : inlineBytes);
     }
   } catch (error) {
     await disposeCapture(!(error instanceof RunnerApiResponseCleanupError));
@@ -256,11 +260,11 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         return { ...base, ok: false, error: "response_text_invalid_utf8" };
       }
       const nextOffset = baseOffset + end;
-      const artifact = captured && captured.byteSize > RUNNER_API_INLINE_BYTES
+      const artifact = captured && captured.byteSize > inlineBytes
         ? await saveResponse(captured.body, type) : undefined;
       return { ...base, data, ...(artifact ? { artifact, guidance: "Continue reading this saved artifact with GET /api/assets/{assetId}/content and responseText.nextOffsetBytes for a stable snapshot." } : {}), responseText: { offsetBytes, nextOffsetBytes: nextOffset < totalBytes ? nextOffset : null, totalBytes } };
     }
-    if (assetTextRange && response.ok && (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type))) {
+    if (assetTextRange && response.ok && (totalBytes > inlineBytes || !/json|^text\//i.test(type))) {
       // This content is already an authorized, stable asset. Return its existing
       // reference after a bounded preview; never download and duplicate it.
       const assetId = input.pathParams!.assetId;
@@ -270,7 +274,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         guidance: "Read this asset with responseText: { offsetBytes: 0 }. Continue with responseText.nextOffsetBytes until null." };
     }
     if (!totalBytes) return { ...base, data: null };
-    if (!sensitiveResponse && (totalBytes > RUNNER_API_INLINE_BYTES || !/json|^text\//i.test(type))) {
+    if (!sensitiveResponse && (totalBytes > inlineBytes || !/json|^text\//i.test(type))) {
       return { ...base, artifact: await saveResponse(captured?.body ?? bytes, type), byteSize: totalBytes, preview: /json|^text\//i.test(type) ? bytes.subarray(0, 2000).toString("utf8") : null,
         ...(/json|^text\//i.test(type) ? { guidance: "Read the saved artifact with GET /api/assets/{assetId}/content and responseText: { offsetBytes: 0 }. Continue with responseText.nextOffsetBytes until null. Do not repeat a mutation to read its response." } : {}) };
     }

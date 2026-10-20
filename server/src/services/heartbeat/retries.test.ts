@@ -9,6 +9,7 @@ import { createRunDispatch, type PostCommitEffect } from "../../modules/run-disp
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
+import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import * as extracted from "./retries.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 
@@ -17,6 +18,7 @@ type Agent = typeof agents.$inferSelect;
 
 function callbacks() {
   return {
+    hasCaseHandoffForRun: vi.fn<HeartbeatRetryDependencies["hasCaseHandoffForRun"]>(async () => false),
     getRun: vi.fn<HeartbeatRetryDependencies["getRun"]>(async () => null),
     getAgent: vi.fn<HeartbeatRetryDependencies["getAgent"]>(async () => undefined),
     resolveSessionBeforeForWakeup: vi.fn(async () => null),
@@ -108,6 +110,22 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("leaves successor work to the committed case handoff without retry escalation", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    deps.hasCaseHandoffForRun.mockResolvedValue(true);
+    const run = unitRun();
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run, { adapterType: "codex_local" } as Agent,
+      { retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, maxAttempts: 0 },
+    );
+    expect(retry).toMatchObject({ outcome: "not_scheduled", issueId: "issue" });
+    expect(deps.hasCaseHandoffForRun).toHaveBeenCalledWith(run);
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).not.toHaveBeenCalled();
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
   it("passes the service's worktree cutoff and publishes only returned effects", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
@@ -193,6 +211,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     const state = createHeartbeatRunState(db);
     const deps = {
       ...callbacks(), getRun: state.getRun, getAgent: state.getAgent,
+      hasCaseHandoffForRun: async (run: Pick<Run, "id" | "companyId">) => Boolean(await pendingCaseHandoffForRun(db, run.id, run.companyId)),
       resolveSessionBeforeForWakeup: state.resolveSessionBeforeForWakeup,
       getAgentInvokability: (agent: Agent | null | undefined) => evaluateAgentInvokabilityFromDb(db, agent),
       runDispatch: createRunDispatch(db),

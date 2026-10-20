@@ -4,7 +4,7 @@ import { Router, type Request } from "express";
 import { prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
 import { accessService } from "../services/access.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { canActorReadExecutionWorkspace, issueReadSqlCondition } from "../services/authorization.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { logActivity } from "../services/activity-log.js";
 import { forbidden, notFound } from "../errors.js";
@@ -24,7 +24,6 @@ export function taskWorkspaceRoutes(db: Db) {
       status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
     } });
     if (!decision.allowed) throw forbidden("Task workspace is outside this actor's authorization boundary");
-    if (issue.executionWorkspaceId && !(await canActorReadExecutionWorkspace(db, req.actor, issue.executionWorkspaceId))) throw notFound("Execution workspace not found");
     if (write && req.actor.type === "agent") {
       const context = await projectToolContext(db, req.actor, true, "Workspace");
       if (context.issue.id !== issue.id) throw forbidden("Workspace selection is scoped to the current task");

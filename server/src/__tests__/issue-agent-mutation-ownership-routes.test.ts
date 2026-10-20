@@ -326,6 +326,12 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
+function emptyCaseHandoffQuery() {
+  return { where: vi.fn(() => ({
+    orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+  })) };
+}
+
 function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
@@ -389,6 +395,7 @@ function createRunContextDb(
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (getTableName(table) === "case_handoffs") return emptyCaseHandoffQuery();
         if (emptyWakeQueue && getTableName(table) === "agent_wakeup_requests") {
           return buildQuery({}, false, true);
         }
@@ -2984,7 +2991,8 @@ describe("agent issue mutation checkout ownership", () => {
       return {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
-          from: vi.fn(() => buildQuery(selection)),
+          from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
+            ? emptyCaseHandoffQuery() : buildQuery(selection)),
         })),
       };
     }

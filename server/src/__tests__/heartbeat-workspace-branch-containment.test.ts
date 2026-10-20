@@ -1075,7 +1075,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     },
   );
 
-  it.each(["git_worktree", "project_primary"] as const)("blocks a reused %s workspace with the owner action once a restricted task worktree shares it", async (strategyType) => {
+  it.each(["git_worktree", "project_primary"] as const)("reuses a %s workspace when a private historical task worktree shares its Git root", async (strategyType) => {
     vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
     const seeded = await seedRetainedSourceRun("deleted");
     if (strategyType === "project_primary") {
@@ -1095,25 +1095,30 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       providerType: "git_worktree", cwd: privateCwd, providerRef: privateCwd, branchName: "restricted-task", status: "idle" }).returning();
     await db.update(issues).set({ executionWorkspaceId: privateWorkspace.id }).where(eq(issues.id, privateIssue.id));
 
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Completed shared-root work.", provider: "test", model: "test-model" };
+    });
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     const run = await waitForRunToFinish(heartbeat, seeded.runId);
     await heartbeat.waitForRunExecutionDrain(seeded.runId);
     await waitForPendingRunFailureReports();
 
-    expect(run).toMatchObject({ status: "failed", errorCode: "configuration_incomplete", resultJson: {
-      configurationIncomplete: { reason: "workspace_source_restricted", issueId: seeded.issueId },
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
-    expect(adapterExecute).not.toHaveBeenCalled();
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: {
+      paperclipWorkspace: { cwd: strategyType === "project_primary" ? seeded.owner : seeded.worktree },
+      executionWorkspaceId: seeded.executionWorkspaceId,
+    } });
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
-    expect(issue).toMatchObject({ status: "blocked", executionRunId: null, executionWorkspaceId: seeded.executionWorkspaceId });
+    expect(issue).toMatchObject({ status: "done", executionWorkspaceId: seeded.executionWorkspaceId });
     const comments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments.map(comment => comment.body).join("\n")).toContain("The task couldn’t start.");
-    const actions = await db.select({ nextAction: issueRecoveryActions.nextAction }).from(issueRecoveryActions)
+    expect(comments.map(comment => comment.body).join("\n")).not.toContain("The task couldn’t start.");
+    const actions = await db.select({ cause: issueRecoveryActions.cause }).from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
-    expect(actions).toHaveLength(1);
-    expect(actions.map(action => action.nextAction).join("\n")).toContain("Retry the task.");
+    expect(actions).toHaveLength(0);
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(1);
     expect(await readFile(path.join(seeded.worktree, "retained.txt"), "utf8")).toBe("unexported original task edits\n");
   });

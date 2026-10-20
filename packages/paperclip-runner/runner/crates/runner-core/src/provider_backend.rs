@@ -562,7 +562,7 @@ fn admit_terminal_tool_authority(
                             .get("continuation")
                             .and_then(|continuation| continuation.get("kind"))
                             .and_then(Value::as_str),
-                        Some("response_wake" | "monitor")
+                        Some("response_wake" | "monitor" | "case_handoff")
                     ))
         }
         "paperclip_block" => disposition == "blocked",

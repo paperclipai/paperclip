@@ -6,6 +6,8 @@ import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { isImmutableDaytonaImage } from "./catalog.js";
 import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { codexSubscriptionAgentConfig, stageCodexSubscriptionFixture } from "./codex-subscription-fixture.js";
+import { caseReceiptTask, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import type { RunnerApi } from "./api.js";
 import type {
@@ -143,6 +145,7 @@ export async function setupLiveFixtures(input: {
   daytonaImage?: string;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
+  const receiptSmoke = execution.suite.id === "case-handoffs" && execution.task.id === caseReceiptTask.id;
   const registry = new FixtureRegistry();
   let setupProbe: LiveFixtureValues["setupProbe"];
 
@@ -166,10 +169,11 @@ export async function setupLiveFixtures(input: {
       return api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
+        budgetMonthlyCents: receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
+          : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
-          : ["stock-harness", "task-workspaces"].includes(execution.suite.id) ? 1_000 : 0,
+          : ["stock-harness", "task-workspaces", "case-handoffs"].includes(execution.suite.id) ? 1_000 : 0,
       });
     },
     async teardown() {
@@ -186,7 +190,7 @@ export async function setupLiveFixtures(input: {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
       for (const credentialName of execution.requiredCredentials) {
-        if (credentialName === "GROK_AUTH_JSON") continue;
+        if (["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(credentialName)) continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
@@ -209,14 +213,15 @@ export async function setupLiveFixtures(input: {
   });
 
   const grokSubscription = execution.profile.credential === "GROK_AUTH_JSON";
-  if (grokSubscription) {
+  const codexSubscription = execution.profile.credential === "CODEX_AUTH_JSON";
+  if (grokSubscription || codexSubscription) {
     registry.register<() => Promise<void>>({
       id: "subscription-login",
       dependencies: ["company"],
       async setup(resolved) {
-        const raw = input.credentials.GROK_AUTH_JSON;
-        if (!raw) throw new Error("Missing credential GROK_AUTH_JSON");
-        return stageGrokSubscriptionFixture({
+        const raw = input.credentials[execution.profile.credential];
+        if (!raw) throw new Error("Missing explicit subscription login credential");
+        return (codexSubscription ? stageCodexSubscriptionFixture : stageGrokSubscriptionFixture)({
           raw, companyId: value<CompanyRecord>(resolved, "company").id,
           environment: process.env,
         });
@@ -230,7 +235,7 @@ export async function setupLiveFixtures(input: {
     dependencies: [
       "company",
       "secrets",
-      ...(grokSubscription ? ["subscription-login"] : []),
+      ...((grokSubscription || codexSubscription) ? ["subscription-login"] : []),
       ...(execution.environment.id === "daytona" ? ["sandbox-provider"] : []),
     ],
     async setup(resolved) {
@@ -310,7 +315,7 @@ export async function setupLiveFixtures(input: {
       "company",
       "secrets",
       "environment",
-      ...(grokSubscription ? ["subscription-login"] : []),
+      ...((grokSubscription || codexSubscription) ? ["subscription-login"] : []),
       ...(managedHiring || savedCopilot ? ["ai-connection"] : []),
     ],
     async setup(resolved) {
@@ -355,6 +360,15 @@ export async function setupLiveFixtures(input: {
         || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
         agent.budgetMonthlyCents = 1_000;
       }
+      if (receiptSmoke) {
+        agent.budgetMonthlyCents = CASE_RECEIPT_BUDGET_CENTS;
+        agent.adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>),
+          timeoutSec: CASE_RECEIPT_RUN_TIMEOUT_MS / 1_000, modelReasoningEffort: "low" };
+        const runtimeConfig = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+        agent.runtimeConfig = { ...runtimeConfig,
+          heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),
+            enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 1, maxDailyCostCents: CASE_RECEIPT_BUDGET_CENTS } };
+      }
       if (managedHiring || savedCopilot) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
@@ -366,7 +380,7 @@ export async function setupLiveFixtures(input: {
       }
       return api.post<AgentRecord>(
         `/api/companies/${company.id}/agents`,
-        agent,
+        codexSubscription ? codexSubscriptionAgentConfig(agent, process.env, company.id) : agent,
       );
     },
     async teardown() {

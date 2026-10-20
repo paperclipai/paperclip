@@ -22,7 +22,7 @@ function database(options: { interaction?: boolean; approval?: boolean; review?:
       : table === issues ? [{ id: "issue", companyId: "company", status: "in_progress", ...(options.review ? { executionState: { status: "pending" } } : {}) }]
       : table === issueThreadInteractions && options.interaction ? [{ id: "request", kind: "request_confirmation", title: "Decision" }]
       : table === issueApprovals && options.approval ? [{ id: "approval" }] : [];
-    const query = { where: () => query, limit: () => query, innerJoin: () => query, then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+    const query = { where: () => query, limit: () => query, orderBy: () => query, innerJoin: () => query, then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
     return query;
   } }) } as unknown as Db;
 }

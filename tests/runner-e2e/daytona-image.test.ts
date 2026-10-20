@@ -247,6 +247,8 @@ describe("runner E2E Daytona image contract", () => {
   "packages/paperclip-runner/test/fixtures/copilot-profile-v42-identity.json",
   "packages/paperclip-runner/test/fixtures/copilot-profile-v46-identity.json",
   "packages/paperclip-runner/test/fixtures/copilot-profile-v47-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v48-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v49-identity.json",
       "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
       "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
       "packages/paperclip-runner/cursor-distributions.json",

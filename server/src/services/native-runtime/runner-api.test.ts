@@ -58,6 +58,37 @@ describe("bounded response capture receipts", () => {
 });
 
 describe("runner API catalog", () => {
+  it("discovers the real handoff schema and recovery endpoints with standard-mode mutation authority", () => {
+    const operation = runnerApiOperation("POST /api/companies/{companyId}/case-handoffs");
+    expect(operation.dedicatedTools).toEqual(["handoff_case", "create_case"]);
+    expect(operation.allowedModes).toEqual(["standard"]);
+    expect(operation.requestBody?.content["application/json"].schema).toMatchObject({ oneOf: [
+      { additionalProperties: false, required: expect.arrayContaining(["case", "toAgentId", "phase", "instructions", "idempotencyKey", "workflow_document_text"]),
+        properties: { case: { required: ["create"] }, workflow_document_text: { type: "string", maxLength: 200000, pattern: "\\S" } } },
+      { additionalProperties: false, required: expect.arrayContaining(["case", "toAgentId", "phase", "instructions", "idempotencyKey"]),
+        properties: { case: { required: ["id"] } } },
+      { additionalProperties: false, required: expect.arrayContaining(["to", "case", "instructions", "idempotencyKey"]),
+        properties: { to: { enum: ["done"] } } },
+    ] });
+    const branches = operation.requestBody!.content["application/json"].schema.oneOf;
+    expect(branches[1].required).not.toContain("workflow_document_text");
+    expect(branches[2].properties).not.toHaveProperty("workflow_document_text");
+    expect(operation.responses).toHaveProperty("202");
+    expect(runnerApiOperation("GET /api/cases/{caseId}/handoffs").parameters).toEqual(expect.arrayContaining([expect.objectContaining({ name: "cursor" })]));
+    for (const action of ["retry", "cancel"]) expect(runnerApiOperation(`POST /api/cases/{caseId}/handoffs/{handoffId}/${action}`).allowedModes).toEqual(["standard"]);
+  });
+  it("maps dedicated case data tools and describes the optional metadata projection", () => {
+    for (const [operationId, tool] of [
+      ["GET /api/cases/{id}", "read_case"], ["PATCH /api/cases/{id}", "update_case"],
+    ]) expect(runnerApiOperation(operationId!).dedicatedTools).toEqual([tool]);
+    const legacyCreate = runnerApiOperation("POST /api/companies/{companyId}/cases");
+    expect(legacyCreate.dedicatedTools).toEqual([]);
+    expect(legacyCreate.requestBody?.content["application/json"].schema.properties).not.toHaveProperty("createOnly");
+    for (const method of ["GET", "PUT"]) expect(runnerApiOperation(`${method} /api/cases/{id}/documents/{key}`).dedicatedTools).toEqual([]);
+    expect(runnerApiOperation("GET /api/cases/{id}").parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "includeDocumentBodies", in: "query" }),
+    ]));
+  });
   it.each(["standard", "ask", "planning", "skill_test"])("permits the title-only API in %s mode", workMode => {
     const operationId = "PUT /api/issues/{id}/title";
     const { operation } = validateRunnerApiCall({

@@ -2,6 +2,8 @@
 
 Product map: [Tool gateways and access profiles](../feature-map/gateways-profiles.md).
 
+Feature ID: `gateways-profiles`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `gateway`
+
+Capability ID: `gateways-profiles/gateway`.
 
 Review: `baseline`.
 
@@ -35,6 +39,8 @@ own policy and access review.
 Gaps: No agent named-gateway management path; assigned tool use exists separately.
 
 ## `profiles`
+
+Capability ID: `gateways-profiles/profiles`.
 
 Review: `baseline`.
 
@@ -65,6 +71,8 @@ entry writes. It grants no profile-management authority to agents.
 
 ## `client-connect`
 
+Capability ID: `gateways-profiles/client-connect`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -88,6 +96,24 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Scoped sessions remain agent/run-bound. MCP requires its existing protocol
 client; named gateways and gateway-token management retain board permissions.
+
+Native assigned-tool results above 500,000 encoded bytes are stored as scoped response assets.
+`read_tool_result` reads bounded JSON pages without repeating the upstream call,
+including when generic `call_api` is disabled.
+Each encoded page is at most 500,000 bytes and continues by byte offset until the
+entire result has been read. Current run authority, same task
+and agent, and asset/responsible-user access remain required. Provider content
+stays untrusted. The
+[response integration tests](../../server/src/services/native-runtime/runner-api.integration.test.ts)
+cover full Unicode reconstruction after controller recreation, low-trust access,
+foreign assets, paused agents, and one upstream execution. The
+[native PRP regression](../../server/src/services/native-runtime/runner-tool-results-prp.integration.test.ts)
+also verifies complete delivery of escape-heavy pages through native Runner,
+including a text wrapper larger than the PRP command limit that is decoded before
+command serialization. The
+[opt-in live probe](../../server/src/__tests__/helpers/verify-assigned-tool-results-live.ts)
+uses real Codex and Runner with a synthetic large upstream response; it does not
+publish to an external service.
 
 Discovery collapses identical descriptors with the same gateway name across
 providers, including native assigned-tool startup and fresh searches. Conflicting
@@ -115,6 +141,8 @@ server, not a live external provider or all client surfaces.
 
 ## `tokens`
 
+Capability ID: `gateways-profiles/tokens`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -139,6 +167,8 @@ A grant to use an app does not create this authority; native `call_api` preserve
 the denial.
 
 ## `activity`
+
+Capability ID: `gateways-profiles/activity`.
 
 Review: `baseline`.
 

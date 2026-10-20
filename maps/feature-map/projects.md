@@ -6,16 +6,19 @@ navigation: {"section":"Projects and execution","sectionOrder":40,"order":10}
 
 People group tasks into projects, attach goals and repositories, and configure the context and defaults used by project work.
 
+Feature ID: `projects`.
+
 Implementation: [project list](../../ui/src/pages/Projects.tsx), [project detail](../../ui/src/pages/ProjectDetail.tsx).
 
 Agent access: [companion](../agent-access-map/projects.md).
 
 ## Sub-features
 
-- `lifecycle`: create, name, organize, and archive projects.
-- `task-context`: inspect project tasks and create work in the selected project.
-- `repositories`: configure repository/workspace sources and verify usable checkouts.
-- `defaults`: maintain project instructions, environment, goal, and budget context where offered.
+- `lifecycle`: `projects/lifecycle` — create, name, organize, and archive projects.
+- `task-context`: `projects/task-context` — inspect project tasks and create work in the selected project.
+- `repositories`: `projects/repositories` — configure repository/workspace sources and verify usable checkouts.
+- `defaults`: `projects/defaults` — maintain project instructions, environment, goal, and budget context where offered.
+- `privacy`: `projects/privacy` — create private projects, inspect access members, and manage their audience without publishing protected tasks.
 
 ## How to get to it (user POV)
 
@@ -26,6 +29,10 @@ Open `/projects`, create a project, and enter its overview or Issues view.
 ### `repository-settings`
 
 Open `/projects/:projectId/configuration` and its repository/workspace settings.
+
+### `project-access`
+
+Open `/projects/:projectId/configuration`, use **Private project**, and choose **Manage access** or **View access** according to your authority. Create a private project through the supported creation surface or API when needed for a fixture.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -43,7 +50,17 @@ Automated: [repository persistence](../../server/src/__tests__/project-repositor
 
 Manual: Attach a small repository, save, and create a project task. Inspect the actual checkout/revision used by its run. Test an invalid repository and missing credentials without treating a saved URL as a working workspace.
 
+### `project-access`
+
+Automated: [Privacy production review](../../server/src/__tests__/privacy-production-review.test.ts) covers persisted project audience changes, task inheritance, and actor intersections. [Privacy controls](../../ui/src/components/PrivateTaskPrivacyControls.test.tsx) covers UI controls and task-cache invalidation after membership removal. These tests do not prove both people’s live navigation.
+
+Manual: As an ordinary authenticated project owner, create a private project and task. Add another company person and an eligible agent through Manage access, reload, and inspect their project discovery and task reads. The added person can view members but cannot change the audience. Remove them, reload their session, and retry direct project/task links. Confirm removing the owner is unavailable or rejected. Add a direct grant for one private task, then open the project to the company after inspecting the confirmation. Verify the project becomes discoverable, protected tasks remain private, and project-derived task access no longer substitutes for direct task access. Test the agent and its responsible person separately.
+
+Sources: [Project properties](../../ui/src/components/ProjectProperties.tsx), [access members](../../ui/src/components/ProjectAccessMembers.tsx), [project routes](../../server/src/routes/projects.ts), and [authorization](../../server/src/services/authorization.ts).
+
 ## Gotchas
+
+- A private project’s member list is readable to an authorized project reader. Task access-grant inspection has a stricter management boundary.
 
 - `/overview` now selects Configuration, not a distinct overview page. Personal
   join/leave and star controls have their own persistence and should be checked

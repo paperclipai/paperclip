@@ -60,6 +60,9 @@ diagnostics/
 /.idea/
 /.agents/
 
+# Personal agent instructions
+/AGENTS.local.md
+
 # Doc maintenance cursor
 .doc-review-cursor
 

@@ -1,3 +1,5 @@
+import { caseHandoffTask, caseHandoffDefinitionDigest } from "./case-handoffs-cases.js";
+import { caseReceiptTask, caseReceiptDefinitionDigest, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_MAX_TURNS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
@@ -213,7 +215,7 @@ function nativeProfile(input: {
       provider: input.provider,
     },
     buildAgent(buildInput) {
-      const credentialRef = input.credential === "GROK_AUTH_JSON"
+      const credentialRef = ["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(input.credential)
         ? null
         : requiredSecret(buildInput, input.credential);
       const permissionConfig =
@@ -235,7 +237,7 @@ function nativeProfile(input: {
           // Codex's supported automation credential is CODEX_API_KEY. Keep
           // OPENAI_API_KEY as the operator-facing fixture secret name and bind
           // the same encrypted reference to the runtime-specific alias.
-          ...(input.provider === "codex"
+          ...(input.provider === "codex" && credentialRef
             ? { CODEX_API_KEY: credentialRef }
             : {}),
         },
@@ -1681,6 +1683,27 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     tasks: [daytonaGitStreamingTask],
     expectedMatrixSize: 1,
     definitionMetadata: { version: 9, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+  },
+  {
+    id: "case-handoffs", label: "Persistent same-task case handoffs", manualOnly: true,
+    description: "Explicit arithmetic and receipt workflows route one persistent case task through three native agents, with durable documents, public history and native tool receipts.",
+    groups: ["native"],
+    profiles: [nativeCompletionProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription", provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      ...runnerProfiles.filter(profile => profile.id === "runner-codex").map(nativeCompletionProfile)],
+    environments: [localEnvironment], tasks: [caseHandoffTask, caseReceiptTask],
+    excludedExecutionIds: ["case-handoffs.runner-codex.local.same-task-roundtrip"], expectedMatrixSize: 3,
+    definitionMetadata: { version: 3,
+      definitionDigest: createHash("sha256").update(caseHandoffDefinitionDigest()).update(caseReceiptDefinitionDigest()).digest("hex"),
+      scheduling: "explicit-only", maximumProviderTurns: 6, maximumAttemptsPerCell: 1,
+      grading: "public-primary-task-handoff-ledger-durable-documents-and-native-tool-receipts",
+      credentialModes: ["isolated-company-subscription-login", "company-encrypted-api-secret-reference"],
+      cases: {
+        "same-task-roundtrip": { definitionDigest: caseHandoffDefinitionDigest(), budgetMonthlyCents: 1000, maximumProviderTurns: 6 },
+        "receipt-smoke": { definitionDigest: caseReceiptDefinitionDigest(), budgetMonthlyCents: CASE_RECEIPT_BUDGET_CENTS,
+          maximumProviderTurns: CASE_RECEIPT_MAX_TURNS, minimumProviderTurns: CASE_RECEIPT_MAX_TURNS,
+          runTimeoutMs: CASE_RECEIPT_RUN_TIMEOUT_MS, reasoningEffort: "low", attemptTimeoutMs: 300_000,
+          agentDailyRunCaps: { triage: 1, builder: 2, verifier: 1 } },
+      } },
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
   {

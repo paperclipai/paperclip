@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
@@ -63,7 +64,7 @@ const mockDbSelectWhere = vi.hoisted(() =>
   })),
 );
 const mockDbSelectFrom = vi.hoisted(() =>
-  vi.fn(() => ({ where: mockDbSelectWhere })),
+  vi.fn((_table: unknown) => ({ where: mockDbSelectWhere })),
 );
 const mockDbSelect = vi.hoisted(() =>
   vi.fn(() => ({ from: mockDbSelectFrom })),
@@ -429,7 +430,17 @@ describe("issue comment reopen routes", () => {
         onRejected?: (reason: unknown) => unknown,
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation((table) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name === "case_handoffs") return { where: vi.fn(() => ({
+        orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+      })) };
+      if (name === "heartbeat_runs") return { where: vi.fn(() => {
+        const query = mockDbSelectWhere();
+        return { ...query, limit: vi.fn((count: number) => Promise.resolve(query).then(rows => rows.slice(0, count))) };
+      }) };
+      return { where: mockDbSelectWhere };
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(
       async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),

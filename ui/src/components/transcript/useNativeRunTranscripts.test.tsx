@@ -136,6 +136,38 @@ describe("native history readiness and stable projection", () => {
     expect(latest.transcriptByRun.get("one")).toBe(rows);
   });
 
+  it("waits for every page of a successful terminal refresh before allowing a fallback", async () => {
+    eventsMock.mockResolvedValueOnce([{ seq: 1, payload: {}, eventType: "log" }]);
+    await act(async () => { root.render(<StateProbe />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+
+    let resolvePage!: (rows: unknown[]) => void;
+    eventsMock.mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
+    await act(async () => { root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+
+    let resolveLastPage!: (rows: unknown[]) => void;
+    eventsMock.mockImplementationOnce(() => new Promise(resolve => { resolveLastPage = resolve; }));
+    await act(async () => {
+      resolvePage(Array.from({ length: 1_000 }, (_, index) => ({ seq: index + 2, payload: {}, eventType: "log" })));
+    });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+    expect(eventsMock.mock.calls.at(-1)?.[1]).toBe(1_001);
+    await act(async () => { resolveLastPage([]); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(true);
+  });
+
+  it("keeps the fallback pending after a failed terminal refresh until retry succeeds", async () => {
+    eventsMock.mockResolvedValueOnce([]);
+    await act(async () => { root.render(<StateProbe />); });
+    eventsMock.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => { root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+    eventsMock.mockResolvedValueOnce([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(true);
+  });
+
   it("times out stalled history, aborts its request, and ignores a late response before retry", async () => {
     let resolveLate!: (rows: never[]) => void;
     eventsMock.mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve; }));

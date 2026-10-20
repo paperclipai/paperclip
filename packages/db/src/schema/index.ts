@@ -71,6 +71,8 @@ export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
+  caseHandoffs,
+  caseAccessSources,
   caseAttachments,
   caseDocuments,
   caseEvents,
@@ -254,3 +256,5 @@ export { executionWorkspaceRepositoryRoots } from "./execution_workspace_reposit
 export { executionWorkspaceRepositoryAccess } from "./execution_workspace_repository_access.js";
 export * from "./fast_responses.js";
 export { companyObservability } from "./company_observability.js";
+
+export * from "./prompt_injection_prevention.js";

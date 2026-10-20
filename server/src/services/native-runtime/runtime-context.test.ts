@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const serviceMocks = vi.hoisted(() => ({
   exportFiles: vi.fn(),
   readCommittedForRuntime: vi.fn(),
-  getEffectiveProfilesForAgent: vi.fn(),
+  getEffectiveToolAssignmentsForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
   spekoToolsForSession: vi.fn(),
 }));
@@ -32,7 +32,7 @@ vi.mock("../agent-instruction-revisions.js", () => ({
 
 vi.mock("../tool-access.js", () => ({
   toolAccessService: () => ({
-    getEffectiveProfilesForAgent: serviceMocks.getEffectiveProfilesForAgent,
+    getEffectiveToolAssignmentsForAgent: serviceMocks.getEffectiveToolAssignmentsForAgent,
   }),
 }));
 
@@ -71,7 +71,7 @@ beforeEach(async () => {
   temporaryRoots.push(root);
   process.env.PAPERCLIP_HOME = root;
   process.env.PAPERCLIP_INSTANCE_ID = "runtime_context_test";
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     agentId: "agent-1",
     profiles: [],
     entries: [{ effect: "include", connectionId: "connection-1" }],
@@ -165,7 +165,7 @@ describe("buildNativeRuntimeContext", () => {
         entryFile: "AGENTS.md",
         files: { "AGENTS.md": "Continue work without unavailable apps.\n" },
       });
-      serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+      serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
         agentId: "agent-1",
         profiles: [],
         entries: [{ effect: "include", connectionId: "connection-1" }],
@@ -205,7 +205,7 @@ describe("buildNativeRuntimeContext", () => {
       entryFile: "AGENTS.md",
       files: { "AGENTS.md": "Continue work with the apps that are available.\n" },
     });
-    serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
       agentId: "agent-1",
       profiles: [],
       entries: [
@@ -293,7 +293,7 @@ describe("buildNativeRuntimeContext", () => {
     const repeated = await buildNativeRuntimeContext(input);
 
     expect(serviceMocks.exportFiles).toHaveBeenCalledWith(input.agent, { rejectSymlinks: true });
-    expect(serviceMocks.getEffectiveProfilesForAgent).toHaveBeenCalledWith("company-1", "agent-1");
+    expect(serviceMocks.getEffectiveToolAssignmentsForAgent).toHaveBeenCalledWith("company-1", "agent-1");
     expect(context.instructions.entryPath).toBe("AGENTS.md");
     expect(await readFile(path.join(context.instructions.bundle.rootPath, "AGENTS.md"), "utf8"))
       .toBe("Follow the agent instructions.\n");
@@ -333,7 +333,7 @@ describe("buildNativeRuntimeContext", () => {
     });
     expect(context.skills).toEqual([]);
     expect(context.mcp.bindingId).toBeNull();
-    expect(serviceMocks.getEffectiveProfilesForAgent).not.toHaveBeenCalled();
+    expect(serviceMocks.getEffectiveToolAssignmentsForAgent).not.toHaveBeenCalled();
   });
 
   it("fails closed for a missing assigned skill and omits a stale legacy operational skill", async () => {
@@ -393,7 +393,7 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
     id, status: "active", enabled: true, healthStatus: "missing_secret", transport: "mcp_remote",
     config: { sourceTemplateKey: "github" }, transportConfig: {},
   }));
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     entries: connections.map((connection) => ({ effect: "include", connectionId: connection.id })),
     installedConnections: connections,
     allowedTools: connections.map((connection) => ({ id: `${connection.id}-get_me`, connectionId: connection.id })),
@@ -411,7 +411,7 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
 });
 
 it("pins channel tools only when the current task run is bound to that bot", async () => {
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     entries: [{ effect: "include", connectionId: "bot-connection" }],
     installedConnections: [{
       id: "bot-connection", status: "active", enabled: true, healthStatus: "healthy",
@@ -427,7 +427,7 @@ it("pins channel tools only when the current task run is bound to that bot", asy
 });
 
 it("pins a voice tool only when the current requester can call through that assigned endpoint", async () => {
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
   const limit = vi.fn().mockResolvedValue([{ issueId: "task-1", activeIdentityContextId: "identity-1" }]);
   const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
   const input = { db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };

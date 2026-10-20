@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { authorizeExternalBotOperator, externalBotEnabled } from "../external-bot-authority.js";
 import { updateAgentConfigurationInTransaction } from "../agent-configuration-transaction.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -319,6 +320,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if(!candidate)return db.transaction(tx=>operation(tx as unknown as Db));
     return db.transaction(tx=>withExternalAdmissionGuard(tx,candidate.companyId,candidate.agentId,async()=>{
       await tx.select({id:museAgentBindings.id}).from(museAgentBindings).where(and(eq(museAgentBindings.id,candidate.id),eq(museAgentBindings.grantId,grant.id))).for("update");
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
       return operation(tx as unknown as Db);
     }));
   }
@@ -506,6 +508,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           await tx.insert(mcpOauthRequests).values({ id, clientId: client.id, redirectUri: p.redirect_uri, resource: config.resource,
             scopes, requestedCompanyId: binding.companyId, state: p.state ?? null, challenge: p.code_challenge,
             grantId: grant.id, codeHash: hashMcpSecret(code), decidedAt: now, expiresAt: new Date(now.getTime() + minute) });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
           await tx.update(museAgentBindings).set({ grantId: grant.id, status: "connected", pairedAt: now, workerActivityAt: now,
             ticketHash: null, ticketExpiresAt: null, clientVersion: null, revision: binding.revision + 1, updatedAt: now }).where(eq(museAgentBindings.id, binding.id));
           await logActivity(tx as unknown as Db, { companyId: binding.companyId, actorType: "user", actorId: binding.operatorId,
@@ -657,6 +660,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, token.grantId)).for("update");
           if (!grant || grant.clientId !== clientId || grant.resource !== config.resource || grant.revokedAt) return null;
           if (token.usedAt) {
+            if (museAgentConnection) await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
             await tx.update(mcpOauthGrants).set({ revokedAt: new Date() }).where(eq(mcpOauthGrants.id, grant.id));
             revokedGrant = grant;
             await tx.insert(activityLog).values({

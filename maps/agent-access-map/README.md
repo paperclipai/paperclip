@@ -4,6 +4,12 @@ This map accompanies the [feature map](../feature-map/README.md). It records API
 agent entry points, permission boundaries and verification for the same capability IDs.
 The [shared contract](../README.md) defines the format and maintenance rules.
 
+Use full capability IDs when referring to access contracts outside their file:
+`onboarding/company` means the `company` capability in `onboarding.md` in both maps.
+The [feature index](../feature-map/README.md#browse-features) lists feature and
+capability IDs; [IDs and references](../feature-map/README.md#ids-and-references)
+explains entry-point references and stable naming.
+
 ## Browse access contracts
 
 The same-named feature recipes define navigation and capability IDs. Run

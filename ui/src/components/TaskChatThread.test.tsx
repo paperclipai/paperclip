@@ -30,6 +30,7 @@ const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
   hydratedRunIds: undefined as Set<string> | undefined,
+  terminalHydratedRunIds: undefined as Set<string> | undefined,
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -59,12 +60,14 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   },
 }));
 vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
-  useNativeRunTranscripts: (runs: unknown[]) => {
+  useNativeRunTranscripts: (runs: { id: string; status: string }[]) => {
     transcriptHookRuns.native.push(runs);
     return {
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
       hydratedRunIds: nativeTranscriptState.hydratedRunIds,
+      terminalHydratedRunIds: nativeTranscriptState.terminalHydratedRunIds ??
+        new Set(runs.filter((run) => run.status !== "running" && run.status !== "queued").map((run) => run.id)),
     };
   },
 }));
@@ -120,6 +123,7 @@ beforeEach(() => {
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
+  nativeTranscriptState.terminalHydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -180,7 +184,11 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
   it.each([true, false].flatMap(streamlined => ["done", "cancelled"].map(issueStatus => ({ streamlined, issueStatus }))))("removes failures, stops, waits and stored notices on $issueStatus tasks (streamlined=$streamlined)", ({ streamlined, issueStatus }) => {
     streamlinedState.enabled = streamlined;
     setTranscript("failed");
+    const pausedAgent = { id: "agent", name: "Assistant", status: "paused", pauseReason: "manual" } as Agent;
     const props = {
+      agentMap: new Map([[pausedAgent.id, pausedAgent]]),
+      currentAssigneeValue: `agent:${pausedAgent.id}`,
+      onResumeAssignee: vi.fn(),
       comments: [
         comment("response", "Saved the useful response.", "failed"),
         { ...comment("notice", "The previous execution needs to be checked.", "failed"), authorType: "system" as const,
@@ -194,7 +202,10 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
       onAdd: async () => {},
     };
     render(<TaskChatThread {...props} issueStatus="blocked" />);
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
     render(<TaskChatThread {...props} issueStatus={issueStatus} />);
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
     expect(container.textContent).toContain("Saved the useful response.");
     expect(container.textContent).toContain("Please keep this message.");
     expect(container.textContent).toContain("New session");
@@ -211,6 +222,10 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     }
     expect(props.linkedRuns[0].status).toBe("failed");
     expect(props.comments).toHaveLength(4);
+    render(<TaskChatThread {...props} issueStatus="todo" />);
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
+    expect(pausedAgent.status).toBe("paused");
+    expect(props.onResumeAssignee).not.toHaveBeenCalled();
   });
 
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
@@ -1020,7 +1035,158 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
-  it("uses runner-only controls only for an actual native Paperclip Runner run", () => {
+  it.each([false, true])("keeps the runner identity and activity mounted through startup (mobile=%s)", (mobile) => {
+    sidebarState.isMobile = mobile;
+    const run = nativeRunningRun();
+    const comment = {
+      id: "startup-message", companyId: "company", issueId: "issue",
+      authorType: "user" as const, authorUserId: "board", authorAgentId: null,
+      body: "Check the sandbox configuration.",
+      presentation: null, metadata: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const props = {
+      comments: [comment], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+    };
+    renderThread({ ...props, comments: [{ ...comment, clientStatus: "pending" }] });
+    const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+    const header = container.querySelector('[data-testid="task-chat-runner-identity-row"]');
+    const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    expect(identity?.textContent).toBe("Runner");
+    expect(identity?.querySelector("svg, img")).not.toBeNull();
+    expect(activity?.textContent).toBe("Thinking");
+
+    for (const startup of [
+      { ...run, runtimeMode: undefined, status: "queued", startedAt: null },
+      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started" },
+      run,
+    ]) {
+      renderThread({ ...props, activeRun: startup });
+      expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+      expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
+      expect(activity?.textContent).toBe("Thinking");
+      expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
+      expect(container.textContent).not.toContain("run started");
+    }
+
+    nativeTranscriptState.transcriptByRun.set(run.id, [
+      { kind: "thinking", ts: "2026-08-25T18:00:01.000Z", text: "", lifecycle: "started", itemId: "reasoning-1" },
+    ]);
+    renderThread({ ...props, activeRun: run });
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+    expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
+    expect(container.textContent).toContain("Thinking");
+  });
+
+  it.each([false, true].flatMap(mobile => ["streamed", "late", "absent"].map(reply => ({ mobile, reply }))))(
+    "keeps report fallbacks behind complete terminal history ($reply, mobile=$mobile)",
+    ({ mobile, reply }) => {
+      sidebarState.isMobile = mobile;
+      const run = nativeRunningRun();
+      const summary = "The report contains a longer account of the completed work.";
+      const finalText = "The final reply is complete.";
+      const result = {
+        schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary,
+        completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      };
+      const events: HeartbeatRunEvent[] = [];
+      const append = (eventType: string, payload: Record<string, unknown>) => {
+        const seq = events.length + 1;
+        events.push({
+          id: seq, runId: run.id, seq, eventType,
+          companyId: "company", agentId: run.agentId, stream: "system", level: "info", color: null, message: null,
+          createdAt: new Date(`2026-08-25T18:00:0${seq}.000Z`),
+          payload: { prpEvent: {
+            schema: "paperclip.prp.event.v1", schemaVersion: 1,
+            runId: run.id, eventType, sourceEventId: `event-${seq}`,
+            itemId: "final-reply", payload,
+          } },
+        });
+        nativeTranscriptState.transcriptByRun.set(run.id, nativeRunEventsToTranscript(events));
+      };
+      const props = { comments: [], onAdd: async () => {}, issueStatus: "in_progress" };
+      nativeTranscriptState.terminalHydratedRunIds = new Set();
+      append("run.result.proposed", result);
+      renderThread({ ...props, activeRun: run });
+      const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+      expect(container.textContent).not.toContain(summary);
+
+      if (reply === "streamed") {
+        append("item.delta", { kind: "agentMessage", channel: "final", text: "The final reply" });
+        renderThread({ ...props, activeRun: run });
+        expect(container.textContent).toContain("The final reply");
+        expect(container.textContent).not.toContain(summary);
+        expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+        append("item.completed", { kind: "agentMessage", channel: "final", text: finalText });
+        renderThread({ ...props, activeRun: run });
+        expect(container.textContent?.split(finalText)).toHaveLength(2);
+      }
+
+      const linkedRun = {
+        ...run, runId: run.id, status: "succeeded", finishedAt: "2026-08-25T18:00:10.000Z",
+        resultJson: { nativeResult: result },
+      };
+      renderThread({ ...props, linkedRuns: [linkedRun] });
+      expect(container.textContent).not.toContain(summary);
+
+      if (reply === "late") {
+        append("item.completed", { kind: "agentMessage", channel: "final", text: finalText });
+      }
+      nativeTranscriptState.terminalHydratedRunIds = new Set([run.id]);
+      renderThread({ ...props, linkedRuns: [linkedRun] });
+      const displayed = reply === "absent" ? summary : finalText;
+      expect(container.textContent?.split(displayed)).toHaveLength(2);
+      if (reply !== "absent") expect(container.textContent).not.toContain(summary);
+
+      renderThread({
+        ...props, linkedRuns: [linkedRun], comments: [{
+          id: "saved-response", companyId: "company", issueId: "issue", runId: run.id,
+          authorType: "agent", authorAgentId: run.agentId, authorUserId: null,
+          body: displayed, presentation: null, metadata: null,
+          createdAt: new Date("2026-08-25T18:00:10.000Z"), updatedAt: new Date("2026-08-25T18:00:10.000Z"),
+        }],
+      });
+      expect(container.textContent?.split(displayed)).toHaveLength(2);
+      if (reply !== "absent") expect(container.textContent).not.toContain(summary);
+    },
+  );
+
+  it.each(["summary", "provider", "empty"])("keeps empty terminal history pending before resolving its %s response", (response) => {
+    const run = nativeRunningRun();
+    const summary = "The accepted report is ready.";
+    const finalText = "The provider's actual final reply.";
+    const props = { comments: [], onAdd: async () => {}, issueStatus: "in_progress" };
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    nativeTranscriptState.transcriptByRun.set(run.id, []);
+    renderThread({ ...props, activeRun: run });
+    const linkedRun = {
+      ...run, runId: run.id, status: "succeeded", finishedAt: "2026-08-25T18:00:10.000Z",
+      resultJson: response === "empty" ? null : {
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary },
+      },
+    };
+    renderThread({ ...props, linkedRuns: [linkedRun] });
+    expect(container.textContent).not.toContain(summary);
+    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+
+    if (response === "provider") {
+      nativeTranscriptState.transcriptByRun.set(run.id, [assistantEntry("2026-08-25T18:00:05.000Z", finalText, "final")]);
+    }
+    nativeTranscriptState.terminalHydratedRunIds = new Set([run.id]);
+    renderThread({ ...props, linkedRuns: [linkedRun] });
+    if (response === "empty") {
+      expect(container.textContent).toContain("The runner returned no user-facing response.");
+    } else {
+      expect(container.textContent?.split(response === "summary" ? summary : finalText)).toHaveLength(2);
+      expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+      if (response === "provider") expect(container.textContent).not.toContain(summary);
+    }
+  });
+
+  it("keeps runner layout during admission and native transcripts scoped to native runs", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Checking the task.", "progress"),
       assistantEntry("2026-08-25T18:00:02.000Z", "The task is ready.", "final"),
@@ -1050,7 +1216,8 @@ describe("TaskChatThread runtime transcript selection", () => {
 
     expect(
       container.querySelector('[data-testid="task-chat-runner-turn"]'),
-    ).toBeNull();
+    ).not.toBeNull();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
 
     renderThread({
       comments: [],
@@ -2804,12 +2971,21 @@ describe("TaskChatThread runtime transcript selection", () => {
       cause: "uncertain_provider_action", canRetry: false },
     { adapterType: "claude_local", status: "cancelled", runtimeMode: "legacy" as const,
       cause: "legacy_execution_requires_reconciliation", canRetry: false },
-  ])("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause", (testCase) => {
+  ].flatMap(testCase => [false, true].map(withRecoveryNotice => ({ ...testCase, withRecoveryNotice }))))("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause (recovery notice=$withRecoveryNotice)", async (testCase) => {
+    const retry = vi.fn();
+    const recoveryRetry = vi.fn();
     renderThread({
-      comments: [],
+      comments: testCase.withRecoveryNotice ? [{
+        id: "recovery-after-stop", companyId: "company", issueId: "issue", metadata: null,
+        authorType: "system", authorAgentId: null, authorUserId: null,
+        body: "Paperclip retried continuation, but it still has no live execution path.",
+        presentation: { kind: "system_notice", title: "No live execution path", tone: "danger", detailsDefaultOpen: false },
+        createdAt: new Date("2026-08-25T18:00:03.000Z"), updatedAt: new Date("2026-08-25T18:00:03.000Z"),
+      }] : [],
       onAdd: async () => {},
       issueStatus: "blocked",
-      onRetryFailedRun: vi.fn(),
+      onRetryFailedRun: retry,
+      onTryAgainNoLiveExecutionPath: recoveryRetry,
       linkedRuns: [{
         runId: "stopped-run",
         runtimeMode: testCase.runtimeMode,
@@ -2828,10 +3004,21 @@ describe("TaskChatThread runtime transcript selection", () => {
         },
       }],
     });
-    expect(Boolean(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')))
-      .toBe(testCase.canRetry);
-    if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
+    const button = container.querySelector<HTMLButtonElement>(testCase.withRecoveryNotice
+      ? '[data-testid="task-chat-no-live-path-try-again"]'
+      : '[data-testid="task-chat-run-failed-try-again"]');
+    expect(Boolean(button)).toBe(testCase.canRetry);
+    if (testCase.withRecoveryNotice) {
+      expect(container.textContent).toContain("No live execution path");
+      expect(container.textContent).not.toContain("Run failed");
+    } else if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
     else expect(container.textContent).not.toContain("You can retry this message now.");
+    if (button) {
+      flushSync(() => button.click());
+      await Promise.resolve();
+      expect(retry).toHaveBeenCalledExactlyOnceWith("stopped-run");
+    }
+    expect(recoveryRetry).not.toHaveBeenCalled();
   });
 
   it.each(DIRECT_ADAPTER_TYPES)(
@@ -3241,6 +3428,26 @@ describe("TaskChatThread no-live-execution-path recovery", () => {
     createdAt: new Date("2026-08-26T12:00:00.000Z"),
     updatedAt: new Date("2026-08-26T12:00:00.000Z"),
   };
+
+  it.each((["native", "legacy"] as const).flatMap(runtimeMode => [true, false].flatMap(streamlined => [true, false].map(recoveryIsLatest => ({ runtimeMode, streamlined, recoveryIsLatest })))))
+    ("keeps the last adjacent error for $runtimeMode (streamlined=$streamlined, recoveryIsLatest=$recoveryIsLatest)", ({ runtimeMode, streamlined, recoveryIsLatest }) => {
+      streamlinedState.enabled = streamlined;
+      render(<TaskChatThread
+        comments={[noLivePathComment]} onAdd={async () => {}} showComposer={false} issueStatus="blocked"
+        onTryAgainNoLiveExecutionPath={async () => {}}
+        linkedRuns={[{
+          runId: "failed-run", status: "failed", runtimeMode, agentId: "agent-1", agentName: "Coder",
+          adapterType: runtimeMode === "native" ? "paperclip_runner" : "claude_local",
+          createdAt: "2026-08-26T11:58:00.000Z", startedAt: "2026-08-26T11:58:01.000Z",
+          finishedAt: recoveryIsLatest ? "2026-08-26T11:59:00.000Z" : "2026-08-26T12:01:00.000Z",
+          errorCode: "runner_exited",
+        }]}
+      />);
+      expect(container.textContent?.includes("Run failed")).toBe(!recoveryIsLatest);
+      expect(container.textContent?.includes("No live execution path")).toBe(recoveryIsLatest);
+      expect(container.querySelector(".border-dashed")).toBeNull();
+      expect(container.querySelectorAll('button[data-testid$="try-again"]')).toHaveLength(1);
+    });
 
   it("offers Try again only while the task is blocked", async () => {
     const onTryAgain = vi.fn();

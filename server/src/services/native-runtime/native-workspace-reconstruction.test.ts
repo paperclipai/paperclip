@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, assets, authUsers, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueAttachments, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, assets, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, heartbeatRuns, issueAttachments, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../../middleware/index.js";
 import { issueRoutes } from "../../routes/issues.js";
@@ -47,6 +47,7 @@ describe("reconstruction after confirmed native workspace loss", () => {
       contractId = randomUUID(), leaseId = randomUUID(), actionId = randomUUID(), providerLeaseId = randomUUID(), userId = randomUUID(), attachmentId = randomUUID(), assetId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Reconstruction", issuePrefix: `REC${companyId.replaceAll("-", "").slice(0, 6)}`, defaultResponsibleUserId: userId, budgetMonthlyCents: 10000 });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", status: "idle", adapterType: "paperclip_runner", budgetMonthlyCents: 5000, runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Finish bounded work", status: "blocked", assigneeAgentId: agentId });
     await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { objective: "Finish bounded work" }, canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });

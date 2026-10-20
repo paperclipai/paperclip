@@ -6,6 +6,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  caseAccessSources,
+  caseEvents,
+  cases,
   companies,
   companyMemberships,
   createDb,
@@ -49,6 +52,8 @@ describePostgres("agent action audit routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(caseEvents);
+    await db.delete(cases);
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
@@ -285,6 +290,48 @@ describePostgres("agent action audit routes", () => {
       expect(response.status, filter).toBe(403);
       expect(response.body.error).toContain("audit:view_agent_actions");
     }
+  });
+
+  it("merges historical case changes into filtered audit before privacy and cursor pagination", async () => {
+    const { company, agent, issue } = await seed();
+    await db.update(issues).set({ visibility: "private", assigneeAgentId: agent.id }).where(eq(issues.id, issue.id));
+    const [openCase, privateCase] = await db.insert(cases).values([
+      { companyId: company.id, caseNumber: 1, identifier: `${company.issuePrefix}-C1`, caseType: "receipt", title: "Morning coffee" },
+      { companyId: company.id, caseNumber: 2, identifier: `${company.issuePrefix}-C2`, caseType: "receipt", title: "Private receipt" },
+    ]).returning();
+    await db.insert(caseAccessSources).values({ companyId: company.id, caseId: privateCase.id, sourceKind: "issue", sourceId: issue.id });
+    const events = await db.insert(caseEvents).values([
+      { companyId: company.id, caseId: openCase.id, kind: "created", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-01") },
+      { companyId: company.id, caseId: openCase.id, kind: "fields_changed", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-02") },
+      { companyId: company.id, caseId: openCase.id, kind: "handoff_delivered", actorType: "agent", actorAgentId: agent.id, createdAt: new Date("2030-01-03") },
+      { companyId: company.id, caseId: privateCase.id, kind: "fields_changed", actorType: "agent", actorAgentId: agent.id, payload: { secret: "hidden" }, createdAt: new Date("2030-01-04") },
+    ]).returning();
+    const [mirroredHandoff] = await db.insert(activityLog).values({ companyId: company.id, actorType: "agent", actorId: agent.id, agentId: agent.id,
+      action: "case.handoff_delivered", entityType: "case", entityId: openCase.id, createdAt: new Date("2030-01-03") }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "reader", status: "active", membershipRole: "viewer" });
+    const app = await createApp(db, { type: "board", userId: "reader", companyIds: [company.id], source: "session", isInstanceAdmin: false });
+    const items: Array<{ id: string; entityId: string; agentId: string | null; details: unknown; entity: unknown }> = [];
+    let cursor: string | null = null;
+    do {
+      const response = await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&action=case.&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.accessTier).toBe("basic");
+      items.push(...response.body.items);
+      cursor = response.body.nextCursor;
+    } while (cursor);
+    expect(items.map(item => item.id)).toEqual([mirroredHandoff.id, events[1].id, events[0].id]);
+    expect(items.every(item => item.entityId === openCase.id && item.agentId === null && item.details === null)).toBe(true);
+    expect(items[0].entity).toMatchObject({ case: { id: openCase.id, identifier: openCase.identifier, title: "Morning coffee" } });
+    const scoped = await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&entityId=${openCase.id}`);
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.items.map((item: { id: string }) => item.id)).toEqual(items.map(item => item.id));
+    const byIdentifier = await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&entityId=${openCase.identifier.toLowerCase()}`);
+    expect(byIdentifier.status).toBe(200);
+    expect(byIdentifier.body.items.map((item: { id: string }) => item.id)).toEqual(items.map(item => item.id));
+    const hidden = await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&entityId=${privateCase.id}`);
+    expect(hidden.status).toBe(200);
+    expect(hidden.body).toMatchObject({ items: [], nextCursor: null });
+    await request(app).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&entityType=case&agentId=${agent.id}`).expect(403);
   });
 
   it("keeps the default scope unchanged and gives permitted readers the full all-actors view", async () => {

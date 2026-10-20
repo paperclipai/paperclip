@@ -2,6 +2,8 @@
 
 Product map: [Dashboards, activity, and audit trails](../feature-map/activity.md).
 
+Feature ID: `activity`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `overview`
+
+Capability ID: `activity/overview`.
 
 Review: `baseline`.
 
@@ -35,12 +39,16 @@ surfaces.
 
 ## `activity`
 
+Capability ID: `activity/activity`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
 - `GET /api/companies/{companyId}/activity`.
 - `GET /api/issues/{id}/activity` (UUID or issue identifier).
+- `GET /api/companies/{companyId}/audit/agent-actions?actorScope=all&entityType=case&entityId={caseRef}`
+  (case UUID or identifier).
 
 Agent access: `partial` — REST / native call_api / CLI activity for company
 activity. Sandbox agents can use GET issue activity through the default
@@ -67,7 +75,27 @@ inaccessible issue, another company, and company-wide audit.
 Gaps: Audit export and raw activity creation have extra restrictions; do not
 equate them with issue activity reading. Live sandbox access remains unverified.
 
+Working-tree case history update (2026-10-20): the all-actors Audit endpoint
+accepts case resource/action/date filters for ordinary company readers who can
+read those cases. Agent, responsible-person and run attribution filters still
+require `audit:view_agent_actions`; the basic tier still strips those fields and
+details. `case_events` mutations lacking an activity-log counterpart are merged
+with logged case events before the retained-source permission predicate and
+cursor limit. Case snippets are enriched only after that filter. Missing,
+inaccessible and other-company cases return no rows; exact identifiers are
+case-insensitive. The raw company activity API remains its existing stored-log
+view.
+
+Local verification: real temporary-Postgres
+[audit route regressions](../../server/src/__tests__/agent-action-audit-routes.test.ts)
+cover historical creation/fields, UUID/identifier filters, one-row cursor
+pagination, hidden private sources, and duplicate handoff suppression. This is
+local transport/database evidence, not a deployed agent run or a sandbox bridge
+qualification.
+
 ## `runs`
+
+Capability ID: `activity/runs`.
 
 Review: `baseline`.
 
@@ -120,6 +148,8 @@ Live updated-bridge admission and useful incident diagnosis remain unverified.
 
 ## `routine-audit`
 
+Capability ID: `activity/routine-audit`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -144,6 +174,8 @@ changes.
 
 ## `timeline`
 
+Capability ID: `activity/timeline`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -166,6 +198,8 @@ remaining operations before qualifying the whole capability.
 Gaps: API exists; no dedicated timeline tool is necessary for this requirement.
 
 ## `agent-commentary`
+
+Capability ID: `activity/agent-commentary`.
 
 Review: `baseline`.
 

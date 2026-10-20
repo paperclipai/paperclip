@@ -2227,9 +2227,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             authorType: taskUserId ? "user" : "system",
             metadata: {
               version: 1,
-              ...(endpoint.provider === "imessage-photon"
-                ? { sourceChannel: "imessage-photon" as const }
-                : {}),
+              sourceChannel: endpoint.provider,
               sections: [
                 {
                   title: `${PROVIDER_LABELS[endpoint.provider]} sender`,

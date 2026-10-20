@@ -797,14 +797,16 @@ class IssueChatErrorBoundary extends Component<
 
 export function IssueAssigneePausedNotice({
   agent,
+  issueStatus,
   onResume,
   resuming,
 }: {
   agent: Agent | null;
+  issueStatus: string | undefined;
   onResume?: () => Promise<void> | void;
   resuming?: boolean;
 }) {
-  if (!agent || agent.status !== "paused") return null;
+  if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
@@ -6710,6 +6712,7 @@ export function IssueChatThread({
                     />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />
@@ -6722,6 +6725,7 @@ export function IssueChatThread({
                   >
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />

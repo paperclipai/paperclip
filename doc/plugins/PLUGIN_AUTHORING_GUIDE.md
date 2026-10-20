@@ -791,3 +791,10 @@ The host resets plugin state on account/company changes and keeps its built-in
 menu when no unique contribution exists, discovery fails, the module is missing,
 or rendering throws. The slot is a React-only contract; do not use a custom
 element export. This replaces only the menu, not company policy or authorization.
+
+## Runner task worker hooks
+
+A plugin can declare `supportsTasks` on an environment driver and implement
+`onEnvironmentTask`. See the [task API](PLUGIN_ENVIRONMENT_TASKS.md) for the
+operations, validation, and lease rules. This hook does not add a shell or file
+transfer API. Native agent execution is a separate integration.

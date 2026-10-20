@@ -8,6 +8,7 @@ import {
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
 import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
+import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
   hasLiveLegacyController,
@@ -2361,6 +2362,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         !revokedState.processPid &&
         !revokedState.processGroupId;
       const shouldRetry =
+        !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         (run.processLossRetryCount ?? 0) < 1 &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||

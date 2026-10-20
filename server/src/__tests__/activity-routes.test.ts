@@ -28,6 +28,11 @@ const mockAgentActionAuditService = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const caseReadCondition = vi.hoisted(() => ({ policy: "authorized-cases" }));
+vi.mock("../services/case-activity-access.js", () => ({
+  caseActivityReadSqlCondition: vi.fn(async () => caseReadCondition),
+}));
+
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
   normalizeActivityLimit: (limit: number | undefined) => {
@@ -182,6 +187,7 @@ describe("activity routes", () => {
       companyId: "company-1",
       actorScope: "all",
       limit: 50,
+      caseReadCondition,
     });
     expect(res.body.items[0]).toMatchObject({
       actorType: "plugin",
@@ -231,6 +237,7 @@ describe("activity routes", () => {
       actorScope: "all",
       actorType: "system",
       limit: 50,
+      caseReadCondition,
     });
     expect(res.body.items[0]).toMatchObject({
       agentId: "agent-1",
@@ -255,6 +262,7 @@ describe("activity routes", () => {
       entityId: undefined,
       limit: 100,
       readCondition: expect.anything(),
+      caseReadCondition,
     });
   });
 
@@ -274,6 +282,7 @@ describe("activity routes", () => {
       entityId: undefined,
       limit: 500,
       readCondition: expect.anything(),
+      caseReadCondition,
     });
   });
 

@@ -12,6 +12,7 @@ import { agentActionAuditService } from "../services/agent-action-audit.js";
 import { logActivity } from "../services/activity-log.js";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
+import { caseActivityReadSqlCondition } from "../services/case-activity-access.js";
 
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
@@ -143,15 +144,19 @@ export function activityRoutes(db: Db) {
   }
 
   function hasAttributionFilters(query: z.infer<typeof agentActionAuditQuerySchema>) {
+    // Case history is available to the case's ordinary readers. Its public
+    // dimensions do not expose run/responsible-person attribution; the case
+    // predicate still filters every row before pagination and enrichment.
+    const caseScope = query.entityType === "case" || query.action?.startsWith("case.");
     return query.agentId !== undefined
       || query.responsibleUserId !== undefined
       || query.runId !== undefined
-      || query.entityType !== undefined
-      || query.entityId !== undefined
-      || query.action !== undefined
-      || query.actorType !== undefined
-      || query.from !== undefined
-      || query.to !== undefined;
+      || (!caseScope && (query.entityType !== undefined
+        || query.entityId !== undefined
+        || query.action !== undefined
+        || query.actorType !== undefined
+        || query.from !== undefined
+        || query.to !== undefined));
   }
 
   function stripAuditAttribution<T extends {
@@ -233,6 +238,7 @@ export function activityRoutes(db: Db) {
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
       readCondition: await issueReadSqlCondition(db, req.actor),
+      caseReadCondition: await caseActivityReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
     res.json(result);
@@ -258,7 +264,8 @@ export function activityRoutes(db: Db) {
       throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
     }
     if (parsedQuery.data.actorScope === "agents") {
-      const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+      const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+        caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
       res.json({ ...result, accessTier: "full" });
       return;
     }
@@ -267,7 +274,8 @@ export function activityRoutes(db: Db) {
     if (!canViewAttribution && hasAttributionFilters(parsedQuery.data)) {
       throw forbidden("Audit filters require permission: audit:view_agent_actions");
     }
-    const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+    const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+      caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
     res.json({
       ...(canViewAttribution ? result : stripAuditAttribution(result)),
       accessTier: canViewAttribution ? "full" : "basic",
@@ -284,10 +292,11 @@ export function activityRoutes(db: Db) {
     // Drive our own pagination for the export; a client-supplied cursor/limit
     // would silently truncate the export, so ignore them.
     const { cursor: _cursor, limit: _limit, ...filters } = parsedQuery.data;
+    const caseReadCondition = await caseActivityReadSqlCondition(db, req.actor);
     const rows: Awaited<ReturnType<typeof agentAudit.list>>["items"] = [];
     let cursor: string | undefined;
     do {
-      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE });
+      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE, caseReadCondition });
       for (const item of page.items) {
         if (rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS) break;
         rows.push(item);

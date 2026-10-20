@@ -30,6 +30,7 @@ export interface ActivityFilters {
   entityId?: string;
   limit?: number;
   readCondition?: SQL<boolean>;
+  caseReadCondition?: SQL<boolean>;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -356,7 +357,8 @@ export function activityService(db: Db) {
 
   return {
     list: async (filters: ActivityFilters) => {
-      const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId)];
+      const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {

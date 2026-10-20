@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, gte, inArray, lt, ne, sql, or, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -296,6 +297,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       return;
     }
 
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
       .update(companies)
       .set({
@@ -337,6 +339,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       return;
     }
 
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
       .update(companies)
       .set({

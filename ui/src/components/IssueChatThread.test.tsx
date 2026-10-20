@@ -4293,6 +4293,7 @@ describe("IssueAssigneePausedNotice", () => {
       root.render(
         <IssueAssigneePausedNotice
           agent={pausedAgent("import")}
+          issueStatus="in_progress"
           onResume={onResume}
           resuming={false}
         />,
@@ -4322,6 +4323,7 @@ describe("IssueAssigneePausedNotice", () => {
       root.render(
         <IssueAssigneePausedNotice
           agent={pausedAgent("budget")}
+          issueStatus="in_progress"
           onResume={vi.fn()}
           resuming={false}
         />,
@@ -4342,6 +4344,7 @@ describe("IssueAssigneePausedNotice", () => {
     act(() => {
       root.render(
         <IssueAssigneePausedNotice
+          issueStatus="in_progress"
           agent={
             { id: "agent-1", name: "CEO", status: "idle" } as unknown as Agent
           }
@@ -4352,6 +4355,28 @@ describe("IssueAssigneePausedNotice", () => {
     expect(
       container.querySelector('[data-testid="issue-assignee-paused-notice"]'),
     ).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it.each(["done", "cancelled"])("hides paused-agent warnings on %s tasks and restores them when reopened", (issueStatus) => {
+    const root = createRoot(container);
+    const agent = pausedAgent("manual");
+    const onResume = vi.fn();
+    const renderNotice = (status: string) => {
+      act(() => root.render(
+        <IssueAssigneePausedNotice agent={agent} issueStatus={status} onResume={onResume} />,
+      ));
+    };
+
+    renderNotice("in_progress");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
+    renderNotice(issueStatus);
+    expect(container.textContent).toBe("");
+    renderNotice("todo");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).not.toBeNull();
+    expect(agent.status).toBe("paused");
+    expect(onResume).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

@@ -13,11 +13,11 @@ import request from "supertest";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRepositoryAccess, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, principalPermissionGrants, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRepositoryAccess, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, principalPermissionGrants, projectAccessMembers, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { authorizationService, canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { assertChatExecutionDefaultsAccess } from "../services/chat-execution-defaults.js";
-import { assertTaskWorkspaceAccess } from "../services/task-workspace-source-access.js";
+import { assertExecutionWorkspaceRecordAccess } from "../services/task-workspace-access.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -57,7 +57,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(overview.items).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: f.workspaceId, projectId: null })]));
   });
 
-  it.each(["replace", "clear"] as const)("retains unbound task privacy and old root ownership when an update %ss its source", async action => {
+  it.each(["replace", "clear"] as const)("retains app-record privacy without physical-root history when an update %ss its source", async action => {
     const f = await fixture(), service = executionWorkspaceService(db);
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-update-provenance-"));
     try {
@@ -83,12 +83,7 @@ const support = await getEmbeddedPostgresTestSupport();
       } });
       const retained = await db.select().from(executionWorkspaceRepositoryAccess)
         .where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-      expect(retained.map(entry => ({ kind: entry.kind, scopeId: entry.scopeId, cwd: entry.canonicalCwd })))
-        .toEqual(expect.arrayContaining([
-          { kind: "source", scopeId: f.workspaceId, cwd: await fs.realpath(oldCwd) },
-          { kind: "project_source", scopeId: project.id, cwd: await fs.realpath(oldCwd) },
-        ]));
-      expect(retained.every(entry => ["source", "project_source", "shared_project_source"].includes(entry.kind))).toBe(true);
+      expect(retained).toEqual([]);
       expect(await fs.readFile(path.join(oldCwd, "private.txt"), "utf8")).toBe("Retained old files");
       expect(await service.update(f.workspaceId, { metadata: null })).toMatchObject({
         metadata: { _issuePrivacySources: { [ancestor.id]: true, [f.issueId]: true } },
@@ -98,7 +93,7 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
-  it("rolls back a source update when existing root provenance cannot be verified", async () => {
+  it("updates source metadata independently of the former filesystem root", async () => {
     const f = await fixture(), service = executionWorkspaceService(db);
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-update-invalid-root-"));
     try {
@@ -108,9 +103,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, f.workspaceId));
       const [before] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
       await expect(service.update(f.workspaceId, { cwd: path.join(root, "new"), sourceIssueId: null, metadata: null }))
-        .rejects.toThrow("Workspace files cannot be detached from unverifiable provenance");
-      const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
-      expect(after).toEqual(before);
+        .resolves.toMatchObject({ cwd: path.join(root, "new"), sourceIssueId: null });
       expect(await db.select().from(executionWorkspaceRepositoryAccess)
         .where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId))).toEqual([]);
     } finally {
@@ -491,15 +484,15 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: source.id }).where(eq(executionWorkspaces.id, f.workspaceId));
     const selection = { selection: { kind: "existing" as const, workspaceId: f.workspaceId }, expectedBindingRevision: 1, requestKey: "member-selection" };
     const repository = { repository: { kind: "url" as const, url: "https://github.com/public/example" }, requestKey: "member-repository" };
-    expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection)).status).toBe(403);
-    expect((await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(repository)).status).toBe(403);
+    expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection)).status).toBe(200);
+    expect((await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(repository)).status).toBe(200);
     const channelDefaults = { companyId: f.companyId, actor, assigneeAgentId: assignee.id,
       defaults: { workspace: { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "shared" as const } } };
-    await expect(assertChatExecutionDefaultsAccess(db, channelDefaults)).rejects.toThrow(/protected/);
+    await expect(assertChatExecutionDefaultsAccess(db, channelDefaults)).resolves.toBeUndefined();
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId,
       permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: assignee.id } });
     await expect(assertChatExecutionDefaultsAccess(db, channelDefaults)).resolves.toBeUndefined();
-    await expect(assertChatExecutionDefaultsAccess(db, { ...channelDefaults, assigneeAgentId: null })).rejects.toThrow(/protected/);
+    await expect(assertChatExecutionDefaultsAccess(db, { ...channelDefaults, assigneeAgentId: null })).resolves.toBeUndefined();
     expect(await issueService(db).create(f.companyId, { title: "Board-assigned shared work", createdByUserId: userId,
       assigneeAgentId: assignee.id, workspaceSelectionActor: actor,
       workspaceSelection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" } }))
@@ -525,52 +518,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, f.workspaceId))).toHaveLength(1);
   });
 
-  it.each(["binding", "configured_source"] as const)("enforces source authority on legacy PATCH %s and rolls back denied edits", async kind => {
-    const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db);
-    const previous = await settings.getExperimental();
+  it.each(["binding", "configured_source"] as const)("preserves selected app configuration privacy on legacy PATCH %s", async kind => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db), previous = await settings.getExperimental();
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     try {
-      await db.insert(authUsers).values({ id: userId, name: "Workspace selector", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
-      const [assignee, nextAssignee] = await db.insert(agents).values(["Current worker", "Next worker"].map(name => ({ companyId: f.companyId, name, status: "idle", runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } } }))).returning();
-      await db.update(issues).set({ assigneeAgentId: assignee.id }).where(eq(issues.id, f.issueId));
-      const [project, organization] = await db.insert(projects).values([
-        { companyId: f.companyId, name: "Protected source", executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } },
-        { companyId: f.companyId, name: "Organization" },
-      ]).returning();
+      await db.insert(authUsers).values({ id: userId, name: "Reader", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, membershipRole: "member", status: "active" });
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Private config", visibility: "private" }).returning();
       const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Source", cwd: `/tmp/source-${f.issueId}` }).returning();
       await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: source.id }).where(eq(executionWorkspaces.id, f.workspaceId));
       const actor = { type: "board" as const, source: "session" as const, userId, companyIds: [f.companyId], isInstanceAdmin: false };
-      const beforeMetadata = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0].metadata;
-      const app = express();
-      app.use(express.json());
-      app.use((req, _res, next) => { req.actor = actor; next(); });
-      app.use("/api", taskWorkspaceRoutes(db));
-      app.use("/api", issueRoutes(db, {} as never));
-      app.use(errorHandler);
-      const patch = kind === "binding" ? { executionWorkspaceId: f.workspaceId } : { projectWorkspaceId: source.id, executionWorkspaceSettings: { mode: "shared_workspace" } };
-      const selection = kind === "binding" ? { kind: "existing", workspaceId: f.workspaceId } : { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" };
-      expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send({ selection, expectedBindingRevision: 0, requestKey: "denied" })).status).toBe(403);
-      const denied = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
-      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
-      const readTask = () => db.select().from(issues).where(eq(issues.id, f.issueId)).then(rows => rows[0]);
-      expect(await readTask()).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null, workspaceBindingRevision: 0 });
-      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0].metadata).toEqual(beforeMetadata);
-      const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: assignee.id } }).returning();
-      await expect(issueService(db).update(f.issueId, { ...patch, assigneeAgentId: nextAssignee.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
-      expect(await readTask()).toMatchObject({ assigneeAgentId: assignee.id, workspaceBindingRevision: 0 });
-      const allowed = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
-      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
-      const bound = await readTask();
-      expect(bound).toMatchObject({ ...patch, projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
-      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-      const organized = await request(app).patch(`/api/issues/${f.issueId}`).send({ projectId: organization.id });
-      expect(organized.status, JSON.stringify(organized.body)).toBe(200);
-      expect(await readTask()).toMatchObject({ projectId: organization.id, executionWorkspaceId: bound.executionWorkspaceId, projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
-    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
+      const app = express(); app.use(express.json()); app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
+      const patch = kind === "binding" ? { executionWorkspaceId: f.workspaceId } : { projectWorkspaceId: source.id };
+      await request(app).patch(`/api/issues/${f.issueId}`).send(patch).expect(403);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null });
+      await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: userId });
+      await request(app).patch(`/api/issues/${f.issueId}`).send(patch).expect(200);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+      vi.unstubAllEnvs();
+    }
   });
 
-  it.each(["create", "patch", "selection"] as const)("uses the assigned agent's effective source strategy for %s authorization", async operation => {
+  it.each(["create", "patch", "selection"] as const)("allows either assigned agent source strategy for %s when the selected config is readable", async operation => {
     const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
     await settings.updateExperimental({ enableIsolatedWorkspaces: true, enableIsolatedWorkspacesByDefault: false });
@@ -590,10 +563,10 @@ const support = await getEmbeddedPostgresTestSupport();
       if (operation === "create") {
         const input = { title: "Read source in separate checkout", assigneeAgentId: isolatedAgent.id,
           projectWorkspaceId: source.id, workspaceSelectionActor: actor, createdByUserId: userId };
-        await expect(tasks.create(f.companyId, { ...input, assigneeAdapterOverrides: sharedOverrides })).rejects.toThrow(/protected/);
+        await expect(tasks.create(f.companyId, { ...input, assigneeAdapterOverrides: sharedOverrides })).resolves.toBeDefined();
         await expect(tasks.create(f.companyId, input)).resolves.toMatchObject({ assigneeAgentId: isolatedAgent.id, projectWorkspaceId: source.id });
         await expect(tasks.create(f.companyId, { ...input, workspaceSelection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "managed_isolated" },
-          assigneeAdapterOverrides: sharedOverrides })).rejects.toThrow(/protected/);
+          assigneeAdapterOverrides: sharedOverrides })).resolves.toBeDefined();
       } else if (operation === "patch") {
         await db.update(issues).set({ assigneeAgentId: sharedAgent.id }).where(eq(issues.id, f.issueId));
         const app = express();
@@ -602,8 +575,8 @@ const support = await getEmbeddedPostgresTestSupport();
         app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
         const patch = { projectWorkspaceId: source.id, assigneeAgentId: isolatedAgent.id };
         const denied = await request(app).patch(`/api/issues/${f.issueId}`).send({ ...patch, assigneeAdapterOverrides: sharedOverrides });
-        expect(denied.status, JSON.stringify(denied.body)).toBe(403);
-        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ assigneeAgentId: sharedAgent.id, projectWorkspaceId: null });
+        expect(denied.status, JSON.stringify(denied.body)).toBe(200);
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ assigneeAgentId: isolatedAgent.id, projectWorkspaceId: source.id });
         const allowed = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
         expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
         expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ assigneeAgentId: isolatedAgent.id, projectWorkspaceId: source.id });
@@ -611,94 +584,43 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.update(issues).set({ assigneeAgentId: isolatedAgent.id, assigneeAdapterOverrides: sharedOverrides }).where(eq(issues.id, f.issueId));
         const input = { companyId: f.companyId, issueId: f.issueId, actor,
           selection: { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "managed_isolated" as const } };
-        await expect(workspaces.validateSelection(input)).rejects.toThrow(/protected/);
+        await expect(workspaces.validateSelection(input)).resolves.toBeDefined();
         await db.update(issues).set({ assigneeAdapterOverrides: null }).where(eq(issues.id, f.issueId));
         await expect(workspaces.validateSelection(input)).resolves.toMatchObject({ projectWorkspaceId: source.id });
         await db.update(issues).set({ assigneeAgentId: sharedAgent.id }).where(eq(issues.id, f.issueId));
-        await expect(workspaces.validateSelection(input)).rejects.toThrow(/protected/);
+        await expect(workspaces.validateSelection(input)).resolves.toBeDefined();
       }
     } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces, enableIsolatedWorkspacesByDefault: previous.enableIsolatedWorkspacesByDefault }); }
   });
 
-  it("requires source project assignment authority for shared files while preserving isolated reads", async () => {
+  it("uses selected project read access without interpreting assignment grants as filesystem permissions", async () => {
     const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
     const settings = instanceSettingsService(db), previous = await settings.getExperimental();
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     try {
-      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Read-only source user", adapterType: "process", status: "idle" }).returning();
+      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Source reader", adapterType: "process", status: "idle" }).returning();
       await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: agent.id, status: "active", membershipRole: "member" });
       const actor = { type: "agent" as const, agentId: agent.id, companyId: f.companyId, source: "agent_key" as const };
-      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected source",
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected config",
         executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
       const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
         name: "Shared source", cwd: `/tmp/protected-${f.issueId}` }).returning();
-      const [shared] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
-        projectWorkspaceId: source.id, name: "Shared files", cwd: source.cwd, mode: "shared_workspace", strategyType: "project_primary" }).returning();
-      const [isolated] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
-        projectWorkspaceId: source.id, name: "Isolated files", cwd: `/tmp/isolated-${f.issueId}`, mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
-      expect(await authorizationService(db).decide({ actor, action: "project:read",
-        resource: { type: "project", companyId: f.companyId, projectId: project.id } })).toMatchObject({ allowed: true });
-      const sharedSelection = { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "shared" as const };
-      const isolatedSelection = { ...sharedSelection, mode: "managed_isolated" as const };
-      await expect(svc.validateSelection({ ...f, actor, selection: sharedSelection })).rejects.toThrow(/protected/);
-      await expect(svc.validateSelection({ ...f, actor, selection: isolatedSelection })).resolves.toMatchObject({ executionWorkspaceSettings: { mode: "isolated_workspace" } });
-      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: shared.id } })).rejects.toThrow(/protected/);
-      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: isolated.id } })).resolves.toMatchObject({ executionWorkspaceId: isolated.id });
-      for (const sourceKind of ["explicit", "channel"] as const) {
-        await expect(tasks.create(f.companyId, { title: `Denied ${sourceKind}`, createdByAgentId: agent.id,
-          workspaceSelection: sharedSelection, workspaceSelectionSource: sourceKind, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
-        expect(await tasks.create(f.companyId, { title: `Isolated ${sourceKind}`, createdByAgentId: agent.id,
-          workspaceSelection: isolatedSelection, workspaceSelectionSource: sourceKind, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });
+      for (const mode of ["shared", "managed_isolated"] as const) {
+        const selection = { kind: "configured_source" as const, projectWorkspaceId: source.id, mode };
+        await expect(svc.validateSelection({ ...f, actor, selection })).resolves.toMatchObject({ projectWorkspaceId: source.id });
+        for (const sourceKind of ["explicit", "channel"] as const) {
+          expect(await tasks.create(f.companyId, { title: `${sourceKind} ${mode}`, createdByAgentId: agent.id,
+            workspaceSelection: selection, workspaceSelectionSource: sourceKind, workspaceSelectionActor: actor })).toMatchObject({ projectWorkspaceId: source.id });
+        }
       }
-      await expect(tasks.create(f.companyId, { title: "Denied legacy source", createdByAgentId: agent.id,
-        projectWorkspaceId: source.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
-      await expect(tasks.create(f.companyId, { title: "Denied legacy binding", createdByAgentId: agent.id,
-        executionWorkspaceId: shared.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
-
-      await db.update(executionWorkspaces).set({ mode: "isolated_workspace" }).where(eq(executionWorkspaces.id, shared.id));
-      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: shared.id } })).rejects.toThrow(/protected/);
-      await expect(tasks.create(f.companyId, { title: "Mislabelled isolated source", createdByAgentId: agent.id,
-        projectWorkspaceId: source.id, workspaceSelectionActor: actor,
-        executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "project_primary" } } })).rejects.toThrow(/protected/);
-      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace",
-        workspaceStrategy: { type: "project_primary" }, authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).where(eq(projects.id, project.id));
-      await expect(svc.validateSelection({ ...f, actor, selection: isolatedSelection })).rejects.toThrow(/protected/);
-      await db.update(projects).set({ executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).where(eq(projects.id, project.id));
-
-      const [organization] = await db.insert(projects).values({ companyId: f.companyId, name: "Task organization" }).returning();
-      await db.update(issues).set({ projectId: organization.id }).where(eq(issues.id, f.issueId));
-      const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
-        principalId: agent.id, permissionKey: "tasks:assign_scope", scope: { projectId: organization.id, assigneeAgentId: agent.id } }).returning();
-      const selectionRequest = { ...f, actor, selection: sharedSelection, expectedBindingRevision: 0, requestKey: "authorized-shared" };
-      await expect(svc.selectTaskWorkspace(selectionRequest)).rejects.toThrow(/protected/);
-      const [otherAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Another assignee", status: "idle" }).returning();
-      await db.update(issues).set({ assigneeAgentId: otherAgent.id }).where(eq(issues.id, f.issueId));
-      await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: otherAgent.id } })
-        .where(eq(principalPermissionGrants.id, grant.id));
-      await expect(svc.selectTaskWorkspace(selectionRequest)).rejects.toThrow(/protected/);
-      await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: agent.id } })
-        .where(eq(principalPermissionGrants.id, grant.id));
-      await expect(svc.selectTaskWorkspace(selectionRequest)).resolves.toMatchObject({ kind: "scheduled" });
-      const responsibleUserId = randomUUID();
-      await db.insert(authUsers).values({ id: responsibleUserId, name: "Source owner", email: `${responsibleUserId}@example.test`,
-        createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: responsibleUserId,
-        status: "active", membershipRole: "member" });
-      const delegated = { ...actor, onBehalfOfUserId: responsibleUserId };
-      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).rejects.toThrow(/Responsible user.*not authorized/);
-      const [userGrant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user",
-        principalId: responsibleUserId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: agent.id } }).returning();
-      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).resolves.toMatchObject({ projectWorkspaceId: source.id });
-      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, userGrant.id));
-      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).rejects.toThrow(/Responsible user.*not authorized/);
-      expect(await tasks.create(f.companyId, { title: "Authorized shared source", createdByAgentId: agent.id,
-        workspaceSelection: sharedSelection, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });
-      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-      await expect(svc.applyPendingTaskWorkspaceSelection({ ...f, actor, runId: randomUUID() })).rejects.toThrow(/protected/);
-      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, shared.id)).resolves.toBeUndefined();
-      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, shared.id, { write: true })).rejects.toThrow(/protected/);
-      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, isolated.id, { write: true })).resolves.toBeUndefined();
-      expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).workspace).toBeNull();
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        projectWorkspaceId: source.id, name: "Shared files", cwd: source.cwd, mode: "shared_workspace", strategyType: "project_primary" }).returning();
+      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: workspace.id } })).resolves.toMatchObject({ executionWorkspaceId: workspace.id });
+      await expect(assertExecutionWorkspaceRecordAccess(db, actor, f.companyId, workspace.id)).resolves.toBeUndefined();
+      // Changing the app configuration still requires its normal write grant.
+      expect(await authorizationService(db).decide({ actor, action: "project:write_workspace", resource: {
+        type: "issue", companyId: f.companyId, projectId: project.id, assigneeAgentId: agent.id,
+      } })).toMatchObject({ allowed: false });
     } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 

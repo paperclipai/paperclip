@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { applyPendingMigrations } from '@paperclipai/db';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -15,7 +17,8 @@ import { companySkillService } from '../services/company-skills.js';
 import { skillFileBytes } from '../services/skill-snapshot.js';
 import { deleteCompany } from '../services/company-deletion.js';
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL');
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)('skill source persistence', () => {
   let testDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -29,12 +32,15 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
   let commit = sha;
   const context: SkillSourceContext = { actor: { type: 'user', userId: 'board' }, read: () => githubFixture(files, { 'deep/one/scripts/run.sh': '100755', 'shared/check.sh': '100755' }, commit), authorize: async () => {}, audit: async () => {} };
   beforeAll(async () => {
-    testDb = await startEmbeddedPostgresTestDatabase('paperclip-skill-sources-'); db = createDb(testDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else testDb = await startEmbeddedPostgresTestDatabase('paperclip-skill-sources-');
+    db = createDb(externalUrl ?? testDb.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-source-test-')); process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Skills', issuePrefix: 'SKL' });
   }, 30000);
   afterAll(async () => {
     if (originalHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = originalHome;
+    await db?.$client.end({ timeout: 1 });
     await testDb?.cleanup(); if (home) await fs.rm(home, { recursive: true, force: true });
   });
   it('publishes two assigned skills while a concurrent version save holds the second skill', async () => {
@@ -46,8 +52,8 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const selected = await Promise.all(created.source.entries.map(entry => companySkillService(db).getById(companyId, entry.skillId!)));
     const second = selected.find(skill => skill!.name === 'b')!;
     const [agent] = await db.insert(agents).values({ companyId, name: 'Uses both skills', adapterType: 'paperclip_runner', adapterConfig: { paperclipSkillSync: { desiredSkills: selected.map(skill => skill!.key) } } }).returning();
-    const sourceDb = createDb(testDb.connectionString, { maxConnections: 1 });
-    const versionDb = createDb(testDb.connectionString, { maxConnections: 1 });
+    const sourceDb = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 1 });
+    const versionDb = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 1 });
     const [backend] = await sourceDb.execute(sql`SELECT pg_backend_pid() AS pid`);
     let locked!: () => void; let resume!: () => void;
     const secondLocked = new Promise<void>(resolve => { locked = resolve; });

@@ -33,6 +33,7 @@ import type {
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
+import type { CaseDetail, IssueCaseLink } from "../api/cases";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import type { CompanyListResult } from "../api/companies-query";
@@ -859,6 +860,11 @@ const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_restored",
   "issue.document_deleted",
 ]);
+const ISSUE_CASE_WORK_ACTIVITY_ACTIONS = new Set([
+  "issue.updated",
+  "issue.checked_out",
+  "issue.released",
+]);
 const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "issue.document_annotation_thread_created",
   "issue.document_annotation_comment_added",
@@ -1371,6 +1377,28 @@ function invalidateActivityQueries(
         entityId,
         details,
       );
+      const taskDocumentsChanged = !!action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action);
+      const caseWorkChanged = !!action && ISSUE_CASE_WORK_ACTIVITY_ACTIONS.has(action);
+      if (caseWorkChanged) {
+        // A changed task can bring a case into a filtered list that did not
+        // contain it, even when no case detail has been loaded yet.
+        queryClient.invalidateQueries({ queryKey: queryKeys.cases.list(companyId) });
+      }
+      if (taskDocumentsChanged || caseWorkChanged) {
+        const changedTaskRefs = new Set(issueRefs);
+        // Both detail aliases embed primary-task state. Linked tasks affect the
+        // document rollup, including creation of their first document.
+        queryClient.invalidateQueries({
+          queryKey: ["cases", "detail"],
+          predicate: (query) => {
+            const cached = query.state.data as CaseDetail | undefined;
+            return cached?.companyId === companyId && (
+              changedTaskRefs.has(cached.workIssueId ?? "") ||
+              (taskDocumentsChanged && cached.issueLinks?.some((link) => changedTaskRefs.has(link.issueId)) === true)
+            );
+          },
+        });
+      }
       const visibleContext = options?.pathname
         ? resolveVisibleIssueRouteContext(queryClient, options.pathname, {
             isForegrounded: options.isForegrounded,
@@ -1585,12 +1613,52 @@ function invalidateActivityQueries(
       queryKey: queryKeys.cases.list(companyId),
     });
     if (entityId) {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.cases.detail(entityId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.cases.events(entityId),
-      });
+      const caseRefs = new Set([entityId]);
+      const issueRefs = new Set<string>();
+      const handoffIssueId = action?.startsWith("case.handoff_")
+        ? readString(payload.issueId) ?? readString(details?.issueId)
+        : null;
+      if (handoffIssueId) issueRefs.add(handoffIssueId);
+      // Detail routes normally use the identifier, while activity carries the UUID.
+      for (const [key, cached] of queryClient.getQueriesData<{ id: string; identifier?: string; workIssueId?: string | null }>({
+        queryKey: ["cases", "detail"],
+      })) {
+        if (cached?.id !== entityId) continue;
+        queryClient.invalidateQueries({ queryKey: key });
+        if (cached.identifier) caseRefs.add(cached.identifier);
+        if (cached.workIssueId) issueRefs.add(cached.workIssueId);
+      }
+      // A task's cases panel can be mounted without ever loading case detail.
+      for (const [key, links] of queryClient.getQueriesData<IssueCaseLink[]>({
+        queryKey: ["cases", "for-issue"],
+      })) {
+        const link = links?.find((candidate) => candidate.case.id === entityId);
+        if (!link) continue;
+        queryClient.invalidateQueries({ queryKey: key });
+        caseRefs.add(link.case.identifier);
+      }
+      const documentChanged = action !== null && [
+        "case.document_revised", "case.document_created", "case.document_updated",
+        "case.document_restored", "case.document_deleted",
+      ].includes(action);
+      const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+      for (const ref of caseRefs) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.cases.detail(ref) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.cases.events(ref) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.cases.handoffs(ref) });
+        if (documentChanged) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.cases.documents(ref) });
+          queryClient.invalidateQueries({
+            queryKey: documentKey ? ["cases", "document", ref, documentKey] : ["cases", "document", ref],
+          });
+          queryClient.invalidateQueries({
+            queryKey: documentKey ? queryKeys.cases.revisions(ref, documentKey) : ["cases", "revisions", ref],
+          });
+        }
+      }
+      for (const ref of issueRefs) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.cases.forIssue(ref) });
+      }
       if (action && CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action)) {
         const documentKey =
           readString(details?.key) ?? readString(details?.documentKey);

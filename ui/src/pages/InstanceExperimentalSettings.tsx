@@ -435,7 +435,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Experimental fast responses"
-          description="Show Connections in company settings and allow short acknowledgements while agents begin work."
+          description="Allow short acknowledgements while agents begin work. Configure them in Settings → Connections."
           checked={experimentalQuery.data?.enableFastResponses ?? false}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableFastResponses: checked })}
           disabled={toggleMutation.isPending}

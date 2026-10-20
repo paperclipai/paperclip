@@ -151,7 +151,7 @@ const waitContinuationSchema = {
   additionalProperties: false,
   required: ["kind", "summary", "idempotencyKey"],
   properties: {
-    kind: { type: "string", enum: ["response_wake", "monitor"] },
+    kind: { type: "string", enum: ["response_wake", "monitor", "case_handoff"] },
     summary: {
       type: "string",
       minLength: 1,
@@ -159,7 +159,9 @@ const waitContinuationSchema = {
         "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request.",
     },
     idempotencyKey: { type: "string", minLength: 1 },
+    handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
+  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
 const commonResultProperties = {

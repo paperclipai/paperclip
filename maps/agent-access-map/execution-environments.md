@@ -3,6 +3,8 @@
 Product map: [Local, SSH, and sandbox
 environments](../feature-map/execution-environments.md).
 
+Feature ID: `execution-environments`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -17,6 +19,8 @@ baseline commit and review depth remain for unrelated operations; no live agent
 or provider qualification is claimed by this update.
 
 ## `configuration`
+
+Capability ID: `execution-environments/configuration`.
 
 Review: `baseline`.
 
@@ -54,6 +58,8 @@ packages do not transfer platform qualification.
 
 ## `capabilities`
 
+Capability ID: `execution-environments/capabilities`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -78,6 +84,8 @@ Gaps: Endpoint discovery and already-bound run capabilities differ; decide wheth
 safe agent-readable capability listing is desired.
 
 ## `probe`
+
+Capability ID: `execution-environments/probe`.
 
 Review: `baseline`.
 
@@ -131,6 +139,8 @@ an accepted interaction does not turn the caller into a board administrator.
 
 ## `assignment`
 
+Capability ID: `execution-environments/assignment`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -156,6 +166,8 @@ Gaps: Choosing among permitted targets differs from creating/configuring host ta
 test authorized and denied selection.
 
 ## `images`
+
+Capability ID: `execution-environments/images`.
 
 Review: `baseline`.
 

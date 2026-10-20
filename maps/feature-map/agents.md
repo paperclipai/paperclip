@@ -6,20 +6,24 @@ navigation: {"section":"Agents and reusable capabilities","sectionOrder":30,"ord
 
 Operators hire agents, configure their identity and instructions, assign reporting relationships, and manage their lifecycle. Built-in agents have their own setup and lifecycle constraints.
 
+Feature ID: `agents`.
+
 Implementation: [hiring](../../ui/src/pages/NewAgent.tsx), [configuration](../../ui/src/components/AgentConfigForm.tsx), [organization](../../ui/src/pages/OrgChart.tsx).
 
 Agent access: [companion](../agent-access-map/agents.md).
 
 ## Sub-features
 
-- `hire`: choose identity, harness, model, and required account settings; edit
+- `hire`: `agents/hire` — choose identity, harness, model, and required account settings; edit
   reporting relationships through the agent configuration afterward.
-- `grok-bot`: experimental existing-Bot agent setup through remote OAuth, routine credentials, and an authenticated two-way challenge; current contact, stop and explicit recovery.
-- `instructions`: edit agent configuration and instruction files with durable revisions.
-- `organization`: inspect and change reporting relationships through supported controls.
-- `primary-agent`: choose a personal primary agent for the company, confirm replacement, and inspect its roster/sidebar and task/chat defaults.
-- `lifecycle`: pause/resume or retire an agent while preserving history.
-- `built-in`: configure required agents without treating them as ordinary removable hires.
+- `grok-bot`: `agents/grok-bot` — experimental existing-Bot agent setup through remote OAuth, routine credentials, and an authenticated two-way challenge; current contact, stop and explicit recovery.
+- `instructions`: `agents/instructions` — edit agent configuration and instruction files with durable revisions.
+- `organization`: `agents/organization` — inspect and change reporting relationships through supported controls.
+- `primary-agent`: `agents/primary-agent` — choose a personal primary agent for the company, confirm replacement, and inspect its roster/sidebar and task/chat defaults.
+- `lifecycle`: `agents/lifecycle` — pause/resume or retire an agent while preserving history.
+- `built-in`: `agents/built-in` — configure required agents without treating them as ordinary removable hires.
+- `api-keys`: `agents/api-keys` — create and inspect named agent credentials, copy a new token once, and revoke it without changing agent identity.
+- `managed-agent-setup`: `agents/managed-agent-setup` — probe, create, or adopt a qualified Anthropic managed-agent profile with pinned provider resources and retention acknowledgement.
 
 ## How to get to it (user POV)
 
@@ -39,6 +43,14 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 Open an agent profile and choose **Set as my primary**. Inspect its crown on the
 profile/roster and its position in the Agents sidebar, then open a new task or Chat.
+
+### `agent-api-keys`
+
+Open `/agents/:agentId/api-keys` → **API Keys** with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
+
+### `managed-agent-cli`
+
+Use the operator command `paperclipai managed-agent setup --company-id <company-id> --profile-key <key> --display-name <name> --api-key-secret-id <company-secret-id> --acknowledge-retention --json`. Supply ANTHROPIC_API_KEY through the process environment. Use `--agent-id`, `--agent-version`, and `--environment-id` to adopt resources, or `--probe` for provider reads without profile persistence. The optional session-list cost ceiling is `--max-session-list-cost-usd`.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -122,7 +134,27 @@ Switch company/user to check isolation. Open a task and Chat with a
 valid draft or recent selection; verify those explicit choices take precedence
 over the primary fallback. Opening Chat must not start execution.
 
+### `agent-api-keys`
+
+Automated: [CLI token tests](../../cli/src/__tests__/token.test.ts) mock create/list/revoke. [Cross-tenant routes](../../server/src/__tests__/agent-cross-tenant-authz-routes.test.ts), [agent permissions](../../server/src/__tests__/agent-permissions-routes.test.ts), and [authentication middleware](../../server/src/__tests__/agent-auth-middleware.test.ts) cover company/key ownership, management permission, responsible-user binding, and denial. They do not prove a browser-created key working against a live instance.
+
+Manual: As an authenticated person with agents:create, create a named key for an eligible disposable agent and copy it privately from the once-only display. Make a harmless same-company agent request with that bearer, then reload the Keys tab and verify only metadata remains. Revoke the key through UI or CLI, reload, and retry the exact same bearer: authentication must fail. Inspect key-created/key-revoked activity without token values. Test a board person lacking agent-management permission, an agent caller, another company’s agent, a different agent’s key ID, and a pending-approval/terminated target. A created key without a real responsible-user binding is a failed acceptance prerequisite, not a working credential.
+
+Sources: [Keys tab](../../ui/src/pages/AgentDetail.tsx), [key routes](../../server/src/routes/agents.ts), [key service](../../server/src/services/agents.ts), [authentication](../../server/src/middleware/auth.ts), and [CLI token commands](../../cli/src/commands/client/token.ts).
+
+### `managed-agent-cli`
+
+Automated: [Managed-agent CLI](../../cli/src/__tests__/managed-agent.test.ts) uses mocked provider/API responses. [Profile route authorization](../../server/src/__tests__/managed-agent-profile-routes-authz.test.ts) and [remote profiles](../../server/src/services/remote-agent-profiles.test.ts) cover actor/company checks and qualification. They do not establish provider provisioning or a useful managed task.
+
+Manual: Start with known adopted provider IDs in an authorized disposable provider account. Run --probe and verify only provider reads: no resources are created and no Paperclip profile is written. Reject unsafe tools/network/package configuration, an unsupported model, duplicate profile matches, a missing retention acknowledgement, and a malformed secret UUID. During persistence, reject missing, inactive, or foreign-company secret references. Then create or adopt a locked profile in a disposable company; inspect its pinned version, model, environment, retention attestation, and cost ceiling through the profile API. Repeat setup and verify resource reuse. Reject viewer/agent writes and foreign-company references. Qualify useful task execution separately through the runtime recipe; a successful probe is not execution acceptance.
+
+Sources: [Managed-agent CLI](../../cli/src/commands/managed-agent.ts), [profile routes](../../server/src/routes/managed-agent-profiles.ts), [profile service](../../server/src/services/managed-agent-profiles.ts), and [runtime validation](./runs-adapters.md).
+
 ## Gotchas
+
+- Managed-agent probing is read-only at the provider and does not persist a Paperclip profile. The explicit retention acknowledgement remains required even for probe.
+
+- Agent keys, human CLI tokens, and personal assistant OAuth grants are different credentials. Never include a key’s plaintext token in screenshots, logs, or verification artifacts.
 
 - A roster entry is not proof of an authenticated or invokable adapter.
 - Pending hires may live in approval/task surfaces rather than the active roster.

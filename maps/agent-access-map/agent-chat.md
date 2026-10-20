@@ -2,6 +2,8 @@
 
 Product map: [Agent conversations and project handoff](../feature-map/agent-chat.md).
 
+Feature ID: `agent-chat`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `discovery`
+
+Capability ID: `agent-chat/discovery`.
 
 Review: `baseline`.
 
@@ -35,6 +39,8 @@ Gaps: Agents cannot enumerate or create another person's standing chats. Detail 
 missing from the generated API catalog.
 
 ## `history`
+
+Capability ID: `agent-chat/history`.
 
 Review: `baseline`.
 
@@ -62,6 +68,8 @@ messages are different actions.
 
 ## `handoff`
 
+Capability ID: `agent-chat/handoff`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -87,6 +95,8 @@ Gaps: Agent handoff is implemented; execution readiness, assignment permission, 
 repository access still apply.
 
 ## `conference-room`
+
+Capability ID: `agent-chat/conference-room`.
 
 Review: `baseline`.
 

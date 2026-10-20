@@ -9,26 +9,28 @@ history. A question, plan confirmation, governance approval, and app-tool review
 can look similar but have different authority and continuation rules. Each
 decision must stay attached to its original request and survive reload.
 
+Feature ID: `questions-and-approvals`.
+
 Agent access: [companion](../agent-access-map/questions-and-approvals.md).
 
 ## Sub-features
 
-- `questions`: single-choice, multiple-choice, custom, and free-text answers;
+- `questions`: `questions-and-approvals/questions` — single-choice, multiple-choice, custom, and free-text answers;
   paged forms retain answers until submission and show validation failures.
-- `dismiss-and-reopen`: unanswered questions remain in the feed after dismissal
+- `dismiss-and-reopen`: `questions-and-approvals/dismiss-and-reopen` — unanswered questions remain in the feed after dismissal
   or a newer message; reopening restores the form without inventing an answer.
-- `confirmations`: accept, decline, or request changes; stale, expired, resolved,
+- `confirmations`: `questions-and-approvals/confirmations` — accept, decline, or request changes; stale, expired, resolved,
   and withdrawn requests cannot be acted on again.
-- `plan-review`: inspect the requested plan revision before accepting or asking
+- `plan-review`: `questions-and-approvals/plan-review` — inspect the requested plan revision before accepting or asking
   for changes. An ordinary planning task can proceed to execution; Agent Chat
   hands work to linked tasks and remains a conversation.
-- `audience`: the current actor, company, named audience, and review policy govern
+- `audience`: `questions-and-approvals/audience` — the current actor, company, named audience, and review policy govern
   resolution. A visible request is not necessarily actionable by that viewer.
-- `governance`: pending/history views, approve/reject, revision request, and
+- `governance`: `questions-and-approvals/governance` — pending/history views, approve/reject, revision request, and
   resubmission for formal board approvals.
-- `tool-review`: approve once, always allow the displayed scope, or decline;
+- `tool-review`: `questions-and-approvals/tool-review` — approve once, always allow the displayed scope, or decline;
   decision status and provider execution outcome remain distinct.
-- `continuation`: one recorded response leads to the eligible waiting run or
+- `continuation`: `questions-and-approvals/continuation` — one recorded response leads to the eligible waiting run or
   continuation; repeated clicks, reloads, and competing tabs do not repeat work.
 
 ## How to get to it (user POV)
@@ -81,6 +83,21 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use separate disposable requests for accept, decline, and revision paths. Record
 the actor and request revision. Prepare a waiting question through a test agent;
 a component fixture alone cannot prove live response delivery.
+
+**Operation checkpoints**
+
+Use these checks alongside the entry-point recipes below and the operation records in the [access companion](../agent-access-map/questions-and-approvals.md). Record the actual actor, surface, saved result and denial separately. Source review and linked tests do not establish a live pass.
+
+| Capability ID | Action and persisted result | Denial, race and retry checks |
+| --- | --- | --- |
+| `questions-and-approvals/questions` | Create fixed-ID single/multiple/custom/text questions; move between pages, submit, and reload the saved answer and responder. | Reject missing/invalid answers without resolving. Competing answers settle once. Distinguish cancel, withdraw, historical Done-task answers, and local dismissal; historical answers must not restart work. |
+| `questions-and-approvals/dismiss-and-reopen` | Dismiss without submitting, reopen from history, edit the retained draft, and reload in the same browser. | Confirm the server request remains pending and a new ordinary comment does not answer it. Resolve in another tab and refresh the old form. Browser draft/dismissal state is not account-wide state. |
+| `questions-and-approvals/confirmations` | Use separate accept, decline/change-request, checkbox subset, suggested-task selection, and partial item-verdict requests. Inspect the actual selected items and created task IDs. | Test invalid selections, child-without-parent selection, expiry, supersession, withdrawal, and repeated/conflicting decisions. Partial verdicts persist; skip must not start a continuation. |
+| `questions-and-approvals/plan-review` | Open the exact requested plan revision; reject one request and accept another. Inspect saved revision, work mode, owner, and the resulting continuation. | Edit after requesting review and reject stale acceptance. Test finalization readiness and bound completion review separately. In Agent Chat, inspect the later project/task creation and its source-plan provenance; acceptance alone is not a completed handoff. |
+| `questions-and-approvals/audience` | Repeat a request for a named person, named agent, human-only resolver, and independent reviewer. Inspect actionability and final attribution. | Test creator exclusion, wrong audience/company, private task, missing or cancelled run, and changed responsible-user access. A human comment used by an agent remains subject to that agent’s resolver authority. |
+| `questions-and-approvals/governance` | Create and inspect a formal request, comment, request revision, resubmit, then approve or reject distinct requests. Reload history and linked task state. | Test board decision authority separately from agent request/comment/resubmit authority. A repeated decision cannot repeat activation. Current pending status, payload revision, and governed side effects must agree. |
+| `questions-and-approvals/tool-review` | Invoke a harmless Ask first action, compare task and Apps review surfaces, then exercise Approve once, Always allow, and Decline separately. | No provider call before approval. Repeat decisions and compare invocation count. Change the tool definition, revoke access, or set Off before a decision. Record the approval decision and provider outcome independently. |
+| `questions-and-approvals/continuation` | After answering, inspect the saved response, delivery receipt, eligible run, and useful result in the original task/thread. | Reload, race two tabs, and interrupt delivery after saving. Require one continuation without repeated external actions. Reassignment, Stop, pause, budget, and external-thread boundaries remain effective. |
 
 ### `task-thread`
 

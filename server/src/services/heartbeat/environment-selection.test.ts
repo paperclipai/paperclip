@@ -145,7 +145,7 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     input.task.taskWorkspaceIntent = { version: 1, source: "explicit", selection: { kind: "task_directory" } };
     await db.update(issues).set({ originKind: "chat_channel" }).where(eq(issues.id, issue.id));
     const read = vi.spyOn(input.services.executionWorkspacesSvc, "getStoredById").mockRejectedValue(new Error("Task source must remain inaccessible"));
-    const select = vi.spyOn(input.services.executionWorkspacesSvc, "validateSelection").mockRejectedValue(new Error("Task selection must remain inaccessible"));
+    const select = vi.spyOn(input.services.executionWorkspacesSvc, "validateStoredSelectionForRun").mockRejectedValue(new Error("Task selection must remain inaccessible"));
     try {
       const result = await selectHeartbeatEnvironment(db, input);
       expect(result).toMatchObject({ isDotRun: true, selectedEnvironmentId: sandbox.id,

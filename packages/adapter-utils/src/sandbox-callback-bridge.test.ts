@@ -1262,11 +1262,15 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    // Publish the complete malformed envelope atomically, like the host writer.
+    // A direct write can instead exercise the reader's file-size race guard.
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      `${responsePath}.tmp`,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await fs.rename(`${responsePath}.tmp`, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);

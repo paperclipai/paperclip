@@ -6,18 +6,20 @@ navigation: {"section":"Oversight and operation","sectionOrder":70,"order":20}
 
 People inspect company health, recent activity, run history, and routine activity, then follow evidence back to the task or agent responsible.
 
+Feature ID: `activity`.
+
 Implementation: [dashboard](../../ui/src/pages/Dashboard.tsx), [live dashboard](../../ui/src/pages/DashboardLive.tsx), [audit hub](../../ui/src/pages/audit/AuditHub.tsx).
 
 Agent access: [companion](../agent-access-map/activity.md).
 
 ## Sub-features
 
-- `overview`: inspect the company dashboard and live-work summary.
-- `activity`: filter and page through recorded actor/resource events.
-- `runs`: find executions and follow their task/agent context.
-- `routine-audit`: inspect routine execution activity separately from its definition.
-- `timeline`: use the available timeline view to understand work over time.
-- `agent-commentary`: browse attributed agent suggestions and complaints.
+- `overview`: `activity/overview` — inspect the company dashboard and live-work summary.
+- `activity`: `activity/activity` — filter and page through recorded actor/resource events.
+- `runs`: `activity/runs` — find executions and follow their task/agent context.
+- `routine-audit`: `activity/routine-audit` — inspect routine execution activity separately from its definition.
+- `timeline`: `activity/timeline` — use the available timeline view to understand work over time.
+- `agent-commentary`: `activity/agent-commentary` — browse attributed agent suggestions and complaints.
 
 ## How to get to it (user POV)
 
@@ -44,6 +46,21 @@ Manual: Compare the dashboard with the known fixture tasks and runs. Start and f
 Automated: [activity service](../../server/src/__tests__/activity-service.test.ts), [audit runs](../../ui/src/pages/audit/AuditRuns.test.tsx), and [routine audit](../../ui/src/pages/audit/RoutineAuditActivity.test.tsx) cover these separate data/host layers.
 
 Manual: Find a known mutation by actor/resource and a known run by status. Change filters, load more, and follow the source links. Reload the chosen view and verify no company leakage or duplicate events. Inspect a routine run from its audit entry.
+
+Case detail's **View in Audit** opens `/activity?entityType=case&entityId=<case UUID>`.
+The Activity filters include **Cases** actions and **Case** entities; the Case
+search accepts a UUID or human identifier such as `CAS-C1` (Enter or blur applies
+the search). Scoped history names and links the case, and agent actors use their
+real avatars. Historical creation, field, status, link, attachment and label
+events from `case_events` appear alongside the already recorded handoffs and
+document events, without duplicating those mirrored records. Combined history
+passes retained case access before cursor pagination.
+
+Focused regressions: [Audit feed](../../ui/src/pages/audit/AuditFeed.test.tsx),
+[Audit routing](../../ui/src/pages/audit/AuditHub.test.tsx), and
+[Postgres audit routes](../../server/src/__tests__/agent-action-audit-routes.test.ts).
+These prove the component/API boundaries separately; follow the case-to-Audit
+link in the actual app to verify the assembled journey.
 
 Issue activity is also available through `GET /api/issues/{id}/activity`.
 [Agent authorization](../../server/src/__tests__/activity-routes.test.ts) and
@@ -79,6 +96,8 @@ not prove live database filtering or authorization.
 ### Storybook verification
 
 #### `runs`
+
+Capability ID: `activity/runs`.
 
 Scope: ui
 Storybook: Mount AuditRuns selected status/agent/routine, linked task/agent, empty/loading/error/retry and 200-entry limit. Do not invent pagination.

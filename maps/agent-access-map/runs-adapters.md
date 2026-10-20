@@ -2,6 +2,8 @@
 
 Product map: [Runs, harnesses, and model accounts](../feature-map/runs-adapters.md).
 
+Feature ID: `runs-adapters`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -22,6 +24,8 @@ shutdown/readiness ordering. The original baseline and review depth remain for
 unrelated operations; no live provider or agent authorization is claimed.
 
 ## `availability`
+
+Capability ID: `runs-adapters/availability`.
 
 Review: `baseline`.
 
@@ -67,6 +71,8 @@ The existing execution path owns lazy environment creation. Saved runners remain
 unchanged. This is source/control evidence, not live Kubernetes qualification.
 
 ## `validation`
+
+Capability ID: `runs-adapters/validation`.
 
 Review: `baseline`.
 
@@ -147,6 +153,8 @@ settings. See [creation access](./agents.md#hire).
 
 ## `runs`
 
+Capability ID: `runs-adapters/runs`.
+
 Review: `baseline`.
 
 Scoped source-only timing evidence: workspace preparation spans carry only the
@@ -203,6 +211,8 @@ The new bridge surface does not qualify retry, cancellation, workspace repair or
 session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
+
+Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.
 

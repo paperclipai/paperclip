@@ -181,6 +181,22 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     for (const row of rows) expect(published.find(event => event.payload?.seq === row.seq)?.payload).toMatchObject({ runId: run.id, message: row.message });
   });
 
+  it.each(["legacy.case_handoff_cleanup_intent", "legacy.case_handoff_cleanup_verified"])(
+    "does not count controller cleanup bookkeeping as agent progress (%s)", async (eventType) => {
+      const { run } = await fixture({ status: "succeeded", runtimeMode: "legacy" });
+      const lifecycle = createHeartbeatLifecycle(db, callbacks(db));
+      await lifecycle.appendRunEvent(run, { eventType, stream: "system", message: "Controller cleanup receipt" });
+      const result = { summary: "I will inspect the repo next and then implement the fix." };
+      const planning = await lifecycle.classifyAndPersistRunLiveness(run, result);
+      expect(planning).toMatchObject({ livenessState: "plan_only", lastUsefulActionAt: null });
+
+      await lifecycle.appendRunEvent(run, { eventType: "item.completed", stream: "stdout", message: "Read the source file" });
+      const progressed = await lifecycle.classifyAndPersistRunLiveness(run, result);
+      expect(progressed?.livenessState).toBe("advanced");
+      expect(progressed?.lastUsefulActionAt).toBeInstanceOf(Date);
+    },
+  );
+
   it("reads current redaction settings for each event and persists the published sanitized payload", async () => {
     const { run } = await fixture();
     const deps = callbacks(db);

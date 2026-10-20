@@ -1,6 +1,6 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -166,6 +166,29 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }).returning();
     return { ...seeded, recipient, pending };
   }
+
+  it("rechecks a handoff's assignment version under the issue claim lock", async () => {
+    const { company, agent, issue, wake, run } = await fixture("queued");
+    const [record] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: "QM-CASE-1",
+      caseType: "work", title: issue.title, workIssueId: issue.id, handoffVersion: 1 }).returning();
+    await db.insert(caseHandoffs).values({ companyId: company.id, caseId: record.id, issueId: issue.id,
+      version: 1, toAgentId: agent.id, phase: "implementation", instructions: "Build the change", actorType: "system",
+      actorId: "test", idempotencyKey: "queue-version-race", inputFingerprint: "fixture", wakeupRequestId: wake.id,
+      expectedIssueStatusVersion: issue.statusVersion, appliedIssueStatusVersion: issue.statusVersion, state: "delivered" });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableCases: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    // Simulate A → B → A after the optimistic receipt read. The agent ID is
+    // unchanged, but the original assignment no longer authorizes a new turn.
+    deps.budgets.getInvocationBlock.mockImplementationOnce(async () => {
+      await db.update(issues).set({ statusVersion: issue.statusVersion + 2 }).where(eq(issues.id, issue.id));
+      return null;
+    });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" })).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+      .toMatchObject({ status: "queued", startedAt: null });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
 
   it.each(["legacy", "native"])("periodic recovery preserves a paused recipient through the real %s release adapter", async runtimeMode => {
     const { company, issue, recipient, pending } = await strandedMention(runtimeMode);

@@ -125,7 +125,7 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
-export function issueRecoveryActionService(db: Db) {
+export function issueRecoveryActionService(db: DbOrTransaction) {
   const upsertQueues = new Map<string, Promise<void>>();
 
   async function runExclusiveUpsert<T>(

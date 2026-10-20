@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import type { AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings } from "../services/ai-connection-router.js";
@@ -62,6 +62,7 @@ beforeAll(async () => {
   else { database = await startEmbeddedPostgresTestDatabase("paperclip-router-db-"); db = createDb(database.connectionString); }
   await db.insert(companies).values([{ id: companyId, name: "Router fixture", issuePrefix: "RTF" }, { id: otherCompanyId, name: "Other", issuePrefix: "RTO" }]);
   await db.insert(agents).values([agentId, secondAgentId].map(id => ({ id, companyId, name: "Router agent", adapterType: "paperclip_runner" })));
+  await db.insert(authUsers).values(["alice", "bob"].map(id => ({ id, name: id, email: `${id}@router.example.test`, createdAt: new Date(), updatedAt: new Date() }))).onConflictDoNothing();
   await db.insert(companyMemberships).values(["alice", "bob"].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
   await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: pluginKey, version: "0.1.0", manifestJson: manifest, status: "ready" });
   const accounts = aiConnectionService(db);
@@ -461,7 +462,10 @@ describe("durable, authorized connection routing", () => {
       recoveryRequiredAt: new Date(), recoveryReason: "work_session" });
     expect(await dotRunnerBroker(db).canStartNewWork(companyId, agent.id, bindingId)).toBe(false);
     const readiness = vi.spyOn(dotRunnerBroker(db), "canStartNewWork");
-    const beforeNative = vi.fn(async () => { throw new Error("fixture stopped before provider start"); });
+    const beforeNative = vi.fn(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      throw new Error("fixture stopped before provider start");
+    });
     const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {},
       beforeNativeRuntimeSelection: beforeNative,
       nativeSessionBackendFactory: () => { throw new Error("Unexpected provider start"); } });

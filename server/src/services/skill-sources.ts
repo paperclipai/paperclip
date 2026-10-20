@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from './delivery-work-notifications.js';
 import { reserveAutomaticSkillWork, settleAutomaticSkillWork } from './skill-source-refresh-budget.js';
 import { skillSourceRepairAction } from './skill-source-problems.js';
 import { listSkillSourceBranches } from './skill-source-branches.js';
@@ -203,6 +204,7 @@ export function skillSourceService(db: Db) {
         skillKey: newSkillKey(scan, candidate.path, candidate.name, id) });
     }
     const published = await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       const [source] = await tx.insert(sources).values({ id, companyId, repositoryId: scan.repositoryId, repositoryUrl: scan.repositoryUrl, fullName: scan.fullName,
         packageMode: scan.packageMode ?? 'skills', trackingRef: context.projectBindingId && input.trackingRef === 'HEAD' ? 'HEAD' : scan.trackingRef, connectionId: scan.connectionId ?? input.connectionId ?? null, lastAttemptAt: new Date(),
         accessScope: context.projectBindingId ? 'projects' : 'company', importNewSkills: Boolean(context.projectBindingId),
@@ -226,8 +228,11 @@ export function skillSourceService(db: Db) {
     if (selection) await authorizeSelection(source, selection.selectedPaths, context);
     if (selection && selection.revision !== source.revision) throw conflict('This source changed. Reload before saving your selection.');
     const token = randomUUID();
-    const [leased] = await db.update(sources).set({ leaseToken: token, leaseExpiresAt: new Date(Date.now() + 10 * 60_000), lastAttemptAt: new Date() })
+    const [leased] = await db.transaction(async tx => {
+      if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+      return tx.update(sources).set({ leaseToken: token, leaseExpiresAt: new Date(Date.now() + 10 * 60_000), lastAttemptAt: new Date() })
       .where(and(scope(companyId, id), eq(sources.revision, source.revision), or(isNull(sources.leaseToken), lt(sources.leaseExpiresAt, new Date())))).returning();
+    });
     if (!leased) throw conflict('This source is refreshing or changed. Try again after it finishes.');
     source = leased;
     try {
@@ -246,6 +251,7 @@ export function skillSourceService(db: Db) {
         )).limit(1);
         if (!legacyDependencyFailure && (head.sha === source.lastScanCommit || (treeSha && treeSha === source.lastScanTreeSha))) {
           await db.transaction(async tx => {
+            if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
             const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
             if (!locked || locked.leaseToken !== token || locked.revision !== source.revision) throw conflict('Source refresh changed. Try again.');
             await context.audit(tx, id, 'company.skill_source_checked', { commit: head.sha, unchangedTree: head.sha !== source.lastScanCommit });
@@ -284,6 +290,7 @@ export function skillSourceService(db: Db) {
       }
       await authorizeScan(source, scan, selectedPaths, context);
       const published = await db.transaction(async tx => {
+        if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
         if (!locked || locked.leaseToken !== token || locked.revision !== source.revision || locked.leaseExpiresAt! < new Date()) throw conflict('Source refresh expired or changed. Try again.');
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection));
@@ -297,7 +304,10 @@ export function skillSourceService(db: Db) {
     } catch (error) {
       // Provider errors have already been sanitized. Never persist arbitrary exception text.
       const message = error instanceof Error && 'status' in error ? error.message : 'Refresh failed. The installed skills were kept. Try again.';
-      await db.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: options.signal?.aborted ? source.lastError : message, failureCount: options.signal?.aborted ? source.failureCount : source.failureCount + 1, nextSyncAt: options.signal?.aborted ? new Date() : skillSourceRetryAt(error, source.failureCount) }).where(and(scope(companyId, id), eq(sources.leaseToken, token)));
+      await db.transaction(async tx => {
+        if (!options.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await tx.update(sources).set({ leaseToken: null, leaseExpiresAt: null, lastError: options.signal?.aborted ? source.lastError : message, failureCount: options.signal?.aborted ? source.failureCount : source.failureCount + 1, nextSyncAt: options.signal?.aborted ? new Date() : skillSourceRetryAt(error, source.failureCount) }).where(and(scope(companyId, id), eq(sources.leaseToken, token)));
+      });
       throw error;
     }
   }
@@ -329,6 +339,7 @@ export function skillSourceService(db: Db) {
       if (!commit || typeof commit.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(commit.sha)) throw unprocessable('The selected branch or revision is unavailable.', { code: 'skill_source_ref_unavailable' });
     }
     return db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       if (input.trackingRef !== undefined) {
         // Attachment/removal lock the source before changing its project bindings.
         await tx.select({ id: sources.id }).from(sources).where(scope(companyId, id)).for('update');
@@ -371,6 +382,7 @@ export function skillSourceService(db: Db) {
       if (!locked || locked.revision !== input.revision) throw conflict('This source changed. Reload before disconnecting.');
     }
     async function remove(tx: Tx, copiedCount: number, deletedCount: number) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       // Stop both pending attachments and an in-flight refresh before removing tracking.
       await tx.update(projectSkillSources).set({ active: false, leaseToken: null, leaseExpiresAt: null })
         .where(and(eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.sourceId, id)));

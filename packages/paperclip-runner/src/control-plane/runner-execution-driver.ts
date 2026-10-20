@@ -1,13 +1,16 @@
+import type { RunnerLaunchPreparer } from "../live/runner-provider-launch.js";
 import type { DurablePrpControlPlane, RunnerProcessConnection, RunnerProcessHandle, RunnerProcessLaunchSpec } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 
 /** Environment ownership shared by local, SSH, and sandbox Runner execution.
  * Preparation belongs to connection registration, before launch; activation
  * happens after dispatch. PRP authority and session semantics stay with Core.
- * Filesystem paths and process specifications are private to the built-in driver,
- * not a serializable plugin API.
+ * Provider preparation can be owned by the execution environment. Process
+ * specifications stay private to the driver; plugins receive versioned requirements.
  */
 export interface RunnerExecutionDriver {
+  /** Own provider configuration and file preparation in the execution environment. */
+  prepareLaunch?: RunnerLaunchPreparer;
   /** Prepare resources and register or acquire the connection before launch. */
   controlPlaneRegistration?: (
     authority: DurablePrpControlPlane,

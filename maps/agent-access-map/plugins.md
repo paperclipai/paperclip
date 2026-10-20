@@ -2,6 +2,8 @@
 
 Product map: [Plugins and contributed product surfaces](../feature-map/plugins.md).
 
+Feature ID: `plugins`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `installation`
+
+Capability ID: `plugins/installation`.
 
 Review: `baseline`.
 
@@ -33,6 +37,8 @@ Gaps: No ordinary agent install path; installing executable plugin code is an ex
 authority decision.
 
 ## `configuration`
+
+Capability ID: `plugins/configuration`.
 
 Review: `baseline`.
 
@@ -66,6 +72,8 @@ This does not add an ordinary agent API.
 
 ## `contributions`
 
+Capability ID: `plugins/contributions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -91,6 +99,8 @@ Gaps: Actual plugin tool use exists; a contributed UI route alone does not prove
 plugin's API/tool coverage.
 
 ## `lifecycle`
+
+Capability ID: `plugins/lifecycle`.
 
 Review: `baseline`.
 

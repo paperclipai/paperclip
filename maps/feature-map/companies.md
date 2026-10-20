@@ -6,19 +6,22 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":30
 
 An operator can switch between companies, change their identity and settings, archive them, and preview an import or export. Each company remains a separate scope for work and agents.
 
+Feature ID: `companies`.
+
 Implementation: [companies](../../ui/src/pages/Companies.tsx), [settings](../../ui/src/pages/CompanySettings.tsx), [import](../../ui/src/pages/CompanyImport.tsx), [export](../../ui/src/pages/CompanyExport.tsx).
 
 Agent access: [companion](../agent-access-map/companies.md).
 
 ## Sub-features
 
-- `selection`: create/select a company and keep navigation in its scope.
-- `identity`: update company identity and configured settings.
-- `decision-models`: configure and test the company's decision model, then inspect invocation history and recorded usage.
-- `fast-responses`: configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
-- `agent-observability`: configure one company OTLP destination for Codex and Claude Code, test synthetic delivery, and disable export.
-- `archive`: archive and restore through the available controls without confusing archival with deletion.
-- `portability`: preview a company package and inspect imported agents, projects, skills, and conflicts.
+- `selection`: `companies/selection` — create/select a company and keep navigation in its scope.
+- `identity`: `companies/identity` — update company identity and configured settings.
+- `decision-models`: `companies/decision-models` — configure and test the company's decision model, then inspect invocation history and recorded usage.
+- `prompt-injection-prevention`: `companies/prompt-injection-prevention` — opt into a shared OpenRouter classifier for existing tool-result guards, test fixed samples, and recover unavailable selections.
+- `fast-responses`: `companies/fast-responses` — configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
+- `agent-observability`: `companies/agent-observability` — configure one company OTLP destination for Codex and Claude Code, test synthetic delivery, and disable export.
+- `archive`: `companies/archive` — archive and restore through the available controls without confusing archival with deletion.
+- `portability`: `companies/portability` — preview a company package and inspect imported agents, projects, skills, and conflicts.
 
 ## How to get to it (user POV)
 
@@ -32,8 +35,9 @@ Use `/company/export` and `/company/import` where enabled, or the corresponding 
 
 ### `company-ai-services`
 
-Use Settings → Connections (`/company/settings/connections`) when fast responses
-are enabled. Otherwise decision-model settings remain in Company Settings.
+Use Settings → Connections (`/company/settings/connections`) for Decision model
+and Prompt Injection Prevention, independent of experimental flags. Fast response
+appears there only when its experiment is enabled.
 Open the Decisions and Fast responses tabs in Costs to inspect invocation history.
 
 ## Driving it with Playwright and the Paperclip CLI
@@ -86,6 +90,8 @@ Use an owned provider fixture for failure states; record any actual provider usa
 
 #### `selection`
 
+Capability ID: `companies/selection`.
+
 Scope: ui
 Storybook: Company list/create/switcher; empty, loading, error, unavailable company and switched navigation.
 Production: Switch and reload between companies; verify tasks/agents/cache/routes remain scoped and unauthorized company requests fail.
@@ -93,12 +99,16 @@ Sources: Source: [Companies.tsx](../../ui/src/pages/Companies.tsx), [CompanySwit
 
 #### `archive`
 
+Capability ID: `companies/archive`.
+
 Scope: ui
 Storybook: Archive confirmation, pending/error and departure navigation; archived list entry and Unarchive action.
 Production: Archive eligible agents/runs without deleting history; restoration handles archival-specific pause and navigates to correct company.
 Sources: Source: [CompanySettings.tsx](../../ui/src/pages/CompanySettings.tsx), [Companies.tsx](../../ui/src/pages/Companies.tsx), [companies.ts](../../ui/src/api/companies.ts). Tests: [CompanySettingsArchive.test.tsx](../../ui/src/pages/CompanySettingsArchive.test.tsx), [Companies.test.tsx](../../ui/src/pages/Companies.test.tsx), [companies-service.test.ts](../../server/src/__tests__/companies-service.test.ts)
 
 #### `portability`
+
+Capability ID: `companies/portability`.
 
 Scope: ui
 Storybook: Import/export preview, conflict choice, warnings, async progress/failure/success and restricted managed deployment.
@@ -123,3 +133,22 @@ inspect their unique markers at the destination, then disable and verify a new m
 
 Storybook verification: `agent-observability-01-settings`, `agent-observability-02-states`,
 and `agent-observability-03-journey` mount production subjects with simulated APIs/providers.
+
+### `prompt-injection-prevention`
+
+Capability ID: `companies/prompt-injection-prevention`.
+
+Scope: ui, api, runtime
+Storybook: Production PromptInjectionPreventionSettingsView states under Companies
+and portability → Prompt Injection Prevention. Provider data is simulated.
+Automated: [settings](../../ui/src/components/prompt-injection-prevention/PromptInjectionPreventionSettings.test.tsx),
+[service](../../server/src/__tests__/prompt-injection-prevention.test.ts),
+[gateway](../../server/src/__tests__/prompt-injection-gateway.test.ts),
+[guards](../../server/src/__tests__/tool-content-guards.test.ts) including redaction
+that hides content still delivered under the existing return contract.
+Manual: Open Connections with Fast Responses off, save a shared OpenRouter
+connection/default model, reload, run both fixed samples, and inspect charges.
+Verify benign code reaches a gateway caller, malicious instructions are blocked,
+provider failure records regex fallback, and disabling makes no model call.
+Root results with concealed instruction text use `input_redaction_mismatch`
+fallback without model dispatch.

@@ -1,5 +1,7 @@
-import { sql } from "drizzle-orm";
-import { activityLog, issueComments, issues } from "@paperclipai/db";
+import { sql, type SQL } from "drizzle-orm";
+import { activityLog, chatConversations, chatMessageLinks, issueComments, issues, issueThreadInteractions } from "@paperclipai/db";
+import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 // Mine participation fails closed. Add new user-authored issue mutation actions
 // here instead of admitting every issue activity, because reads, previews, and
@@ -69,11 +71,63 @@ export function automaticReadRecoveryCleanupCondition() {
   )`;
 }
 
+export function humanCreatedIssueCondition() {
+  return sql<boolean>`(
+    ${issues.createdByAgentId} IS NULL
+    AND ${issues.createdByUserId} IS NOT NULL
+    AND ${issues.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
+  )`;
+}
+
+export function directHumanCommentCondition() {
+  return sql<boolean>`(
+    ${issueComments.authorAgentId} IS NULL
+    AND ${issueComments.derivedAuthorAgentId} IS NULL
+    AND ${issueComments.createdByRunId} IS NULL
+    AND COALESCE(${issueComments.authorType}, 'user') = 'user'
+    AND COALESCE(${issueComments.metadata}->>'sourceChannel', '') = ''
+    AND NOT jsonb_path_exists(
+      COALESCE(${issueComments.metadata}, '{}'::jsonb),
+      '$.sections[*] ? (@.title like_regex " sender$" && exists(@.rows[*] ? (@.type == "key_value" && @.label == "Provider ID")))'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ${chatConversations}
+      INNER JOIN ${chatMessageLinks}
+        ON ${chatMessageLinks.companyId} = ${chatConversations.companyId}
+        AND ${chatMessageLinks.endpointId} = ${chatConversations.endpointId}
+        AND ${chatMessageLinks.conversationId} = ${chatConversations.id}
+      WHERE ${chatConversations.companyId} = ${issueComments.companyId}
+        AND ${chatConversations.issueId} = ${issueComments.issueId}
+        AND ${chatMessageLinks.commentId} = ${issueComments.id}
+        AND ${chatMessageLinks.direction} = 'inbound'
+    )
+  )`;
+}
+
+export function pendingUserRequestCondition(companyId: string, userId: string, after?: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM ${issueThreadInteractions}
+    WHERE ${issueThreadInteractions.companyId} = ${companyId}
+      AND ${issueThreadInteractions.issueId} = ${issues.id}
+      AND ${issueThreadInteractions.status} = 'pending'
+      AND ${issues.status} NOT IN ('done', 'cancelled')
+      AND ${activeIssueInteractionCondition()}
+      AND ${issueThreadInteractions.addresseeUserId} = ${userId}
+      AND ${issueThreadInteractions.addresseeAgentId} IS NULL
+      AND (
+        ${issueThreadInteractions.effectiveResolverPolicy} <> 'not_creator'
+        OR ${issueThreadInteractions.createdByUserId} IS DISTINCT FROM ${userId}
+      )
+      ${after ? sql`AND ${issueThreadInteractions.createdAt} > ${after}` : sql``}
+  )`;
+}
+
 export function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
-      ${issues.createdByUserId} = ${userId}
+      (${issues.createdByUserId} = ${userId} AND ${humanCreatedIssueCondition()})
       OR ${issues.assigneeUserId} = ${userId}
+      OR ${pendingUserRequestCondition(companyId, userId)}
       OR EXISTS (
         SELECT 1
         FROM ${activityLog}
@@ -83,6 +137,10 @@ export function touchedByUserCondition(companyId: string, userId: string) {
           AND ${activityLog.actorType} = 'user'
           AND ${activityLog.actorId} = ${userId}
           AND NOT ${automaticReadRecoveryCleanupCondition()}
+          AND NOT (
+            ${activityLog.action} = 'issue.inbox_touched'
+            AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
+          )
           AND ${activityLog.action} IN (${sql.join(
             ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map(
               (action) => sql`${action}`,
@@ -96,8 +154,8 @@ export function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
+          AND ${directHumanCommentCondition()}
       )
     )
   `;
 }
-

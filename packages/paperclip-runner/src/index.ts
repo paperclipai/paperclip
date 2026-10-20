@@ -96,3 +96,6 @@ export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOpt
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
 
 export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
+
+export { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
+export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";

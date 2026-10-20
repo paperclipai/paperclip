@@ -574,6 +574,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         await dispatchWithTiming(
           (markDispatchStarted) => {
             return executePaperclipNativeSession({
+              casesEnabled: context.paperclipCasesEnabled === true,
               db,
               execution: nativeExecution,
               observability,

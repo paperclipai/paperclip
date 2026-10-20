@@ -6,17 +6,19 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":10
 
 An operator can start an instance, create a company, configure its first agent, and reach a real first task. Instance setup and company onboarding are separate steps.
 
+Feature ID: `onboarding`.
+
 Implementation: [web wizard](../../ui/src/components/OnboardingWizard.tsx), [CLI setup](../../cli/src/commands/onboard.ts).
 
 Agent access: [companion](../agent-access-map/onboarding.md).
 
 ## Sub-features
 
-- `instance`: choose local instance configuration and start the server.
-- `company`: create a company with its identity and initial agent.
-- `adapter`: choose an available harness, model, account, and execution environment.
-- `first-task`: leave setup with a task whose execution or missing prerequisite is visible.
-- `resume`: return to an incomplete wizard without losing saved state.
+- `instance`: `onboarding/instance` — choose local instance configuration and start the server.
+- `company`: `onboarding/company` — create a company with its identity and initial agent.
+- `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
+- `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+- `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
 
 ## How to get to it (user POV)
 
@@ -156,12 +158,16 @@ Manual: Run setup in the disposable directory, open the URL it prints, and confi
 
 #### `resume`
 
+Capability ID: `onboarding/resume`.
+
 Scope: ui
 Storybook: Restored incomplete wizard; invalid or unauthorized saved company; temporarily withheld draft; account switch; storage failure.
 Production: Reload company-prefixed onboarding without duplicating company; restore only authorized account/company draft and retain input after recoverable loading failure.
 Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [OnboardingWizard.test.tsx](../../ui/src/components/OnboardingWizard.test.tsx), [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
 
 #### `instance`
+
+Capability ID: `onboarding/instance`.
 
 Scope: cli
 Storybook: No authored UI story required for host installation and startup.

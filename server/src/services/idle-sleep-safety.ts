@@ -206,6 +206,12 @@ const WORK_CHECKS = [
   // label requires its completion stamp and a cleared failure reason.
   `SELECT 1 FROM feedback_exports WHERE (status = 'local_only'
     OR (status = 'sent' AND exported_at IS NOT NULL AND failure_reason IS NULL)) IS NOT TRUE`,
+  `SELECT 1 FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
+    WHERE c.status = 'active' AND b.active AND b.source_id IS NULL`,
+  `SELECT 1 FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
+    WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
+      AND (s.access_scope = 'company' OR EXISTS (
+        SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[

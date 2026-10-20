@@ -1,5 +1,12 @@
 # Selected architecture — 2026-10-09
 
+> **Policy superseded 2026-10-20:** Physical-root provenance authorization, retained
+> source/reader intersections for files, source filesystem write grants, and sticky
+> directory acquisition classifications below describe the original design. Runtime
+> filesystem access now follows current task/configuration authority and OS isolation.
+> App-record privacy, current trust/credentials, lifecycle, and copy integrity remain.
+
+
 This design addresses PAP-171: a short agent turn paid minutes of workspace hydration and copyback because a projectless chat task inherited a large agent fallback directory. It covers app/API and chat tasks, including optional channel defaults, independent project and filesystem choices, explicit physical sharing, and deterministic harness preparation. Two architecture workers received the same full plan and grounding. Both candidates and an independent review used the inherited parent model; this is not cross-model consensus.
 
 ## Caller contract first

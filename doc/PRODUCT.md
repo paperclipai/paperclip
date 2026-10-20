@@ -67,6 +67,34 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+The experimental Cases feature also supports persistent work records and
+prompt-driven agent handoffs. Native case creation requires kickoff and creates
+one primary task; later handoffs move that same task
+between agents with a phase and instructions. The case retains facts, document references,
+and history while normal task assignments form each agent's queue. Task sessions,
+workspaces, private access, review rules, and human intervention remain part of
+the ordinary execution model. Ordinary task completion leaves case status unchanged.
+An explicit handoff to `done` closes the case when primary-task completion is
+accepted through the existing gates; review and human waits keep it open.
+
+Native agents can create, read and update case facts through dedicated tools.
+Creation always includes a kickoff and explicit `workflow_document_text`.
+The latter becomes the primary task's Markdown `workflow` document, describing
+phase owners, routing, evidence and completion rules. Agents read it before
+choosing their next step. Recommended authoring includes both a Mermaid
+`stateDiagram-v2` map and prose explaining each transition's conditions, evidence,
+destination agent, human waits and correction limits. Transitions remain advisory. Initial documents belong to
+the first task and are saved before its agent wakes; the case displays documents
+from its primary and accessible linked tasks without copying them. Agents use
+ordinary task document tools; historical case-owned documents remain readable.
+Each phase receives its current handoff instructions;
+compatible resumed sessions receive changed facts without repeating unchanged
+case contents. Agents can read current persisted data whenever they need it.
+
+Case pages are a lightweight read-only view: search or filter the list, open a
+record, read its findings and documents, and follow its current task and handoff
+history. Agents and APIs author the records; the pages have no editing controls.
+
 When a task is assigned to the current human, the message composer defaults to
 the latest agent that assigned it to them. If no assignment is available, it uses
 the latest other commenter, or leaves the recipient empty. A manual recipient
@@ -83,14 +111,25 @@ ancestors and expandable subtasks as context without promoting unrelated automat
 work to independent results. Agent profiles, routine histories, and task-detail
 subtasks retain their full history.
 
-Inbox membership continues to follow human creation, assignment, comments, and
-existing qualifying participation actions, including manually running a routine.
-Routine ownership or responsibility alone does not subscribe a person to scheduled
-runs; opening or reading a task is not participation. Inbox discovery searches and
-Blocked hide unrelated automated tasks unless the checkbox is checked, while
-preserving tasks admitted by the existing participation rules. Checking it does
-not subscribe the user to all automation. Approvals and other non-task items keep
-their existing rules.
+Mine contains personal work. Channel tasks, routine tasks, and agent-created tasks
+stay outside Mine by default. This includes routines that a person starts manually.
+Linked accounts, creator IDs, responsible-user IDs, synchronized provider comments,
+and read markers do not establish participation in automatic work. Direct board or
+human API comments, human assignment, and deliberate user mutations do establish
+participation. Open requests addressed to the person also admit the task until
+resolution. Ordinary human-created tasks keep their creator's participation.
+These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
+Approvals retain their existing recipient and permission rules.
+
+New inbound comments retain their provider in `metadata.sourceChannel`. Historical
+imports use inbound message links or the stored provider-sender metadata. These
+checks preserve direct board comments on channel tasks. If both historical
+records are absent, the comment remains unclassified and keeps its previous
+behavior. A task origin alone cannot prove the source of an old comment.
+
+Inbox discovery searches and Blocked hide unrelated automatic tasks unless the
+checkbox is checked. The checkbox does not subscribe a person to automatic work.
+Source feeds and project task lists retain their existing access rules.
 
 ### Company Skills and Policy
 
@@ -307,3 +346,18 @@ and sticky headers help operators scan exports. Rendered and raw view icons
 remain next to download; raw view preserves the original source. The table
 shows up to 500 data rows and 100 columns, with a notice when the preview is
 limited. Download retains the complete file.
+
+### Filesystem access boundary (2026-10-20)
+
+Filesystem isolation belongs to the OS, execution environment, and storage layout.
+Paperclip authorizes the current task/run, company, explicitly selected configuration,
+execution policy, and repository credentials. It does not infer file permissions from
+other tasks or agents that previously used the same directory, overlapping roots,
+symlink aliases, or shared Git storage. Existing files under an authorized task root
+may be read subject to OS access and API path containment.
+
+Private task records, comments, attachments, run logs, full workspace metadata, and
+operation logs retain their app authorization. Workspace `_issuePrivacySources` and
+operation privacy metadata protect app-record disclosure; they do not grant or deny
+filesystem execution or task-bound file browsing. Current trust and sandbox policy,
+publication receipts, binding checks, and lifecycle locks remain authoritative.

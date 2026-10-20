@@ -7,6 +7,13 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     "boardOnly": false,
     "source": "server/src/routes/cases.ts"
   },
+  "GET /api/companies/{companyId}/cases/types": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/cases.ts"
+  },
   "GET /api/companies/{companyId}/cases": {
     "successStatuses": [
       200

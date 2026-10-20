@@ -2,6 +2,8 @@
 
 Product map: [Skill discovery, authoring, and policy](../feature-map/skills.md).
 
+Feature ID: `skills`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `discovery`
+
+Capability ID: `skills/discovery`.
 
 Review: `baseline`.
 
@@ -42,6 +46,8 @@ agent's role name.
 
 ## `authoring`
 
+Capability ID: `skills/authoring`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -68,6 +74,8 @@ Gaps: Writable/fork policy and expected version apply. Native helpers intentiona
 support a narrower shape than full API.
 
 ## `versions`
+
+Capability ID: `skills/versions`.
 
 Review: `baseline`.
 
@@ -114,6 +122,8 @@ cover separate actors and project-access revocation; this adds no agent API.
 
 ## `policy`
 
+Capability ID: `skills/policy`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -150,6 +160,8 @@ returning a resolved runtime version as a pin. Latest remains unpinned across an
 assignment round trip.
 
 ## `testing`
+
+Capability ID: `skills/testing`.
 
 Review: `baseline`.
 

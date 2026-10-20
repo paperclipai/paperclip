@@ -983,81 +983,99 @@
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:29",
+      "id": "skill:skills/paperclip/references/cases.md:31",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L29:upsert-semantics",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L31:upsert-semantics",
       "heading": "Upsert Semantics",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:67",
+      "id": "skill:skills/paperclip/references/cases.md:69",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L67:read-and-search",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L69:start-and-hand-off-work",
+      "heading": "Start And Hand Off Work",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/cases.md:218",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L218:example-factory-instructions",
+      "heading": "Example factory instructions",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/cases.md:241",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L241:read-and-search",
       "heading": "Read And Search",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:90",
+      "id": "skill:skills/paperclip/references/cases.md:324",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L90:documents",
-      "heading": "Documents",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L324:task-documents-and-legacy-case-documents",
+      "heading": "Task Documents And Legacy Case Documents",
       "primaryDisposition": "always_agent_tool",
       "semanticOperation": "write_document",
       "expectedMockState": "operation_result"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:118",
+      "id": "skill:skills/paperclip/references/cases.md:358",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L118:fields",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L358:fields",
       "heading": "Fields",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:151",
+      "id": "skill:skills/paperclip/references/cases.md:391",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L151:issue-links",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L391:issue-links",
       "heading": "Issue Links",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:176",
+      "id": "skill:skills/paperclip/references/cases.md:416",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L176:child-cases",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L416:child-cases",
       "heading": "Child Cases",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
       "expectedMockState": "operation_result"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:195",
+      "id": "skill:skills/paperclip/references/cases.md:435",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L195:attachments",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L435:attachments",
       "heading": "Attachments",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:208",
+      "id": "skill:skills/paperclip/references/cases.md:448",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L208:lifecycle",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L448:lifecycle",
       "heading": "Lifecycle",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",
       "expectedMockState": "runtime_decision_record"
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:222",
+      "id": "skill:skills/paperclip/references/cases.md:462",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md#L222:worked-blog-post-example",
+      "sourceAnchor": "skills/paperclip/references/cases.md#L462:worked-blog-post-example",
       "heading": "Worked Blog Post Example",
       "primaryDisposition": "control_plane_owned",
       "semanticOperation": "runtime_reconciliation",

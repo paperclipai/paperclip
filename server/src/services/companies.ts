@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
@@ -351,6 +352,9 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
+        if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        }
         const updated = await tx
           .update(companies)
           .set({
@@ -497,6 +501,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await tx
             .update(companies)
             .set({ status: "archived", updatedAt: new Date() })

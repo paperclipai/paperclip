@@ -47,6 +47,21 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+## Legacy case handoff cleanup
+
+`legacy.case_handoff_cleanup_intent` records local cleanup ownership before
+dispatch, then binds it atomically to the observed process identity on spawn.
+It includes the host, controller/run generation, PID/group/start identity, and
+owned scratch descriptor or explicit `null`. It does not prove termination.
+`legacy.case_handoff_cleanup_verified` records the later stop proof before
+scratch removal. Restart recovery rechecks process, controller, workspace and
+ownership gates before completing cleanup and releasing the handoff.
+These controller receipts are cleanup bookkeeping, not evidence of agent task
+progress, and are excluded from run-liveness action counts.
+The controller authors both events on the system stream. Adapter ingestion
+rejects the reserved `legacy.case_handoff_` namespace. These events stay in the
+instance run log and add no first-party Telemetry or OpenTelemetry export.
+
 ## Provider-pack preparation timing
 
 The existing `run.performance.span` event also records `provider_pack.select`,

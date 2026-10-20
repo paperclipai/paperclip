@@ -6,17 +6,19 @@ navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order
 
 Administrators expose selected tools through gateways and reusable access profiles, connect clients, manage tokens, and inspect gateway activity.
 
+Feature ID: `gateways-profiles`.
+
 Implementation: [gateways](../../ui/src/pages/apps/gateways/GatewaysList.tsx), [gateway detail](../../ui/src/pages/apps/gateways/GatewayDetail.tsx), [profiles](../../ui/src/pages/tools/profiles/ProfileWizard.tsx).
 
 Agent access: [companion](../agent-access-map/gateways-profiles.md).
 
 ## Sub-features
 
-- `gateway`: create/edit an endpoint backed by a tool access profile.
-- `profiles`: define reusable tool access configuration and inspect draft/detail state.
-- `client-connect`: copy the intended endpoint/configuration to an authorized test client.
-- `tokens`: create/revoke client credentials and verify their scope.
-- `activity`: inspect tool discovery/calls and explicit errors.
+- `gateway`: `gateways-profiles/gateway` — create/edit an endpoint backed by a tool access profile.
+- `profiles`: `gateways-profiles/profiles` — define reusable tool access configuration and inspect draft/detail state.
+- `client-connect`: `gateways-profiles/client-connect` — copy the intended endpoint/configuration to an authorized test client.
+- `tokens`: `gateways-profiles/tokens` — create/revoke client credentials and verify their scope.
+- `activity`: `gateways-profiles/activity` — inspect tool discovery/calls and explicit errors.
 
 ## How to get to it (user POV)
 
@@ -70,6 +72,8 @@ Manual: Create a bounded profile, choose its offered tools and options, save or 
 ### Storybook verification
 
 #### `tokens`
+
+Capability ID: `gateways-profiles/tokens`.
 
 Scope: ui
 Storybook: Mount current TokensPanel with issue controls, once-only token reveal, expiry/actions, revocation confirmation and failures. Old GatewaysTab fixtures and assistant OAuth revocation are insufficient.

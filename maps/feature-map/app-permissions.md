@@ -6,17 +6,19 @@ navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order
 
 After connecting an app, an operator decides which agents may use it and whether each action is off, requires approval, or is allowed. Activity and action tests help verify the resulting access.
 
+Feature ID: `app-permissions`.
+
 Implementation: [app detail](../../ui/src/pages/apps/AppDetail.tsx), [permissions](../../ui/src/pages/apps/app-detail/PermissionsPanel.tsx), [activity](../../ui/src/pages/apps/app-detail/ActivityPanel.tsx).
 
 Agent access: [companion](../agent-access-map/app-permissions.md).
 
 ## Sub-features
 
-- `agent-access`: grant the connection to all or selected eligible agents.
-- `action-policy`: set off/ask/allowed independently for available actions.
-- `catalog-change`: review newly discovered/quarantined actions before enabling them.
-- `test-action`: choose an actor and inputs and inspect a real action result.
-- `account-maintenance`: inspect accounts, reconnect/revoke, and review connection activity.
+- `agent-access`: `app-permissions/agent-access` — grant the connection to all or selected eligible agents.
+- `action-policy`: `app-permissions/action-policy` — set off/ask/allowed independently for available actions.
+- `catalog-change`: `app-permissions/catalog-change` — review newly discovered/quarantined actions before enabling them.
+- `test-action`: `app-permissions/test-action` — choose an actor and inputs and inspect a real action result.
+- `account-maintenance`: `app-permissions/account-maintenance` — inspect accounts, reconnect/revoke, and review connection activity.
 
 ## How to get to it (user POV)
 
@@ -79,6 +81,8 @@ run-bound file transfers, and revocation with fixture provider responses.
 ### Storybook verification
 
 #### `catalog-change`
+
+Capability ID: `app-permissions/catalog-change`.
 
 Scope: ui
 Storybook: Mount PermissionsPanel/AppDetail with quarantined actions, selection/review, refresh pending, empty and failed discovery states. Existing auto-allowed NewToolsAllowed examples are not quarantine review.

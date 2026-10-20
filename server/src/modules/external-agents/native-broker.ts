@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { sql, and, eq, isNull, gt, inArray } from "drizzle-orm";
@@ -267,6 +268,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           const [old]=await tx.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${runId}::uuid and turn_id=${b.turnId}`);
           const projection={...p,binding:b};
           if(old&&externalOperationDigest("tool",old.projection)!==externalOperationDigest("tool",projection))throw conflict("Assignment event changed its immutable projection.");
+          if (!old && provider === "muse") await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
           const [a]=old?[old]:await tx.execute<Assignment>(sql`insert into ${assignmentTable} (company_id,binding_id,binding_generation,run_id,agent_id,normalized_session_id,turn_id,revision,controller_generation,catalog_digest,status,projection,accept_by,expires_at) values (${b.companyId}::uuid,${b.bindingId}::uuid,${b.bindingGeneration},${runId}::uuid,${b.agentId}::uuid,${b.normalizedSessionId},${b.turnId},${b.assignmentRevision},${owner.controllerGeneration},${externalOperationDigest("tool",{tools:p.tools})},'offered',${JSON.stringify(projection)}::jsonb,${new Date(Number(p.acceptByUnixMs)).toISOString()}::timestamptz,${new Date(Number(p.expiresAtUnixMs)).toISOString()}::timestamptz) returning ${assignmentColumns}`);
           if(!a)throw conflict("Assignment creation failed.");
           await tx.execute(sql`insert into ${mailboxTable} (company_id,binding_id,binding_generation,assignment_id,kind,source_event_id,"references") values (${a.companyId}::uuid,${a.bindingId}::uuid,${a.bindingGeneration},${a.id}::uuid,'assignment',${event.sourceEventId},${JSON.stringify({assignmentId:a.id,runId,revision:a.revision})}::jsonb) on conflict do nothing`);

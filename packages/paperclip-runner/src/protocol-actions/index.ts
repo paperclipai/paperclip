@@ -22,6 +22,8 @@ import { blockTaskAction } from "./block-task.js";
 import { commentOnApprovalAction } from "./comment-on-approval.js";
 import { controlWorkspaceServiceAction } from "./control-workspace-service.js";
 import { createTaskAction } from "./create-task.js";
+import { handoffCaseAction } from "./handoff-case.js";
+import { createCaseAction, readCaseAction, updateCaseAction } from "./case-data.js";
 import { decideApprovalAction } from "./decide-approval.js";
 import { exportCompanyAction } from "./export-company.js";
 import { finishTaskAction } from "./finish-task.js";
@@ -87,6 +89,10 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   commentOnApprovalAction,
   controlWorkspaceServiceAction,
   createTaskAction,
+  handoffCaseAction,
+  readCaseAction,
+  updateCaseAction,
+  createCaseAction,
   decideApprovalAction,
   exportCompanyAction,
   finishTaskAction,

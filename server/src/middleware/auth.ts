@@ -62,7 +62,7 @@ function pruneCloudTenantWriteDebounce(
     debounce.delete(oldestSubject);
   }
 }
-import { instanceSettingsService } from "../services/instance-settings.js";
+import { resolveOwnerInstanceAdmin } from "../services/cloud-tenant-authority.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
@@ -555,31 +555,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     }
     continueRequest?.();
   };
-}
-
-/**
- * Whether the trusted-header actor being resolved should carry computed
- * instance-admin elevation: only the stack `owner` role elevates, and only
- * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
- * the instance-settings service so the cloud managed-config overlay applies
- * (the harness can turn elevation off fleet-wide without touching tenant
- * DBs). Fails closed: a settings read error means no elevation.
- */
-async function resolveOwnerInstanceAdmin(
-  db: Db,
-  stackRole: "owner" | "admin" | "member" | "support",
-): Promise<boolean> {
-  if (stackRole !== "owner") return false;
-  try {
-    const experimental = await instanceSettingsService(db).getExperimental();
-    return experimental.enableOwnerInstanceAdmin === true;
-  } catch (err) {
-    logger.warn(
-      { err },
-      "Failed to resolve enableOwnerInstanceAdmin for cloud tenant owner; treating elevation as disabled",
-    );
-    return false;
-  }
 }
 
 /**

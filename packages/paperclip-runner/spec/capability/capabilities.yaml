@@ -1635,9 +1635,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:upsert-semantics:29",
+      "id": "skill:skills/paperclip/references/cases.md:upsert-semantics:31",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:29",
+      "sourceAnchor": "skills/paperclip/references/cases.md:31",
       "title": "Upsert Semantics",
       "expectedSemantics": "Skill guidance headed “Upsert Semantics”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1646,13 +1646,43 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:29"
+        "skill:skills/paperclip/references/cases.md:31"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:read-and-search:67",
+      "id": "skill:skills/paperclip/references/cases.md:start-and-hand-off-work:69",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:67",
+      "sourceAnchor": "skills/paperclip/references/cases.md:69",
+      "title": "Start And Hand Off Work",
+      "expectedSemantics": "Skill guidance headed “Start And Hand Off Work”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/cases.md:69"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/cases.md:example-factory-instructions:218",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/cases.md:218",
+      "title": "Example factory instructions",
+      "expectedSemantics": "Skill guidance headed “Example factory instructions”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/cases.md:218"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/cases.md:read-and-search:241",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/cases.md:241",
       "title": "Read And Search",
       "expectedSemantics": "Skill guidance headed “Read And Search”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1661,28 +1691,28 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:67"
+        "skill:skills/paperclip/references/cases.md:241"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:documents:90",
+      "id": "skill:skills/paperclip/references/cases.md:task-documents-and-legacy-case-documents:324",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:90",
-      "title": "Documents",
-      "expectedSemantics": "Skill guidance headed “Documents”.",
+      "sourceAnchor": "skills/paperclip/references/cases.md:324",
+      "title": "Task Documents And Legacy Case Documents",
+      "expectedSemantics": "Skill guidance headed “Task Documents And Legacy Case Documents”.",
       "primaryDisposition": "always_agent_tool",
       "requiredGrants": [],
       "assertionClasses": [
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:90"
+        "skill:skills/paperclip/references/cases.md:324"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:fields:118",
+      "id": "skill:skills/paperclip/references/cases.md:fields:358",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:118",
+      "sourceAnchor": "skills/paperclip/references/cases.md:358",
       "title": "Fields",
       "expectedSemantics": "Skill guidance headed “Fields”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1691,13 +1721,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:118"
+        "skill:skills/paperclip/references/cases.md:358"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:issue-links:151",
+      "id": "skill:skills/paperclip/references/cases.md:issue-links:391",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:151",
+      "sourceAnchor": "skills/paperclip/references/cases.md:391",
       "title": "Issue Links",
       "expectedSemantics": "Skill guidance headed “Issue Links”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1706,13 +1736,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:151"
+        "skill:skills/paperclip/references/cases.md:391"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:child-cases:176",
+      "id": "skill:skills/paperclip/references/cases.md:child-cases:416",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:176",
+      "sourceAnchor": "skills/paperclip/references/cases.md:416",
       "title": "Child Cases",
       "expectedSemantics": "Skill guidance headed “Child Cases”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1721,13 +1751,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:176"
+        "skill:skills/paperclip/references/cases.md:416"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:attachments:195",
+      "id": "skill:skills/paperclip/references/cases.md:attachments:435",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:195",
+      "sourceAnchor": "skills/paperclip/references/cases.md:435",
       "title": "Attachments",
       "expectedSemantics": "Skill guidance headed “Attachments”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1736,13 +1766,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:195"
+        "skill:skills/paperclip/references/cases.md:435"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:lifecycle:208",
+      "id": "skill:skills/paperclip/references/cases.md:lifecycle:448",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:208",
+      "sourceAnchor": "skills/paperclip/references/cases.md:448",
       "title": "Lifecycle",
       "expectedSemantics": "Skill guidance headed “Lifecycle”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1751,13 +1781,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:208"
+        "skill:skills/paperclip/references/cases.md:448"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/cases.md:worked-blog-post-example:222",
+      "id": "skill:skills/paperclip/references/cases.md:worked-blog-post-example:462",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/cases.md:222",
+      "sourceAnchor": "skills/paperclip/references/cases.md:462",
       "title": "Worked Blog Post Example",
       "expectedSemantics": "Skill guidance headed “Worked Blog Post Example”.",
       "primaryDisposition": "optional_agent_tool",
@@ -1766,7 +1796,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/cases.md:222"
+        "skill:skills/paperclip/references/cases.md:462"
       ]
     },
     {

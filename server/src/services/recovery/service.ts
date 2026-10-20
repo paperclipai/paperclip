@@ -55,6 +55,7 @@ import {
   approvals,
   activityLog,
   chatConversations,
+  caseHandoffs,
   companies,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
@@ -161,6 +162,9 @@ import {
   type RunOutputSilenceSummary,
   type WatchdogDecisionActor,
 } from "../../modules/active-run-watchdog/index.js";
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -947,8 +951,8 @@ export function recoveryService(
   const budgets = budgetService(db);
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
-  async function getAgent(agentId: string) {
-    return db
+  async function getAgent(agentId: string, database: DbOrTransaction = db) {
+    return database
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -2289,8 +2293,8 @@ export function recoveryService(
     return { assigned, skipped, issueIds };
   }
 
-  async function getCompanyIssuePrefix(companyId: string) {
-    return db
+  async function getCompanyIssuePrefix(companyId: string, database: DbOrTransaction = db) {
+    return database
       .select({ issuePrefix: companies.issuePrefix })
       .from(companies)
       .where(eq(companies.id, companyId))
@@ -2527,7 +2531,7 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
-  }) {
+  }, database: DbOrTransaction = db) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -2538,7 +2542,8 @@ export function recoveryService(
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
     const now = new Date();
-    const action = await recoveryActionsSvc.upsertSourceScoped({
+    const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
+    const action = await actions.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
       // A configuration-incomplete failure carries a per-identity fingerprint
@@ -2656,8 +2661,8 @@ export function recoveryService(
     latestRun: LatestIssueRun;
     actionId: string;
     agentId: string;
-  }) {
-    const existing = await db
+  }, database: DbOrTransaction = db) {
+    const existing = await database
       .select()
       .from(heartbeatRuns)
       .where(
@@ -2675,7 +2680,7 @@ export function recoveryService(
 
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
-    return db.transaction(async (tx) => {
+    return database.transaction(async (tx) => {
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -2790,14 +2795,20 @@ export function recoveryService(
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
+  }, transaction?: {
+    tx: DbTransaction;
+    publications: ActivityPublication[];
+    postCommitActions: IssuePostCommitAction[];
   }) {
-    const updated = await issuesSvc.update(input.issue.id, {
+    const database = transaction?.tx ?? db;
+    const mutationIssuesSvc = transaction ? issueService(database as Db) : issuesSvc;
+    const updated = await mutationIssuesSvc.update(input.issue.id, {
       status: "blocked",
-    });
+    }, database, transaction?.publications, transaction?.postCommitActions);
     if (!updated) return null;
 
-    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
-    await issuesSvc.addComment(
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId, database);
+    await mutationIssuesSvc.addComment(
       input.issue.id,
       buildRecoveryIssueInPlaceEscalationComment({
         issue: input.issue,
@@ -2843,9 +2854,10 @@ export function recoveryService(
           ],
         },
       },
+      database,
     );
 
-    await logActivity(db, {
+    await logActivity(database as Db, {
       companyId: input.issue.companyId,
       actorType: "system",
       actorId: "system",
@@ -2865,7 +2877,7 @@ export function recoveryService(
         originKind: input.issue.originKind,
         originId: input.issue.originId,
       },
-    });
+    }, transaction?.publications);
 
     return updated;
   }
@@ -2887,8 +2899,9 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssues(
     companyId: string,
     issueId: string,
+    database: DbOrTransaction = db,
   ) {
-    return db
+    return database
       .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
@@ -2911,8 +2924,9 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssueIds(
     companyId: string,
     issueId: string,
+    database: DbOrTransaction = db,
   ) {
-    return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) =>
+    return existingUnresolvedBlockerIssues(companyId, issueId, database).then((rows) =>
       rows.map((row) => row.id),
     );
   }
@@ -3979,12 +3993,65 @@ export function recoveryService(
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const updated = await db.transaction(async (tx) => {
+      // Recovery observes candidates before asynchronous policy checks. Serialize
+      // its effects with operator decisions; a stale observation grants no new
+      // authority to block, assign, or create a recovery action for this task.
+      const current = await tx.select().from(issues).where(and(
+        eq(issues.companyId, input.issue.companyId),
+        eq(issues.id, input.issue.id),
+      )).for("update").limit(1).then((rows) => rows[0] ?? null);
+      if (!current || current.hiddenAt
+        || current.status !== input.issue.status
+        || ["done", "cancelled"].includes(current.status)
+        || current.statusVersion !== input.issue.statusVersion
+        || current.lastStatusDecisionId !== input.issue.lastStatusDecisionId
+        || current.assigneeAgentId !== input.issue.assigneeAgentId
+        || current.assigneeUserId !== input.issue.assigneeUserId
+        || current.executionRunId !== input.issue.executionRunId
+        || current.checkoutRunId !== input.issue.checkoutRunId
+        || current.executionAgentNameKey !== input.issue.executionAgentNameKey
+        || current.updatedAt.getTime() !== input.issue.updatedAt.getTime()) {
+        return null;
+      }
+
+      // Acceptance holds the same issue lock before writing its successor.
+      // An awaiting-release handoff need not change the issue's version or
+      // owner, and generic recovery must not cancel that durable successor.
+      // Terminal intent has no successor; ordinary task recovery still owns it.
+      const pendingHandoff = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+        eq(caseHandoffs.companyId, current.companyId),
+        eq(caseHandoffs.issueId, current.id),
+        eq(caseHandoffs.destinationKind, "agent"),
+        inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (pendingHandoff) return null;
+
+      return applyStrandedAssignedIssueEscalation(input, tx, publications, postCommitActions);
+    });
+    if (updated) {
+      for (const publication of publications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitActions);
+    }
+    return updated;
+  }
+
+  async function applyStrandedAssignedIssueEscalation(
+    input: Parameters<typeof escalateStrandedAssignedIssue>[0],
+    tx: DbTransaction,
+    publications: ActivityPublication[],
+    postCommitActions: IssuePostCommitAction[],
+  ) {
+    // Bind implicit settings and policy reads to the held connection as well.
+    const transactionIssuesSvc = issueService(tx as unknown as Db);
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
-      });
+      }, { tx, publications, postCommitActions });
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(
@@ -3997,7 +4064,7 @@ export function recoveryService(
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-    });
+    }, tx);
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4008,16 +4075,18 @@ export function recoveryService(
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
         agentId: recoveryAction.returnOwnerAgentId,
-      });
+      }, tx);
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(
       input.issue.companyId,
       input.issue.id,
+      tx,
     );
-    const updated = await issuesSvc.update(input.issue.id, {
+    const updated = await transactionIssuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-    });
+      companyGuard: input.issue.companyId,
+    }, tx, publications, postCommitActions);
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
@@ -4025,10 +4094,10 @@ export function recoveryService(
       updated.assigneeUserId === input.issue.assigneeUserId;
 
     const recoveryOwner = recoveryAction.ownerAgentId
-      ? await getAgent(recoveryAction.ownerAgentId)
+      ? await getAgent(recoveryAction.ownerAgentId, tx)
       : null;
     const sourceAssignee = input.issue.assigneeAgentId
-      ? await getAgent(input.issue.assigneeAgentId)
+      ? await getAgent(input.issue.assigneeAgentId, tx)
       : null;
     let notice: SuccessfulRunHandoffNotice | null = null;
     if (
@@ -4036,7 +4105,7 @@ export function recoveryService(
       input.successfulRunHandoffEvidence
     ) {
       const [sourceRun] = input.successfulRunHandoffEvidence.sourceRunId
-        ? await db
+        ? await tx
             .select({
               id: heartbeatRuns.id,
               status: heartbeatRuns.status,
@@ -4103,7 +4172,7 @@ export function recoveryService(
     if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
-      const hasEscalationComment = await db
+      const hasEscalationComment = await tx
         .select({
           id: issueComments.id,
           body: issueComments.body,
@@ -4134,7 +4203,7 @@ export function recoveryService(
 
       if (!hasEscalationComment) {
         if (notice) {
-          await issuesSvc.addComment(
+          await transactionIssuesSvc.addComment(
             input.issue.id,
             notice.body,
             {},
@@ -4143,9 +4212,10 @@ export function recoveryService(
               presentation: notice.presentation,
               metadata: notice.metadata,
             },
+            tx,
           );
         } else {
-          await issuesSvc.addComment(
+          await transactionIssuesSvc.addComment(
             input.issue.id,
             escalationNotice.body,
             {},
@@ -4154,12 +4224,13 @@ export function recoveryService(
               presentation: escalationNotice.presentation,
               metadata: escalationNotice.metadata,
             },
+            tx,
           );
         }
       }
     }
 
-    await logActivity(db, {
+    await logActivity(tx as unknown as Db, {
       companyId: input.issue.companyId,
       actorType: "system",
       actorId: "system",
@@ -4208,7 +4279,7 @@ export function recoveryService(
         sourceAssigneePreserved,
         blockerIssueIds: blockerIds,
       },
-    });
+    }, publications);
 
     if (!sourceAssigneePreserved) {
       logger.error(
@@ -4416,6 +4487,12 @@ export function recoveryService(
             : undefined,
           isNull(issues.hiddenAt),
           not(unadmittedChatWakeupCondition(issues.id, issues.companyId)),
+          notExists(db.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+            eq(caseHandoffs.companyId, issues.companyId),
+            eq(caseHandoffs.issueId, issues.id),
+            eq(caseHandoffs.destinationKind, "agent"),
+            inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]),
+          ))),
         ),
       );
 

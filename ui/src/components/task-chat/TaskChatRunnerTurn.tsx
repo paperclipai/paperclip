@@ -125,6 +125,7 @@ export function TaskChatRunnerTurn({
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
+  allowSummaryFallback = true,
   suppressFinal = false,
   continuedAfterSteering = false,
   onRuntimeRequestDecision,
@@ -140,6 +141,7 @@ export function TaskChatRunnerTurn({
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
+  allowSummaryFallback?: boolean;
   /** Accepted wait/interaction authority overrides an early provider final. */
   suppressFinal?: boolean;
   /** The visible tail resumes the same native run after an accepted steer. */
@@ -160,7 +162,7 @@ export function TaskChatRunnerTurn({
   const observedFinal = suppressFinal
     ? undefined
     : paperclipRunnerFinalResponse(items, {
-        allowFallback: terminal,
+        allowFallback: terminal && allowSummaryFallback,
       });
   const observedProviderText = Boolean(
     observedFinal &&
@@ -210,10 +212,7 @@ export function TaskChatRunnerTurn({
       data-phase={status === "queued" ? "startup" : undefined}
     >
       <div
-        className={cn(
-          "flex min-h-8 min-w-0 items-center gap-2",
-          status === "queued" ? "pb-1" : "pb-1 pt-2",
-        )}
+        className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2"
         data-testid="task-chat-runner-identity-row"
       >
         {agentName ? (

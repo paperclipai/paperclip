@@ -2,6 +2,8 @@
 
 Product map: [Inbox, decisions, and search](../feature-map/inbox-search.md).
 
+Feature ID: `inbox-search`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `views`
+
+Capability ID: `inbox-search/views`.
 
 The issue-list API accepts optional `includeAgentCreatedTasks`; false restricts
 independent results to human creation before search/pagination. Omission retains
@@ -32,7 +36,12 @@ Agent access: `partial` — REST / native call_api; MCP inbox/task search.
 Policy: Own agent context; responsible-user inbox policy and explicit opt-in/grants for
 cross-user archive; decision policy separately. Automatic read cleanup does not
 count as user participation, including historical reader-attributed rows.
-Explicit user recovery decisions still count.
+Explicit user recovery decisions still count. Automatic creator attribution,
+synchronized comments, and manual routine runs do not count. Direct board/API
+comments, human assignment, and open addressed requests qualify. These admission
+rules do not grant task access.
+Historical questions and requests on closed tasks do not qualify. Request unread
+state uses the person's read or reply time, independent of automatic task updates.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L3952) at
 the reviewed commit above. The cleanup exclusion in
@@ -53,6 +62,8 @@ Gaps: Agent inbox and Mine support exist; board attention/unread/dismissal aggre
 is a separate user-only surface.
 
 ## `triage`
+
+Capability ID: `inbox-search/triage`.
 
 Review: `baseline`.
 
@@ -79,6 +90,8 @@ does not have equivalent agent semantics everywhere.
 
 ## `decisions`
 
+Capability ID: `inbox-search/decisions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -103,6 +116,8 @@ Gaps: Queue browsing/managing may be allowed; governed approval decisions still 
 separate board/resolver boundaries.
 
 ## `search`
+
+Capability ID: `inbox-search/search`.
 
 Review: `baseline`.
 
@@ -130,6 +145,8 @@ the appropriate one.
 
 
 ## `toasts`
+
+Capability ID: `inbox-search/toasts`.
 
 Review: `baseline`.
 

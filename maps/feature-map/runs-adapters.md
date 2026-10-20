@@ -6,16 +6,18 @@ navigation: {"section":"Agents and reusable capabilities","sectionOrder":30,"ord
 
 Operators choose an agent harness and model account, inspect execution history and transcripts, and distinguish a working configuration from a successful task result.
 
+Feature ID: `runs-adapters`.
+
 Implementation: [adapter manager](../../ui/src/pages/AdapterManager.tsx), [run host](../../ui/src/pages/AgentDetail.tsx), [configuration](../../ui/src/components/AgentConfigForm.tsx).
 
 Agent access: [companion](../agent-access-map/runs-adapters.md).
 
 ## Sub-features
 
-- `availability`: discover installed adapters and available models/accounts.
-- `validation`: test an adapter in the selected execution environment and surface authentication failures.
-- `runs`: inspect run status, events, output, costs, and the source task.
-- `session`: preserve or reset execution context through supported lifecycle actions.
+- `availability`: `runs-adapters/availability` — discover installed adapters and available models/accounts.
+- `validation`: `runs-adapters/validation` — test an adapter in the selected execution environment and surface authentication failures.
+- `runs`: `runs-adapters/runs` — inspect run status, events, output, costs, and the source task.
+- `session`: `runs-adapters/session` — preserve or reset execution context through supported lifecycle actions.
 
 ## How to get to it (user POV)
 

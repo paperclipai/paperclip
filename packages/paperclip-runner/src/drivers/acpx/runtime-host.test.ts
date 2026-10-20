@@ -189,9 +189,9 @@ afterEach(async () => {
   // Release every sealed skills tree before the plain `rm` below. `rm` does
   // not restore write permission, so a tree still sealed at this point would
   // otherwise fail with EACCES and hide the real test failure.
+  // Cancelled opens can reuse one home. Parallel cleanup must visit it once.
   await Promise.all(
-    materializedSkillsHomes
-      .splice(0)
+    [...new Set(materializedSkillsHomes.splice(0))]
       .map((skillsHome) => releaseMaterializedNativeRuntimeSkills(skillsHome)),
   );
   await Promise.all(

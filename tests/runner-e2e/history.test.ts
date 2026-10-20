@@ -137,7 +137,7 @@ describe("runner E2E campaign history", () => {
     expect(history.latestGreenCampaignId).toBeNull();
     expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
     expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
-    expect(renderRunnerE2EDashboard({ title: "History", generatedAt: incomplete.finishedAt, expected: [], catalog: [], entries: [], history })).toContain('data-history-status="incomplete"');
+    expect(renderRunnerHistoryIndex(history)).toContain('data-history-status="incomplete"');
   });
 
   it("shows unknown campaign costs without plotting zero dollars", () => {
@@ -147,9 +147,9 @@ describe("runner E2E campaign history", () => {
     const record = { ...campaignHistoryRecord(campaign, "https://example.test"), complete: true };
     const history = mergeRunnerHistory(null, record);
     expect(renderRunnerHistoryIndex(history)).toContain("Unknown");
-    const dashboard = renderRunnerE2EDashboard({ title: "History", generatedAt: campaign.generatedAt, expected: [], catalog: [], entries: [], history });
-    expect(dashboard).toContain("Unknown measurements are not plotted");
-    expect(dashboard).not.toContain("NaN");
+    const index = renderRunnerHistoryIndex(history);
+    expect(index).toContain("Unknown measurements are not plotted");
+    expect(index).not.toContain("NaN");
   });
 
   it("does not turn a clean-evidence behavior failure into a pass when regenerating", async () => {
@@ -274,34 +274,33 @@ describe("runner E2E campaign history", () => {
         errors: campaignResult.status === "passed" ? [] : ["failed"],
       })),
     });
-    expect(dashboard).toContain("Campaign trends");
-    expect(dashboard).toContain("data-history-from");
-    expect(dashboard).toContain("data-history-through");
-    expect(dashboard).toContain(
+    expect(dashboard).not.toContain('class="history-section"');
+    const index = renderRunnerHistoryIndex(history);
+    expect(index).toContain("Campaign trends");
+    expect(index).toContain("data-history-from");
+    expect(index).toContain("data-history-through");
+    expect(index).toContain(
       'data-history-suite-trends="core-compatibility"',
     );
-    expect(dashboard).toContain(
+    expect(index).toContain(
       'data-history-suite-trends="openrouter-model-breadth"',
     );
-    expect(dashboard).toContain(
+    expect(index).toContain(
       'data-history-suite-trends="local-session-integrity"',
     );
-    expect(dashboard).toContain("Suite pass rate");
-    expect(dashboard).toContain("lines break at definition changes");
-    expect(dashboard).toContain("cleanup passed");
-    const index = renderRunnerHistoryIndex(history, {
-      latestSummaryImageHref:
-        "campaigns/complete-red/public-images/campaign-summary.png",
-    });
+    expect(index).toContain("Suite pass rate");
+    expect(index).toContain("lines break at definition changes");
+    expect(index).toContain("cleanup passed");
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
     expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);
     expect(index).toContain(`${runnerMatrix.length - 1}/${runnerMatrix.length} passed`);
     expect(index).toContain("Open report&nbsp;→");
-    expect(index).toContain(
-      "campaigns/complete-red/public-images/campaign-summary.png",
-    );
+    expect(index).toContain('aria-label="Latest campaign summary"');
+    expect(index).toContain('aria-label="Suite results"');
+    expect(index).toContain("Core Runner Compatibility</a>");
+    expect(index).not.toContain("campaign-summary.png");
     expect(index).toContain(
       "declared screenshots, and normalized results",
     );
@@ -605,11 +604,11 @@ describe("historical publication security", () => {
     ).toBe(true);
     await regenerateRunnerDashboard({
       bundle: root,
-      publicSummaryImageHref: "public-images/campaign-summary.png",
     });
-    expect(await readFile(path.join(root, "index.html"), "utf8")).toContain(
-      'src="public-images/campaign-summary.png"',
-    );
+    const dashboardHtml = await readFile(path.join(root, "index.html"), "utf8");
+    expect(dashboardHtml).toContain('aria-label="Suite results"');
+    expect(dashboardHtml).toContain(`${execution.suite.label}</a>`);
+    expect(dashboardHtml).not.toContain('src="public-images/campaign-summary.png"');
     const manifest = await createBundleManifest(
       root,
       campaign.campaignId,

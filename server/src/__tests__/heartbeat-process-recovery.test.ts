@@ -500,17 +500,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
-  function recoveryCompanyRow(
-    rowId: (typeof companies.$inferInsert)["id"],
+  async function seedRecoveryCompany(
+    companyId: string,
     issuePrefix: (typeof companies.$inferInsert)["issuePrefix"],
-  ): typeof companies.$inferInsert {
-    return {
-      id: rowId,
+  ) {
+    await db.insert(companies).values({
+      id: companyId,
       name: "Paperclip",
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
-    };
+    });
+    // The account created in beforeAll also needs an active membership for
+    // admission's current responsible-user authorization intersection.
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "responsible-user",
+      status: "active",
+      membershipRole: "member",
+    });
   }
 
   function recoveryAgentRow(
@@ -849,7 +858,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
 
     await db.insert(agents).values({
       id: agentId,
@@ -1081,7 +1090,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
 
     await db.insert(agents).values(recoveryAgentRow(agentId, companyId, "CodexCoder", "engineer", "idle"));
 
@@ -1263,9 +1272,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const wakeReason = input?.wakeReason ?? "execution_review_requested";
 
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
 
-    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values(recoveryAgentRow(agentId, companyId, "CodexReviewer", "engineer", "idle"));
 
     await db.insert(agentWakeupRequests).values({
@@ -1341,7 +1349,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
 
     await db.insert(agents).values({
       id: agentId,
@@ -1528,9 +1536,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
 
-    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -10833,7 +10840,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
     const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
     await db.insert(agents).values({
       id: agentId, companyId, name: input.agentName ?? "CodexCoder", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
@@ -11490,7 +11497,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const blockerIssueId = randomUUID();
     const blockedIssueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
     await db.insert(agents).values([
       {
         id: creatorAgentId,
@@ -11617,7 +11624,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    await db.insert(companies).values(recoveryCompanyRow(companyId, issuePrefix));
+    await seedRecoveryCompany(companyId, issuePrefix);
     await db.insert(agents).values(recoveryAgentRow(agentId, companyId, "CodexCoder", "engineer", "idle"));
     await db.insert(issues).values({
       id: issueId,

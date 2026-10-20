@@ -6,17 +6,19 @@ navigation: {"section":"Projects and execution","sectionOrder":40,"order":40}
 
 Operators configure where agents execute, probe readiness, select an environment for work, and inspect remote provisioning or custom-image state when the installed provider supports it.
 
+Feature ID: `execution-environments`.
+
 Implementation: [environment settings](../../ui/src/pages/CompanyEnvironments.tsx), [environment runtime](../../server/src/services/environment-runtime.ts).
 
 Agent access: [companion](../agent-access-map/execution-environments.md).
 
 ## Sub-features
 
-- `configuration`: inspect local environments and configure available SSH/sandbox targets.
-- `capabilities`: select only drivers/providers that advertise the required execution capability.
-- `probe`: test reachability and runtime prerequisites in the actual target.
-- `assignment`: bind the intended agent/project/workspace to its execution target.
-- `images`: inspect supported sandbox custom-image preparation and terminal workflows.
+- `configuration`: `execution-environments/configuration` — inspect local environments and configure available SSH/sandbox targets.
+- `capabilities`: `execution-environments/capabilities` — select only drivers/providers that advertise the required execution capability.
+- `probe`: `execution-environments/probe` — test reachability and runtime prerequisites in the actual target.
+- `assignment`: `execution-environments/assignment` — bind the intended agent/project/workspace to its execution target.
+- `images`: `execution-environments/images` — inspect supported sandbox custom-image preparation and terminal workflows.
 
 ## How to get to it (user POV)
 
@@ -100,12 +102,16 @@ Manual: Run a bounded command in the intended target, inspect its output and wor
 
 #### `configuration`
 
+Capability ID: `execution-environments/configuration`.
+
 Scope: ui
 Storybook: Local/SSH/sandbox editors; unavailable providers, missing credentials, save pending/error and restricted operator.
 Production: Persist target configuration and enforce instance-admin/local-operator mutation boundary; target catalog is instance-scoped.
 Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environments.ts](../../server/src/routes/environments.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-service.test.ts](../../server/src/__tests__/environment-service.test.ts)
 
 #### `capabilities`
+
+Capability ID: `execution-environments/capabilities`.
 
 Scope: ui
 Storybook: Supported versus unavailable driver/provider controls and interactive-setup/template-capture limitations.
@@ -114,12 +120,16 @@ Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironment
 
 #### `probe`
 
+Capability ID: `execution-environments/probe`.
+
 Scope: ui
 Storybook: Remote Test pending, success, reachability/auth failure and platform qualification absent/invalidated notice.
 Production: Probe actual owned target; verify selected saved immutable config/image/company qualification plus lease cleanup; local API probe proves host/cwd only and has no UI Test button.
 Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-probe.ts](../../server/src/services/environment-probe.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-probe.test.ts](../../server/src/__tests__/environment-probe.test.ts), [environment-live-ssh.test.ts](../../server/src/__tests__/environment-live-ssh.test.ts)
 
 #### `images`
+
+Capability ID: `execution-environments/images`.
 
 Scope: ui
 Storybook: Custom-image setup/capture/progress, terminal connect/disconnect/failure, unsupported capability and active-image drift.

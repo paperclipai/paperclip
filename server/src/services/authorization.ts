@@ -2903,8 +2903,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
   };
 }
 
-/** A workspace can contain several tasks. Reading files/operations requires
- * access to every task bound to it, not just the task that originally made it. */
+/** Protect disclosure of workspace records and their task-derived app metadata.
+ * Filesystem execution and task-bound file roots use current task access instead. */
 export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   const issueCondition = await issueReadSqlCondition(db, actor);
   const projectCondition = await projectReadSqlCondition(db, actor);

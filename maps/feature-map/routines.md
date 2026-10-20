@@ -6,17 +6,19 @@ navigation: {"section":"Automation and structured work","sectionOrder":60,"order
 
 Operators define repeatable work, configure its inputs and triggers, run it on demand or automatically, and inspect the execution history and resulting tasks.
 
+Feature ID: `routines`.
+
 Implementation: [routine list](../../ui/src/pages/Routines.tsx), [routine detail](../../ui/src/pages/RoutineDetail.tsx), [trigger editor](../../ui/src/components/routine-triggers/TriggerWizard.tsx).
 
 Agent access: [companion](../agent-access-map/routines.md).
 
 ## Sub-features
 
-- `definition`: save the request, agent, project, variables, and execution context.
-- `triggers`: configure supported schedules/webhooks or other offered triggers.
-- `run-now`: supply inputs and create an observable routine execution.
-- `history`: inspect resulting tasks and past outcomes.
-- `management`: organize, pause/disable, archive, and distinguish plugin-managed routines.
+- `definition`: `routines/definition` — save the request, agent, project, variables, and execution context.
+- `triggers`: `routines/triggers` — configure supported schedules/webhooks or other offered triggers.
+- `run-now`: `routines/run-now` — supply inputs and create an observable routine execution.
+- `history`: `routines/history` — inspect resulting tasks and past outcomes.
+- `management`: `routines/management` — organize, pause/disable, archive, and distinguish plugin-managed routines.
 
 ## How to get to it (user POV)
 
@@ -71,6 +73,8 @@ for both the agent and its responsible person.
 ### Storybook verification
 
 #### `run-now`
+
+Capability ID: `routines/run-now`.
 
 Scope: ui
 Storybook: Mount RoutineRunVariablesDialog through actual RoutineDetail with required/default inputs, project/workspace overrides, pending, blocked and failed submission. RunButton-only no-op examples do not supply/run inputs.

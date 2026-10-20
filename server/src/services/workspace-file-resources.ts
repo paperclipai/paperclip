@@ -1,6 +1,5 @@
-import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
-import { assertExecutionWorkspaceRootReadAccess } from "./execution-workspace-repositories.js";
 import path from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1043,24 +1042,36 @@ async function listChangedWorkspaceFiles(input: {
 }
 
 export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
-  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false) {
+  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false, task?: IssueRow) {
     if (!actor) return candidates;
     const visible: WorkspaceCandidate[] = [];
     for (const candidate of candidates) {
       const rows = candidate.workspaceKind === "execution_workspace"
         ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), await executionWorkspaceReadSqlCondition(db, actor)))
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, candidate.companyId)))
         : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
           .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
           .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
       if (!rows.length) continue;
+      if (candidate.workspaceKind === "execution_workspace") {
+        // A task-bound root grants file navigation, never disclosure of the workspace record.
+        if (!task || task.companyId !== candidate.companyId) continue;
+        if (task.executionWorkspaceId !== candidate.workspaceId) {
+          const [owner] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, task.companyId)));
+          if (owner?.sourceIssueId !== task.id) {
+            if (!task.parentId || owner?.sourceIssueId !== task.parentId) continue;
+            const [parent] = await db.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, task.parentId), eq(issues.companyId, task.companyId), await issueReadSqlCondition(db, actor)));
+            if (!parent) continue;
+          }
+        }
+        candidate.label = "Task workspace";
+      }
       if (candidate.rootPath && (!candidate.remote || candidate.provider === "local_fs" || LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(candidate.provider))) {
         try {
           const canonicalCwd = await fs.realpath(candidate.rootPath);
-          await assertExecutionWorkspaceRootReadAccess(db, {
-            companyId: candidate.companyId, cwd: canonicalCwd, actor,
-            sourceWorkspaceId: candidate.workspaceKind === "execution_workspace" ? candidate.workspaceId : undefined,
-          });
+
           candidate.rootPath = canonicalCwd;
         } catch (error) {
           if (isHttpStatus(error, 403) || isHttpStatus(error, 404)
@@ -1169,7 +1180,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       }
     }
 
-    return visibleCandidates(candidates, selector === "auto");
+    return visibleCandidates(candidates, selector === "auto", issue);
   }
 
   async function loadAvailabilityTargets(

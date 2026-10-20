@@ -193,7 +193,7 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
-  const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
+  const effective = await toolAccessService(input.db).getEffectiveToolAssignmentsForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
   const hasGitHubConnection = effective.installedConnections.some((connection) => {
     const config = connection.config && typeof connection.config === "object"

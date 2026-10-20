@@ -76,6 +76,16 @@ that relayed a message from another channel.
 
 ## Contextual feedback
 
+Keep the runner turn's avatar, name, Working header and current-activity slot
+in place from message submission through queued admission and native startup.
+Runtime discovery must not replace the turn with a generic spinner or a
+"run started" receipt. Queued and running headers use the same spacing.
+
+Stream the provider's final reply as the conversational answer. Completion-tool
+reports remain inspectable run data while work continues. Use their summary as
+an answer fallback only after the run ends and its final transcript fetch
+completes without a provider reply. Preserve the reply through persistence.
+
 Task chat shows execution errors and waits only while they remain relevant.
 Completing or cancelling a task hides its old execution notices. A newer attempt by
 the same agent or an explicit successor supersedes earlier run notices; an
@@ -85,6 +95,14 @@ Run history retains the full diagnostic record. Session reset boundaries remain
 in the conversation. Time passing or a new human comment alone does not resolve
 an error. Stored notices need run or recovery provenance before they can be hidden;
 child-task relays and other unrelated system updates stay visible.
+
+Interrupted runs use compact rows without divider rules, including
+older saved markers. When a run error and a no-live-execution-path notice are
+adjacent, show only the last error row. Keep its details and retry action. If a
+legacy run has a permitted retry, keep that action on the surviving notice,
+including its pending state. A
+message, input, session boundary or credential-access denial separates errors;
+it must not disappear as part of this grouping. Run details retain full history.
 
 Credential-sharing denials stay expanded as an error card in the task conversation.
 Name the agent and selected AI connection when known, and say which person lacks

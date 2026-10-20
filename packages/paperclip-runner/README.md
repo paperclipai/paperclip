@@ -46,6 +46,12 @@ specifications are internal to built-in execution; they are not a plugin wire
 contract. Existing flat transport options remain compatible through this shared
 interface. This refactor does not add Launcher APIs or change harness capabilities.
 
+An execution owner can supply `prepareLaunch`, a Runner artifact identity, and
+process and connection hooks. Core supplies the launch requirements. The owner
+returns a provider descriptor bound to those requirements. Core checks the policy
+and assigned resources. See [Runner launch preparation](../../doc/runner-launch-preparation.md)
+for the contract and recovery record.
+
 Connection continuations inspect the harness descriptor's optional
 `toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
 OpenCode, and qualified Claude/Codex/Grok ACPX profiles expose it; unqualified

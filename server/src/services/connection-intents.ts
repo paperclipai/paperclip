@@ -288,7 +288,7 @@ export function connectionIntentService(db: Db) {
       && connection.status !== "archived" && connection.connectionPurpose !== "ai"
     );
     if (matching.length === 0) return null;
-    const effective = await access.getEffectiveProfilesForAgent(input.companyId, input.agentId);
+    const effective = await access.getEffectiveToolAssignmentsForAgent(input.companyId, input.agentId);
     const installedIds = new Set(effective.installedConnections.map((connection) => connection.id));
     const permittedIds = new Set(effective.allowedTools.map((tool) => tool.connectionId));
     const usable = (connection: ToolConnection | undefined) => connection
@@ -335,7 +335,7 @@ export function connectionIntentService(db: Db) {
   }
 
   async function administrativeDenial(companyId: string, agentId: string, serviceSlug: string, inventory: Awaited<ReturnType<typeof connectionInventory>>) {
-    const effective = await access.getEffectiveProfilesForAgent(companyId, agentId);
+    const effective = await access.getEffectiveToolAssignmentsForAgent(companyId, agentId);
     const installed = effective.installedConnections.filter((connection) => sourceSlugForConnection(connection, inventory.applicationsById) === serviceSlug);
     if (!installed.length || effective.allowedTools.some((tool) => installed.some((connection) => connection.id === tool.connectionId))) return false;
     for (const connection of installed) {
@@ -748,7 +748,7 @@ export function connectionIntentService(db: Db) {
           const availableNames = catalog.map(tool => tool.toolName).sort();
           throw unprocessable(`A requested tool is not in this connection's active catalog. Available indexed tool names (first ${Math.min(20, availableNames.length)} of ${availableNames.length}): ${JSON.stringify(availableNames.slice(0, 20))}. Request only the needed exact names with connection_request. No access was granted.`);
         }
-        const effective = await access.getEffectiveProfilesForAgent(context.run.companyId, context.agent.id);
+        const effective = await access.getEffectiveToolAssignmentsForAgent(context.run.companyId, context.agent.id);
         const installed = effective.installedConnections.some(item => item.id === connection.id);
         const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
         if (missing && tools.length && tools.every(tool => Boolean(tool))) {
@@ -1141,7 +1141,7 @@ export function connectionIntentService(db: Db) {
         });
       }
 
-      const effective = await txAccess.getEffectiveProfilesForAgent(loaded.issue.companyId, payload.requestingAgentId);
+      const effective = await txAccess.getEffectiveToolAssignmentsForAgent(loaded.issue.companyId, payload.requestingAgentId);
       if (!effective.allowedTools.some((tool) => tool.connectionId === selectedConnection.id)) throw conflict("This connection has no permitted tools. Review its action permissions before continuing.");
 
       const runtimeConnection = await connectionIntentService(txDb).usableConnectionForAgent({

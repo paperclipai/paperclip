@@ -1133,7 +1133,7 @@ function verifyPrivateRegularFile(file: Stats, path: string): void {
   }
 }
 
-function readPrivateFile(path: string): string | null {
+export function readPrivateFile(path: string): string | null {
   let descriptor: number;
   try {
     descriptor = openSync(
@@ -1171,7 +1171,7 @@ function syncParentDirectory(path: string): void {
   }
 }
 
-function atomicPrivateWrite(path: string, contents: string): void {
+export function atomicPrivateWrite(path: string, contents: string): void {
   const temporary = resolve(
     dirname(path),
     `.${path.split(/[\\/]/).at(-1)}.${randomUUID()}.tmp`,
@@ -2736,7 +2736,8 @@ export class DurablePrpControlPlane {
           phase: "activated",
         };
         candidate.leases = { [lease.credentialId]: structuredClone(lease) };
-        candidate.runAttachTemplate = this.#store.state.runAttachTemplate;
+        const { paperclipNextAuthority: _authority, ...runAttachTemplate } = transition.command.payload;
+        candidate.runAttachTemplate = structuredClone(runAttachTemplate);
         this.#store.commit(candidate);
         this.#identity = structuredClone(candidate.identity);
         lease = this.#store.state.leases[lease.credentialId]!;

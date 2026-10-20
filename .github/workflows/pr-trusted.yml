@@ -90,7 +90,9 @@ jobs:
           "${{ github.event.pull_request.head.sha }}"
 
       - name: Validate Dockerfile deps stage
-        run: node ./scripts/check-docker-deps-stage.mjs
+        run: |
+          node ./scripts/check-docker-deps-stage.mjs
+          node "$CI_NODE_TEST" ./scripts/docker-deps-postinstall.test.mjs
 
       - name: Validate Node version policy
         run: pnpm check:node-version

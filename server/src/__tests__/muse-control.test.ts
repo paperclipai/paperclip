@@ -1,3 +1,5 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import express from "express";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -78,6 +80,42 @@ describe("personal Muse control plane",()=>{
     const [binding]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
     return {...f,binding,ticket,oauth,client,verifier,input,authorizationUrl,tokenInput,tokens,subject};
   }
+  it("signals maintenance from real qualification, assignment, and OAuth revocation producers", async () => {
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, event => events.push(event));
+    let detach: (() => Promise<void>) | undefined;
+    try {
+      const f = await oauthFixture(true);
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      events.length = 0;
+      const [binding] = await db.select().from(bindings).where(eq(bindings.id, f.binding.id));
+      await f.broker.beginQualification({ companyId: f.company.id, agentId: f.agent.id,
+        bindingId: binding.id, generation: binding.generation, expectedRevision: binding.revision,
+        qualificationId: randomUUID(), expiresAt: new Date(Date.now() + 60_000), operatorId: f.operatorId });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      const running = await active(f);
+      detach = running.detach;
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      events.length = 0;
+      await f.oauth.revokeConnection(binding.grantId!, f.operatorId);
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      expect((await db.select().from(bindings).where(eq(bindings.id, binding.id)))[0].revokedAt).not.toBeNull();
+    } finally { unsubscribe(); await detach?.(); }
+  });
+  it("permits a paused handoff recipient authority read while retaining connection revocation checks", async () => {
+    const f = await oauthFixture(true);
+    const ref = { companyId: f.company.id, agentId: f.agent.id, bindingId: f.binding.id, bindingGeneration: f.binding.generation };
+    await expect(f.broker.authorizingUserIdForBinding(ref)).resolves.toBe(f.operatorId);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    await expect(f.broker.authorizingUserIdForBinding(ref)).rejects.toMatchObject({ status: 403 });
+    await expect(f.broker.authorizingUserIdForBinding(ref, { allowPaused: true })).resolves.toBe(f.operatorId);
+    await db.update(bindings).set({ revokedAt: new Date() }).where(eq(bindings.id, f.binding.id));
+    await expect(f.broker.authorizingUserIdForBinding(ref, { allowPaused: true })).rejects.toMatchObject({ status: 403 });
+  });
   async function active(provided?:Awaited<ReturnType<typeof fixture>>,afterSettle?: (command:ExternalProviderOperation)=>Promise<void>) {
     const f=provided??await fixture(),runId=randomUUID(),session=randomUUID(),turnId="turn_"+randomUUID();
     const [issue]=await db.insert(issues).values({companyId:f.company.id,title:"Muse task",status:"in_progress",assigneeAgentId:f.agent.id,responsibleUserId:f.operatorId}).returning();

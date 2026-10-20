@@ -1,3 +1,4 @@
+import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
 import type {
@@ -190,6 +191,8 @@ export interface DocumentRevision {
   changeSummary: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Writer provenance; reading a revision does not grant access to the run. */
+  createdByRunId?: string | null;
   createdAt: Date;
 }
 
@@ -1157,7 +1160,7 @@ export interface IssueCommentMetadataSection {
 export interface IssueCommentMetadata {
   version: 1;
   /** Inbound channel attribution; never an authorization input. */
-  sourceChannel?: "imessage-photon";
+  sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;

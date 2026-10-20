@@ -6,17 +6,19 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":70}
 
 People read and revise task documents, annotate specific content, open attached files, and inspect the outputs an agent hands back. The artifact library provides another route to the same work.
 
+Feature ID: `documents-artifacts`.
+
 Implementation: [task documents](../../ui/src/components/IssueDocumentsSection.tsx), [artifact library](../../ui/src/pages/Artifacts.tsx), [document panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.tsx).
 
 Agent access: [companion](../agent-access-map/documents-artifacts.md).
 
 ## Sub-features
 
-- `documents`: edit versioned task documents and inspect or restore revisions.
-- `annotations`: attach feedback to document content and inspect resolution state.
-- `attachments`: upload, preview, and download allowed files with company access checks.
-- `work-products`: link deliverables to their source task, resource, and review context.
-- `library`: search, filter, group, and open artifact stacks.
+- `documents`: `documents-artifacts/documents` — edit versioned task documents and inspect or restore revisions.
+- `annotations`: `documents-artifacts/annotations` — attach feedback to document content and inspect resolution state.
+- `attachments`: `documents-artifacts/attachments` — upload, preview, and download allowed files with company access checks.
+- `work-products`: `documents-artifacts/work-products` — link deliverables to their source task, resource, and review context.
+- `library`: `documents-artifacts/library` — search, filter, group, and open artifact stacks.
 
 ## How to get to it (user POV)
 
@@ -72,6 +74,8 @@ Manual: Find the task’s output through search and grouping, open its stack, pa
 ### Storybook verification
 
 #### `documents`
+
+Capability ID: `documents-artifacts/documents`.
 
 Scope: ui
 Storybook: Writable/read-only document, save pending/failure/conflict, revision history/historical preview and restore confirmation.

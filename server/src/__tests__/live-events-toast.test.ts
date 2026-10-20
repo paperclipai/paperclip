@@ -15,6 +15,9 @@ vi.mock("../services/authorization.js", () => ({
   authorizationService: () => ({ decide: async ({ resource }: { resource: { issueId: string } }) => ({ allowed: resource.issueId !== "hidden" }) }),
 }));
 vi.mock("../services/heartbeat-run-privacy.js", () => ({ canActorReadHeartbeatRun: async () => false }));
+vi.mock("../services/case-access.js", () => ({
+  canActorReadCase: async (_db: unknown, _actor: unknown, record: { id: string }) => record.id !== "hidden-case",
+}));
 function database(onPredicate: (kind: "where" | "join", condition: SQL) => void = () => {}) {
   return { select: (fields: Record<string, unknown>) => {
     let table = "";
@@ -33,6 +36,40 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
   } };
 }
 describe("authenticated activity notifications", () => {
+  it("preserves only an authorized handoff task identity for empty case-panel refresh", async () => {
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      const messages: Array<{ payload: Record<string, unknown> }> = [];
+      socket.on("message", data => messages.push(JSON.parse(data.toString())));
+      const activity = (entityId: string, issueId: string, action = "case.handoff_applied") => publishLiveEvent({
+        companyId: "company", type: "activity.logged", payload: {
+          action, entityType: "case", entityId, issueId,
+          details: { instructions: "private handoff instructions", phase: "verification" },
+        },
+      });
+      activity("hidden-case", "visible");
+      activity("visible-case", "hidden");
+      const first = once(socket, "message");
+      activity("visible-case", "visible");
+      await first;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].payload).toEqual({ action: "case.handoff_applied", entityType: "case", entityId: "visible-case", issueId: "visible", actorType: null, actorId: null });
+      const second = once(socket, "message");
+      activity("visible-case", "visible", "case.updated");
+      await second;
+      expect(messages[1].payload).toEqual({ action: "case.updated", entityType: "case", entityId: "visible-case", actorType: null, actorId: null });
+    } finally {
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it("uses the persisted local-board user identity for local task eligibility", async () => {
     vi.mocked(taskToastEligible).mockImplementation(async (_db, _event, userId) => userId === "local-board");
     const server = createServer();

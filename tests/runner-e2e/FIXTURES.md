@@ -920,4 +920,74 @@ execution-workspace file reads and run-attributed artifact downloads verify byte
 Calibration rejects wrong roots, missing history, changed pins, duplicate receipts,
 extra wakes, incomplete persistence, tool bypass and missing remote leases. Partial
 observations remain in retained attempt evidence; missing evidence cannot pass.
+
 The Copilot `extended-harnesses` file case supplies a portable read-only validation command with hexadecimal expected bytes. The provider still creates and edits the file itself. The command must exit zero before registration and semantic completion; independent workspace and downloaded-artifact byte matchers remain authoritative. The explicit command avoids ambiguous shell operands and escaped-newline literals. Original prompt measurements retain their original grade and source; only the two Copilot file prompts change. Other providers, deadlines and matchers remain unchanged.
+
+## Same-task case handoffs
+
+The suite contains three local cells: `receipt-smoke` under both `runner-codex`
+(API key) and `runner-codex-subscription`, plus the original subscription-only
+`same-task-roundtrip`. The API profile uses the same model and workflow
+definition with ordinary encrypted `OPENAI_API_KEY` secret references, including
+the provider's `CODEX_API_KEY` alias. It does not stage a subscription login.
+Receipt smoke has exactly four successful native task work runs, with triage,
+builder, verifier and a return to the builder. Ordinary case document writes save
+`receipt` as `{total:6}`, then `review` as
+`{totalCorrect:true,missing:["currency"]}`, then a second receipt revision as
+`{total:6,currency:"USD"}`. The independent oracle requires both receipt writes
+by the builder in distinct runs, the review by the verifier, observed reads of
+the prior documents, four delivered agent handoffs and fresh case/task context for
+each phase. The final builder requests `to: "done"` before normal task completion;
+the fifth handoff becomes `completed` and the case closes atomically with the task.
+This terminal destination does not create another run or bypass completion gates.
+
+Before kickoff, its isolated company and every agent have 100-cent budgets,
+90-second native Codex work-run timeouts and low reasoning effort. Daily task-run limits
+are triage one, builder two and verifier one. Setup applies the initial triage
+limits before creating that agent; the flow applies and reads back every role's
+limits before work begins. The attempt is five minutes and has no automatic
+retry. Pristine production-default instruction evidence is captured before
+adding the declared role routing prompt. These settings apply to receipt smoke;
+the original arithmetic cell retains its 1,000-cent budgets and four-to-six-run
+contract.
+
+Initial production lifecycle setup performs hello inference outside heartbeat
+counts and budget accounting. Up to three initial probes are expected, one for
+each agent; detailed setup tokens and cost are unavailable. The flow observes
+readiness serially, waits up to 45 seconds per agent and fails immediately on a
+reported lifecycle error, then pauses the agents to prevent routine 60-second
+setup retries. Timing out does not immediately cancel an in-flight hello probe.
+The four-run limit therefore covers task work, not every provider inference.
+The ordinary work-run usage report excludes setup probes, and unknown usage
+must not be reported as zero or free. Setup observations are retained separately
+in `receipt-setup.json`.
+
+Two passive cases are created through public APIs for browser list filtering.
+They remain unchanged and start no work. Public screenshots use the primary
+case detail route, document dialogs on that route and the primary task route.
+List navigation itself produces no screenshot.
+
+Both case fixtures supply required `workflow_document_text` through the handoff
+API; it becomes the ordinary task's `workflow` document before dispatch. Receipt
+role prompts tell each phase to read that document. Older recorded campaigns
+precede this new required field and remain evidence of their original version.
+API/tool authoring guidance recommends both a Mermaid `stateDiagram-v2` map and
+prose explaining transition conditions, evidence, ownership and wait/retry rules;
+the small fixture may use prose only because the recommendation is not validation.
+
+The original arithmetic `case-handoffs` fixture uses ordinary agent creation and the
+public case-handoff API for initial kickoff. Subsequent routing is performed by
+the agents through the production native tool. Four phase documents record
+fresh case/task/version observations; the oracle checks these against the
+public ledger and independently specified arithmetic result. Its company-wide run
+collection accounts for all three agents and fails above six turns. Only
+allowlisted state, the synthetic document contents and correlated tool-presence
+booleans enter the workflow snapshot; provider event bodies are not republished.
+Final UI screenshots cover the persistent case history and original task.
+
+The `runner-codex-subscription` profile consumes explicit `CODEX_AUTH_JSON` and
+never creates a fake API key. Login setup uses the production company Codex
+home, refuses nonisolated or redirected roots and occupied auth files, and
+registers cleanup before agent setup. It copies no operator config, sessions,
+plugins or unrelated files. The shared fixture registry owns that dependency;
+there is no private runtime injection.

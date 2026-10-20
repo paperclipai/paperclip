@@ -1,4 +1,6 @@
 import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
+import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
+import { createCaseAction, readCaseAction, updateCaseAction } from "../protocol-actions/case-data.js";
 import { listWorkspacesAction } from "../protocol-actions/list-workspaces.js";
 import { selectWorkspaceAction } from "../protocol-actions/select-workspace.js";
 import { prepareRepositoryAction } from "../protocol-actions/prepare-repository.js";
@@ -475,6 +477,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     ),
     outputSchema: operationReceipt,
   }),
+  descriptor({ ...handoffCaseAction.live.descriptor, placement: "optional", effect: "write" }),
+  ...[createCaseAction, readCaseAction, updateCaseAction].map(action => descriptor({
+    ...action.live.descriptor,
+    placement: "optional",
+    effect: action.canonical.sideEffectClass === "read" ? "read" : "write",
+  })),
   descriptor({ ...getWorkspaceAction.live.descriptor, placement: "optional" }),
   descriptor({ ...listWorkspacesAction.live.descriptor, placement: "optional" }),
   descriptor({ ...selectWorkspaceAction.live.descriptor, placement: "optional" }),

@@ -2987,9 +2987,11 @@ describe("DurablePrpControlPlane", () => {
       const unusedTicket = core.issueBootstrapTicket();
       peer = await authenticateVersion(core, core.issueBootstrapTicket());
       const oldToken = peer!.leaseToken!;
+      core.persistRunAttachTemplate({ provider: { kind: "mock", run: "prior" } });
       const command = core.queueCommand(
         "run.attach",
         {
+          provider: { kind: "mock", run: "next" },
           paperclipNextAuthority: {
             identity: nextIdentity,
             connection: { mode: "connect", connectUrl: core.connectUrl },
@@ -3334,6 +3336,7 @@ describe("DurablePrpControlPlane", () => {
         );
         expect(successor).not.toBeNull();
         expect(core.store.state.identity).toEqual(nextIdentity);
+        expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" } });
         expect(
           (successor!.welcome.payload as Record<string, unknown>)
             .pendingCommands,

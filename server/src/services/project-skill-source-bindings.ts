@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from './delivery-work-notifications.js';
 import { lockSkillImportQueue, MAX_COMPANY_PENDING_SKILL_IMPORTS, MAX_PROJECT_PENDING_SKILL_IMPORTS, SKILL_IMPORT_CAPACITY_WAIT } from './skill-source-import-queue.js';
 import { and, eq, ne } from 'drizzle-orm';
 import { projectSkillSources, type Db, projectWorkspaces } from '@paperclipai/db';
@@ -39,6 +40,7 @@ export async function enqueueProjectSkillSource(db: Db, workspace: typeof projec
     const db = tx as unknown as Db;
     const repository = projectSkillRepository(workspace);
     const setup = repository ? setupIdentity ?? await projectSkillSetupIdentity(db, workspace.companyId) : undefined;
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
     const pending = await lockSkillImportQueue(db, workspace.companyId);
     await db.update(projectSkillSources).set({ active: false, lastError: null })
       .where(and(eq(projectSkillSources.companyId, workspace.companyId), eq(projectSkillSources.workspaceId, workspace.id),
@@ -60,5 +62,8 @@ export async function enqueueProjectSkillSource(db: Db, workspace: typeof projec
 }
 
 export async function detachProjectSkillSource(db: Db, companyId: string, workspaceId: string) {
-  await db.update(projectSkillSources).set({ active: false, lastError: null }).where(and(eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.workspaceId, workspaceId)));
+  await db.transaction(async tx => {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+    await tx.update(projectSkillSources).set({ active: false, lastError: null }).where(and(eq(projectSkillSources.companyId, companyId), eq(projectSkillSources.workspaceId, workspaceId)));
+  });
 }

@@ -1,4 +1,5 @@
-import { assertIsolatedWorkspaceSourceReadAccess, retainIsolatedWorkspaceSourceAccess } from "../execution-workspace-repositories.js";
+import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
+import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { selectRestoredProjectRepositories, type GitWorkspaceContents } from "../git-workspace-contents.js";
 import { GitCacheRestorationFailure } from "../git-workspace-restoration.js";
 import { deriveRepoNameFromRepoUrl, managedProjectCheckoutName, projectRepositoryIdentity } from "../managed-project-checkout-name.js";
@@ -499,7 +500,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   workspaces: Array<Pick<typeof projectWorkspaces.$inferSelect, "id" | "repoUrl" | "repoRef"> & { cwd?: string | null }>;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   beforePublish?: () => Promise<void>;
-  prepareLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
+  prepareLocalSource?: (sourceCwd: string, projectWorkspaceId: string) => Promise<() => Promise<void>>;
   restoredContents?: GitWorkspaceContents;
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
   const identity = projectRepositoryIdentity;
@@ -532,7 +533,7 @@ export async function prepareProjectRepositoryWorkspaces(input: {
     const urlLocalSource = localRepositoryPath(repoUrl);
     const sourceToAuthorize = localSource ?? urlLocalSource;
     const recheckLocalSource = sourceToAuthorize
-      ? await input.prepareLocalSource?.(sourceToAuthorize) : undefined;
+      ? await input.prepareLocalSource?.(sourceToAuthorize, workspace.id) : undefined;
     const beforePublish = async () => {
       await recheckLocalSource?.();
       await input.beforePublish?.();
@@ -3256,7 +3257,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     issueId: string | null,
     runId: string | null,
   ): PrepareManagedLocalSource {
-    return async (sourceCwd) => {
+    return async (sourceCwd, targetCwd) => {
       const [run] = runId
         ? await db.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, runId),
@@ -3277,21 +3278,38 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         runId: run.id,
         onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId,
       };
-      const captured = await assertIsolatedWorkspaceSourceReadAccess(db, {
-        companyId: agent.companyId,
-        sourceCwd,
-        actor,
-        copyKind: "repository",
-      });
-      return targetCwd => retainIsolatedWorkspaceSourceAccess(db, {
-        companyId: agent.companyId,
-        sourceCwd,
-        targetCwd,
-        actor,
-        captured,
-        issueId: issueId ?? undefined,
-        copyKind: "repository",
-      });
+      if (!issueId) throw forbidden("Local repository source requires a current task");
+      const sourceIdentity = await fs.realpath(sourceCwd);
+      const targetIdentity = await canonicalRepositoryRoot(targetCwd);
+      const selected = await assertTaskWorkspaceExecutionAccess(db, actor, agent.companyId, { issueId });
+      const [sourceConfiguration] = selected.task.projectWorkspaceId
+        ? await db.select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd,
+            repoUrl: projectWorkspaces.repoUrl, repoRef: projectWorkspaces.repoRef })
+          .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, selected.task.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, agent.companyId)))
+        : [];
+      const validate = async () => {
+        if (await fs.realpath(sourceCwd) !== sourceIdentity
+          || await canonicalRepositoryRoot(targetCwd) !== targetIdentity) {
+          throw forbidden("Local repository copy identity changed during preparation");
+        }
+        const current = await assertTaskWorkspaceExecutionAccess(db, actor, agent.companyId, { issueId });
+        if (current.task.projectWorkspaceId !== selected.task.projectWorkspaceId
+          || current.task.projectId !== selected.task.projectId) {
+          throw forbidden("Local repository source configuration changed during preparation");
+        }
+        if (sourceConfiguration) {
+          const [source] = await db.select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd,
+            repoUrl: projectWorkspaces.repoUrl, repoRef: projectWorkspaces.repoRef }).from(projectWorkspaces)
+            .where(and(eq(projectWorkspaces.id, sourceConfiguration.id), eq(projectWorkspaces.companyId, agent.companyId)));
+          if (!source || source.cwd !== sourceConfiguration.cwd || source.repoUrl !== sourceConfiguration.repoUrl
+            || source.repoRef !== sourceConfiguration.repoRef) {
+            throw forbidden("Local repository source configuration changed during preparation");
+          }
+        }
+      };
+      await validate();
+      return validate;
     };
   }
 

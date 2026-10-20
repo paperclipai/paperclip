@@ -19,6 +19,8 @@ export const DELIVERY_QUEUES = {
   chatReceipts: "chat-slack-receipts",
   browser: "browser-use",
   email: "email-channels",
+  museMaintenance: "muse-maintenance",
+  skillSourceSync: "skill-source-sync",
   fastResponse: "fast-responses",
   feedback: "feedback-exports",
   chatCompletion: "chat-completions",
@@ -29,6 +31,7 @@ export const DELIVERY_QUEUES = {
   terminalWorkspaces: "terminal-workspaces",
   routineSchedules: "routine-schedules",
   issueMonitors: "issue-monitors",
+  caseHandoffs: "case-handoffs",
 } as const;
 export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];
 

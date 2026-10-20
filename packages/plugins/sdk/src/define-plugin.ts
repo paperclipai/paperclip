@@ -1,3 +1,4 @@
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -400,6 +401,9 @@ export interface PluginDefinition {
   onEnvironmentValidateConfig?(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
+  onEnvironmentTask?(params: PluginEnvironmentTaskParams): Promise<PluginEnvironmentTaskResult>;
 
   /** Called to test reachability or readiness of a plugin-hosted environment. */
   onEnvironmentProbe?(

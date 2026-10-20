@@ -1,9 +1,9 @@
-import type { DocumentRevision, IssueDocument, IssueLabel } from "@paperclipai/shared";
+import type { CaseHandoff, DocumentRevision, HandoffCaseInput, HandoffCaseResult, IssueDocument, IssueLabel } from "@paperclipai/shared";
 import { api } from "./client";
 
 // -----------------------------------------------------------------------------
 // Cases API (experimental — PAP-12947). Mirrors server/src/routes/cases.ts.
-// Human-writable in v1 = status + labels only; everything else is agent-authored.
+// Board pages are read-only; agents and authorized REST callers author case data.
 // -----------------------------------------------------------------------------
 
 export const CASE_STATUSES = [
@@ -16,7 +16,7 @@ export const CASE_STATUSES = [
 ] as const;
 export type CaseStatus = (typeof CASE_STATUSES)[number];
 
-/** Statuses hidden by the list's default `Active` filter. */
+/** Terminal statuses for callers that explicitly request active records. */
 export const TERMINAL_CASE_STATUSES: readonly CaseStatus[] = ["done", "cancelled"];
 
 export type CaseLinkRole = "origin" | "work" | "reference";
@@ -34,6 +34,11 @@ export interface CaseSummary {
   summary: string | null;
   status: CaseStatus;
   fields: Record<string, unknown>;
+  workIssueId?: string | null;
+  phase?: string | null;
+  handoffVersion?: number;
+  workIssue?: CaseWorkIssue | null;
+  pendingHandoff?: CaseHandoffView | null;
   parentCaseId: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
@@ -50,6 +55,18 @@ export interface CaseSummary {
 export interface CaseDocumentRef {
   key: string;
   document: CaseDocument;
+}
+
+/** A reference to the ordinary task document; content and revisions stay there. */
+export interface CaseTaskDocumentRef {
+  id: string;
+  sourceKind: "issue";
+  taskId: string;
+  taskIdentifier: string | null;
+  key: string;
+  scope: "primary" | "linked";
+  document: Omit<CaseDocument, "latestBody">;
+  readPath: string;
 }
 
 export interface CaseDocument {
@@ -116,12 +133,20 @@ export function isImageAttachment(attachment: CaseAttachmentRef): boolean {
   return attachment.asset.contentType.startsWith("image/");
 }
 
+/** Primary task summary shared by the list and detail payloads. */
+export interface CaseWorkIssue {
+  id: string; identifier: string | null; title: string; status: string; statusVersion: number;
+  assigneeAgentId: string | null; assigneeAgentName: string | null;
+}
+
 /** The full detail payload (loadCaseDetail on the server). */
 export interface CaseDetail extends CaseSummary {
   parent: CaseParentRef | null;
   labels: IssueLabel[];
   issueLinks: CaseIssueLink[];
   documents: CaseDocumentRef[];
+  taskDocuments?: CaseTaskDocumentRef[];
+  taskDocumentsOmitted?: boolean;
   attachments: CaseAttachmentRef[];
 }
 
@@ -136,7 +161,19 @@ export type CaseEventKind =
   | "child_linked"
   | "attachment_added"
   | "label_added"
-  | "label_removed";
+  | "label_removed"
+  | "handoff_requested"
+  | "handoff_applied"
+  | "handoff_delivered"
+  | "handoff_completed"
+  | "handoff_cancelled";
+
+export type CaseHandoffView = CaseHandoff & { fromAgentName?: string | null; toAgentName?: string | null };
+export interface CaseHandoffPage {
+  items: CaseHandoffView[];
+  nextCursor: string | null;
+  canControl?: boolean;
+}
 
 /** Run→issue attribution shared by feed rows and revisions. */
 export interface CaseAttributionIssue {
@@ -203,8 +240,13 @@ export interface IssueCaseLink {
     title: string;
     caseType: string;
     status: CaseStatus;
+    workIssueId?: string | null;
+    phase?: string | null;
   };
 }
+
+export type CaseSortField = "updated" | "created" | "title" | "status" | "type";
+export type CaseGroupBy = "none" | "status" | "type" | "project";
 
 export interface ListCasesParams {
   type?: string;
@@ -219,7 +261,11 @@ export interface ListCasesParams {
   parent?: string;
   q?: string;
   includeAncestors?: boolean;
+  sortField?: CaseSortField;
+  sortDir?: "asc" | "desc";
+  groupBy?: CaseGroupBy;
   limit?: number;
+  offset?: number;
 }
 
 function appendAll(search: URLSearchParams, key: string, values: readonly string[] | undefined) {
@@ -239,7 +285,11 @@ function toQuery(params: ListCasesParams): string {
   if (params.parent) search.set("parent", params.parent);
   if (params.q) search.set("q", params.q);
   if (params.includeAncestors) search.set("includeAncestors", "true");
+  if (params.sortField) search.set("sortField", params.sortField);
+  if (params.sortDir) search.set("sortDir", params.sortDir);
+  if (params.groupBy) search.set("groupBy", params.groupBy);
   if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
   const qs = search.toString();
   return qs ? `?${qs}` : "";
 }
@@ -292,8 +342,17 @@ export function caseRevisionToDocumentRevision(caseId: string, key: string, revi
 }
 
 export const casesApi = {
+  handoff: (companyId: string, input: HandoffCaseInput) =>
+    api.post<HandoffCaseResult>(`/companies/${companyId}/case-handoffs`, input),
+  listHandoffs: (caseId: string, cursor?: string | null) =>
+    api.get<CaseHandoffPage>(`/cases/${caseId}/handoffs?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  retryHandoff: (caseId: string, handoffId: string) =>
+    api.post(`/cases/${caseId}/handoffs/${handoffId}/retry`, {}),
+  cancelHandoff: (caseId: string, handoffId: string) =>
+    api.post(`/cases/${caseId}/handoffs/${handoffId}/cancel`, {}),
   list: (companyId: string, params: ListCasesParams = {}) =>
     api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery(params)}`),
+  listTypes: (companyId: string) => api.get<string[]>(`/companies/${companyId}/cases/types`),
   get: (idOrIdentifier: string) => api.get<CaseDetail>(`/cases/${idOrIdentifier}`),
   patch: (idOrIdentifier: string, input: PatchCaseInput) =>
     api.patch<CaseDetail>(`/cases/${idOrIdentifier}`, input),

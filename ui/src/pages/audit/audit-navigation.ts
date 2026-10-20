@@ -49,6 +49,11 @@ export function routineAuditHref(routineId: string) {
   });
 }
 
+/** Link target for a case's handoffs and other persistent changes. */
+export function caseAuditHref(caseId: string) {
+  return auditSectionHref("activity", { entityType: "case", entityId: caseId });
+}
+
 /** Link target for the attributed activity behind a specific run. */
 export function runAuditHref(runId: string, agentId?: string | null) {
   return auditSectionHref("activity", { mode: "agents", runId, agentId });

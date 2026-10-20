@@ -102,6 +102,115 @@ in `packages/shared/src/constants.ts`.
 
 ## 6. Architecture
 
+### Experimental persistent cases and handoffs
+
+Standalone cases (`enableCases`) are independent of the experimental pipeline
+case model. A passive case has no execution requirement. `work_issue_id` binds at
+most one primary ordinary task per case and one primary case per task. Handoffs
+reuse that task, update its assignee through normal task policy, and store a free
+text phase separately from case/task status. They do not satisfy review gates.
+
+Native `create_case` requires `kickoff` and `workflow_document_text`, delegating
+to ordinary case handoff acceptance. New-case API handoffs also require workflow
+text. It is saved verbatim as ordinary task document key `workflow`, title
+`Workflow`, format `markdown`. Missing or blank text is rejected before mutation.
+Top-level `initialDocuments` belongs to first-task kickoff: normalized, unique
+task document keys, at most 20 additional documents and 200,000 total body
+characters including the workflow. Its key is reserved from additional seeds.
+The acceptance transaction writes
+ordinary task documents, attribution and activity before durable wake delivery.
+Retries share the kickoff receipt and cannot repeat document revisions. Existing
+primary tasks, binding existing tasks and terminal handoffs reject initial
+documents. There is no passive native creation branch or document seed storage. Native case-document
+tools are retired; case detail and execution context roll up authorized task
+document references, omitting bodies and system keys. Historical case document
+storage and REST reads remain compatible.
+
+Starting the first new task of an existing passive case also requires workflow
+text. New-case binding may create `workflow` on the bound task with ordinary task
+mutation authority and create-only revision semantics; an existing key conflicts
+atomically. Later handoffs of an existing primary task omit workflow text and
+revise it through ordinary task document tools. Existing stored cases are not
+backfilled. Receiving agents are instructed to read the task's workflow document;
+its authorized metadata precedes the document reference budget, while its body
+is read on demand. Recommend both a Mermaid `stateDiagram-v2` map and prose
+defining each transition's trigger, evidence, destination agent, human wait/resume
+rules, and correction/escalation limits. State IDs match phases and named edge
+outcomes are defined in prose. No graph parser, guard interpreter or new workflow
+execution service is added.
+
+`case_handoffs` is a durable, principal-idempotent intent/delivery ledger.
+Acceptance atomically stores the comment, links, observed revisions, audit, and
+delivery identity. A running source yields; it retains execution ownership until
+provider termination and workspace/session settlement are proven. Its late
+mutations cannot complete transferred work. Delivery uses the ordinary wake queue
+with a stable receipt, preserving Stop, private access, responsible-user, pause,
+and budget rules. A queued receipt is not proof that the recipient ran.
+Whole-company deletion removes cases and their history before tasks and agents.
+Permanent deletion of an individual agent with retained handoff history returns
+`409 agent_case_history_retained`; keep that agent terminated to preserve attribution.
+
+An existing case with a primary task may instead receive `to: "done"`.
+This terminal handoff records `awaiting_completion`, keeps assignment and
+execution unchanged, and returns `callerMustYield: false`. Normal task
+completion remains authoritative: accepted transition to `done` atomically
+closes the case, sets its phase to `done` and records the handoff as `completed`.
+A task already done settles immediately. Reviews, questions and other legitimate
+waits do not close the case. Stop, task cancellation and reassignment cancel
+the intent. Recording a terminal intent cannot manufacture completion evidence
+or bypass review. Ordinary task completion without this intent leaves case
+status unchanged. Settling an admitted intent remains available while cases
+are disabled, like outgoing-execution cleanup.
+
+`case_access_sources` retains existing task/project boundaries. All sources must
+remain readable; unlinking or deletion cannot widen access. The same policy covers
+case contents, documents, revisions, annotations, assets, history, audit, and live
+publication. Agents cannot supply creator or responsible-user overrides.
+
+The REST operation is `POST /api/companies/:companyId/case-handoffs`; native agents
+use `handoff_case`. History, retry, and cancel stay on the case. Workflow routing
+lives in prompts/skills, without a server-configured phase graph. See
+[persistent case handoffs](plans/2026-10-19-persistent-case-handoffs.md).
+
+Native standard-mode agents also have `create_case`, `read_case` and
+`update_case`. Reads and updates default to the task's primary case and preserve
+the standalone-case authorization, provenance and audit rules of REST. Case
+updates expose facts only; routing, status and permissions remain outside those
+updates. Update receipts deduplicate identical keys within one admitted run;
+creation and handoff receipts remain principal-scoped. Ordinary `read_document`
+and `write_document` manage the active task's revisioned documents.
+
+`read_case` keeps small responses structured. Large responses return bounded
+`readPage.text` JSON chunks with case/task routing versions on every page. Use
+`section: "fields"` to retrieve the entire fields object, including large keys,
+strings, and arrays. Continue with the same `section` and `snapshot`, passing
+`offsetBytes: readPage.nextOffsetBytes` until it is null; concatenate the text
+before parsing JSON. A 409 means facts, accessible references, or routing changed:
+restart at offset zero without the old snapshot. Each page reauthorizes current case access through
+`GET /api/cases/:id?agentRead=true`; no generic API tool or asset grant is needed.
+`limitBytes` is 4–8192 UTF-8 bytes. Ordinary REST reads retain their existing full
+response, and ordinary `update_case` mutation receipts remain unchanged.
+For `section: "document"`, require `documentKey` and optionally
+`documentIssueId`. Omit the task ID for historical case-owned documents; a
+supplied ID must identify the case's primary or currently linked task. Return
+the selected document as bounded JSON pages. Recheck source access, linkage,
+and document trust on every page, and reject system or quarantined documents.
+Document identity, revision and body participate in the snapshot. These reads
+work without generic API tools and confer no additional mutation authority.
+
+Case context is authorized on each admission. Fresh sessions receive a bounded
+snapshot; verified native continuations send current routing metadata and new
+handoff instructions, plus case facts when their content or document revisions
+change. An incompatible or unproven prior projection falls back to full context.
+This limits repeated input without treating prepared database snapshots as proof
+that a provider received them.
+
+The existing Cases navigation opens read-only list and detail pages. List filters
+are URL-backed and applied before authorized pagination. A distinct-types read
+uses the same case visibility policy. Rows include batched current work context;
+detail preserves document previews/revisions, attachments, references, activity
+and handoff history. No case mutation or handoff recovery controls appear there.
+
 ## 6.1 Runtime Components
 
 - `server/`: REST API, auth, orchestration services
@@ -1127,7 +1236,7 @@ Core authorization follows these rules:
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - Concurrent archives keep the newest archive time and its actor attribution. An earlier request must not undo an archive written by human completion while it waited. Unarchive removes that state so a later archive starts fresh.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
-- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
+- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with direct human creation of an ordinary task, human assignment, a direct board/API comment, or another deliberate audited user mutation. Open requests addressed to the person also admit the task until resolution. Channel and routine creator attribution, imported comments, and manual routine runs do not establish participation.
 
 Failed-run rows in Mine and the inbox badge use the run's `responsibleUserId`.
 Another user's run does not appear there, even for a shared agent. Select the
@@ -2277,6 +2386,21 @@ The internal service provides local-only availability and bounded, reauthorized 
 
 ### Task workspace ownership (2026-10-09)
 
+### Filesystem access boundary (2026-10-20)
+
+Filesystem isolation belongs to the OS, execution environment, and storage layout.
+Paperclip authorizes the current task/run, company, explicitly selected configuration,
+execution policy, and repository credentials. It does not infer file permissions from
+other tasks or agents that previously used the same directory, overlapping roots,
+symlink aliases, or shared Git storage. Existing files under an authorized task root
+may be read subject to OS access and API path containment.
+
+Private task records, comments, attachments, run logs, full workspace metadata, and
+operation logs retain their app authorization. Workspace `_issuePrivacySources` and
+operation privacy metadata protect app-record disclosure; they do not grant or deny
+filesystem execution or task-bound file browsing. Current trust and sandbox policy,
+publication receipts, binding checks, and lifecycle locks remain authoritative.
+
 A task's organizational project and filesystem workspace are independent. New tasks that need a filesystem and have no selected/configured workspace get a company/task directory, not the agent home. Plain tasks need neither Git nor a project. Existing bindings and admitted roots remain authoritative; changing project does not move files. Explicit workspace selections apply at a subsequent normal admission after prior execution and persistence obligations settle.
 
 Chat connection and destination settings may supply project/workspace defaults. Destination fields override connection fields; omitted values inherit and null clears the inherited choice. Resolve and authorize these defaults once for a new conversation, then retain the resulting task intent. Existing conversations do not change when settings change. Trust confinement still takes precedence.
@@ -2313,9 +2437,14 @@ pagination, and retrieve hierarchy context separately under existing access chec
 Context does not count as independent results or board cards. Bounded context
 reads retain loaded rows while users reveal more of the tree.
 
-Inbox membership, archives, unread state, and badges retain existing participation
-rules, including assignment, comments, and manual routine runs. Responsibility and
-read-only activity do not admit scheduled work. Inbox discovery/Blocked preserve
+Mine, unread counts, badges, and task toasts use the same personal participation
+rules. Automatic creator attribution, synchronized provider comments, manual routine
+runs, responsibility, and read-only activity do not admit automatic work. Human
+assignment, direct board/API participation, and open addressed requests still qualify.
+Only current requests on open tasks qualify. Historical questions remain answerable
+without adding tasks to Mine. A request stays unread until the person reads or
+replies; automatic task updates do not mark requests as read.
+Existing archive behavior and access checks remain in force. Inbox discovery/Blocked preserve
 participated automation and hide unrelated automation by default. Agent profile
 history, routine history, and task-detail subtasks remain complete. API consumers
 that omit the optional creation filter retain their existing list behavior.
@@ -2355,3 +2484,8 @@ Pipelines, its review queue and learnings, stage automation, REST API, CLI comma
 and experimental setting are removed. Existing database tables and records remain
 for data preservation; there is no migration that drops or rewrites them. The
 independent Cases and Routines features remain available.
+
+Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
+optionally classifies existing tool-result boundaries through a shared OpenRouter
+connection. Settings → Connections is permanent; valid model verdicts take
+precedence and dependency failures use the original built-in detector.

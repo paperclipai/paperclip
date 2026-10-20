@@ -23,6 +23,23 @@ interface ActivityFormatOptions {
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
+  "case.created": "created",
+  "case.updated": "updated",
+  "case.fields_changed": "updated details on",
+  "case.status_changed": "changed status on",
+  "case.issue_linked": "linked a task to",
+  "case.issue_unlinked": "unlinked a task from",
+  "case.child_linked": "linked a child to",
+  "case.attachment_added": "attached a file to",
+  "case.label_added": "added a label to",
+  "case.label_removed": "removed a label from",
+  "case.document_revised": "updated a document on",
+  "case.handoff_requested": "requested a handoff for",
+  "case.handoff_applied": "handed off",
+  "case.handoff_delivered": "delivered a handoff for",
+  "case.handoff_retry_requested": "retried a handoff for",
+  "case.handoff_cancelled": "cancelled a handoff for",
+  "case.handoff_completed": "completed",
   "issue.created": "created",
   "issue.updated": "updated",
   "issue.read_marked": "read",

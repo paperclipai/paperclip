@@ -12,6 +12,7 @@ import { activityLog, agents, companies, companyMemberships, createDb, execution
 import { eq } from "drizzle-orm";
 import { taskRepositoryRelativePath } from "../services/execution-workspace-repositories.js";
 import { errorHandler } from "../middleware/index.js";
+import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import {
   createFileResourceAvailabilityLimiter,
   createFileResourceLimiter,
@@ -344,10 +345,10 @@ describeEmbeddedPostgres("workspace file resources", () => {
       expect(download.text).toBe("CURRENT_TASK_REPORT");
       const explicit = { projectId: graph.projectId, workspaceId: graph.projectWorkspaceId };
       for (const target of [explicit, { workspace: "project" }]) {
-        await request(app).get(`${base}/list`).query(target).expect(404);
-        await request(app).get(`${base}/resolve`).query({ ...target, path: "report.txt" }).expect(404);
-        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt" }).expect(404);
-        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt", download: true }).expect(404);
+        await request(app).get(`${base}/list`).query(target).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/resolve`).query({ ...target, path: "report.txt" }).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt" }).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt", download: true }).expect(alternative === "denied" ? 200 : 404);
       }
       const batch = await request(app).post(`${base}/availability`).send({ queries: [
         { path: "report.txt" }, { workspace: "execution", path: "report.txt" },
@@ -356,8 +357,8 @@ describeEmbeddedPostgres("workspace file resources", () => {
       expect(batch.body.results).toEqual([
         expect.objectContaining({ openable: true, resource: expect.objectContaining({ workspaceKind: "execution_workspace" }) }),
         expect.objectContaining({ openable: true, resource: expect.objectContaining({ workspaceKind: "execution_workspace" }) }),
-        expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
-        expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
+        alternative === "denied" ? expect.objectContaining({ openable: true }) : expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
+        alternative === "denied" ? expect.objectContaining({ openable: true }) : expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
       ]);
       expect(JSON.stringify(batch.body)).not.toContain(projectRoot);
       expect(JSON.stringify(batch.body)).not.toContain("PRIVATE_ALTERNATIVE_BYTES");
@@ -379,7 +380,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     }
   });
 
-  it("checks shared physical-root privacy before every file read and retains moved or deleted source provenance", async () => {
+  it("reads task-bound files regardless of historical private sources and leaves legacy ledgers unchanged", async () => {
     const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
     try {
       const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
@@ -393,6 +394,11 @@ describeEmbeddedPostgres("workspace file resources", () => {
       const [source] = await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: privateIssueId,
         name: "Private source workspace", cwd: executionRoot, mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" }).returning();
       await fs.writeFile(path.join(executionRoot, "secret.txt"), "PRIVATE_ROOT_BYTES");
+      const [task] = await db.select().from(issues).where(eq(issues.id, graph.issueId));
+      await db.update(executionWorkspaces).set({ sourceIssueId: privateIssueId, name: "Private original workspace metadata" })
+        .where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(await canActorReadExecutionWorkspace(db, { type: "board", userId: "board-user", source: "session", companyIds: [graph.companyId] }, task.executionWorkspaceId!)).toBe(false);
       const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
       const targets = [{ workspace: "execution" }, { projectId: graph.projectId, workspaceId: graph.projectWorkspaceId }];
       const reads = () => targets.flatMap(target => [
@@ -402,20 +408,17 @@ describeEmbeddedPostgres("workspace file resources", () => {
         request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ ...target, path: "secret.txt", download: true }),
         request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`).send({ queries: [{ ...target, path: "secret.txt" }] }),
       ]);
-      const deny = async () => {
+      const allow = async () => {
         for (const pending of reads()) {
           const response = await pending;
+          expect(response.status).toBe(200);
           if (response.body.kind === "workspace_file_availability") {
-            expect(response.status).toBe(200);
-            expect(response.body.results).toEqual([expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null })]);
-          } else expect(response.status).toBe(404);
-          for (const hidden of ["PRIVATE_ROOT_BYTES", source.id, privateIssueId, executionRoot, "Private source workspace"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
+            expect(response.body.results).toEqual([expect.objectContaining({ openable: true })]);
+          }
+          for (const hidden of [source.id, privateIssueId, "Private source workspace", "Private original workspace metadata"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
         }
       };
-      await deny();
-      await db.update(executionWorkspaces).set({ status: "archived" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
-      await deny();
-      await db.update(executionWorkspaces).set({ status: "active" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await allow();
       expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId))).toEqual([]);
       expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId))).toEqual([]);
       const [grant] = await db.insert(issueAccessGrants).values({ issueId: privateIssueId, subjectType: "user", subjectId: "board-user", source: "explicit" }).returning();
@@ -426,17 +429,17 @@ describeEmbeddedPostgres("workspace file resources", () => {
       const provenance = await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId));
       await db.update(executionWorkspaces).set({ cwd: targetProjectRoot }).where(eq(executionWorkspaces.id, source.id));
       await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
-      await deny();
+      await allow();
       await db.update(issueAccessGrants).set({ revokedAt: null }).where(eq(issueAccessGrants.id, grant.id));
       await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "secret.txt" }).expect(200);
       await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, source.id));
-      await deny();
+      await allow();
       expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId))).toEqual(provenance);
       expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId))).toEqual([]);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
-  it("protects a private configured-project alias even without an execution workspace", async () => {
+  it("ignores an unrelated private project alias while reading the current task root", async () => {
     const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
     try {
       const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
@@ -446,7 +449,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       await db.update(projectWorkspaces).set({ cwd: executionRoot }).where(eq(projectWorkspaces.id, graph.targetProjectWorkspaceId));
       await fs.writeFile(path.join(executionRoot, "private-project.txt"), "PRIVATE_CONFIGURED_PROJECT");
       const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
-      await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "private-project.txt" }).expect(404);
+      await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "private-project.txt" }).expect(200);
       await db.insert(projectAccessMembers).values({ companyId: graph.companyId, projectId: graph.targetProjectId, subjectType: "user", subjectId: "board-user" });
       const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "private-project.txt" }).expect(200);
       expect(response.body.content.data).toBe("PRIVATE_CONFIGURED_PROJECT");
@@ -456,7 +459,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
   it.each([
     ["configured", "ancestor"], ["configured", "descendant"],
     ["execution", "ancestor"], ["execution", "descendant"],
-  ] as const)("protects %s private roots from a public %s file browser, including retained moved ownership", async (ownerKind, relation) => {
+  ] as const)("allows files in authorized roots despite %s private %s aliases and retained history", async (ownerKind, relation) => {
     const { root, projectRoot, targetProjectRoot } = await makeWorkspace();
     try {
       const ancestor = path.join(root, "work"), descendant = path.join(ancestor, "private");
@@ -489,22 +492,22 @@ describeEmbeddedPostgres("workspace file resources", () => {
         access: await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId)),
         policies: await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId)),
       });
-      const deny = async () => {
+      const allow = async () => {
         const before = await readState();
         for (const target of targets) {
           for (const [endpoint, query] of [
             ["list", {}], ["resolve", { path: relativeFile }], ["content", { path: relativeFile }], ["content", { path: relativeFile, download: true }],
           ] as const) {
-            const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/${endpoint}`).query({ ...target, ...query }).expect(404);
-            for (const hidden of ["PRIVATE_OVERLAPPING_ROOT_BYTES", ownerId, privateRoot, "Private overlapping"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
+            const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/${endpoint}`).query({ ...target, ...query }).expect(200);
+            for (const hidden of [ownerId, "Private overlapping"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
           }
           const availability = await request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`)
             .send({ queries: [{ ...target, path: relativeFile }] }).expect(200);
-          expect(availability.body.results).toEqual([expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null })]);
+          expect(availability.body.results).toEqual([expect.objectContaining({ openable: true })]);
         }
         expect(await readState()).toEqual(before);
       };
-      await deny();
+      await allow();
       const grant = ownerKind === "configured"
         ? (await db.insert(projectAccessMembers).values({ companyId: graph.companyId, projectId: ownerId, subjectType: "user", subjectId: "board-user" }).returning())[0]!
         : (await db.insert(issueAccessGrants).values({ issueId: privateIssueId!, subjectType: "user", subjectId: "board-user", source: "explicit" }).returning())[0]!;
@@ -525,7 +528,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
         await db.update(executionWorkspaces).set({ cwd: targetProjectRoot }).where(eq(executionWorkspaces.id, ownerId));
         await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
       }
-      await deny();
+      await allow();
       expect(await fs.readFile(path.join(publicRoot, relativeFile), "utf8")).toBe("PRIVATE_OVERLAPPING_ROOT_BYTES");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });

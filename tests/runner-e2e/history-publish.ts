@@ -567,7 +567,6 @@ async function main() {
   await regenerateRunnerDashboard({
     bundle: s3ReportRoot,
     historyFile: null,
-    publicSummaryImageHref: "public-images/campaign-summary.png",
   });
   const manifest = await createBundleManifest(
     s3ReportRoot,
@@ -635,16 +634,10 @@ async function main() {
     historyFile,
     outputDirectory: landingDirectory,
     evidenceHrefPrefix: `campaigns/${campaign.campaignId}`,
-    publicSummaryImageHref: `campaigns/${campaign.campaignId}/public-images/campaign-summary.png`,
   });
   await writeFile(
     path.join(landingDirectory, "index.html"),
-    renderRunnerHistoryIndex(history, {
-      latestSummaryImageHref:
-        history.latestCampaignId === campaign.campaignId
-          ? `campaigns/${campaign.campaignId}/public-images/campaign-summary.png`
-          : undefined,
-    }),
+    renderRunnerHistoryIndex(history),
     "utf8",
   );
   await Promise.all([

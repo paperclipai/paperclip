@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -120,6 +121,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     await tx.update(mcpOauthTokens).set({usedAt:new Date(),expiresAt:new Date()}).where(eq(mcpOauthTokens.grantId,b.grantId));
   }
   async function revokeBinding(tx:ExternalAdmissionTransaction,b:typeof bindings.$inferSelect,operatorId:string,reason:string,actorType:"user"|"system"="user") {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
     const runs=await fence(tx,b,reason);
     await tx.update(bindings).set({status:"revoked",revokedAt:new Date(),ticketHash:null,challengeHash:null,cleanupExpiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS),deadlineEnforcedAt:b.deadlineEnforcedAt??(b.qualificationExpiresAt&&b.qualificationExpiresAt<=new Date()?new Date():null),revision:b.revision+1,updatedAt:new Date()}).where(eq(bindings.id,b.id));
     await tx.update(credentials).set({revokedAt:new Date()}).where(and(eq(credentials.bindingId,b.id),inArray(credentials.kind,["access","refresh","signal"])));
@@ -177,6 +179,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
           await tx.update(credentials).set({expiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS)}).where(and(eq(credentials.bindingId,old.id),inArray(credentials.kind,["cleanup","detector_cleanup"]),isNull(credentials.revokedAt)));
         } else if(input.replaceBindingId)throw conflict("Invitation changed. Refresh before replacing its ticket.");
         const [latest]=await tx.select({generation:bindings.generation}).from(bindings).where(and(eq(bindings.companyId,input.companyId),eq(bindings.agentId,input.agentId))).orderBy(desc(bindings.generation)).limit(1);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
         const [created]=await tx.insert(bindings).values({id:bindingId,companyId:input.companyId,agentId:input.agentId,operatorId:input.operatorId,generation:(latest?.generation??0)+1,ticketHash:museCredentialHash(ticket),ticketExpiresAt:new Date(Date.now()+MUSE_TICKET_TTL_MS)}).returning();
         await logActivity(tx as unknown as Db,{companyId:input.companyId,actorType:"user",actorId:input.operatorId,action:"muse.pairing_created",entityType:"agent",entityId:input.agentId,details:{bindingId:created!.id,generation:created!.generation}});
         await updateAgentConfigurationInTransaction(tx as unknown as Db,agent.id,{adapterConfig:{...agent.adapterConfig,museBindingId:created!.id}},{recordRevision:{createdByUserId:input.operatorId,source:"muse-pairing"}});
@@ -312,6 +315,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         if(b.qualificationId)throw conflict("Another qualification already exists.");
         await assertMuseCurrentAuthority(tx,b);
         const startedAt=new Date(input.expiresAt.getTime()-24*60*60_000);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
         await tx.update(bindings).set({qualificationId:input.qualificationId,qualificationStartedAt:startedAt,qualificationExpiresAt:input.expiresAt,revision:b.revision+1,updatedAt:new Date()}).where(eq(bindings.id,b.id));
         await logActivity(tx as unknown as Db,{companyId:input.companyId,actorType:"user",actorId:input.operatorId,agentId:input.agentId,action:"muse.qualification_started",entityType:"agent",entityId:input.agentId,details:{bindingId:b.id,generation:b.generation,revision:b.revision+1,authorizingUserId:b.operatorId,qualificationId:input.qualificationId,startedAt:startedAt.toISOString(),expiresAt:input.expiresAt.toISOString()}},publications);
         return {qualificationId:input.qualificationId,startedAt:startedAt.toISOString(),expiresAt:input.expiresAt.toISOString(),revision:b.revision+1};
@@ -484,9 +488,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       publications.forEach(publishActivity);
       return {status:removed?"detector_removed":"detector_removal_requested",externalStopConfirmed:false};
     },
-    async authorizingUserIdForBinding(ref:{companyId:string;agentId:string;bindingId:string;bindingGeneration:number}) {
+    async authorizingUserIdForBinding(ref:{companyId:string;agentId:string;bindingId:string;bindingGeneration:number}, options: { allowPaused?: boolean } = {}) {
       const [b]=await db.select().from(bindings).where(and(eq(bindings.id,ref.bindingId),eq(bindings.generation,ref.bindingGeneration),eq(bindings.companyId,ref.companyId),eq(bindings.agentId,ref.agentId),isNull(bindings.revokedAt)));
-      if(!b||!await identity.enabled())throw forbidden("Muse binding unavailable.");await assertMuseCurrentAuthority(db,b);if((await inspectMuseConnectionCredential(db,b,b.grantId?connectionResource():undefined)).state!=="active")throw forbidden("Muse credential authority is unavailable.");return b.operatorId;
+      if(!b||!await identity.enabled())throw forbidden("Muse binding unavailable.");await assertMuseCurrentAuthority(db,b,false,options.allowPaused === true);if((await inspectMuseConnectionCredential(db,b,b.grantId?connectionResource():undefined)).state!=="active")throw forbidden("Muse credential authority is unavailable.");return b.operatorId;
     },
     async assertRunAuthority(execution:Execution,database:Db=db) {const ref=execution.provider.binding;const [b]=await database.select().from(bindings).where(and(eq(bindings.id,ref.bindingId),eq(bindings.generation,ref.bindingGeneration),eq(bindings.companyId,ref.companyId),eq(bindings.agentId,ref.agentId),isNull(bindings.revokedAt)));if(!b||!await museIdentity(database).enabled())throw forbidden("Muse binding unavailable.");await assertMuseCurrentAuthority(database,b);if((await inspectMuseConnectionCredential(database,b,b.grantId?connectionResource():undefined)).state!=="active")throw forbidden("Muse credential authority is unavailable.");const [a]=await database.select().from(assignments).where(and(eq(assignments.runId,execution.binding.runId),eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation)));if(!a||a.status==="fenced"||!Number.isFinite(a.expiresAt.getTime())||a.expiresAt.getTime()<=Date.now())throw forbidden("Muse assignment unavailable.");},
     port:(execution:Execution):ExternalProviderPort & Required<Pick<ExternalProviderPort,"inputAvailable">>=>nativeBroker.port(execution),

@@ -3,9 +3,11 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
   agentWakeupRequests,
   agentRuntimeState,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   documentRevisions,
@@ -180,6 +182,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     // the TRUNCATE below runs.
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await cleanupHeartbeatInvalidationFixture(db);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
   });
 
   afterAll(async () => {
@@ -195,6 +198,22 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+    });
+    // Admission intersects agent authority with an existing responsible user
+    // and that user's active company membership.
+    await db.insert(authUsers).values({
+      id: "responsible-user",
+      name: "Fixture user",
+      email: "responsible-user@example.test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "responsible-user",
+      status: "active",
+      membershipRole: "member",
     });
     await db.insert(agents).values({
       id: agentId,
