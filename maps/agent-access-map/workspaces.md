@@ -135,6 +135,13 @@ a running service.
 
 ## `provisioning`
 
+Source preparation keeps its dedicated lock connection active during work on
+other connections. It preserves company/source exclusion and existing admission
+authority; it adds no agent API or permission. The
+[source-lock regression](../../server/src/services/isolated-remote-workspace-source-lock.test.ts)
+covers PostgreSQL idle timeout, competing preparation, ordinary pool availability,
+and failure cleanup. Deployed agent recovery requires separate live evidence.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:

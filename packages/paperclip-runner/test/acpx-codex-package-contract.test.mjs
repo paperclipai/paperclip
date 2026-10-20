@@ -87,6 +87,7 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
     "paperclip-runner-eval-session": "./dist/cli/eval-session.js",
     "paperclip-runner-codex-proxy": "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+    "paperclip-runner-copilot-metadata-probe": "./dist/cli/copilot-metadata-probe.js",
     "paperclip-runner-opencode-proxy":
       "./dist/cli/opencode-app-server-proxy.js",
   });

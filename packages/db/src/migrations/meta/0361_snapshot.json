@@ -1,5 +1,5 @@
 {
-  "id": "3d8850ed-39ce-4cd8-a651-a5d17395284c",
+  "id": "d34e0f36-d7d1-409e-b868-6e4262e8adca",
   "prevId": "a69ba991-0ea0-4cf4-8dcc-53f547aacaeb",
   "version": "7",
   "dialect": "postgresql",
@@ -4387,7 +4387,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -4860,7 +4860,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false
@@ -14751,12 +14751,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
@@ -46661,12 +46655,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

@@ -342,6 +342,14 @@ Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mod
 
 ## Migration authoring checklist
 
+Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
+both `SQL_ASCII` and UTF-8 databases. Migration `0355` constructs its whitespace
+pattern from UTF-8 bytes so legacy databases can compile it, and matches whole
+characters instead of trimming individual bytes. Its shipped hash remains a
+valid migration receipt; otherwise an upgrade could replay its older connector
+triggers over the replacements from `0356`. The encoding migration regression
+checks both selector behavior and preservation of that later trigger definition.
+
 The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
 
 When authoring migrations or one-time backfills:

@@ -16,9 +16,9 @@ import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
 export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const verified = result.checks.some(check => check.level === "info" &&
-    (/hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified"));
+    (/hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified" || check.code === "copilot_metadata_verified"));
   const authenticationFailed = result.checks.some(check =>
-    check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code));
+    check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || check.code === "COPILOT_AUTH_REQUIRED" || /_hello_probe_auth_required$/.test(check.code));
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
@@ -63,7 +63,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     }
     if (binding) config = { ...config, env: stripAiAuthBindings(config.env) };
     config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType })).config;
-    const environmentId = await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId);
+    const environmentId = await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, agent.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
     if (environmentId) {
       await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId);
       const environment = await environments.getById(environmentId);

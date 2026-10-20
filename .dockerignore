@@ -72,6 +72,11 @@ packages/paperclip-runner/test-fixtures/pi-acp/**
 
 packages/grok-acp/bin
 
+# The Copilot build-time identity gate reads these sanitized source declarations.
+!packages/paperclip-runner/test/fixtures/copilot-profile-v*-identity.json
+# Images build their pinned Copilot assets instead of copying host binaries.
+/packages/paperclip-runner/provider-assets/
+/server/provider-assets/
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v23-claude-qualification-identity.json
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v26-identity.json
 !packages/paperclip-runner/test/fixtures/copilot-profile-v19-claude-qualification-identity.json

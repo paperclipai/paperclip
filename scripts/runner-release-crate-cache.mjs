@@ -53,6 +53,7 @@ export const CACHED_PATHS = [
 // crate, whatever its form, must land under one of these patterns.
 export const HASHED_INPUTS = [
   `${RUNNER_PACKAGE}/rust-toolchain.toml`,
+  `${RUNNER_PACKAGE}/acpx-profiles.json`,
   `${RUNNER_PACKAGE}/runner/Cargo.toml`,
   `${RUNNER_PACKAGE}/runner/Cargo.lock`,
   `${RUNNER_PACKAGE}/runner/crates/**`,

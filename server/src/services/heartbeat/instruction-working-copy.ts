@@ -9,6 +9,7 @@ import { AgentDirectoryReuseInvalidatedError, isAgentDirectoryCopy } from "../ag
 import { collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance, type agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import { claimWarmNativeInstructionCopy, nativeSessionWorkspaceScope, reserveWarmNativeInstructionDirectory } from "../native-runtime/index.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { supportsNativeWarmFiles } from "../native-runtime/native-warm-capability.js";
 import type { HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
@@ -137,7 +138,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
         const savedFileInput = parseObject(parseObject(readRun().runnerProfileJson).nativeExecutionInput);
         const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
         const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-        const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+        const warmFiles = nativeRuntimeResolution.kind === "native" && (supportsNativeWarmFiles({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }) ||
           (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
           (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
             ? executionTarget.runnerLifecyclePolicy?.mode === "warm"

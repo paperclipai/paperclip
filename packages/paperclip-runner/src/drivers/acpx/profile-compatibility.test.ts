@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
 import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
@@ -19,6 +20,32 @@ describe("historical ACPX profile decoding", () => {
     for (const agent of ["claude", "codex", "grok"]) {
       expect(isSupportedAcpxProfileVersion(agent, 5)).toBe(true);
       expect(isSupportedAcpxProfileVersion(agent, 6)).toBe(false);
+    }
+  });
+  it("decodes retained Copilot revisions and the current profile without widening other providers", () => {
+    for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]) {
+      expect(isSupportedAcpxProfileVersion("copilot", version)).toBe(true);
+    }
+    expect(isSupportedAcpxProfileVersion("copilot", QUALIFIED_ACPX_PROFILE_DATA.copilot.agentProfileVersion + 1)).toBe(false);
+    // Preserve Pi history and its current mainline release without admitting the next profile.
+    expect(isSupportedAcpxProfileVersion("pi", 23)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("pi", QUALIFIED_ACPX_PROFILE_DATA.pi.agentProfileVersion)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("pi", QUALIFIED_ACPX_PROFILE_DATA.pi.agentProfileVersion + 1)).toBe(false);
+    for (const agent of ["cursor", "claude", "codex", "grok"]) {
+      expect(isSupportedAcpxProfileVersion(agent, 23)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 24)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 25)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 26)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 27)).toBe(false);
+    }
+  });
+  it("decodes every retained Copilot identity so saved runs can reach recovery", () => {
+    const root = new URL("../../../test/fixtures/", import.meta.url);
+    const files = readdirSync(root).filter(name => /^copilot-profile-v\d+.*-identity\.json$/u.test(name));
+    expect(files.length).toBeGreaterThan(30);
+    for (const file of files) {
+      const identity = JSON.parse(readFileSync(new URL(file, root), "utf8"));
+      expect(isSupportedAcpxProfileVersion("copilot", identity.declaration.agentProfileVersion), file).toBe(true);
     }
   });
   it.each([0, 1.5, "11", null, undefined, NaN])("rejects invalid revisions: %s", version => {

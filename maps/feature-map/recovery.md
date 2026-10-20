@@ -134,6 +134,14 @@ and rejected identity evidence. The Runner restart tests require positive exit
 evidence before replacement. This coverage does not prove recovery of a
 historical retained sandbox or behavior during a live provider outage.
 
+For completion recovery, restart after a native completion proposal is appended
+but before its session checkpoint. Verify that the original result is finalized
+after provider termination, with no new provider turn or repeated external action.
+The [runtime regressions](../../packages/paperclip-runner/src/native-session-runtime.test.ts)
+exercise the real Codex driver with a simulated transport, including a still-active
+provider and invalid, conflicting, duplicate, or stale proposals. This does not
+qualify a hosted sandbox restart.
+
 The same database suite pauses an original preparation while recovery claims
 the remote run. It then verifies that the old preparation yields without opening
 a provider or changing the recovery owner, for both live and expired leases.

@@ -580,6 +580,9 @@ async function mapHashesToMigrationFiles(migrationFiles: string[]): Promise<Map<
       const content = await readMigrationFileContent(migrationFile);
       const hash = createHash("sha256").update(content).digest("hex");
       mapped.set(hash, migrationFile);
+      if (migrationFile === "0355_agent_tool_definition_hooks.sql") {
+        mapped.set("7ac76adac0220da522c78e51da20490aeb0f90512b4370a05af9f8dd0f75eda6", migrationFile);
+      }
     }),
   );
 

@@ -859,6 +859,11 @@ const recoveryFakeCodex = resolve(
           async onContinuityBreak(value) {
             continuity = value;
           },
+        }).then((result) => {
+          if (result.terminal.runTerminalState !== "succeeded") {
+            throw new Error(`Disposable recovery fixture failed: ${JSON.stringify(result)}`);
+          }
+          return result;
         }).catch(async (error: unknown) => {
           const eventRows = await db
             .select({

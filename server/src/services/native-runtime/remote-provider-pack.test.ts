@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification } from "./remote-provider-pack.js";
+import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -90,6 +90,21 @@ describe("remote provider pack reuse", () => {
   });
 });
 
+
+describe("ordinary ACPX image artifacts", () => {
+  const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);
+  it.each(["cursor", "copilot"])("selects bundled artifacts for remote %s without an operator override", agent => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(true);
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: false, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: "/explicit/pack", provider: provider(agent) })).toBe(false);
+  });
+  it.each(["pi", "claude", "codex", "grok"])("does not change the artifact authority for %s", agent => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
+  });
+  it("does not admit a non-ACPX provider through bundled image selection", () => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: { kind: "codex", model: null } })).toBe(false);
+  });
+});
 
 describe("standard remote provider pack discovery", () => {
   const roots = ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"];

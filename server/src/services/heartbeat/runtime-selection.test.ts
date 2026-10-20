@@ -98,6 +98,25 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(input.onNativeOwnershipHeld).not.toHaveBeenCalled();
   });
 
+  it("persists the Copilot task model without accepting task provider or permission changes", async () => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", acpxPermissionMode: "approve-reads" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({
+      persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null,
+    });
+    input.config.issueAssigneeOverrides = { adapterConfig: {
+      model: "gpt-6-luna", provider: "codex", acpxAgent: "pi", acpxPermissionMode: "approve-all",
+    } };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Copilot selection");
+    const expected = { kind: "acpx", agent: "copilot", model: "gpt-6-luna", permissionMode: "approve-reads" };
+    expect(selected.nativeExecution.provider).toMatchObject(expected);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { provider: expected } });
+  });
+
   it("persists configured GitHub instruction skills without admitting provider-mentioned skills", async () => {
     const { input, issue, run } = await fixture();
     input.config.runScopedMentionedSkillKeys = ["company/test/configured"];
@@ -257,6 +276,39 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("runner_warm_environment_requires_reusable_lease");
     expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
     expect(await coordinators(run.id)).toHaveLength(0);
+  });
+
+  it.each([
+    { provider: "github" as const, method: "api_key" as const, expected: "warm" },
+    { provider: "github" as const, method: "subscription" as const, expected: "per_turn" },
+    { provider: "openai" as const, method: "api_key" as const, expected: "per_turn" },
+  ])("persists $expected Copilot lifecycle for a managed $provider/$method account", async ({ provider, method, expected }) => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", lifecycleMode: "warm", idleTimeoutMs: 300_000 };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({
+      persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null,
+    });
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider, method, mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = {
+      sessionIdentity: "fixture-grant:task-owner:epoch-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "fixture-grant:task-owner:generation-1", sessionIdentity: "fixture-grant:task-owner:epoch-1" } },
+      attribution,
+      accountName: "Saved account",
+      accountOwnerUserId: "task-owner",
+      identity: "fixture-grant:task-owner:generation-1",
+      home: instructionRoot,
+      cleanup: async () => {},
+    };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Copilot selection");
+    expect(selected.nativeExecution.session.lifecyclePolicy.mode).toBe(expected);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: expected } } },
+    });
+    expect(await coordinators(run.id)).toHaveLength(1);
   });
 
   it("preserves only server-owned admission and dispatch evidence when recording legacy selection", async () => {

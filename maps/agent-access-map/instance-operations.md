@@ -88,7 +88,10 @@ actor without receiving other instance-admin powers. This uses the current
 stack role on each request; company membership alone does not grant it.
 Members, Support users, agents, and ordinary self-hosted sessions remain denied.
 Cloud staging exposes experimental controls to instance admins and stack Admins.
-It permits saved overrides of Cloud feature defaults. This exception requires a managed instance
+It permits saved overrides of Cloud-disabled experimental defaults. Cloud-enabled
+features remain true on every managed stack, including staging, and the settings
+service rejects attempts to disable them with 403 before saving.
+This exception requires a managed instance
 and a provisioner-supplied `*.staging.paperclip.app` primary hostname; request
 headers do not establish staging. Ordinary board members and agents still cannot
 mutate instance settings. Only an explicit feature allowlist is editable on staging. Cloud

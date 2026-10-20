@@ -180,7 +180,7 @@ describe("Pi controls catalog admission", () => {
     expect(cells).toHaveLength(4); expect(cells.every(c => c.profile.qualificationCandidate === "pi" && c.task.expectedRunCount === 1)).toBe(true);
     expect(cells.map(c => `${c.environment.id}/${c.task.id}`).sort()).toEqual(["daytona/pending-permission-stop", "daytona/same-turn-steering", "local/pending-permission-stop", "local/same-turn-steering"]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(c => c.suite.id === "pi-controls")).toBe(false);
-    expect(validateRunnerCatalog()).toHaveLength(731);
+    expect(validateRunnerCatalog()).toHaveLength(733);
     for (const cell of cells) expect(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     expect(() => assertRemoteNativeEvidencePrerequisites(cells, {})).toThrow();
   });
@@ -193,17 +193,19 @@ describe("Pi controls catalog admission", () => {
     expect(runnerSuites.find(s => s.id === "pi-controls")!.definitionMetadata).toMatchObject({ version: 10, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", profileVersion: 28,
       remoteProcessIdentity: "observer-pid-startTicks-bootId",
       controlPlaneSettlement: "required-scoped-result-and-terminal-after-runner" });
-    expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 5, piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" });
+    expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 6, piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" });
     for (const cell of runnerMatrix.filter(cell => cell.profile.qualificationCandidate === "pi")) {
       const agent = cell.profile.buildAgent({ environmentId: "environment", environmentFixtureId: cell.environment.id, workspacePath: "/workspace", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "synthetic", version: "latest" } } });
       expect(agent.adapterConfig).toMatchObject({ piThinkingLevel: "low" });
     }
+    // Capture the combined catalog: current mainline Pi 28 and the retained Copilot cells.
+    // Profile changes update the fingerprint automatically; historical grades stay separate.
     const hashes = Object.fromEntries(runnerSuites.filter(s => ["pi-native", "native-active-stop", "extended-harnesses", "rich-acp-warm-continuity"].includes(s.id)).map(s => [s.id, suiteDefinitionHash(s)]));
     expect(hashes).toEqual({
       "pi-native": "914b35a061fe7e0fbd7a288bfb970ba1a73f9ed725667a7edf81cfdee33ab5df",
-      "native-active-stop": "2d4fdeeb75bd531b309bd1b35cfa5680ceefdeee6b7155b068dd011ce9901980",
-      "rich-acp-warm-continuity": "331b88d9538a132670789fb7864df7df5f4bf294ae19b62f53d8a02f901774f0",
-      "extended-harnesses": "5de4fac78d4d581bc0954f07b5cf2df2862d37f8b0205325eede6d9ef6d9f5e6",
+      "native-active-stop": "4654a2169bff96cf8377fdd62441f5cabea5c613f447e518830f6b1efd82c051",
+      "rich-acp-warm-continuity": "7e8a0012f2f67fba03cd94403b096a07cfc95cdb7aa568b4c3fd18b852d735f3",
+      "extended-harnesses": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
     });
     expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(22);
   });

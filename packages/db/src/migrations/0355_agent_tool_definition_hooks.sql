@@ -3,13 +3,13 @@ RETURNS TABLE(target_type text, target_id text)
 LANGUAGE plpgsql IMMUTABLE SET search_path = public, pg_temp AS $$
 DECLARE single_agent text := CASE WHEN jsonb_typeof(selectors->'agentId') = 'string' THEN nullif(selectors->>'agentId', '') END;
   many_agents text[];
-  trim_chars text := U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF';
+  trim_pattern text := '[\x09-\x0d ]|' || convert_from(decode('c2a07ce19a807ce280807ce280817ce280827ce280837ce280847ce280857ce280867ce280877ce280887ce280897ce2808a7ce280a87ce280a97ce280af7ce2819f7ce380807cefbbbf', 'hex'), 'UTF8');
 BEGIN
   SELECT array_agg(value#>>'{}') INTO many_agents
     FROM jsonb_array_elements(CASE jsonb_typeof(selectors->'agentIds')
       WHEN 'array' THEN selectors->'agentIds'
-      WHEN 'string' THEN jsonb_build_array(btrim(selectors->>'agentIds', trim_chars)) ELSE '[]'::jsonb END) value
-    WHERE jsonb_typeof(value) = 'string' AND btrim(value#>>'{}', trim_chars) <> '';
+      WHEN 'string' THEN jsonb_build_array(regexp_replace(selectors->>'agentIds', '^(' || trim_pattern || ')+|(' || trim_pattern || ')+$', '', 'g')) ELSE '[]'::jsonb END) value
+    WHERE jsonb_typeof(value) = 'string' AND regexp_replace(value#>>'{}', '^(' || trim_pattern || ')+|(' || trim_pattern || ')+$', '', 'g') <> '';
   IF single_agent IS NOT NULL THEN
     IF coalesce(cardinality(many_agents), 0) = 0 OR single_agent = ANY(many_agents) THEN
       RETURN QUERY SELECT 'agent'::text, single_agent;

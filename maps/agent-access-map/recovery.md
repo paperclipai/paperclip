@@ -69,6 +69,14 @@ prove successful recovery.
 
 ## `bounded-continuation`
 
+Controller recovery can restore the exact active turn's saved completion proposal
+before reconnecting its provider. It requires matching run/session/source/turn
+identity and subsequent provider termination. This adds no agent retry, completion,
+or recovery-resolution authority. The
+[runtime regressions](../../packages/paperclip-runner/src/native-session-runtime.test.ts)
+cover the driver boundary with simulated transport; live hosted recovery remains
+separate qualification.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:

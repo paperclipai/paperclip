@@ -954,7 +954,7 @@ export async function createApp(
   api.use(decisionModelRoutes(db));
   api.use(agentObservabilityRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure }));
   api.use(fastResponseRoutes(db));
-  api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));
+  api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost, pluginWorkerManager: workerManager }));
   api.use(
     toolAccessRoutes(db, {
       deploymentMode: opts.deploymentMode,

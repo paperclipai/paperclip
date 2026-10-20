@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { INSTANCE_FEATURE_CATALOG } from "@paperclipai/shared";
 import {
   applyManagedExperimentalOverlay,
   instanceSettingsService,
@@ -83,6 +84,40 @@ describe("applyManagedExperimentalOverlay", () => {
 });
 
 describe("instanceSettingsService managed overlay", () => {
+  it.each(["team.staging.paperclip.app", "team.paperclip.app", undefined])(
+    "enforces every Cloud-enabled flag over old tenant values on %s",
+    async (primaryHost) => {
+      const features = Object.fromEntries(Object.entries(INSTANCE_FEATURE_CATALOG)
+        .filter(([, entry]) => entry.tier === "managed")
+        .map(([key]) => [key, true]));
+      const stored = Object.fromEntries(Object.keys(features).map((key) => [key, false]));
+      const { db, persistedSets } = stubDb(settingsRow(stored));
+      const runtimeEnv = {
+        PAPERCLIP_PRIMARY_HOST: primaryHost,
+        ...managedEnv(JSON.stringify({
+          v: 1, mode: "cloud", catalogVersion: "test",
+          features, plugins: { autoInstall: [] },
+        })),
+      };
+      const service = instanceSettingsService(db, { runtimeEnv });
+      expect(await service.getExperimental()).toMatchObject(features);
+      expect((await service.get()).experimental).toMatchObject(features);
+      expect((await service.getExperimental()).managedKeys).toMatchObject(
+        Object.fromEntries(Object.keys(features)
+          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators")
+          .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
+      );
+      for (const key of Object.keys(features)) {
+        await expect(service.updateExperimental({ [key]: false })).rejects.toMatchObject({
+          status: 403,
+          details: { code: "settings_operator_managed" },
+        });
+      }
+      expect(persistedSets).toHaveLength(0);
+      expect(await instanceSettingsService(db, { runtimeEnv }).getExperimental()).toMatchObject(features);
+    },
+  );
+
   it("keeps sandbox policy enforced on staging after a tenant tries to disable it", async () => {
     const row = settingsRow({ enableManagedSandboxOnly: false });
     const { db, persistedSets } = stubDb(row);
@@ -94,10 +129,10 @@ describe("instanceSettingsService managed overlay", () => {
       })),
     };
     const service = instanceSettingsService(db, { runtimeEnv });
-    const updated = await service.updateExperimental({ enableManagedSandboxOnly: false });
-    Object.assign(row, persistedSets.at(-1));
+    await expect(service.updateExperimental({ enableManagedSandboxOnly: false })).rejects.toMatchObject({ status: 403 });
+    expect(persistedSets).toHaveLength(0);
     const restored = await instanceSettingsService(db, { runtimeEnv }).getExperimental();
-    for (const experimental of [updated.experimental, restored]) {
+    for (const experimental of [await service.getExperimental(), restored]) {
       expect(experimental).toMatchObject({
         enableManagedSandboxOnly: true,
         managedKeys: { enableManagedSandboxOnly: { managed: true, managedBy: "paperclip-cloud" } },
@@ -109,7 +144,7 @@ describe("instanceSettingsService managed overlay", () => {
     }
   });
 
-  it("lets staging override managed defaults, persists toggles, and preserves other defaults", async () => {
+  it("lets staging override disabled defaults while keeping Cloud-enabled features managed", async () => {
     const row = settingsRow({});
     const { db, persistedSets } = stubDb(row);
     const runtimeEnv = {
@@ -121,16 +156,20 @@ describe("instanceSettingsService managed overlay", () => {
       PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app",
     };
     const service = instanceSettingsService(db, { runtimeEnv });
+    const managedKeys = {
+      enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
+      enableNativeRunner: { managed: true, managedBy: "paperclip-cloud" },
+    };
     expect(await service.getExperimental()).toMatchObject({
-      enableStatusCards: true, enableChatConnectors: false, enableNativeRunner: true, managedKeys: {},
+      enableStatusCards: true, enableChatConnectors: false, enableNativeRunner: true, managedKeys,
     });
     expect(persistedSets).toHaveLength(0);
 
     for (const enabled of [true, false]) {
-      const updated = await service.updateExperimental({ enableChatConnectors: enabled, enableNativeRunner: enabled });
+      const updated = await service.updateExperimental({ enableChatConnectors: enabled });
       Object.assign(row, persistedSets.at(-1));
       const expected = {
-        enableStatusCards: true, enableChatConnectors: enabled, enableNativeRunner: enabled, managedKeys: {},
+        enableStatusCards: true, enableChatConnectors: enabled, enableNativeRunner: true, managedKeys,
       };
       expect(updated.experimental).toMatchObject(expected);
       const restored = instanceSettingsService(db, { runtimeEnv });
@@ -139,6 +178,7 @@ describe("instanceSettingsService managed overlay", () => {
       expect(row.experimental).not.toHaveProperty("managedKeys");
       expect(row.experimental).not.toHaveProperty("enableStatusCards");
     }
+    expect((await service.updateExperimental({ enableNativeRunner: true })).experimental.enableNativeRunner).toBe(true);
 
     const changedDefaults = instanceSettingsService(db, { runtimeEnv: {
       ...runtimeEnv,
@@ -149,7 +189,7 @@ describe("instanceSettingsService managed overlay", () => {
       }),
     } });
     expect(await changedDefaults.getExperimental()).toMatchObject({
-      enableStatusCards: false, enableChatConnectors: false, enableNativeRunner: false,
+      enableStatusCards: false, enableChatConnectors: true, enableNativeRunner: true,
     });
 
     const production = instanceSettingsService(db, { runtimeEnv: { ...runtimeEnv, PAPERCLIP_PRIMARY_HOST: "team.paperclip.app" } });
@@ -172,7 +212,7 @@ describe("instanceSettingsService managed overlay", () => {
       enableOwnerInstanceAdmin: true,
       managedKeys: { enableOwnerInstanceAdmin: { managed: true, managedBy: "paperclip-cloud" } },
     });
-    expect((await service.updateExperimental({ enableOwnerInstanceAdmin: false })).experimental.enableOwnerInstanceAdmin).toBe(true);
+    await expect(service.updateExperimental({ enableOwnerInstanceAdmin: false })).rejects.toMatchObject({ status: 403 });
   });
 
   it.each([{}, { enableMcpAggregators: false }])("keeps aggregators on with legacy stored and managed values: %j", async (stored) => {

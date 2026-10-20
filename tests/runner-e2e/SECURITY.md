@@ -341,7 +341,12 @@ one fixed bounded child; it cannot select commands, arguments, or paths. The exa
 native client command is supplied by the fixture, while production notices retain
 only its SHA-256. The fixture keeps private process identities local, closes its
 owned socket/child in cleanup, and never signals API-reported PIDs. Directory
-watch loss makes the denial oracle incomplete; it must not become a no-effect pass.
+watch loss makes the denial oracle incomplete; it must not become a no-effect pass. A run-only Stop without provider dispatch qualifies the denial's
+completed-provider branch only when its exact canonical completion was actually
+read and retained before Stop. A blocked unfinished task additionally requires
+pre-Stop retained missing-result evidence and the exact company/issue/run recovery
+binding. Neither exception qualifies definitely-active cancellation, permits
+extra runs or mutations, or manufactures a receipt for a historical failure.
 
 Pi Daytona controls bind process identity to the independent Linux observer's
 PID, start ticks and boot ID within the exact admitted run/lease/sandbox. The

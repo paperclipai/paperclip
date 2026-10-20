@@ -1,3 +1,4 @@
+import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
@@ -12,7 +13,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidEle
 import type { AdapterConfigSection } from "../adapters/types";
 import { useConfigSchema } from "../adapters/schema-config-fields";
 import { schemaFieldSection } from "../adapters/config-sections";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hashKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
@@ -926,24 +927,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
-  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
+  const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
+    ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
+  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelProvider)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
     error: fetchedModelsError,
     isLoading: fetchingModels,
+    refetch: refreshConnectionModels,
   } = useQuery({
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, modelAdapterType, {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
+      acpxAgent: runnerAcpxAgent,
+      aiConnection: modelAiBinding,
+      agentId: isCreate ? undefined : props.agent.id,
     }),
+    ...(runnerAcpxAgent === "copilot" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
+  const copilotModelScope = runnerAcpxAgent === "copilot" ? JSON.stringify(modelQueryKey) : null;
+  useEffect(() => {
+    if (copilotModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [copilotModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
@@ -1298,7 +1312,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent === "copilot" ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1723,7 +1737,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
-            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
+            onChange={binding => {
+              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              if (runnerAcpxAgent === "copilot" && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
+            }} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -2213,6 +2230,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
           variant={isExternalRunner ? "prerequisites" : "connection"}
+          metadataOnly={adapterType === "paperclip_runner" && runnerAcpxAgent === "copilot"}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
           error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}

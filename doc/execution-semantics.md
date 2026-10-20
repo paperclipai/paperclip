@@ -657,6 +657,13 @@ qualify as capacity failures.
 
 ### Workspace scan failures before provider startup
 
+Workspace source preparation keeps its dedicated advisory-lock connection active
+while authorization and filesystem work use other connections. Keepalive queries
+follow the configured idle-transaction timeout without changing that setting.
+Preparation retains source exclusion until its work and any in-flight keepalive
+query finish. Ordinary pool reads remain available, including with a one-slot pool.
+This does not authorize replay after a connection failure or bypass admission gates.
+
 Repository discovery distinguishes an ordinary folder from a failed Git read.
 A timeout, full scan queue, cancellation, output limit, or Git failure must keep
 its typed cause through workspace preparation and run persistence. It must not
@@ -1617,6 +1624,14 @@ execution finalizer cannot suspend or signal the durable runner: the next
 controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
+
+Recovery restores a structured result proposal from the durable run events when
+its append survived but the active turn's session checkpoint did not. Advancing
+the replay cursor must preserve that proposal for the exact run, session, source,
+and turn. Conflicting or invalid proposals fail closed. A proposal from another
+turn cannot complete the current turn, and a later started turn prevents adoption
+of the older proposal. The provider must still supply terminal evidence before
+normal finalization; recovery must not repeat completed work to obtain its result.
 
 When a native turn creates a governed approval wait, its checkpoint retains the
 exact committed triggering event and yielded disposition before interrupting the

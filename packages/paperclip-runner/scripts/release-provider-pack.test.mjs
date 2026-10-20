@@ -22,6 +22,9 @@ function fixture() {
     providers: { cursor: { version: profiles.profiles.cursor.agentServerVersion, profileDigest: profiles.profiles.cursor.commandDigest,
       closureDigest: `sha256:${distributions.platforms["linux-x64"].closureSha256}`, qualification: "qualified",
       path: "provider-assets/cursor/linux-x64", sha256: digest } } };
+  payload.providers.copilot = { version: profiles.profiles.copilot.agentServerVersion,
+    profileDigest: profiles.profiles.copilot.commandDigest, closureDigest: "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
+    qualification: "qualified", path: "provider-assets/copilot/linux-x64", sha256: digest };
   return payload;
 }
 function seal(payload) { return { schema: "paperclip-runner/remote-provider-pack/v1", payload,
@@ -95,6 +98,19 @@ test("daemon-only assembly retains an existing same-source Linux provider-pack i
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+for (const field of ["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"]) {
+  test(`rejects an independently rehashed stale Copilot ${field}`, () => {
+    const payload = fixture(); payload.providers.copilot[field] = "stale";
+    assert.throws(() => verifyReleaseProviderPack(seal(payload), revision), /Copilot identity/);
+  });
+}
+test("rejects omitted Copilot and a duplicate candidate inventory", () => {
+  const missing = fixture(); delete missing.providers.copilot;
+  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision), /Copilot identity/);
+  const mixed = fixture(); mixed.candidateProviders = { copilot: mixed.providers.copilot };
+  assert.throws(() => verifyReleaseProviderPack(seal(mixed), revision), /Copilot identity/);
+});
+
 function armFixture() {
   const payload = fixture();
   payload.target.architecture = "arm64";
@@ -146,4 +162,13 @@ test("frozen image validation uses release profiles rather than the newer workfl
   assert.equal(verifyReleaseProviderPack(pack, revision, "linux-x64", expected), pack);
   payload.acpxProfileDigests.claude = "sha256:" + "d".repeat(64);
   assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-x64", expected), /profiles/);
+});
+
+test("uses the frozen release's Copilot profile when the workflow checkout has advanced", () => {
+  const releaseProfiles = structuredClone(profiles);
+  releaseProfiles.profiles.copilot.commandDigest = "sha256:" + "e".repeat(64);
+  const payload = fixture(); payload.providers.copilot.profileDigest = releaseProfiles.profiles.copilot.commandDigest;
+  const manifest = seal(payload);
+  assert.equal(verifyReleaseProviderPack(manifest, revision, "linux-x64", { profiles: releaseProfiles, distributions }), manifest);
+  assert.throws(() => verifyReleaseProviderPack(manifest, revision), /Copilot identity/);
 });

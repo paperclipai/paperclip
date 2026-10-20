@@ -579,9 +579,15 @@ impl ProviderToolBridge {
 
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
         if !self.pending.is_empty() || !self.completed.is_empty() {
-            return Err(ProviderBridgeError::invalid(
-                "cannot prepare the next provider turn while tool calls are active",
-            ));
+            // Name the blocking receipts so a recovery that can never start a
+            // turn identifies the stuck call. IDs and operation names only; no
+            // tool input or result content leaves the bridge.
+            return Err(ProviderBridgeError::invalid(format!(
+                "cannot prepare the next provider turn while tool calls are active \
+                 (pending: {}; completed: {})",
+                describe_active_receipts(self.pending.values()),
+                describe_active_receipts(self.completed.values().map(|entry| &entry.call)),
+            )));
         }
         // The authoritative result bodies are needed only while the provider
         // can replay the just-settled turn. Release that bulky data at the
@@ -981,6 +987,27 @@ impl ProviderToolBridge {
             self.retained_result_bytes,
             self.pending.values().chain(additional_pending.into_iter()),
         )
+    }
+}
+
+const MAX_DESCRIBED_ACTIVE_RECEIPTS: usize = 4;
+
+fn describe_active_receipts<'a>(
+    calls: impl ExactSizeIterator<Item = &'a PendingToolCall>,
+) -> String {
+    let total = calls.len();
+    if total == 0 {
+        return "0".to_owned();
+    }
+    let described = calls
+        .take(MAX_DESCRIBED_ACTIVE_RECEIPTS)
+        .map(|call| format!("{}:{}", call.operation_id, call.call_id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if total > MAX_DESCRIBED_ACTIVE_RECEIPTS {
+        format!("{total} [{described}, ...]")
+    } else {
+        format!("{total} [{described}]")
     }
 }
 
@@ -2151,6 +2178,47 @@ mod tests {
                 json!({}),
             )
             .expect("a new durable run resets the full legacy ledger");
+    }
+
+    #[test]
+    fn active_receipts_that_block_the_next_turn_are_named() {
+        let mut bridge = completion_bridge();
+        bridge
+            .begin_call(
+                "stuck-call".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "private summary text"}),
+            )
+            .unwrap();
+
+        let message = bridge
+            .prepare_turn()
+            .expect_err("a pending call blocks the next turn")
+            .to_string();
+        assert!(message.contains("tool calls are active"));
+        assert!(message.contains("pending: 1 [paperclip_finish:stuck-call]"));
+        assert!(message.contains("completed: 0"));
+        assert!(!message.contains("private summary text"));
+
+        bridge
+            .apply_result(ToolResult {
+                call_id: "stuck-call".to_owned(),
+                operation_id: "paperclip_finish".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        let message = bridge
+            .prepare_turn()
+            .expect_err("an unsettled completed call blocks the next turn")
+            .to_string();
+        assert!(message.contains("pending: 0;"));
+        assert!(message.contains("completed: 1 [paperclip_finish:stuck-call]"));
+
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        bridge
+            .prepare_turn()
+            .expect("settled receipts no longer block the turn");
     }
 
     #[test]

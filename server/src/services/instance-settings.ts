@@ -36,6 +36,7 @@ import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
+import { forbidden } from "../errors.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -440,7 +441,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   const enforcedManagedConfig = staging && managedConfig
     ? {
       ...managedConfig,
-      features: Object.fromEntries(Object.entries(managedConfig.features).filter(([key]) => !isCloudStagingExperimentalSetting(key))),
+      features: Object.fromEntries(Object.entries(managedConfig.features)
+        .filter(([key, enabled]) => enabled || !isCloudStagingExperimentalSetting(key))),
     }
     : managedConfig;
   // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
@@ -575,6 +577,13 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
+      for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
+          throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
+            code: "settings_operator_managed",
+          });
+        }
+      }
       const current = await getOrCreateRow();
       // Guarded Cloud flags stay absent from the row unless chosen, so the
       // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).

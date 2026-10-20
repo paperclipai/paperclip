@@ -55,6 +55,12 @@ Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx)
 
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
+For slow source preparation, configure a short PostgreSQL idle-transaction
+timeout in a disposable instance. Hold preparation beyond that interval and
+verify it retains its source lock, rejects competing preparation, and leaves
+ordinary reads available. The [source-lock regression](../../server/src/services/isolated-remote-workspace-source-lock.test.ts)
+uses real PostgreSQL; it does not prove provider startup or deployed recovery.
+
 For fresh standard-trust tasks using an implicit repository default, create a
 disposable project checkout whose shared Git storage overlaps a private task
 workspace. Verify that source admission creates a separate checkout from the

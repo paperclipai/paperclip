@@ -14,7 +14,7 @@ type Input = Parameters<typeof createHeartbeatInstructionWorkingCopy>[0];
 type Prepare = Parameters<ReturnType<typeof createHeartbeatInstructionWorkingCopy>["prepare"]>[0];
 type Copy = NonNullable<Awaited<ReturnType<Input["instructionCopies"]["prepare"]>>>;
 
-function fixture(executionTarget: Input["workspace"]["executionTarget"] = null) {
+function fixture(executionTarget: Input["workspace"]["executionTarget"] = null, acpxAgent?: string) {
   let run = { id: "current-run", companyId: "company", agentId: "agent", runnerProfileJson: null, status: "queued" } as ReturnType<Input["readRun"]>;
   const copy = { runId: run.id, companyId: run.companyId, agentId: run.agentId,
     localRoot: "/workspace/copy", executionRoot: "/workspace/copy", entryFile: "AGENTS.md",
@@ -32,14 +32,14 @@ function fixture(executionTarget: Input["workspace"]["executionTarget"] = null) 
   const controller = createHeartbeatInstructionWorkingCopy({
     db: {} as Input["db"], instructionCopies: copies as unknown as Input["instructionCopies"],
     readRun: () => run,
-    agent: { id: "agent", companyId: "company", adapterType: "codex_local", adapterConfig: { lifecycleMode: "warm" }, runtimeConfig: {} } as unknown as Input["agent"],
+    agent: { id: "agent", companyId: "company", adapterType: acpxAgent ? "paperclip_runner" : "codex_local", adapterConfig: { lifecycleMode: "warm", ...(acpxAgent ? { provider: "acpx", acpxAgent } : {}) }, runtimeConfig: {} } as unknown as Input["agent"],
     context,
     session: { taskSession: null, taskSessionForRun: { lastRunId: "previous-run" }, sessionConfigMetadata: {} as Input["session"]["sessionConfigMetadata"] },
     workspace: { executionTarget, executionWorkspace: { cwd: "/workspace" } as Input["workspace"]["executionWorkspace"], persistedExecutionWorkspace: null },
     appendRunEvent,
   });
   const prepare: Prepare = { runtimeConfig: { retained: true }, hasInstructionFilesystem: true,
-    nativeRuntimeResolution: { kind: "native", profile: { backend: "codex_app_server" } } as Prepare["nativeRuntimeResolution"] };
+    nativeRuntimeResolution: { kind: "native", profile: { backend: acpxAgent ? "acpx_runtime" : "codex_app_server" } } as Prepare["nativeRuntimeResolution"] };
   const reservation = { reuseRunId: "previous-run", adopt: vi.fn(), release: vi.fn().mockResolvedValue(undefined) };
   native.reserve.mockResolvedValue(reservation);
   return { controller, copies, copy, context, prepare, reservation, appendRunEvent,
@@ -49,6 +49,21 @@ function fixture(executionTarget: Input["workspace"]["executionTarget"] = null) 
 beforeEach(() => { vi.clearAllMocks(); native.claim.mockResolvedValue(null); });
 
 describe("instruction working-copy extraction boundary", () => {
+  it.each([
+    ["copilot", false, true], ["copilot", true, true],
+    ["cursor", false, true], ["cursor", true, true],
+    ["claude", false, false], ["claude", true, false],
+  ] as const)("prepares %s instructions with the expected warm ownership on remote=%s", async (agent, remote, warm) => {
+    const target: Input["workspace"]["executionTarget"] = remote
+      ? { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } }
+      : null;
+    const f = fixture(target, agent);
+    await f.controller.prepare(f.prepare);
+    expect(f.copies.prepare).toHaveBeenCalledWith(expect.objectContaining({ warm, reuseRunId: warm ? "previous-run" : undefined }));
+    if (warm) expect(native.reserve).toHaveBeenCalledWith(expect.objectContaining({ previousRunId: "previous-run", runId: "current-run", target }));
+    else expect(native.reserve).not.toHaveBeenCalled();
+  });
+
   it.each(["openai_dot_mcp", "muse_external"])("does not prepare an instruction filesystem for %s", async backend => {
     const f = fixture();
     const result = await f.controller.prepare({ ...f.prepare, hasInstructionFilesystem: false,

@@ -330,7 +330,7 @@ test('the verifier stages only workspace packages, so it skips the standalone bu
   // staged, reusing the UI that `pnpm build` produced, and it is timed. The
   // gated standalone build keeps release.sh's order: after the closure is
   // known and before the UI copy and any staged source.
-  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills']);
+  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills', 'scripts/install-copilot-assets.mjs']);
   assert.ok(source.includes("PAPERCLIP_RELEASE_REUSE_UI_DIST: '1'"));
   const uiDist = position("run('bash', [join(repo, 'scripts/prepare-server-ui-dist.sh')], repo)");
   assert.ok(position('publicInstallClosure(repo)') < gate && gate < uiDist && uiDist < position('timing.stage_ui_dist_ms =') && uiDist < position('const stageSource = '));

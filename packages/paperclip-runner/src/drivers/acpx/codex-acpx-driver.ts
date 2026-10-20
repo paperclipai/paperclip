@@ -60,6 +60,7 @@ import {
 } from "../runner-tool-bridge.js";
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
+  AcpxProviderProcessLostError,
   openCodexAcpxRuntime,
 } from "./codex-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
@@ -1581,7 +1582,7 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
-      this.#cancelPendingRuntimeRequests("provider turn failed", turnId);
+      this.#cancelPendingRuntimeRequests(error instanceof AcpxProviderProcessLostError ? error : "provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1612,7 +1613,7 @@ class CodexAcpxSession implements HarnessSession {
               : { reaffirmedSemanticResult }),
           }),
           "turn.failed",
-          { status: "failed", error: { message: safeMessage(error) } },
+          { status: "failed", error: { ...(error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}), message: safeMessage(error) } },
         );
       }
     }
@@ -1756,9 +1757,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(request, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId });
+        this.#emitRequestAbort(request, context.signal.reason);
         settle(input.cancel());
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1807,9 +1806,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(runtimeRequest, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        this.#emitRequestAbort(runtimeRequest, signal.reason);
         settle({ outcome: "cancel" });
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1943,14 +1940,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!pending || pending.settling) return;
         if (!this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit(
-          "runtime_request.cancelled",
-          harnessRuntimeRequestOutcome(runtimeRequest, {
-            action: "cancel",
-            reason: "provider request aborted",
-          }),
-          { turnId, itemId: requestId },
-        );
+        this.#emitRequestAbort(runtimeRequest, context.signal.reason);
         settle({ action: "cancel" });
       };
       context.signal.addEventListener("abort", cancel, { once: true });
@@ -1968,22 +1958,23 @@ class CodexAcpxSession implements HarnessSession {
     });
   }
 
-  #cancelPendingRuntimeRequests(reason: string, turnId?: string): void {
+  #emitRequestAbort(request: HarnessRuntimeRequest, reason: unknown): void {
+    const lost = reason instanceof AcpxProviderProcessLostError;
+    this.#emit(lost ? "runtime_request.expired" : "runtime_request.cancelled", {
+      ...harnessRuntimeRequestOutcome(request, {
+        ...(lost ? {} : { action: "cancel" as const }),
+        reason: lost ? "provider_process_lost" : typeof reason === "string" ? boundedText(reason, 1_000) : "provider request aborted",
+      }),
+      ...(lost ? { replayAllowed: false } : {}),
+    }, { turnId: request.turnId, itemId: request.itemId });
+  }
+
+  #cancelPendingRuntimeRequests(reason: string | AcpxProviderProcessLostError, turnId?: string): void {
     for (const [requestId, pending] of this.#pendingRuntimeRequests) {
       if (turnId && pending.request.turnId !== turnId) continue;
       if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
       pending.cleanup();
-      this.#emit(
-        "runtime_request.cancelled",
-        harnessRuntimeRequestOutcome(pending.request, {
-          action: "cancel",
-          reason: boundedText(safeMessage(reason), 1_000),
-        }),
-        {
-          turnId: pending.request.turnId,
-          itemId: pending.request.itemId,
-        },
-      );
+      this.#emitRequestAbort(pending.request, reason);
       pending.cancel();
     }
   }

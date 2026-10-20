@@ -107,6 +107,20 @@ it("offers one Codex harness without a runner/provider tile", async () => {
   expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
   expect(document.querySelector("select")).toBeNull();
 });
+it.each([true, false, undefined])("opens saved-token Copilot setup without an experimental override (%s)", async enableNativeRunner => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="copilot_runtime"]')!.click());
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("copilot");
+});
+it("hides Copilot when its runtime adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await name();
+  expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+});
 it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
   await act(async () => (document.querySelector("summary") as HTMLElement).click());

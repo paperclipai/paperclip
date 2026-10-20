@@ -17,6 +17,28 @@ const installedCodexCells = new Set([
   "everyday-workflows.runner-codex.local.build-revise",
   "agent-chat.runner-codex.local.continuity-restart",
 ]);
+const installedCopilotCells = new Set([
+  "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+  "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+  "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+  "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+  "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+  "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+  "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate",
+  "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume",
+  "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+  "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+  "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+  "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+  "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume",
+  "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+  "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+  "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn",
+  "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn",
+]);
 export function usesInstalledCli(env: NodeJS.ProcessEnv): boolean {
   return installedCliKeys.some(key => env[key] !== undefined);
 }
@@ -24,8 +46,9 @@ export function assertInstalledCliSelection(env: NodeJS.ProcessEnv, executions: 
   if (!usesInstalledCli(env)) return;
   if (!installedCliKeys.every(key => Boolean(env[key])) || executions.length === 0 || executions.some(e => !(
     (e.profile.id === "runner-acpx-pi" && e.profile.qualificationCandidate === "pi" && e.suite.manualOnly && suites.has(e.suite.id)) ||
-    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && e.environment.id === "local" && installedCodexCells.has(e.id))
-  ))) throw new Error("Installed CLI proof requires complete pins and explicit supported Pi or Codex cases");
+    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && e.environment.id === "local" && installedCodexCells.has(e.id)) ||
+    (e.profile.id === "runner-acpx-copilot" && e.profile.qualificationCandidate === "copilot" && e.suite.manualOnly && installedCopilotCells.has(e.id))
+  ))) throw new Error("Installed CLI proof requires complete pins and explicit supported Pi, Codex, or Copilot cases");
   for (const key of overrideKeys) if (env[key] !== undefined) throw new Error(`Installed CLI proof forbids ${key}`);
   if (env.NODE_OPTIONS !== undefined || env.NODE_PATH !== undefined) throw new Error("Installed CLI proof forbids ambient Node injection");
 }

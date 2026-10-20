@@ -912,6 +912,46 @@ describe("instance settings routes", () => {
   });
 
   describe("Cloud staging experiments", () => {
+    it.each(["team.staging.paperclip.app", "team.paperclip.app"])(
+      "reads Cloud-enabled isolation and rejects disabling it through the real service on %s",
+      async (primaryHost) => {
+        const { instanceSettingsService } = await vi.importActual<typeof import("../services/instance-settings.js")>(
+          "../services/instance-settings.js",
+        );
+        const update = vi.fn();
+        const db = {
+          select: () => ({ from: () => ({ where: async () => [{
+            id: "settings-1",
+            experimental: { enableIsolatedWorkspaces: false },
+          }] }) }),
+          update,
+        } as unknown as Parameters<typeof instanceSettingsService>[0];
+        const service = instanceSettingsService(db, { runtimeEnv: {
+          PAPERCLIP_PRIMARY_HOST: primaryHost,
+          PAPERCLIP_MANAGED_CONFIG: JSON.stringify({
+            v: 1, mode: "cloud", catalogVersion: "test",
+            features: { enableIsolatedWorkspaces: true }, plugins: { autoInstall: [] },
+          }),
+        } });
+        mockInstanceSettingsService.getExperimental.mockImplementation(service.getExperimental);
+        mockInstanceSettingsService.updateExperimental.mockImplementation(service.updateExperimental);
+        const app = createApp({
+          type: "board", userId: "stack-admin-1", source: "cloud_tenant",
+          companyIds: ["company-1"], isInstanceAdmin: false, canManageExperimentalSettings: true,
+        });
+        const current = await request(app).get("/api/instance/settings/experimental").expect(200);
+        expect(current.body).toMatchObject({
+          enableIsolatedWorkspaces: true,
+          managedKeys: { enableIsolatedWorkspaces: { managed: true } },
+        });
+        const denied = await request(app).patch("/api/instance/settings/experimental")
+          .send({ enableIsolatedWorkspaces: false }).expect(403);
+        expect(denied.body.details).toMatchObject({ code: "settings_operator_managed" });
+        expect(update).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+      },
+    );
+
     afterEach(() => vi.unstubAllEnvs());
 
     it.each(["instance.experimental", "instance.experimental.*"])(
