@@ -12,6 +12,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { managedAiHomeEnvironment } from "@paperclipai/adapter-utils/server-utils";
 
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
@@ -2199,6 +2200,29 @@ describe("shared ACPX engine runtime behavior", () => {
     const changed = await withScratch(path.join(root, "run-3"), "/custom/tmp-2");
     expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
     expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+  });
+
+  it("keeps the rotated managed-AI credential home out of session identity while retaining real adapter env changes", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    async function fingerprint(home: string, opts: { model?: string; userHome?: string; flagged?: boolean } = {}) {
+      const env: Record<string, string> = { ...managedAiHomeEnvironment(home), ANTHROPIC_MODEL: opts.model ?? "claude-opus-4-7" };
+      if (opts.userHome) env.HOME = opts.userHome;
+      const run = await runExecutor(
+        { ...config, env },
+        { context: { taskId: "issue-1", ...(opts.flagged === false ? {} : { managedAiRetainedHome: home }) } },
+      );
+      return run.result.sessionParams?.configFingerprint;
+    }
+    const home1 = path.join(root, "ai-home-1");
+    const home2 = path.join(root, "ai-home-2");
+    const first = await fingerprint(home1);
+
+    expect(await fingerprint(home2)).toBe(first);
+    expect(await fingerprint(home2, { model: "claude-sonnet-5" })).not.toBe(first);
+    expect(await fingerprint(home2, { userHome: path.join(root, "user-home") }))
+      .not.toBe(await fingerprint(home2, { userHome: path.join(root, "other-user-home") }));
+    expect(await fingerprint(home2, { flagged: false })).not.toBe(await fingerprint(home1, { flagged: false }));
   });
 
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
