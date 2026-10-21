@@ -24,6 +24,43 @@ describe("model-facing run errors", () => {
   });
 });
 
+describe("scheduled continuation presentation", () => {
+  const resultJson = {
+    finalizationPhase: "committed",
+    finalizationReasonCode: "scheduled_monitor_waiting",
+    nativeResult: {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "QA is still pending. The repository is being prepared and I will continue automatically.",
+      continuation: { kind: "monitor", summary: "Continue with the prepared repository.", idempotencyKey: "repository-ready" },
+    },
+  };
+
+  it.each([false, true])("retains the accepted continuation explanation on board and chat (%s)", (external) => {
+    expect(resolveHeartbeatRunResponse({
+      resultJson,
+      preferFinalResponseOverExistingComment: external,
+      finalAgentMessage: { text: "The task is complete.", sourceEventId: "provider-final", channel: "final" },
+    })).toMatchObject({
+      text: resultJson.nativeResult.summary,
+      decision: { chosenSource: "semantic_result_summary", commentAction: "create", reasonCodes: ["accepted_scheduled_monitor_summary"] },
+    });
+  });
+
+  it("withholds continuation claims until finalization commits", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson: { ...resultJson, finalizationPhase: "retryable_failure" } }).text).toBeNull();
+  });
+
+  it("reuses its saved continuation comment after recovery", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "saved-continuation", body: resultJson.nativeResult.summary } }))
+      .toMatchObject({ text: resultJson.nativeResult.summary, decision: { commentAction: "reuse", commentId: "saved-continuation" } });
+  });
+
+  it("lets the run's question own its response", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, interactionOwnsResponse: true }).text).toBeNull();
+  });
+});
+
 describe("selectHeartbeatRunFinalAgentMessage", () => {
   const substantive = {
     seq: 80,

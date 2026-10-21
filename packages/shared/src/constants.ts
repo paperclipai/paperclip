@@ -669,7 +669,7 @@ export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
 // reason for platform-managed pauses (plugins, built-ins).
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -1323,8 +1323,10 @@ export const PLUGIN_CAPABILITIES = [
   // Data Read
   "companies.read",
   "projects.read",
+  "projects.instance-secrets",
   "project.workspaces.read",
   "execution.workspaces.read",
+  "workspaces.manage",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",

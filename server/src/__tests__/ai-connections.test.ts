@@ -204,7 +204,7 @@ describe("managed AI connections", () => {
       expect(response.status).toBe(200);
       expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.body).toEqual([{ id: "gpt-5.6-luna", label: "GPT" }]);
-      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager });
+      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager, targetAgentId: agentId });
       expect(JSON.stringify(response.body)).not.toContain(token);
     } finally { probe.mockRestore(); }
   });
@@ -1505,6 +1505,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("requires a typed project authentication capability for task-only environments", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    const task = vi.fn(async () => description);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/unused", runnerTask: task } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    try {
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target)).rejects.toThrow("overrides");
+      expect(task).toHaveBeenCalledWith({ kind: "describe" });
+      task.mockResolvedValueOnce({ ...description, projectAuthCheckVersion: undefined } as never);
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
+      expect(execute).not.toHaveBeenCalled();
+    } finally { execute.mockRestore(); }
+  });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");
@@ -2175,6 +2190,61 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
+  });
+
+  it("saves a restricted shared connection during setup and installs it only when setup finishes", async () => {
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const setupId = randomUUID();
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared setup", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-setup-key");
+    const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const initial = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy" });
+    expect(initial.status, JSON.stringify(initial.body)).toBe(201);
+    const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment");
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+    try {
+      const saved = await request(app).patch(`/api/agents/${setupId}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body).toMatchObject({ pauseReason: "setup", runtimeConfig: { aiConnection: selected } });
+      expect(probe).not.toHaveBeenCalled();
+      probe.mockResolvedValue({ adapterType: "claude_local", status: "pass", checks: [], testedAt: new Date().toISOString() });
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/claude_local/test-environment`).send({
+        agentId: setupId, runner: "legacy", adapterConfig: {}, aiConnection: selected,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
+      const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({
+        setupAgentId: setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy", runtimeConfig: { aiConnection: selected },
+      });
+      expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+      expect(finished.body.agent.id).toBe(setupId);
+      expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
+    } finally { probe.mockRestore(); providerRequest.mockRestore(); }
+  });
+
+  it.each([["responsible_user", "codex_local"], ["shared", "codex_local"], ["responsible_user", "claude_local"]] as const)("drops a superseded saved %s connection when %s setup changes authentication", async (mode, adapterType) => {
+    const setupId = randomUUID();
+    await db.insert(agents).values({ id: setupId, companyId, name: "Switch provider", createdByUserId: "alice",
+      adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
+      runtimeConfig: { aiConnection: mode === "shared"
+        ? { provider: "openai", method: "api_key", mode, connectionId: randomUUID(), grantId: randomUUID() }
+        : { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", mode } },
+    });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const saved = await request(app).patch(`/api/agents/${setupId}`).send({ adapterType: "claude_local", runner: "legacy",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: false } },
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.runtimeConfig).not.toHaveProperty("aiConnection");
+    const [row] = await db.select().from(agents).where(eq(agents.id, setupId));
+    expect(row.runtimeConfig).not.toHaveProperty("aiConnection");
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {

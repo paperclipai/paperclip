@@ -95,6 +95,13 @@ remaining operations before qualifying the whole capability.
 Gaps: Normal agent replies work through server delivery. Explicit endpoint publication
 APIs are board management paths.
 
+Monitor publication lineage uses the admitted wake and its source run's matching
+`set_task_monitor` receipt, including company, task, immutable agent, requester,
+and scheduled time. A source ID in context cannot grant publication. The normal
+delivery worker rechecks current endpoint and sender authority. Database fixtures
+exercise lineage and finalization recovery; live Slack qualification remains
+separate.
+
 Publication, provider-reply, and form-open 403/permission errors fail the rejected
 operation without removing unrelated assigned channel tools. Confirmed
 authentication failures still put the endpoint in attention, which blocks tool

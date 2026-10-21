@@ -31,6 +31,12 @@ Agent access: [companion](../agent-access-map/agents.md).
 
 Use New agent from the roster or `/agents/new`.
 
+Submitting the name creates an inactive record before adapter selection or account setup.
+A name-only draft returns to adapter selection when reopened.
+Save & exit keeps its configuration; Finish setup on the agent returns to the
+same record. Final submission requests approval when required, then follows the
+existing preparation and verification lifecycle.
+
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.

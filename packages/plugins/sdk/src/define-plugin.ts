@@ -1,3 +1,4 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
 import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -401,6 +402,9 @@ export interface PluginDefinition {
   onEnvironmentValidateConfig?(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Required with manifest.workspaceProvider, together with project resource lifecycle. */
+  onWorkspaceOperation?(params: PluginWorkspaceParams): Promise<PluginWorkspaceResult>;
 
   /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
   onEnvironmentTask?(params: PluginEnvironmentTaskParams): Promise<PluginEnvironmentTaskResult>;

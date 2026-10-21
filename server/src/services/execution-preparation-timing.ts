@@ -40,6 +40,26 @@ export type ExecutionPhase =
   | "workspace.sources.repository_scan" | "workspace.sources.project_scan" | "workspace.provenance_lock"
   | "workspace.readers" | "workspace.readers.identity" | "workspace.readers.trust" | "workspace.readers.projects" | "workspace.readers.sources"
   | "workspace.access" | "workspace.access.privacy" | "workspace.access.inventory" | "workspace.access.authorization"
+  | "workspace.access.execution" | "workspace.access.task_read" | "workspace.access.agent_read" | "workspace.access.run_read"
+  | "workspace.access.workspace_read" | "workspace.access.source_read" | "workspace.access.projects_read"
+  | "workspace.access.task_authorization" | "workspace.access.trust" | "workspace.access.trust.project_read"
+  | "authorization.base" | "authorization.responsible_user" | "authorization.authorizing_user"
+  | "authorization.task_privacy" | "authorization.project_privacy"
+  | "workspace.repository.binding" | "workspace.repository.current_policy" | "workspace.repository.acquisition"
+  | "workspace.repository.catalog" | "workspace.repository.receipts" | "workspace.repository.paths"
+  | "workspace.repository.fs_prepare" | "workspace.repository.publication" | "workspace.repository.lock_wait"
+  | "workspace.repository.critical_section" | "workspace.repository.lock_release" | "workspace.repository.checkout_identity"
+  | "workspace.repository.state_write" | "workspace.repository.ownership_read" | "workspace.repository.ownership_verify"
+  | "workspace.repository.materialize" | "workspace.repository.git_origin" | "workspace.repository.git_branch"
+  | "workspace.repository.git_commit" | "workspace.repository.ownership_write" | "workspace.repository.ignore_rules"
+  | "workspace.repository.db.issue" | "workspace.repository.db.workspace" | "workspace.repository.db.agent"
+  | "workspace.repository.db.project" | "workspace.repository.db.run"
+  | "connectors.github.catalog" | "connectors.github.connections" | "connectors.github.grants"
+  | "connectors.github.grant_members" | "connectors.github.membership"
+  | "connectors.github.refresh" | "connectors.github.credentials" | "connectors.github.repositories"
+  | "connectors.github.grant_lock" | "connectors.github.grant_write" | "connectors.github.webhooks"
+  | "connectors.github.refresh.transaction" | "connectors.github.refresh.transaction.entry"
+  | "connectors.github.refresh.transaction.commit" | "connectors.github.refresh.transaction.rollback"
   | "workspace.materialize.directories" | "workspace.materialize.source_identity"
   | "workspace.checkout.lookup" | "workspace.checkout.git_auth" | "workspace.checkout.git_clone"
   | "workspace.checkout.git_ref" | "workspace.checkout.publish"
@@ -80,7 +100,7 @@ export type ExecutionPhase =
   | "response.transaction" | "response.transaction.entry" | "response.transaction.commit" | "response.transaction.rollback" | "response.row_lock" | "response.write"
   | "response.resolve" | "response.authorize" | "response.add_comment" | "response.activity" | "response.publish";
 
-type RunScope = { runId: string; parent?: Context; ended: boolean; details: Map<string, number> };
+type RunScope = { runId: string; phase: string; parent?: Context; ended: boolean; details: Map<string, number> };
 const ownership = new AsyncLocalStorage<RunScope>();
 const endpointEnabled = () => Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 
@@ -109,12 +129,18 @@ export function getRunExecutionTraceContext(runId: string): Context | undefined 
   return endpointEnabled() && owned?.runId === runId && !owned.ended ? owned.parent : undefined;
 }
 
+/** Inspect only the current async scope; unrelated authorization must not consume its detail budget. */
+export function isRunPhaseActive(phase: ExecutionPhase): boolean {
+  const owned = ownership.getStore();
+  return endpointEnabled() && owned?.phase === phase && !owned.ended;
+}
+
 function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
     const previous = ownership.getStore();
-    const owned: RunScope = { runId,
+    const owned: RunScope = { runId, phase: name,
       parent: parent ?? (!independent && previous?.runId === runId && !previous.ended ? previous.parent : undefined),
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),

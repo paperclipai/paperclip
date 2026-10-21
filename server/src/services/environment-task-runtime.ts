@@ -1,6 +1,7 @@
+import { readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped } from "./remote-execution-termination.js";
@@ -41,26 +42,39 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const activeProbe = lease.heartbeatRunId === null && lease.issueId === null && probe
     && typeof probe.runId === "string" && typeof probe.sessionId === "string"
     && typeof probe.expiresAtMs === "number" && probe.expiresAtMs > Date.now();
-  if ((operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection") &&
+  if ((operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || operation.kind === "read_state" || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
       (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
-  const runner = operation.kind === "submit" ? operation.runner : operation.kind === "prepare" ? {
+  if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
+  const checkpointIdentity = operation.kind === "read_state" ? operation.identity
+    : operation.kind === "archive_state" ? operation.priorIdentity : null;
+  const runner = checkpointIdentity ? { runnerId: checkpointIdentity.runnerInstanceId, leaseId: checkpointIdentity.environmentLeaseId,
+    runId: checkpointIdentity.runId, sessionId: checkpointIdentity.normalizedSessionId } : operation.kind === "submit" ? operation.runner : operation.kind === "prepare" ? {
     runnerId: operation.requirements.identity.runnerInstanceId,
     leaseId: operation.requirements.identity.environmentLeaseId,
     runId: operation.requirements.identity.runId, sessionId: operation.requirements.identity.normalizedSessionId,
   } : null;
   const launches = operation.kind === "submit" || operation.kind === "prepare";
-  const resumeFrom = launches ? operation.resumeFrom : undefined;
-  if (runner && (runner.runId !== (activeProbe ? probe.runId : run?.id) || (!resumeFrom && runner.leaseId !== lease.id)
+  const scopesProjects = launches || operation.kind === "check_project_auth";
+  const resumeFrom = launches || checkpointIdentity ? (operation as { resumeFrom?: string }).resumeFrom : undefined;
+  const savedIdentity = metadata.runnerTaskIdentity as Record<string, unknown> | undefined;
+  const ownCheckpoint = checkpointIdentity && !resumeFrom && savedIdentity
+    && savedIdentity.runnerId === checkpointIdentity.runnerInstanceId && savedIdentity.leaseId === checkpointIdentity.environmentLeaseId
+    && savedIdentity.runId === checkpointIdentity.runId && savedIdentity.sessionId === checkpointIdentity.normalizedSessionId
+    && savedIdentity.turnId === checkpointIdentity.turnId && savedIdentity.itemId === checkpointIdentity.itemId;
+  if (checkpointIdentity && !resumeFrom && !ownCheckpoint) throw new Error("Plugin Runner state identity mismatch");
+  if (runner && ((!checkpointIdentity || !resumeFrom) && runner.runId !== (activeProbe ? probe.runId : run?.id) || (!resumeFrom && runner.leaseId !== lease.id && !ownCheckpoint)
     || (activeProbe && (runner.sessionId !== probe.sessionId || (launches && operation.projectIds.length > 0))))) {
     throw new Error("Plugin-provided Runner execution identity mismatch");
   }
   if (runner && resumeFrom) {
-    const sources = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
+    const sources = await db.select({ runId: environmentLeases.heartbeatRunId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
       eq(environmentLeases.providerLeaseId, resumeFrom),
     )).limit(2);
     const priorRunId = sources.length === 1 ? sources[0]!.runId : null;
-    if (activeProbe || !priorRunId || resumeFrom !== await resolvePluginTaskResume(db, {
+    const sourceIdentity = sources.length === 1 ? sources[0]!.metadata?.runnerTaskIdentity as Record<string, unknown> | undefined : undefined;
+    if (activeProbe || !priorRunId || (checkpointIdentity && (checkpointIdentity.runId !== priorRunId
+      || checkpointIdentity.turnId !== sourceIdentity?.turnId || checkpointIdentity.itemId !== sourceIdentity?.itemId)) || resumeFrom !== await resolvePluginTaskResume(db, {
       companyId: input.companyId, leaseId: lease.id,
       priorIdentity: { runnerInstanceId: runner.runnerId, environmentLeaseId: runner.leaseId,
         runId: priorRunId, normalizedSessionId: runner.sessionId },
@@ -76,10 +90,23 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       !workers.getWorker(plugin.id)?.supportedMethods.includes("environmentTask")) {
     throw new Error("Plugin-provided Runner execution provider unavailable");
   }
-  const issue = launches && lease.issueId ? await db.select({ id: issues.id }).from(issues)
+  const issue = scopesProjects && lease.issueId ? await db.select({ id: issues.id }).from(issues)
     .where(and(eq(issues.id, lease.issueId), eq(issues.companyId, input.companyId))).limit(1).then(rows => rows[0]) : null;
-  if (launches && lease.issueId && !issue) throw new Error("Plugin-provided Runner execution issue unavailable");
-  const projectIds = launches ? operation.projectIds : [];
+  if (scopesProjects && lease.issueId && !issue) throw new Error("Plugin-provided Runner execution issue unavailable");
+  const workspaceBinding = readWorkspaceProviderBinding(lease.metadata);
+  if (metadata.workspaceProvider !== undefined && !workspaceBinding) throw new Error("Invalid managed workspace binding");
+  if (workspaceBinding) {
+    const [workspace] = await db.select().from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.id, workspaceBinding.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId)));
+    const saved = readWorkspaceProviderBinding(workspace?.metadata);
+    if (!workspace || workspace.id !== lease.executionWorkspaceId || workspace.providerType !== "plugin" || workspace.providerRef !== workspaceBinding.workspaceRef ||
+        (launches && !["active", "idle", "in_review"].includes(workspace.status)) ||
+        workspaceBinding.pluginId !== plugin.id || !saved || JSON.stringify(saved) !== JSON.stringify(workspaceBinding)) {
+      throw new Error("Managed workspace execution binding changed");
+    }
+  }
+  const projectIds = scopesProjects ? operation.projectIds : [];
+  if (activeProbe && projectIds.length > 0) throw new Error("Plugin Runner probe cannot use project mounts");
   if (projectIds.length > 0) {
     const authorizedProjects = await db.select({ id: projects.id }).from(projects)
       .where(and(eq(projects.companyId, input.companyId), inArray(projects.id, projectIds)));
@@ -90,6 +117,21 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const config = (environment?.config ?? {}) as Record<string, unknown>;
   const driverConfig = config.pluginKey === plugin.pluginKey && config.driverKey === metadata.driverKey
     ? (config.driverConfig as Record<string, unknown> | undefined) ?? {} : {};
+  let requiredProjectAuthProof: Record<string, unknown> | undefined;
+  if (operation.kind === "submit") {
+    const proof = metadata.runnerTaskProjectAuthValidation as { configurationId?: unknown; provider?: unknown; projectIds?: string[] } | undefined;
+    const provider = operation.runner.harness === "codex" ? "openai" : operation.runner.harness === "claude" ? "anthropic" : operation.runner.harness;
+    if (!provider || !operation.preparedLaunchId || proof?.configurationId !== operation.preparedLaunchId || proof.provider !== provider
+      || (!Array.isArray(proof.projectIds) ? null : JSON.stringify([...proof.projectIds].sort())) !== JSON.stringify([...operation.projectIds].sort())
+      || (operation.credential && (operation.credential.type === "codex-auth-json" ? "openai" : "anthropic") !== provider)) {
+      throw new Error("Plugin Runner managed project authentication validation unavailable");
+    }
+    requiredProjectAuthProof = proof as Record<string, unknown>;
+  }
+  if (operation.kind === "check_project_auth" || operation.kind === "prepare") {
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskProjectAuthValidation'` })
+      .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
+  }
   if (operation.kind === "submit" && activeProbe) {
     const remainingMs = Number(probe.expiresAtMs) - Date.now();
     if (remainingMs <= 0 || !operation.launch) throw new Error("Plugin-provided Runner probe lease is not active");
@@ -99,12 +141,14 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     operation.launch.maxRuntimeMs = Math.min(remainingMs, ...requestedLimits);
     delete operation.launch.maxLifetimeMs;
   }
-  if (operation.kind === "submit") {
+  if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null })}::jsonb`,
+      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
-      eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
+      eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
+      requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
+    )).returning({ id: environmentLeases.id });
     if (marked.length !== 1) throw new Error("Plugin-provided Runner execution lease is not active");
   }
   try {
@@ -119,12 +163,23 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
       issueId: lease.issueId, config: driverConfig,
       taskId, runId: run?.id ?? (activeProbe ? String(probe.runId) : null), agentId: run?.agentId ?? null, projectIds,
-      lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined }, operation,
-    }, 15_000);
+      lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
+      ...(workspaceBinding ? { workspace: workspaceBinding } : {}), operation,
+    }, operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now())) : 15_000);
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
-    if (parsed.kind === "status" && parsed.executionStopped === true) {
+    if (operation.kind === "check_project_auth" && parsed.kind === "project_auth") {
+      if (parsed.configurationId !== operation.configurationId || parsed.provider !== operation.provider) throw new Error("Plugin Runner project validation identity mismatch");
+      if (parsed.allowed) {
+        const saved = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          runnerTaskProjectAuthValidation: { configurationId: parsed.configurationId, provider: parsed.provider, projectIds },
+        })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+          eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
+        if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");
+      }
+    }
+    if ((parsed.kind === "status" || parsed.kind === "copilot_metadata") && parsed.executionStopped === true) {
       await db.update(environmentLeases).set({
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true, runnerTaskSessionRetained: parsed.sessionStateAvailable === true })}::jsonb`,
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true, runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
     }
     if (operation.kind === "complete") {

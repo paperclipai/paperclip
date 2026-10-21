@@ -97,8 +97,8 @@ describe("heartbeat workspace module", () => {
     ]);
     expect(firstResult).toMatchObject({ cwd: firstCwd, projectId: "project-one", workspaceId: "workspace-one", source: "project_primary", additionalWorkspaces: [] });
     expect(secondResult).toMatchObject({ cwd: secondCwd, projectId: "project-two", workspaceId: "workspace-two", source: "project_primary", additionalWorkspaces: [] });
-    expect(first.select).toHaveBeenCalledTimes(1);
-    expect(second.select).toHaveBeenCalledTimes(1);
+    expect(first.select).toHaveBeenCalledTimes(2);
+    expect(second.select).toHaveBeenCalledTimes(2);
   });
 
   it("uses the current issue's project and selected workspace over stale context", async () => {
@@ -115,7 +115,16 @@ describe("heartbeat workspace module", () => {
       null,
     );
     expect(result).toMatchObject({ cwd: selectedCwd, projectId: "current-project", workspaceId: "selected-workspace", warnings: [], baseCwdFallback: false });
-    expect(database.select).toHaveBeenCalledTimes(3);
+    expect(database.select).toHaveBeenCalledTimes(4);
+  });
+
+  it("resolves plugin storage without creating or reading a Core checkout", async () => {
+    const missingCwd = path.join(testRoot, "provider-only-repository");
+    const database = databaseWithResults([workspace("remote-source", "project-one", missingCwd)],
+      [{ policy: { storageProviderPluginId: "10000000-0000-4000-8000-000000000001" } }]);
+    const result = await createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(agent(), { projectId: "project-one" }, null);
+    expect(result).toMatchObject({ cwd: "/workspaces/remote-source", workspaceId: "remote-source", projectId: "project-one", source: "project_primary" });
+    expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
   });
 
   it("fails closed with workspace diagnostics when a configured directory is unavailable", async () => {

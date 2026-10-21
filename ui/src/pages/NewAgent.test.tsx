@@ -10,6 +10,136 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it("creates an inactive record before connecting and finishes that same agent", async () => {
+    await render("codex_local");
+    expect(api.create).toHaveBeenCalledTimes(1);
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.create.mock.calls[0][1]).toMatchObject({ name: "Atlas", runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(state.navigate).toHaveBeenCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a name-only draft at adapter selection without creating another record", async () => {
+    const setupId = "00000000-0000-4000-8000-000000000091";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
+    api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    await settle();
+    expect(document.body.textContent).toContain("Choose an adapter");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await act(async () => document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="codex_local"]')!.click());
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+    await settle();
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+    expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it("retries early creation with the same identity before offering authentication", async () => {
+    api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
+    await render("codex_local");
+    expect(container.textContent).toContain("Creation unavailable");
+    expect(container.textContent).not.toContain("Complete subscription login");
+    await click("Retry");
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
+    expect(container.textContent).toContain("Connect a model");
+  });
+
+  it("resumes a saved setup record and its configuration after navigation", async () => {
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    await fill("Model", "gpt-5.4");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).not.toContain("Your agent is ready");
+    expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("gpt-5.4");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ setupAgentId: setupId, adapterConfig: { model: "gpt-5.4" } });
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the first agent's role when finishing its setup", async () => {
+    api.list.mockResolvedValue([]);
+    await render("codex_local");
+    await connect("OpenAI");
+    api.list.mockResolvedValue([{ id: api.create.mock.calls[0][1].setupId, role: "ceo", status: "paused" }]);
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.agents.list("company-1") }); });
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].role).toBe("ceo");
+  });
+
+  it("keeps the setup identity when finalization fails and is retried", async () => {
+    await render("codex_local");
+    await connect("OpenAI");
+    api.hire.mockRejectedValueOnce(new Error("Hire unavailable"));
+    await click("Finish setup");
+    expect(container.textContent).toContain("Hire unavailable");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(2);
+    expect(api.hire.mock.calls[1][1].setupAgentId).toBe(api.hire.mock.calls[0][1].setupAgentId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the existing Claude stored-login authorization into a saved setup", async () => {
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "stored-oauth", latestVersion: 1 });
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(api.update.mock.calls[0][1].applyStoredClaudeLogin).toBe(true);
+  });
+
+  it("saves a typed gateway key as a secret and restores it without re-entry", async () => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "saved-gateway-key");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(JSON.stringify(api.update.mock.calls)).not.toContain("saved-gateway-key");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "hermes_gateway", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains an unfinished legacy harness when the current target defaults to Paperclip Runner", async () => {
+    await render("codex_local");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    await act(async () => root.render(null));
+    cache.clear();
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "codex_local" ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter);
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
+  });
+
   it.each([
     ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
     ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
@@ -612,15 +742,62 @@ describe("New agent setup", () => {
     expect(container.textContent).toContain("Enter the Kimi API model name");
     await fill("Kimi API model name", "kimi-for-coding");
     await fill("Kimi API base URL", "https://api.kimi.com/coding/v1");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      const saved = await persist(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
     await click("Finish setup");
     const config = api.hire.mock.calls[0][1].adapterConfig;
     expect(config).not.toHaveProperty("model");
     expect(config.env).toMatchObject({
       KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "kimi" },
       KIMI_MODEL_BASE_URL: { type: "plain", value: "https://api.kimi.com/coding/v1" },
       KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
     });
   });
+  it("restores saved Kimi API settings even when the API redacts plain environment values", async () => {
+    await render("kimi_local");
+    await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
+    await fill("Kimi API model name", "kimi-for-coding");
+    await act(async () => {
+      const protocol = container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement;
+      protocol.value = "openai";
+      protocol.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await fill("Kimi API base URL", "https://kimi.example.test/v1");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    const get = api.get.getMockImplementation()!;
+    api.get.mockImplementation(async (...args) => {
+      const saved = await get(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "kimi_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect((container.querySelector('[aria-label="Kimi API model name"]') as HTMLInputElement).value).toBe("kimi-for-coding");
+    expect((container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement).value).toBe("openai");
+    await click("Save & exit");
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env).toMatchObject({
+      KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "openai" },
+      KIMI_MODEL_BASE_URL: { type: "plain", value: "https://kimi.example.test/v1" },
+    });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env).toMatchObject({ KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" } });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
   it("configures Hermes Gateway URL and its top-level secret reference", async () => {
     await render("hermes_gateway");
     expect(container.querySelector('[aria-label="Model"]')).toBeNull();
@@ -705,7 +882,7 @@ describe("New agent setup", () => {
       expect(container.textContent).toContain("Your agent is ready");
       await click("Assign Atlas a Task");
       expect(state.openNewIssue).toHaveBeenCalledWith({
-        assigneeAgentId: "new-agent",
+        assigneeAgentId: api.create.mock.calls[0][1].setupId,
         status: "todo",
       });
     },
@@ -953,11 +1130,11 @@ describe("New agent setup", () => {
     await act(async () => root.render(null));
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
   });
-  it("removes the staged credential when hiring fails", async () => {
+  it("removes the staged credential when saving setup fails", async () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
+    api.update.mockRejectedValueOnce(new ApiError("Creation rejected", 422, null));
     await click("Finish setup");
     expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
     expect(container.textContent).toContain("Creation rejected");
@@ -966,11 +1143,41 @@ describe("New agent setup", () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    api.update.mockRejectedValueOnce(new ApiError("Agent quota exceeded", 422, null));
     secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
     await click("Finish setup");
     expect(container.textContent).toContain("Agent quota exceeded");
     expect(container.textContent).toContain("Could not remove an unused setup credential");
+  });
+  it("retains the credential on the setup record when the hire response is lost", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Response lost"));
+    await click("Finish setup");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env.OPENROUTER_API_KEY).toMatchObject({ type: "secret_ref" });
+    await click("Finish setup");
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(2);
+  });
+  it.each(["Save & exit", "Finish setup"])("retains a saved key when the %s PATCH response is lost", async action => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "uncertain-save-key");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      await persist(...args);
+      throw new Error("Save response lost");
+    });
+    await click(action);
+    expect(container.textContent).toContain("Save response lost");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect((await api.get(setupId)).adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();

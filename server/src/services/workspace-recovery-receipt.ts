@@ -36,12 +36,12 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
 /** Only the host writes workspace operations. Adapter output and a user-supplied
  * repair note cannot substitute for this exact copyback receipt. Stop/authority
  * are checked separately at every continuation admission. */
-export async function hasVerifiedWorkspaceRepair(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  if (typeof issueId !== "string" || !reference || reference.state !== "finalized" || !reference.finalHostSha256) return false;
-  const [receipt] = await db.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
+  if (typeof issueId !== "string" || !reference || reference.state !== "finalized" || !reference.finalHostSha256) return null;
+  const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery"),
     eq(workspaceOperations.status, "succeeded"),
@@ -49,11 +49,15 @@ export async function hasVerifiedWorkspaceRepair(db: Db, run: Pick<typeof heartb
   const proof = receipt?.metadata;
   if (!proof || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
     || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256
-    || typeof proof.recoveryActionId !== "string") return false;
+    || typeof proof.recoveryActionId !== "string") return null;
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.id, proof.recoveryActionId),
   )).limit(1);
   const state = readWorkspaceRecovery(action?.evidence ?? null);
-  return state?.runId === run.id && state.status === "recovered";
+  return state?.runId === run.id && state.status === "recovered" ? receipt.id : null;
+}
+
+export async function hasVerifiedWorkspaceRepair(...args: Parameters<typeof verifiedWorkspaceRepairReceipt>) {
+  return (await verifiedWorkspaceRepairReceipt(...args)) !== null;
 }

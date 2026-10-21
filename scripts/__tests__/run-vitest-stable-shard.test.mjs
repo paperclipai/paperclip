@@ -360,7 +360,7 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(nativeRunnerSuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -405,6 +405,7 @@ for (const caller of ["Release", "Cloud readiness", "another caller"]) {
 test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   const lane = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"]);
   assert.deepEqual(lane.selectedGeneralServerSuites, [
+    "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,

@@ -76,6 +76,15 @@ export async function prepareSandboxStopAndRetain(db: Db, lease: Lease) {
   return prepareStopAndRetain(db, lease, "active");
 }
 
+/** Historical release rows can lack a stop receipt. Re-inspect the exact
+ * recorded allocation using stop-only dispatch; never infer that it stopped. */
+export async function prepareHistoricalSandboxStopVerification(db: Db, lease: typeof environmentLeases.$inferSelect) {
+  if (lease.status !== "released" || !lease.heartbeatRunId || !lease.providerLeaseId ||
+      !["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) || lease.metadata?.pendingCleanupInFlight === true)
+    return null;
+  return prepareStopAndRetain(db, lease, "released");
+}
+
 /** A repair-only resume invalidates the old stop receipt atomically. This is
  * separate from ordinary release; a released timestamp alone cannot grant it. */
 export async function prepareStoppedSandboxForRecovery(db: Db, lease: typeof environmentLeases.$inferSelect) {

@@ -21,6 +21,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
         const [agent] = await tx.select().from(agents).where(eq(agents.id, id)).for("update", command === "reconcile" ? { skipLocked: true } : undefined);
         if (!agent) return null;
         if (options.version !== undefined && options.version !== agent.lifecycleVersion) return null;
+        if (command === "resume" && agent.lifecycleHolds.includes("setup")) throw new AgentLifecycleConflict("Finish agent setup before resuming");
         if (command === "complete" && (!options.owner || !agent.lifecycleOperation?.leaseUntil || agent.lifecycleOperation?.leaseOwner !== options.owner ||
           Date.parse(agent.lifecycleOperation?.leaseUntil ?? "") <= Date.now() ||
           !agent.lifecycleOperation.hostComplete || agent.lifecycleRequiredPluginIds === null ||

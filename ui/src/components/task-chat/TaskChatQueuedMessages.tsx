@@ -146,7 +146,7 @@ function SortableQueuedMessage({
         {label}
       </span>
 
-      {queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
+      {queue.targetRunId && (queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
@@ -178,7 +178,7 @@ function SortableQueuedMessage({
           )}
           Steer
         </button>
-      )}
+      ))}
 
       <button
         type="button"
@@ -382,11 +382,6 @@ export function TaskChatQueuedMessages({
       data-testid="task-chat-queued-messages"
       aria-label="Queued messages"
     >
-      {queue.executionWait && (
-        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
-          {queue.executionWait.message}
-        </div>
-      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}

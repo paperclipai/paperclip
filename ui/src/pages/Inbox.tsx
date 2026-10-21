@@ -10,6 +10,7 @@ import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { useSecondTick } from "../hooks/useSecondTick";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -298,6 +299,7 @@ function approvalStatusLabel(status: Approval["status"]): string {
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
+  if (run.issueId) return run.issueId;
   const context = run.contextSnapshot;
   if (!context) return null;
 
@@ -383,7 +385,17 @@ export function FailedRunInboxRow({
 }) {
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
-  const displayError = runFailureMessage(run);
+  const interruption = issue?.interruption;
+  useSecondTick(interruption?.state === "retry_scheduled");
+  const retrySeconds = Math.max(0, Math.ceil((Date.parse(interruption?.nextRetryAt ?? "") - Date.now()) / 1000));
+  const displayError = isRetrying || interruption?.state === "working" ? "Thinking"
+    : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
+      : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
+        : interruption?.state === "waiting_for_user" ? ({
+          approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
+          resume: "Work is paused", budget: "Budget limit reached",
+        }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
+  const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -417,7 +429,7 @@ export function FailedRunInboxRow({
           </span>
         ) : null}
         <Link
-          to={`/agents/${run.agentId}/runs/${run.id}`}
+          to={issueId ? `/issues/${issueId}` : `/agents/${run.agentId}/runs/${run.id}`}
           className={cn(
             "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors",
             selected ? "hover:bg-transparent" : "hover:bg-accent/50",
@@ -442,7 +454,7 @@ export function FailedRunInboxRow({
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <StatusBadge status={run.status} />
+              {!interruption && <StatusBadge status={run.status} />}
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
               <span className="truncate max-w-(--sz-300px)">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
@@ -453,7 +465,7 @@ export function FailedRunInboxRow({
           {onArchive ? (
             <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
           ) : null}
-          <Button
+          {retryAvailable && <Button
             type="button"
             variant="outline"
             size="sm"
@@ -462,8 +474,8 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Retrying…" : "Retry"}
-          </Button>
+            {isRetrying ? "Thinking" : "Retry"}
+          </Button>}
           {!showUnreadSlot && (
             <button
               type="button"
@@ -477,7 +489,7 @@ export function FailedRunInboxRow({
         </div>
       </div>
       <div className="mt-3 flex gap-2 sm:hidden">
-        <Button
+        {retryAvailable && <Button
           type="button"
           variant="outline"
           size="sm"
@@ -486,8 +498,8 @@ export function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Retrying…" : "Retry"}
-        </Button>
+          {isRetrying ? "Thinking" : "Retry"}
+        </Button>}
         {!showUnreadSlot && (
           <button
             type="button"
@@ -1334,9 +1346,10 @@ function StreamlinedInbox({
   const failedRuns = useMemo(
     () =>
       getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
-        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
+        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt)
+          && issueById.get(readIssueIdFromRun(r) ?? "")?.interruption?.state !== "resolved",
       ),
-    [heartbeatRuns, dismissedAtByKey],
+    [heartbeatRuns, dismissedAtByKey, issueById],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -1819,9 +1832,26 @@ function StreamlinedInbox({
   });
 
   const [retryingRunIds, setRetryingRunIds] = useState<Set<string>>(new Set());
+  const retryRequestKeys = useRef(new Map<string, string>());
 
   const retryRunMutation = useMutation({
     mutationFn: async (run: HeartbeatRun) => {
+      const issueId = readIssueIdFromRun(run);
+      if (issueId) {
+        let idempotencyKey = retryRequestKeys.current.get(run.id);
+        if (!idempotencyKey) {
+          idempotencyKey = crypto.randomUUID();
+          retryRequestKeys.current.set(run.id, idempotencyKey);
+        }
+        const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id }).catch(error => {
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500)
+            retryRequestKeys.current.delete(run.id);
+          throw error;
+        });
+        queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
+          current ? { ...current, interruption: result.presentation } : current);
+        return { newRun: { runId: null, issueId }, originalRun: run };
+      }
       const result = await agentsApi.retryFailedRun(
         run.agentId,
         run.id,
@@ -1833,6 +1863,7 @@ function StreamlinedInbox({
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
     onSuccess: ({ newRun, originalRun }) => {
+      retryRequestKeys.current.delete(originalRun.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
       if (newRun.runId)

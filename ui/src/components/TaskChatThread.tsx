@@ -1,4 +1,5 @@
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
+import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -850,6 +851,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
+        if (comment.authorType === "system" && comment.metadata?.recoveryResponsibility === "system") return [];
         if (statusRelevance.isHistoricalNotice(comment)) return [];
         if (isRedundantAiRecoveryNotice(comment, interactions)) return [];
         if (comment.body !== LEGACY_WITHHELD_RUN_COMMENT || !comment.runId)
@@ -1556,7 +1558,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         !lastCommentIdByRun.has(source.id);
       if (executionWait) {
         settledRunIds.add(source.id);
-        if (historical) continue;
+        if (historical || props.interruption) continue;
         const wait = meta?.resultJson?.executionWait;
         const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
           ? String(wait.recoveryActionId)
@@ -1700,7 +1702,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : undefined;
         const finishedAt =
           meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
-        if (!historical) entriesWithFailures.push({
+        if (!historical && (!props.interruption || credentialAccess ||
+            (props.interruption.responsibility === "user" &&
+              ["native_provider_model_rejected", "native_provider_approval_required"].includes(code)))) entriesWithFailures.push({
           ms: toMs(finishedAt),
           order: 3,
           id,
@@ -1764,7 +1768,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `Workspace setup failed before the agent started. ${retryDetail}`
             : `The run failed (${code}). ${retryDetail}`;
         const id = `${source.id}:failure`;
-        if (!historical) entriesWithFailures.push({
+        if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
           ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
           order: 3,
           id,
@@ -1847,7 +1851,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         } else if (!sourceHasNativeStop && !sourceHasLegacyStop && !lastCommentIdByRun.has(source.id)) {
           settledRunIds.add(source.id);
           const id = `${source.id}:terminal-notice`;
-          if (!historical) entriesWithFailures.push({
+          if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
             ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
             order: 3,
             id,
@@ -1880,7 +1884,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         !sourceHasNativeResponse
       ) {
         const id = `${source.id}:terminal-notice`;
-        if (!historical) entriesWithFailures.push({
+        if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
           ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
           order: 3,
           id,
@@ -2173,6 +2177,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     };
   }, [
     orderedEntries,
+    props.interruption,
     statusRelevance,
     canRetryFailedRun,
     interactions,
@@ -2612,44 +2617,58 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [handleRuntimeRequestDecision, onSkipInteraction],
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
-  const assigneeUsesPaperclipRunner = Boolean(
-    issueAssigneeAgentId &&
-    agentMap?.get(issueAssigneeAgentId)?.adapterType === "paperclip_runner",
-  );
+  const hasAgentAssignee = Boolean(issueAssigneeAgentId);
   const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
+  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
+  const submissionRequestId = useRef<string | null>(null);
   useEffect(() => {
-    if (tailRunId) setRunnerSubmissionPending(false);
-  }, [tailRunId]);
+    const confirmed = submissionRequestId.current && comments.some(comment =>
+      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
+    // The previous intent's projection cannot acknowledge this submission.
+    if (tailRunId || confirmed) {
+      setRunnerSubmissionPending(false);
+      setSubmissionTakingLonger(false);
+    }
+  }, [tailRunId, comments, runnerSubmissionPending]);
   useEffect(() => {
     if (!runnerSubmissionPending || tailRunId) return;
     const timeout = window.setTimeout(
-      () => setRunnerSubmissionPending(false),
+      () => {
+        setSubmissionTakingLonger(true);
+        void props.onRefreshLatestComments?.();
+      },
       10_000,
     );
     return () => window.clearTimeout(timeout);
   }, [runnerSubmissionPending, tailRunId]);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      if (assigneeUsesPaperclipRunner) setRunnerSubmissionPending(true);
+      if (hasAgentAssignee) {
+        submissionRequestId.current = args[4] ?? null;
+        setRunnerSubmissionPending(true);
+        setSubmissionTakingLonger(false);
+      }
       try {
         await onAdd(...args);
+        setRunnerSubmissionPending(false);
+        setSubmissionTakingLonger(false);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
           dismissQuestion(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
           setTakeoverMode("normal");
         }
       } catch (error) {
-        setRunnerSubmissionPending(false);
+        setRunnerSubmissionPending(error instanceof CommentSubmissionUnknownError);
+        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
         throw error;
       }
     },
-    [assigneeUsesPaperclipRunner, onAdd, selectedPendingInput, dismissQuestion],
+    [hasAgentAssignee, onAdd, selectedPendingInput, dismissQuestion],
   );
   const optimisticRunnerStartup =
-    assigneeUsesPaperclipRunner &&
-    !props.executionBlocked &&
+    hasAgentAssignee &&
     !tailRunId &&
-    (runnerSubmissionPending ||
+    (props.retryPreparing || props.interruption?.state === "working" || runnerSubmissionPending ||
       commentItems.some(
         (item) =>
           item.kind === "message" &&
@@ -3038,7 +3057,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               >
                 {prepareInitialContent ? (
                   <>
-                    {items.length === 0 && !tailRunId ? (
+                    {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
                       <div
                         className={
                           isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
@@ -3117,6 +3136,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       agentIcon={visibleTailAgentIcon}
                                       agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                       items={tailItems}
+                                      preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
                                       allowSummaryFallback={!paperclipRunnerTail ||
                                         terminalHydratedRunIds.has(tailRunId ?? "") ||
                                         tailEntries.some((entry) => entry.kind === "run_terminal")}

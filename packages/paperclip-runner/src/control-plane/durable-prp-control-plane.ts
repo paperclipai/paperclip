@@ -46,8 +46,10 @@ import {
 } from "./prp-transport-types.js";
 
 const protocol = "paperclip.runner";
-const protocolMinVersion = 1;
-const protocolVersion = 3;
+export const RUNNER_PRP_PROTOCOL_MIN = 1;
+const protocolMinVersion = RUNNER_PRP_PROTOCOL_MIN;
+export const RUNNER_PRP_PROTOCOL_MAX = 3;
+const protocolVersion = RUNNER_PRP_PROTOCOL_MAX;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
@@ -292,10 +294,11 @@ export interface RunnerProcessHandle {
   startedAt?: string;
   isExitConfirmed?(): boolean;
   /** Relaunches the same immutable process specification with a fresh ticket. */
-  restart?(ticket: string): RunnerProcessHandle;
+  restart?: ((ticket: string) => RunnerProcessHandle) | null;
 }
 
 export type RunnerProcessConnection =
+  | { mode: "external" }
   | { mode: "connect"; connectUrl: string; caBundlePath?: string }
   | {
       mode: "listen";
@@ -305,6 +308,8 @@ export type RunnerProcessConnection =
     };
 
 export interface RunnerProcessLaunchSpec {
+  /** Structured data for process owners. Plugins never receive the shell specification. */
+  nativeRunner?: Omit<Parameters<typeof spawnRunner>[0], "processLauncher" | "runnerBinaryPath" | "environment" | "connectUrl">;
   command: string;
   args: readonly string[];
   cwd: string;
@@ -3554,8 +3559,9 @@ export function spawnRunner(options: {
       : null);
   if (connection === null)
     throw new Error("runner process connection is required");
+  if (connection.mode === "external" && !options.processLauncher) throw new Error("External Runner connection requires a process owner");
   const connectionArgs =
-    connection.mode === "connect"
+    connection.mode === "external" ? [] : connection.mode === "connect"
       ? [
           "--connect-url",
           connection.connectUrl,
@@ -3655,7 +3661,7 @@ export function spawnRunner(options: {
 
   const command = options.runnerBinaryPath ?? runnerBinary;
   const environment = runnerEnvironment(options.ticket, options.identity.normalizedSessionId, options.environment);
-  const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
+  const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => handle.restart === null ? handle : ({
     ...handle,
     restart: (ticket) => {
       if (handle.isExitConfirmed?.() === false) {
@@ -3666,7 +3672,17 @@ export function spawnRunner(options: {
   });
   if (options.processLauncher !== undefined) {
     return withRestart(
-      options.processLauncher({ command, args, cwd: packageRoot, environment }),
+      options.processLauncher({ command, args, cwd: packageRoot, environment,
+        nativeRunner: {
+          identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
+          runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,
+          maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,
+          maxRuntimeMs: options.maxRuntimeMs, maxLifetimeMs: options.maxLifetimeMs,
+          reconnectGraceMs: options.reconnectGraceMs, lifecyclePolicy: options.lifecyclePolicy,
+          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile,
+          diagnosticsDirectory: options.diagnosticsDirectory,
+        },
+      }),
     );
   }
 

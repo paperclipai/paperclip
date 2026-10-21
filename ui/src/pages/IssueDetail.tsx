@@ -1,3 +1,4 @@
+import { useTaskRetry } from "../hooks/useTaskRetry";
 import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
 import { WorkspaceRetryControl } from "../components/WorkspaceRetryButton";
@@ -1199,6 +1200,8 @@ function InboxMobileToolbar({
 
 type IssueDetailChatTabProps = {
   executionBlocked?: boolean;
+  interruption?: Issue["interruption"];
+  retryPreparing?: boolean;
   queryIssueId?: string;
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
@@ -1357,6 +1360,8 @@ const DesignSandboxTaskThread = lazy(() => import("../components/design-sandbox/
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
   executionBlocked,
+  interruption,
+  retryPreparing,
   queryIssueId,
   browsers,
   onOpenBrowser,
@@ -2510,6 +2515,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
             executionBlocked={executionBlocked}
+            interruption={interruption}
+            retryPreparing={retryPreparing}
             key={conversationMode ? draftKey : issueId}
             {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
             onOpenSkill={onOpenSkill}
@@ -3232,6 +3239,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     if (issueId) void prefetchIssueThread(queryClient, issueId);
   }, [issueId, queryClient]);
   const issue = queriedIssue ?? conversation?.issue ?? draftIssue;
+  const taskRetry = useTaskRetry(issue ?? undefined);
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
     const resolved = await conversation.ensureIssue();
@@ -3978,7 +3986,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const threadComments = useMemo(
     () =>
-      mergeIssueComments(comments ?? [], optimisticComments).map((comment) => {
+      mergeIssueComments(comments ?? [], optimisticComments)
+      .filter(comment => !(comment.authorType === "system" && comment.metadata?.recoveryResponsibility === "system"))
+      .map((comment) => {
         if ("clientId" in comment && comment.clientId)
           commentRenderKeys.current.set(comment.id, comment.clientId);
         const clientId = commentRenderKeys.current.get(comment.id);
@@ -7784,16 +7794,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             issueCacheRefs={issueCacheRefs}
           />
 
-          {resolvedDetailTab === "chat" && !issue.executionBlocker?.workspaceRecovery && (
+          {resolvedDetailTab === "chat" && !issue.interruption && !issue.executionBlocker?.workspaceRecovery && (
             <WorkspaceExportRecovery key={`workspace-export:${issue.activeRecoveryAction?.id ?? issue.id}`}
               className={shellSectionClass}
               action={issue.activeRecoveryAction ?? null} />
           )}
-          {resolvedDetailTab === "chat" && issue.executionBlocker && (
-            <ExecutionBlockerNotice className={shellSectionClass} companyId={issue.companyId} issueId={issue.id}
-              issueStatus={issue.status} canManage={canManageBoardRuntime && canResolveBoardRecoveryAction}
-              canRecover={canResolveBoardRecoveryAction}
-              blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
+          {resolvedDetailTab === "chat" && (
+            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
+              canRetry={canResolveBoardRecoveryAction} onRetry={taskRetry.retry}
+              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
           {issue.status === "in_review" && issue.externalConversationState === "waiting" && (
@@ -8124,6 +8133,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 }}>
                 <IssueDetailChatTab
                   executionBlocked={Boolean(issue.executionBlocker)}
+                  interruption={issue.interruption}
+                  retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
@@ -8177,7 +8188,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockerAttention={issue.blockerAttention ?? null}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
+                  recoveryAction={issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
@@ -8362,7 +8373,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   }
                   resumeAssigneePending={resumeAssigneeAgent.isPending}
                   onTryAgainNoLiveExecutionPath={
-                    issue.status === "blocked" && issue.activeRecoveryAction
+                    issue.status === "blocked" && !issue.interruption && issue.activeRecoveryAction
                       ? handleTryAgainNoLiveExecutionPath
                       : undefined
                   }

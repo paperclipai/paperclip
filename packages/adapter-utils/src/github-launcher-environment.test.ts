@@ -12,6 +12,7 @@ import { syncRemoteTextFilesWithHashSkip } from "./sandbox-callback-bridge.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
+  cleanupGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
 } from "./execution-target.js";
@@ -311,6 +312,14 @@ describe("managed GitHub launcher environment", () => {
         expect(JSON.parse(result.stdout)).toEqual(captured ? identity : {});
       }
     }
+  });
+
+  it("keeps task-only startup free of command probes and host credentials", async () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "plugin", remoteCwd: "/project", runnerTask: async () => ({}) };
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: false, networkAccess: true }))
+      .resolves.toMatchObject({ PAPERCLIP_GITHUB_AUTH_MODE: "managed", PAPERCLIP_GIT_METADATA_ROOTS: "[]", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" });
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: true, networkAccess: true }))
+      .rejects.toThrow("cannot import host GitHub credentials");
   });
 
   it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {

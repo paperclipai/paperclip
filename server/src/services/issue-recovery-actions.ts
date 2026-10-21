@@ -408,7 +408,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           .update(issueRecoveryActions)
           .set({
             status: "escalated",
-            ownerType: "board",
+            ownerType: existing.ownerType === "system" || input.ownerType === "system" ? "system" : "board",
             ownerAgentId: null,
             ownerUserId: null,
             previousOwnerAgentId:

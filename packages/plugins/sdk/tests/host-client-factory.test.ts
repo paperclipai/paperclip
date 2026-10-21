@@ -435,3 +435,20 @@ describe("agent runtime reader", () => {
     expect(getRuntime).toHaveBeenCalledOnce();
   });
 });
+
+describe("project instance secrets", () => {
+  it("requires the capability and host-authorized company scope", async () => {
+    const getInstanceSecrets = vi.fn(async () => ({ mount_grants: "fixture" }));
+    const services = { projects: { getInstanceSecrets } } as unknown as HostServices;
+    const params = { companyId: "company-a", projectId: "project-a" };
+    const context = { invocationScope: { companyId: "company-a" } };
+    const denied = createHostClientHandlers({ pluginId: "fixture", capabilities: [], services });
+    await expect(denied["projects.getInstanceSecrets"](params, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    const allowed = createHostClientHandlers({ pluginId: "fixture", capabilities: ["projects.instance-secrets"], services });
+    await expect(allowed["projects.getInstanceSecrets"](params)).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    await expect(allowed["projects.getInstanceSecrets"](params, { invocationScope: { companyId: "other" } })).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(getInstanceSecrets).not.toHaveBeenCalled();
+    await expect(allowed["projects.getInstanceSecrets"](params, context)).resolves.toEqual({ mount_grants: "fixture" });
+    expect(getInstanceSecrets).toHaveBeenCalledWith(params);
+  });
+});

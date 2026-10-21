@@ -160,6 +160,7 @@ import {
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import {
   createPaperclipCloudConnector,
@@ -10273,6 +10274,19 @@ export function createToolGatewayService(
       let recoveredGitHubPublication: { content: string; data: unknown } | undefined;
       let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
+
+      if (session.runId && session.issueId && tool.connectionId && tool.risk !== "read" &&
+          // This owner has an exact publication receipt/reconciliation protocol.
+          !(tool.providerType === "paperclip_github_chat" &&
+            ["comment", "update_comment", "submit_review"].includes(tool.upstreamToolName ?? ""))) {
+        const unresolved = await unresolvedRecoveryToolInvocation(db, {
+          companyId: session.companyId, issueId: session.issueId, runId: session.runId,
+          connectionId: tool.connectionId, toolName: tool.name, risk: tool.risk,
+        });
+        if (unresolved) throw new ToolGatewayHttpError(409,
+          "A previous operation has an unconfirmed outcome. Reconcile it before repeating this operation; reads and independent work remain available.",
+          "recovery_effect_outcome_unresolved", { invocationId: unresolved });
+      }
 
       if (!input.approvedActionRequestId) {
         const replay = await replayMatchingAgentAction({

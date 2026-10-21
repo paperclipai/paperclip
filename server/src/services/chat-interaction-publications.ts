@@ -193,8 +193,10 @@ function textForQuestionInteraction(
     interaction.payload.title ?? interaction.title ?? "Input needed",
     "",
   ];
+  if (interaction.summary) lines.push(interaction.summary, "");
   for (const question of interaction.payload.questions) {
     lines.push(question.prompt);
+    if (question.helpText) lines.push(question.helpText);
     for (const option of question.options) lines.push(`- ${option.label}`);
     lines.push("");
   }
@@ -401,7 +403,12 @@ export async function enqueueIssueInteractionChatPublications(
                 : "Response needed in Paperclip",
           body:
             interaction.kind === "ask_user_questions"
-              ? (question?.helpText ?? undefined)
+              ? [...new Set([
+                  interaction.summary,
+                  ...(question
+                    ? [question.helpText]
+                    : interaction.payload.questions.flatMap(item => [item.prompt, item.helpText])),
+                ].filter((value): value is string => Boolean(value?.trim())))].join("\n\n") || undefined
               : interaction.kind === "request_confirmation"
                 ? (interaction.payload.detailsMarkdown ?? undefined)
                 : "Open the task in Paperclip to review and respond.",

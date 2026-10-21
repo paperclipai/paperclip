@@ -1,6 +1,6 @@
 import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
-import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
+import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -927,6 +927,7 @@ export interface Issue {
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
+  interruption?: TaskInterruptionPresentation | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
@@ -993,6 +994,7 @@ export type CompactIssue = Pick<
   | "createdAt"
   | "updatedAt"
 > & {
+  interruption?: TaskInterruptionPresentation | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -1159,6 +1161,8 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  /** Producer-classified diagnostics; task interruption UI owns system repair. */
+  recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
   sourceChannel?: ChatProvider;
   sourceRunId?: string | null;

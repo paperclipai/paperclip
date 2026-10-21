@@ -187,6 +187,10 @@ Automated: [chat question forms](../../server/src/services/chat-question-forms.t
 and [interaction publications](../../server/src/__tests__/chat-interaction-publications.test.ts)
 cover serialization and delivery logic with fixtures.
 
+Free-text and multi-question cards must show their title, question prompts, help
+text, and relevant context beside Respond. Settled cards must not expose saved
+free-text answers. The interaction publication database suite covers both states.
+
 Manual: use a disposable provider conversation, answer as the linked sender,
 and check the task's persisted result and one continuation. Repeat from an
 unlinked or wrong sender and with an expired card. A browser answer does not

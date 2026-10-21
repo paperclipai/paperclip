@@ -1,3 +1,4 @@
+import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
@@ -907,7 +908,7 @@ export function heartbeatService(
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspacesSvc = executionWorkspaceService(db, { pluginWorkerManager: options.pluginWorkerManager });
   const environmentsSvc = environmentService(db);
   const environmentRuntime =
     options.environmentRuntime ??
@@ -2195,7 +2196,8 @@ export function heartbeatService(
       const externalProvider = heartbeatExternalProvider({ run, agent });
       const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
-      const runtimeWorkspaceSelectionEnabled = !externalProvider && taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled, hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) });
+      const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
+      const runtimeWorkspaceSelectionEnabled = !externalProvider && (freshWorkspace?.mode === "fresh_isolated_workspace" || taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled, hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) }));
       const parsedIssueExecutionWorkspaceSettings =
         parseIssueExecutionWorkspaceSettings(
           issueContext?.executionWorkspaceSettings,
@@ -2508,8 +2510,8 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const requestedExecutionWorkspaceMode =
-        trustPreset.kind === "low_trust_review" &&
+      const requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
+        ? "isolated_workspace" : trustPreset.kind === "low_trust_review" &&
         resolvedExecutionWorkspaceMode === "shared_workspace"
           ? "isolated_workspace"
           : resolvedExecutionWorkspaceMode;
@@ -2526,9 +2528,8 @@ export function heartbeatService(
             description: issueContext.description,
             projectId: issueContext.projectId,
             projectWorkspaceId: issueContext.projectWorkspaceId,
-            executionWorkspaceId: issueContext.executionWorkspaceId,
-            executionWorkspacePreference:
-              issueContext.executionWorkspacePreference,
+            executionWorkspaceId: freshWorkspace?.mode === "fresh_isolated_workspace" ? null : issueContext.executionWorkspaceId,
+            executionWorkspacePreference: freshWorkspace?.mode === "fresh_isolated_workspace" ? "create_new" : issueContext.executionWorkspacePreference,
           }
         : null;
       const storedLedgerScope = parseObject(parseObject(run.usageJson).ledgerScope);
@@ -2583,7 +2584,7 @@ export function heartbeatService(
       } = await timePreparation("environment_selection", () => selectHeartbeatEnvironment(db, {
         run, agent,
         task: { issueRef, issueContext, issueId, context, executionProjectId, workspaceProjectContext, boundSourceWorkspace,
-          hasSelectedWorkspaceSource: Boolean(selectedWorkspaceSource), taskWorkspaceIntent: taskWorkspaceIntentRow?.intent ?? null, responsibleUserId },
+          freshWorkspace, hasSelectedWorkspaceSource: Boolean(selectedWorkspaceSource), taskWorkspaceIntent: taskWorkspaceIntentRow?.intent ?? null, responsibleUserId },
         policy: {
           trustPreset, requestedExecutionWorkspaceMode, isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
           projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
@@ -2661,6 +2662,7 @@ export function heartbeatService(
           responsibleUserId,
           previousSessionParams,
           workspaceSelection: taskWorkspaceIntentRow?.intent ?? null,
+          freshWorkspace,
         },
         policy: {
           trustPreset,
@@ -2697,6 +2699,7 @@ export function heartbeatService(
           runOptions,
         },
         services: {
+          workspaceWorkers: options.pluginWorkerManager,
           envOrchestrator,
           executionWorkspacesSvc,
           workspaceOperationsSvc,
@@ -4078,6 +4081,7 @@ export function heartbeatService(
 
     releaseEnvironmentLeasesForRun,
     resumeRemoteStopComments,
+    resumeTaskRetry: runControl.resumeTaskRetry,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
 

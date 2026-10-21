@@ -4,6 +4,7 @@ import { forbidden } from "../errors.js";
 import { isDeepStrictEqual } from "node:util";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH, resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -56,9 +57,9 @@ export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input
   issueId?: string | null; sourceWorkspaceId?: string | null; assigneeAgentId?: string | null; taskCreation?: TaskWorkspaceCreationTrustContext;
 }) {
   if (!input.sourceProjectId) return;
-  const [selectedSource] = await db.select({ id: projects.id, companyId: projects.companyId,
+  const [selectedSource] = await measureRunPhase("workspace.access.trust.project_read", async () => db.select({ id: projects.id, companyId: projects.companyId,
     executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects).where(and(
-      eq(projects.companyId, input.companyId), eq(projects.id, input.sourceProjectId)));
+      eq(projects.companyId, input.companyId), eq(projects.id, input.sourceProjectId!))));
   if (!selectedSource) throw forbidden("Selected workspace source project is unavailable");
   if (resolveCoreTrustPreset({ companyId: input.companyId, workspaceSourceProject: selectedSource }).kind === "standard") return;
   const incompatible = () => forbidden("Selected workspace source trust is incompatible with the task's execution policy");

@@ -987,7 +987,10 @@ export function canonicalProviderEventsFromCodex(
               ? "environment"
               : "turn",
           recoverable: method !== "error",
-          userActionable: method === "error" || method === "warning",
+          // Provider severity does not establish a decision the task user can
+          // make. Authentication, approval and model-choice actions have typed
+          // admission paths; generic runtime notices remain diagnostics.
+          userActionable: false,
           summary: [params.summary, params.message, params.details]
             .map((value) => text(value).trim())
             .find(Boolean)?.slice(0, 4000) || "Provider notice",

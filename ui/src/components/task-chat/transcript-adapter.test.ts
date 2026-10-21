@@ -221,7 +221,7 @@ describe("completion tool feed visibility", () => {
     const [notice] = transcriptToTaskChatItems([{
       kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
       status: "informational", title: "Provider notice", summary,
-      payload: { noticeId: "long-notice", summary },
+      payload: { noticeId: "long-notice", summary, userActionable: true },
     }], { runId: "notice", running: false });
     expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
       notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
@@ -240,7 +240,7 @@ describe("completion tool feed visibility", () => {
         })),
         { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
           status: "informational", title: "Provider notice", summary: "Repository is not trusted",
-          payload: { noticeId: "notice", summary: "Repository is not trusted" } },
+          payload: { noticeId: "notice", summary: "Repository is not trusted", userActionable: true } },
       ];
       const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
       expect(parsed).toHaveLength(4);
@@ -858,19 +858,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
         description: "Canonical event details",
       },
     ]);
-    expect(
-      notice?.kind === "protocol" && notice.surface === "provider_activity"
-        ? notice.details
-        : [],
-    ).toEqual(
-      expect.arrayContaining([
-        { label: "Severity", value: "warning", mono: false },
-        { label: "Category", value: "config", mono: false },
-        { label: "Scope", value: "environment", mono: false },
-        { label: "Recoverable", value: "Yes", mono: false },
-        { label: "User Actionable", value: "No", mono: false },
-      ]),
-    );
+    expect(notice).toBeUndefined();
   });
 
   it("retains every canonical provider family for live and settled rendering", () => {
@@ -898,7 +886,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       status: index % 2 === 0 ? "running" : "completed",
       title: family,
       summary: `Visible ${family}`,
-      payload: { [`${family}Id`]: `${family}-1` },
+      payload: { [`${family}Id`]: `${family}-1`, ...(family === "provider_notice" ? { userActionable: true } : {}) },
     }));
     const items = transcriptToTaskChatItems(entries, {
       ...opts,

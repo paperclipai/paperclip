@@ -1,3 +1,6 @@
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { projectInstanceSecretService, type ProjectSecretSnapshot } from "./project-instance-secrets.js";
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
 import { pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import type { ResourceLifecycleEvent } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
@@ -40,19 +43,29 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
         .orderBy(asc(resourceLifecycleEvents.id)).limit(limit);
       return rows.map(row => ({ ...row, id: String(row.id), createdAt: row.createdAt.toISOString() })) as ResourceLifecycleEvent[];
     },
-    async acknowledge(companyId: string, eventId: string): Promise<void> {
+    async acknowledge(companyId: string, eventId: string, credentials?: { snapshot: ProjectSecretSnapshot; changes: unknown }): Promise<void> {
       if (typeof eventId !== "string" || !/^[1-9]\d*$/.test(eventId) || !Number.isSafeInteger(Number(eventId))) throw badRequest("Invalid lifecycle event id");
-      await db.transaction(async tx => {
+      const commit = () => db.transaction(async tx => {
+        const publications: ActivityPublication[] = [];
         const txDb = tx as unknown as Db;
         await assertAvailable(txDb, companyId);
         const [event] = await tx.select().from(resourceLifecycleEvents)
           .where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.id, Number(eventId)))).for("update");
         if (!event) throw notFound("Lifecycle event not found");
+        const [acked] = await tx.select().from(pluginLifecycleAcknowledgments).where(and(eq(pluginLifecycleAcknowledgments.pluginId, pluginId), eq(pluginLifecycleAcknowledgments.eventId, event.id)));
+        if (acked) return publications;
         const [eligible] = await tx.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
           .where(and(eq(resourceLifecycleEvents.id, event.id), firstForResource));
         if (!eligible) throw conflict("Acknowledge earlier lifecycle events for this resource first");
+        if (credentials) {
+          if (event.resourceType !== "project") throw forbidden("Project instance secret event required");
+          publications.push(...await projectInstanceSecretService(txDb, pluginId).apply({ ...event, id: String(event.id), createdAt: event.createdAt.toISOString() } as ResourceLifecycleEvent, credentials.snapshot, credentials.changes));
+        }
         await tx.insert(pluginLifecycleAcknowledgments).values({ pluginId, eventId: event.id }).onConflictDoNothing();
+        return publications;
       });
+      const publications = credentials ? await withAccountHomeSecretMutationLock(undefined, companyId, commit) : await commit();
+      for (const publication of publications) publishActivity(publication);
     },
   };
 }

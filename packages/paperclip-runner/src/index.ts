@@ -33,6 +33,8 @@ export {
 export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,
+  RUNNER_PRP_PROTOCOL_MIN,
+  RUNNER_PRP_PROTOCOL_MAX,
   inspectWarmRunTransition,
   type DurablePrpControlPlaneOptions,
   type PrpWireConnection,

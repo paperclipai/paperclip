@@ -47,6 +47,13 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
+Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
+verify the exact originating conversation, rejected forged/mismatched receipts,
+one working publication, no completion for a yielded run, and saved-response
+recovery. In a disposable live thread, request work that needs deferred repository
+preparation. Verify a useful continuation explanation, automatic resumption, and
+the final result in that same thread. A successful provider turn alone is insufficient.
+
 GitHub review comment regression (2026-10-19): repeated PR review requests reuse
 one main App comment, including across restart and reconnect. Test a leading
 request for an external bot (`@greptile review`) and verify it creates no wake or

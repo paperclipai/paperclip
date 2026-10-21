@@ -1,4 +1,5 @@
 import { continuingTeamsFilePublication, type ContinuingTeamsFileTransfer } from "./microsoft-teams/file-transfer-source.js";
+import { readTaskChatRetryIntent, taskChatRetryExecutionStopped } from "./task-retry-authority.js";
 import { notifyChatActionWork, notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { FAILED_RUN_RETRY_STALE_MS, dueChatAction } from "../chat-action-work.js";
 
@@ -546,6 +547,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     tx: DbOrTransaction,
     source: Pick<FailedChatRetrySource, "failedRunId" | "issueId" | "agentId">,
     companyId: string,
+    taskRetryIntentId?: string,
   ) {
     const [run] = await tx
       .select()
@@ -559,6 +561,14 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       )
       .for("share", { noWait: true });
     if (!run) throw failedChatRetryDenied();
+    if (taskRetryIntentId) {
+      if (!await readTaskChatRetryIntent(tx as unknown as Db, { companyId, issueId: source.issueId,
+        agentId: source.agentId, sourceRunId: run.id, intentId: taskRetryIntentId })) throw failedChatRetryDenied();
+      if (await taskChatRetryExecutionStopped(tx as unknown as Db, run)) return;
+      // A still-live/unknown executor remains held. The exact pre-provider
+      // proof below can establish a never-started native attempt.
+      if (run.runtimeMode !== "native") throw failedChatRetryDenied();
+    }
     if (run.runtimeMode !== "native") return;
     const { coordinator, leases, retiredOwner } =
       await failedNativeRetryCoordinator(tx, run, source.issueId);
@@ -634,6 +644,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       retryActionId?: string;
       runId?: string;
       publication?: boolean;
+      taskRetryIntentId?: string;
       /** Internal selector for already committed output, never retry admission. */
       committedResponse?: {
         resultId: string;
@@ -691,9 +702,10 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       !failedRun ||
       !failedRun.wakeupRequestId ||
       (!input.committedResponse &&
-        (!["failed", "timed_out"].includes(failedRun.status) ||
+        (!(["failed", "timed_out"].includes(failedRun.status) ||
+            (input.taskRetryIntentId && failedRun.status === "cancelled")) ||
           !failedRun.finishedAt)) ||
-      (!input.committedResponse &&
+      (!input.committedResponse && !input.taskRetryIntentId &&
         failedRun.runtimeMode !== "native" &&
         !(
           [
@@ -708,7 +720,11 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         ["backlog", "done", "cancelled"].includes(issue.status))
     )
       throw failedChatRetryDenied();
-    if (failedRun.runtimeMode === "native" && !input.committedResponse)
+    if (input.taskRetryIntentId && !await readTaskChatRetryIntent(tx as unknown as Db, {
+      companyId: input.companyId, issueId: issue.id, agentId: input.agentId,
+      sourceRunId: failedRun.id, intentId: input.taskRetryIntentId,
+    })) throw failedChatRetryDenied();
+    if (failedRun.runtimeMode === "native" && !input.committedResponse && !input.taskRetryIntentId)
       await failedNativeRetryCoordinator(tx, failedRun, issue.id);
     const context = failedRun.contextSnapshot ?? {};
     const provider = CHAT_PROVIDERS.find(
@@ -899,6 +915,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           ...input,
           failedRunId: priorIntent.payload.failedRunId,
           committedResponse: undefined,
+          taskRetryIntentId: typeof priorIntent.payload.taskRetryIntentId === "string"
+            ? priorIntent.payload.taskRetryIntentId : undefined,
         },
         ancestors,
       );
@@ -1222,10 +1240,12 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       agentId: string;
       failedRunId: string;
       initiatedByUserId: string;
+      retryIntentId?: string;
     },
   ): Promise<{ actionId: string; issueId: string }> {
-    const source = await failedChatRetrySource(tx, input);
-    const providerActionId = `failed-run-retry:${source.failedRunId}`;
+    const source = await failedChatRetrySource(tx, { ...input, taskRetryIntentId: input.retryIntentId });
+    const providerActionId = input.retryIntentId
+      ? `task-retry:${input.retryIntentId}` : `failed-run-retry:${source.failedRunId}`;
     const [existing] = await tx
       .select()
       .from(chatActions)
@@ -1245,7 +1265,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         throw failedChatRetryDenied();
       return { actionId: existing.id, issueId: input.issueId };
     }
-    await assertFailedNativeRetryState(tx, source, input.companyId);
+    if (!input.retryIntentId) await assertFailedNativeRetryState(tx, source, input.companyId);
     const [busy] = await tx
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
@@ -1277,6 +1297,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           version: 1,
           ...source,
           initiatedByUserId: input.initiatedByUserId,
+          ...(input.retryIntentId ? { taskRetryIntentId: input.retryIntentId } : {}),
         },
         status: "issued",
         result: { code: "failed_chat_retry_queued", attemptCount: 0 },
@@ -1331,7 +1352,13 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const source = await failedChatRetrySource(tx, {
       ...input,
       failedRunId: snapshot.payload.failedRunId,
+      taskRetryIntentId: typeof snapshot.payload.taskRetryIntentId === "string"
+        ? snapshot.payload.taskRetryIntentId : undefined,
     });
+    if (typeof snapshot.payload.taskRetryIntentId === "string" && !await readTaskChatRetryIntent(tx as unknown as Db, {
+      companyId: input.companyId, issueId: input.issueId, agentId: input.agentId,
+      sourceRunId: source.failedRunId, intentId: snapshot.payload.taskRetryIntentId, chatActionId: snapshot.id,
+    })) throw failedChatRetryDenied();
     const [intent] = await tx
       .select()
       .from(chatActions)
@@ -1408,7 +1435,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         ...input,
         retryActionId: input.wakeupRequestId,
       });
-      await assertFailedNativeRetryState(tx, source, input.companyId);
+      await assertFailedNativeRetryState(tx, source, input.companyId,
+        typeof source.intent.payload.taskRetryIntentId === "string" ? source.intent.payload.taskRetryIntentId : undefined);
       const context = input.contextSnapshot;
       const hint = context.chatFailedRunRetry as
         | Record<string, unknown>
@@ -1423,6 +1451,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         hint?.version !== 1 ||
         hint.actionId !== source.intent.id ||
         hint.failedRunId !== source.failedRunId ||
+        (typeof source.intent.payload.taskRetryIntentId === "string" &&
+          (context.taskRetryRequestId !== source.intent.payload.taskRetryIntentId || context.forceFreshSession !== true)) ||
         !Array.isArray(context.externalAttachmentOmissions) ||
         JSON.stringify(
           context.externalAttachmentOmissions.map((entry) =>
@@ -1562,6 +1592,10 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       if (!existing.length) {
         const context = {
           issueId: source.issueId,
+          ...(typeof claimed.payload.taskRetryIntentId === "string" ? {
+            taskRetryRequestId: claimed.payload.taskRetryIntentId, forceFreshSession: true,
+            previousRunId: source.failedRunId,
+          } : {}),
           taskKey: source.taskKey,
           source: `chat:${source.provider}`,
           wakeCommentId: source.commentIds.at(-1)!,
@@ -1584,6 +1618,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           payload: context,
           contextSnapshot: context,
           allowRunCoalescing: false,
+          ...(typeof claimed.payload.taskRetryIntentId === "string"
+            ? { taskRetryRequestId: claimed.payload.taskRetryIntentId } : {}),
           requestedByActorType: source.requestedByActorType,
           requestedByActorId: source.requestedByActorId,
           durableChatRequest: createDurableChatWakeupRequest({
@@ -1602,6 +1638,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
                 tx,
                 current,
                 claimed.companyId,
+                typeof claimed.payload.taskRetryIntentId === "string" ? claimed.payload.taskRetryIntentId : undefined,
               );
             },
           }),

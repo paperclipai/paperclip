@@ -21,12 +21,13 @@ Agent access: [companion](../agent-access-map/recovery.md).
   conversation context and bounded attempts, without blindly replaying tools.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
-- `exhaustion`: `recovery/exhaustion` — exhausted or overdue recovery exposes the current gate and
-  permitted operator action; it does not claim an automatic path is still live.
+- `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+  Internal repair stays system-owned; genuine user decisions retain their
+  specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,
   reconcile, or isolated reissue action with evidence and authority checks.
   Retained-file recovery runs in the harness with observed task progress and a
-  Retry recovery action only after transient failures. It preserves newer files,
+  ordinary Retry action after exhaustion or during backoff. It preserves newer files,
   keeps uncertain sources held, and delivers saved human input through ordinary
   admission. The task does not expose infrastructure-certification forms or a
   workspace link when the destination is disabled. Local PostgreSQL and real
@@ -44,15 +45,13 @@ Agent access: [companion](../agent-access-map/recovery.md).
 ### `source-task`
 
 Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
-Inspect the recovery notice/card in its history, expand details if needed, and
-use the currently offered action. Follow any linked repair task and return owner.
+Observe one working, backoff, failed or waiting-for-user state. Use Retry after
+an infrastructure failure. No process or file certification is required.
 
-An authorized board user can expand Recovery details on a stopped-run notice to
-read the decision that still blocks replay, including a settled recovery record.
-The notice matches the current action and run; it does not show another run's
-historical decision or authorize a retry. Source-reviewed behavior; the
-[notice regressions](../../ui/src/components/ExecutionBlockerNotice.test.tsx)
-cover empty active recovery, a mismatched source, and failed history reads.
+Thinking appears immediately after Retry, before the request completes.
+Technical source/run details remain in deliberate diagnostics. The
+[task recovery contract](../../doc/task-recovery.md) describes receipt identity,
+fresh workspaces, bounded retries, historical adoption and service incidents.
 
 ### `run-detail`
 
@@ -64,9 +63,9 @@ stopped-run recovery checks.
 
 ### `operator-retry`
 
-On an exhausted disposition or workspace recovery card, inspect the current
-reason and use the permitted retry/repair/reconcile action. Some repairs require
-confirmation; unavailable actions must explain the gate or remain absent.
+Use the task's Retry action. It can create an isolated attempt after old execution
+is contained even when old-file preservation remains unresolved. Approval,
+credentials, budget and deliberate pause use their existing specific controls.
 
 ### `post-stop-message`
 
@@ -210,10 +209,9 @@ confirmation. [Workspace export](../../ui/src/components/WorkspaceExportRecovery
 covers quiet restoration, legacy/operator assistance and resolved states.
 
 For a retained legacy or native file hold, open the source task after its recovery
-action has resolved but its files still need recovery. The task shows a compact
-operator-attention notice with inspection and collapsed diagnostics, without a
-file-certification form. A source-bound live recovery uses the ordinary working
-state; a missed or exhausted retry and an unknown action outcome remain visible.
+action has resolved but its files still need recovery. The shared task projection
+shows actual working/backoff state or ordinary Retry. It does not show a separate
+infrastructure attention card. Unknown external outcomes remain fenced internally.
 An authorized board operator can use the resolution API to record verified files
 and a backup link without changing task status or starting another run. The
 server independently validates the original stopped-execution receipt. Agent

@@ -916,7 +916,7 @@ async function* walkDirectory(root: string, relative = "", childrenFirst = false
   }
 }
 
-async function confineFullWorkspaceExport(root: string): Promise<void> {
+async function confineFullWorkspaceExport(root: string, rejectExternalSymlinks = false): Promise<void> {
   const unsafe = () => Object.assign(new Error("Unsafe workspace export directory"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" });
   if (!(await fs.lstat(root)).isDirectory()) throw unsafe();
   const canonicalRoot = await fs.realpath(root);
@@ -930,12 +930,59 @@ async function confineFullWorkspaceExport(root: string): Promise<void> {
         const target = await fs.readlink(entryPath);
         const resolved = path.resolve(directory, target);
         if (path.isAbsolute(target) || (resolved !== canonicalRoot && !resolved.startsWith(`${canonicalRoot}${path.sep}`))) {
+          if (rejectExternalSymlinks) throw unsafe();
           await fs.unlink(entryPath);
+        }
+        if (rejectExternalSymlinks) {
+          const canonicalTarget = await fs.realpath(entryPath).catch(() => { throw unsafe(); });
+          if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(`${canonicalRoot}${path.sep}`)) throw unsafe();
         }
       } else if (!stats.isFile()) throw unsafe();
     }
   };
   await walk(canonicalRoot);
+}
+
+/** Export into a caller-owned empty staging directory, without a merge baseline
+ * or any writes to the original host workspace. The normal transfer client owns
+ * archive validation; snapshots additionally reject links that cannot be kept. */
+export async function exportSandboxWorkspaceSnapshot(input: {
+  client: SandboxManagedRuntimeClient;
+  remoteDir: string;
+  stagingDir: string;
+  operationId: string;
+}): Promise<void> {
+  await fs.mkdir(input.stagingDir, { recursive: true });
+  if ((await fs.readdir(input.stagingDir)).length) throw new Error("Workspace snapshot destination is not empty");
+  const operations: SandboxSyncOperation[] = [{
+    operationId: input.operationId,
+    files: [{ sourcePath: input.remoteDir, targetPath: input.stagingDir, kind: "directory", exclude: [".paperclip-runtime"] }],
+  }];
+  assertSyncOperationsConfined(operations, { sourceRoots: [input.remoteDir], targetRoots: [input.stagingDir] });
+  if (!input.client.syncOut) throw Object.assign(new Error("Validated workspace export is unavailable for this provider"),
+    { code: "WORKSPACE_SNAPSHOT_EXPORT_UNSUPPORTED" });
+  await input.client.syncOut(operations);
+  await confineFullWorkspaceExport(input.stagingDir, true);
+}
+
+/** Only host-created snapshot archives qualify: the expected digest comes from
+ * a verified preservation receipt, never an agent or upload request. */
+export async function restoreVerifiedSnapshotArchive(input: {
+  archivePath: string; localDir: string; sha256: string; byteSize: number;
+}): Promise<void> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const bytes of createReadStream(input.archivePath)) {
+    size += bytes.length;
+    if (size > input.byteSize) throw new Error("Workspace snapshot size changed");
+    hash.update(bytes);
+  }
+  if (size !== input.byteSize || hash.digest("hex") !== input.sha256)
+    throw new Error("Workspace snapshot digest changed");
+  await fs.mkdir(input.localDir, { recursive: true });
+  if ((await fs.readdir(input.localDir)).length) throw new Error("Workspace snapshot destination is not empty");
+  await extractTarballToDirectory(input);
+  await confineFullWorkspaceExport(input.localDir, true);
 }
 
 async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {

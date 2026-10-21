@@ -40,6 +40,7 @@ export interface HeartbeatEnvironmentSelectionInput {
   agent: Pick<typeof agents.$inferSelect,
     "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
   task: {
+    freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
     issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
     issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
     issueId: string | null;
@@ -102,6 +103,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const isDotRun = heartbeatExternalProvider({ run, agent }) !== null;
   const persistedNativeExecutionWorkspaceId =
     persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
+  const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
   const requestedExecutionWorkspaceId = isDotRun ? null :
     persistedNativeExecutionWorkspaceId ??
     readNonEmptyString(issueRef?.executionWorkspaceId);
@@ -260,6 +262,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     companyId: agent.companyId,
     agentId: agent.id,
     issueId,
+    ...(fresh ? { freshAttemptId: run.id } : {}),
     admittedCwd: nativeExecutionUsesTaskWorkspace(persistedNativeExecutionInput)
       ? persistedNativeExecutionInput.workspace.cwd : null,
   });
@@ -440,7 +443,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       preserveImplicitDefaultSettings: ["project", "task_default"].includes(taskWorkspaceIntent.source) });
   }
   const explicitTaskDirectory = !isDotRun && taskWorkspaceIntent?.selection.kind === "task_directory";
-  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && shouldUseIsolatedTaskDirectory({
+  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && ((fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
     trustPreset: trustPreset.kind,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     mode: requestedExecutionWorkspaceMode,
@@ -452,7 +455,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       projectExecutionWorkspacePolicy?.workspaceStrategy,
       issueExecutionWorkspaceSettings?.workspaceStrategy,
     ],
-  });
+  }));
   return {
     persistedRunnerProfile,
     persistedNativeExecutionInput,

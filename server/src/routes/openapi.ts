@@ -252,6 +252,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   recoverWorkspaceSchema,
+  taskRetrySchema,
   retryWorkspaceExportSchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
@@ -1390,6 +1391,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
   "GET /api/companies/{companyId}/prompt-injection-prevention/models",
@@ -10757,6 +10759,15 @@ registerCurrentRoute({
   path: "/api/issues/{id}/recovery-actions",
   tags: ["issues"],
   summary: "List issue recovery actions",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/retry",
+  tags: ["issues"],
+  summary: "Request one durable task retry from current input and preserved results",
+  body: taskRetrySchema,
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({

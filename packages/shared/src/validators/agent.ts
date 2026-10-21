@@ -84,6 +84,7 @@ export const agentRuntimeConfigSchema = z.object({
 });
 
 export const createAgentSchema = z.object({
+  setupId: z.string().guid().optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
@@ -139,7 +140,8 @@ export const builtInAgentResetSchema = z.object({
 
 export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
-export const createAgentHireSchema = createAgentSchema.extend({
+export const createAgentHireSchema = createAgentSchema.omit({ setupId: true }).extend({
+  setupAgentId: z.string().guid().optional(),
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
   // Agent-authored hires may explicitly request the caller's native runner
@@ -150,7 +152,7 @@ export const createAgentHireSchema = createAgentSchema.extend({
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
 )
   .partial()
   .extend({

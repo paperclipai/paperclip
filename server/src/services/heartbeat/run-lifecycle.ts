@@ -1,3 +1,4 @@
+import os from "node:os";
 import {
   DEFERRED_WAKE_CONTEXT_KEY,
   EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
@@ -577,10 +578,13 @@ export async function persistHeartbeatRunProcessMetadata(
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
-    if (run?.runtimeMode === "native") await appendHeartbeatRunEvent(tx as unknown as Db, {
+    if (run) await appendHeartbeatRunEvent(tx as unknown as Db, {
       companyId: run.companyId, runId, agentId: run.agentId,
       eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info",
       message: "Process identity recorded; prior stop evidence no longer applies.",
+      payload: { targetKind: meta.targetKind ?? "local", hostname: os.hostname(),
+        processPid: meta.pid, processGroupId: meta.processGroupId,
+        processStartedAt: run.processStartedAt?.toISOString() ?? null },
     });
     return run;
   });

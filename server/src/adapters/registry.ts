@@ -1,3 +1,4 @@
+import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -434,6 +435,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           message: profileError.message,
         }],
       };
+    }
+    if (context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
+      return probePluginRunnerEnvironment(context);
     }
     if (profile.provider === "muse") {
       return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),

@@ -1,4 +1,5 @@
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions.js";
 import type { Db } from "@paperclipai/db";
 import * as activityLogModule from "../services/activity-log.js";
@@ -10089,6 +10090,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })
       .expect(400);
   });
+
 
   it.each([
     {
@@ -59871,7 +59873,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       {
         threadId: dm.thread.id,
         messageId: "outbound-2",
-        text: "Maya completed this turn.",
+        text: "Maya has no final response to show yet. Open the task in Paperclip for details.",
       },
     ]);
     expect(
@@ -60014,7 +60016,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           messageId: "outbound-2",
           text: publishesComment
             ? `Explicit Telegram reply via ${authorizationReason}`
-            : "Maya completed this turn.",
+            : "Maya has no final response to show yet. Open the task in Paperclip for details.",
         },
       ]);
       await expect(
@@ -60824,6 +60826,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
         rmSync(directory, { recursive: true, force: true });
       }
+    },
+  );
+
+  it.each(["stopped", "real_queue", "unknown_executor", "source_edited", "cancelled_stopped", "cancelled_unknown"] as const)(
+    "admits ordinary chat task Retry with a missing checkpoint only after containment: %s", async kind => {
+      const context = await failedChatRetryFixture("telegram", undefined, kind === "real_queue");
+      try {
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: context.issue.id,
+          nativePhase: "terminal_failure", errorCode: "runner_remote_process_identity_unavailable",
+          runnerProfileJson: {},
+          ...(kind.startsWith("cancelled_") ? { status: "cancelled" } : {}),
+        }).where(eq(heartbeatRuns.id, context.runId));
+        await db.insert(nativeRunFinalizations).values({ companyId: context.fixture.companyId,
+          issueId: context.issue.id, runId: context.runId, phase: "terminal_failure" });
+        const exact = { companyId: context.fixture.companyId, issueId: context.issue.id,
+          agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user" };
+        await expect(db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, exact)))
+          .rejects.toMatchObject({ details: { code: "chat_failed_run_retry_not_authorized" } });
+        if (kind !== "unknown_executor" && kind !== "cancelled_unknown") await db.insert(heartbeatRunEvents).values({
+          companyId: context.fixture.companyId, agentId: context.fixture.assignedAgentId, runId: context.runId,
+          seq: 1, eventType: "native.local_process_stopped", payload: { processPid: 999999999, processGroupId: null },
+        });
+        const request = { db, companyId: context.fixture.companyId, issueId: context.issue.id,
+          actorId: "owner-user", actorSource: "cloud_tenant", observedRunId: context.runId, idempotencyKey: randomUUID(),
+          prepareChatRetry: context.service.prepareFailedChatRunRetry };
+        const receipt = await requestTaskRetry(request);
+        expect(receipt.chatActionId).toBeTruthy();
+        expect((await requestTaskRetry(request)).requestId).toBe(receipt.requestId);
+        if (kind === "source_edited") await db.update(issueComments).set({ body: "Changed source", updatedAt: new Date() })
+          .where(eq(issueComments.id, String(context.action.payload.commentId)));
+        if (kind === "real_queue") {
+          // Exercise the real dispatch transaction while another live run
+          // occupies capacity. This test makes no provider-execution claim.
+          await db.update(agents).set({ adapterType: "paperclip_runner", status: "running",
+            runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+            .where(eq(agents.id, context.fixture.assignedAgentId));
+          await db.insert(heartbeatRuns).values({ companyId: context.fixture.companyId,
+            agentId: context.fixture.assignedAgentId, status: "running", startedAt: new Date() });
+          context.wakeup.mockImplementation(heartbeatService(db).wakeup);
+        }
+        const outcome = await context.service.processFailedChatRunRetry(receipt.chatActionId!);
+        if (kind === "stopped" || kind === "real_queue" || kind === "cancelled_stopped") {
+          expect(outcome).toMatchObject({ status: "queued" });
+          const [wake] = await readAgentWakeupRequestsById(receipt.chatActionId!);
+          expect(wake, JSON.stringify({
+            action: (await db.select().from(chatActions).where(eq(chatActions.id, receipt.chatActionId!)))[0],
+            wakeResult: await context.wakeup.mock.results.at(-1)?.value,
+          })).toBeDefined();
+          expect(wake).toMatchObject({ requestedByActorType: context.receipt.requestedByActorType,
+            requestedByActorId: context.receipt.requestedByActorId,
+            payload: { wakeCommentIds: [context.action.payload.commentId], retryOfRunId: context.runId } });
+          if (kind === "real_queue") {
+            const [intent] = await readAgentWakeupRequestsById(receipt.requestId!);
+            expect(intent).toMatchObject({ status: "coalesced", runId: wake.runId });
+            expect(wake.runId).toBeTruthy();
+            const [successor] = await readHeartbeatRunsById(wake.runId!);
+            expect(successor).toMatchObject({ status: "queued", contextSnapshot: {
+              taskRetryRequestId: receipt.requestId, forceFreshSession: true,
+              chatFailedRunRetry: { actionId: receipt.chatActionId },
+            } });
+            await context.service.processFailedChatRunRetry(receipt.chatActionId!);
+            expect((await readHeartbeatRunsByCompanyId(context.fixture.companyId))
+              .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(1);
+          }
+        } else {
+          expect(outcome).toMatchObject({ status: "failed" });
+          expect(await readAgentWakeupRequestsById(receipt.chatActionId!)).toHaveLength(0);
+        }
+      } finally { await context.service.shutdown(); }
     },
   );
 

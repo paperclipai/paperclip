@@ -300,6 +300,8 @@ export const issuesApi = {
     api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
     api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];

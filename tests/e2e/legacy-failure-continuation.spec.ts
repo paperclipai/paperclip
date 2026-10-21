@@ -11,7 +11,7 @@ async function json(response: APIResponse) {
   return response.json();
 }
 
-for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "queued_interrupt", "automatic_message"] as const) {
+for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "message", "queued_retry", "automatic_message"] as const) {
   test(`legacy startup hold: ${action} reaches a new agent response`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "legacy-recovery-browser-"));
@@ -41,7 +41,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       // Seed the historical incident, then exercise all recovery through the UI.
       // No adapter.invoke or new dispatch identity exists on this pre-upgrade run.
       await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: company.id, agentId: agent.id,
-        status: "failed", runtimeMode: "legacy", processPid: action === "queued_interrupt" ? process.pid : 999999999,
+        status: "failed", runtimeMode: "legacy", processPid: action === "queued_retry" ? process.pid : 999999999,
         responsibleUserId: issue.responsibleUserId, errorCode: "process_lost", error: "Server restarted during startup",
         startedAt: new Date(Date.now() - 10_000), finishedAt: new Date(Date.now() - 5_000),
         contextSnapshot: { issueId: issue.id },
@@ -52,18 +52,18 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
         evidence: { runId: sourceRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
       });
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
-      if (action === "queued_interrupt") {
+      if (action === "queued_retry") {
         await db.insert(authUsers).values({ id: "original-board", name: "Original author", email: "original-author@example.test",
           createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
         await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user",
           principalId: "original-board", membershipRole: "operator", status: "active" });
       }
-      if (action === "queued_interrupt" || action === "automatic_message") {
+      if (action === "queued_retry" || action === "automatic_message") {
         const commentId = randomUUID();
         // Reproduce a real user comment saved while the failed run was active,
         // including queues originally created by a system wake.
         await db.insert(issueComments).values({ id: commentId, companyId: company.id, issueId: issue.id,
-          authorType: "user", authorUserId: action === "queued_interrupt" ? "original-board" : "local-board", body: "Approved",
+          authorType: "user", authorUserId: action === "queued_retry" ? "original-board" : "local-board", body: "Approved",
           createdAt: new Date(Date.now() - 8_000),
         });
         await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
@@ -75,25 +75,25 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       const taskUrl = `/${company.issuePrefix}/issues/${issue.identifier}`;
       await page.goto(action === "inbox_retry" ? `/${company.issuePrefix}/inbox/all` : taskUrl);
       if (action === "task_retry") {
-        const notice = page.getByRole("status", { name: "Task recovery" });
-        await expect(notice).toContainText("Server restarted during startup");
-        await expect(notice).toContainText("Automatic recovery stopped.");
-        await expect(notice.getByRole("link", { name: "Inspect run" }))
-          .toHaveAttribute("href", new RegExp(`/agents/${agent.id}/runs/${sourceRunId}$`));
+        const notice = page.getByRole("status", { name: "Task status" });
+        await expect(notice).toContainText("Couldn’t finish this attempt. Your message is saved.");
+        await expect(page.getByText("Automatic recovery stopped.", { exact: true })).toHaveCount(0);
+        await expect(notice.getByRole("link", { name: "Inspect run" })).toHaveCount(0);
         await expect(notice.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
-        const presentation = await notice.evaluate(element => {
-          const style = getComputedStyle(element);
-          return { border: style.borderTopWidth, background: style.backgroundColor };
-        });
-        expect(parseFloat(presentation.border)).toBeGreaterThan(0);
-        expect(presentation.background).not.toBe("rgba(0, 0, 0, 0)");
-        await test.info().attach("recovery-notice", { body: await notice.screenshot(), contentType: "image/png" });
+        await test.info().attach("task-retry", { body: await notice.screenshot(), contentType: "image/png" });
       }
-      if (action === "queued_interrupt") {
-        const interrupt = page.getByRole("button", { name: "Interrupt", exact: true });
-        await expect(interrupt).toBeEnabled();
+      if (action === "retry_after_reload") {
+        await page.reload();
+        await expect(page.getByRole("button", { name: "Try again", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
+      }
+      if (action === "queued_retry") {
+        await expect(page.getByRole("button", { name: "Interrupt", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveCount(0);
+        const retry = page.getByRole("button", { name: "Retry", exact: true });
+        await expect(retry).toBeEnabled();
         await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, sourceRunId));
-        await interrupt.click();
+        await retry.click();
       } else if (action === "automatic_message") {
         // No Retry, duplicate message, or status change: the saved input runs.
       } else if (action === "message") {
@@ -105,15 +105,15 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
           page.waitForResponse((response) => {
             const request = response.request();
             return request.method() === "POST"
-              && new URL(response.url()).pathname.endsWith(`/agents/${agent.id}/wakeup`)
-              && request.postDataJSON()?.failedRunId === sourceRunId;
+              && new URL(response.url()).pathname.endsWith(`/issues/${issue.id}/retry`)
+              && request.postDataJSON()?.observedRunId === sourceRunId;
           }),
           page.getByRole("button", { name: "Retry", exact: true }).click(),
         ]);
         expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
         await page.goto(taskUrl);
       } else {
-        await page.getByRole("button", { name: action === "thread_retry" ? "Try again" : "Retry", exact: true }).click();
+        await page.getByRole("button", { name: "Retry", exact: true }).click();
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 45_000 });
       await expect(page.getByRole("status", { name: "Task recovery" })).toHaveCount(0);
@@ -123,7 +123,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       expect(runs.filter(run => run.id !== sourceRunId)).toHaveLength(1);
       expect(runs.find(run => run.id === sourceRunId)).toMatchObject({ status: "failed", resultJson: null });
       const prompts = await readFile(path.join(root, "prompts"), "utf8");
-      if (action === "queued_interrupt" || action === "automatic_message") {
+      if (action === "queued_retry" || action === "automatic_message") {
         expect(prompts).toContain("Approved");
         await expect(page.getByRole("button", { name: "Interrupt", exact: true })).toHaveCount(0);
       }

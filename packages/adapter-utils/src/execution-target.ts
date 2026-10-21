@@ -184,6 +184,11 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /** Host-bound plugin task RPC. Both sides validate the wire contract. */
+  runnerTask?: (operation: unknown) => Promise<unknown>;
+  runnerTaskProjectIds?: readonly string[];
+  /** Private Core-issued identity for a bounded, tool-free setup probe. */
+  runnerTaskProbe?: { runId: string; sessionId: string };
   /**
    * Read-only effective capability snapshot for this sandbox target. The host
    * resolves it from the provider declaration ∩ the verified worker methods ∩
@@ -1662,7 +1667,10 @@ process.stdout.write("\0" + JSON.stringify(env) + "\0");
   const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
   const remote = input.target?.kind === "remote" ? input.target : null;
   let discovered: Record<string, string>;
-  if (remote) {
+  if (remote?.transport === "sandbox" && remote.runnerTask) {
+    if (input.hostCredentials) throw new Error("Task-only Runner environments cannot import host GitHub credentials");
+    discovered = {};
+  } else if (remote) {
     // A legacy SSH host may run a standalone agent binary without Node. Use
     // only the shell and Git, and emit bounded, NUL-framed environment records.
     const probe = String.raw`

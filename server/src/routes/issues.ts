@@ -1,3 +1,4 @@
+import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
@@ -100,6 +101,7 @@ import {
   resolveIssueRecoveryActionSchema,
   retryWorkspaceExportSchema,
   recoverWorkspaceSchema,
+  taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
   runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
@@ -2981,6 +2983,7 @@ function toCompactIssue(issue: any): CompactIssue {
       ? { isUnreadForMe: issue.isUnreadForMe }
       : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
+    interruption: issue.interruption ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
   };
 }
@@ -3481,7 +3484,7 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
-  const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
+  const executionWorkspacesSvc = executionWorkspaceServiceDirect(db, { pluginWorkerManager: opts.pluginWorkerManager });
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
@@ -8575,6 +8578,7 @@ export function issueRoutes(
           : await filterIssuesForActor(req, rawResult);
         const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
         const issueIds = result.map((issue) => issue.id);
+        const interruptions = await taskInterruptionPresentations(db, companyId, result);
         if (compactView) {
           const [handoffStates, recoveryActionByIssue] = await Promise.all([
             listSuccessfulRunHandoffStates(db, companyId, issueIds),
@@ -8600,6 +8604,7 @@ export function issueRoutes(
             toCompactIssue({
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+              interruption: interruptions.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             }),
           );
@@ -8636,6 +8641,7 @@ export function issueRoutes(
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            interruption: interruptions.get(issue.id) ?? null,
           })),
         };
       },
@@ -9383,6 +9389,7 @@ export function issueRoutes(
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       executionBlocker,
+      interruption: await taskInterruptionPresentation(db, issue),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       blockedBy: visibleRelations.blockedBy,
@@ -9554,6 +9561,30 @@ export function issueRoutes(
       actions: [...(active ? [active] : []), ...retainedHolds
         .filter(action => action.id !== active?.id).map(issueRecoveryActionReadModel)],
     });
+  });
+
+  router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (issue.conversationAgentId) {
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
+        throw forbidden("Only the conversation owner can retry a chat run");
+    }
+    const { requestTaskRetry } = await import("../services/task-retry.js");
+    const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
+      ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,
+      prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
+    res.status(receipt.accepted ? 202 : 200).json({ ...receipt, presentation: await taskInterruptionPresentation(db, issue) });
+    // The receipt commits before dispatch. Maintenance redelivers it after a
+    // crash or a lost response; this nudge only reduces perceived latency.
+    if (receipt.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(receipt.chatActionId).catch(err =>
+      logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
+    else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
+      logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
   });
 
   router.post("/issues/:id/recovery-actions/recover-workspace", validate(recoverWorkspaceSchema), async (req, res) => {

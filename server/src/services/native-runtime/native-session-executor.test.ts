@@ -1787,12 +1787,26 @@ describe("native harness persistence profiles", () => {
     },
   );
 
-  it("excludes disposable Codex scratch trees and launch-time credentials", () => {
+  it("excludes disposable Codex scratch trees, launch-time credentials and re-downloadable remote plugins", () => {
     const codex = profile({ kind: "codex" }, "codex_app_server");
     expect(
       codex.directories.find((directory) => directory.name === "codex-home"),
     ).toMatchObject({
-      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: [
+        "tmp",
+        ".tmp",
+        "auth.json",
+        "config.toml",
+        ".remote-plugin-install-staging",
+        "cache/remote_plugin_catalog",
+        "plugins/.remote-plugin-install-staging",
+        "plugins/cache/openai-curated-remote",
+        "plugins/cache/created-by-me-remote",
+        "plugins/cache/workspace-directory",
+        "plugins/cache/workspace-shared-with-me",
+        "plugins/cache/workspace-shared-with-me-private",
+        "plugins/cache/workspace-shared-with-me-unlisted",
+      ],
     });
   });
 
@@ -1807,6 +1821,15 @@ describe("native harness persistence profiles", () => {
         `acpx/${sessionDirectory}/codex-home/.tmp`,
         `acpx/${sessionDirectory}/codex-home/auth.json`,
         `acpx/${sessionDirectory}/codex-home/config.toml`,
+        `acpx/${sessionDirectory}/codex-home/.remote-plugin-install-staging`,
+        `acpx/${sessionDirectory}/codex-home/cache/remote_plugin_catalog`,
+        `acpx/${sessionDirectory}/codex-home/plugins/.remote-plugin-install-staging`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/openai-curated-remote`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/created-by-me-remote`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/workspace-directory`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/workspace-shared-with-me`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/workspace-shared-with-me-private`,
+        `acpx/${sessionDirectory}/codex-home/plugins/cache/workspace-shared-with-me-unlisted`,
       ],
     });
     expect(
@@ -2530,6 +2553,51 @@ describe("remote provider checkpoint snapshots", () => {
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it("keeps Codex session state while omitting re-downloadable remote plugins from the checkpoint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-plugin-checkpoint-"));
+    try {
+      const source = join(root, "codex-home");
+      const target = join(root, "backup");
+      const files: Record<string, string> = {
+        "sessions/2026/10/20/rollout.jsonl": "resume-state",
+        "state_5.sqlite": "state",
+        "cache/codex_apps_tools/tools.json": "apps",
+        "cache/remote_plugin_catalog/catalog.json": "catalog",
+        "plugins/data/sites/data.json": "plugin-data",
+        "plugins/cache/openai-bundled/browser/1.0.0/plugin.json": "bundled",
+        "plugins/cache/openai-curated-remote/sites/1.0.2/plugin.json": "remote",
+        "plugins/cache/workspace-shared-with-me/notes/0.1.0/plugin.json": "remote",
+        "plugins/.remote-plugin-install-staging/partial/plugin.json": "staging",
+        ".remote-plugin-install-staging/partial/plugin.json": "staging",
+      };
+      for (const [path, contents] of Object.entries(files)) {
+        await mkdir(join(source, path, ".."), { recursive: true });
+        await writeFile(join(source, path), contents);
+      }
+      const codexProfile = resolveNativeHarnessPersistenceProfile({
+        provider: { kind: "codex" },
+        session: { normalizedSessionId: "session", driverKind: "codex_app_server" },
+      } as unknown as NativeExecutionInputV1);
+      const execute = async ({ command, args }: { command: string; args: string[] }) => ({
+        exitCode: 0, timedOut: false, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "",
+      });
+      const syncOut = async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string }> }>) => {
+        for (const operation of operations) for (const file of operation.files)
+          await cp(file.sourcePath, file.targetPath, { recursive: true });
+      };
+      await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
+        sourcePath: source, targetPath: target, mode: 0o700,
+        excludeEntries: codexProfile.directories.find(directory => directory.name === "codex-home")!.excludeEntries });
+      for (const kept of ["sessions/2026/10/20/rollout.jsonl", "state_5.sqlite", "cache/codex_apps_tools/tools.json",
+        "plugins/data/sites/data.json", "plugins/cache/openai-bundled/browser/1.0.0/plugin.json"])
+        expect(await readFile(join(target, kept), "utf8")).toBe(files[kept]);
+      for (const omitted of ["cache/remote_plugin_catalog", "plugins/cache/openai-curated-remote",
+        "plugins/cache/workspace-shared-with-me", "plugins/.remote-plugin-install-staging", ".remote-plugin-install-staging"])
+        await expect(access(join(target, omitted))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(source, "plugins/cache/openai-curated-remote/sites/1.0.2/plugin.json"), "utf8")).toBe("remote");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("excludes Codex scratch and credential state without mutating the live provider home", async () => {
     const execute = vi
       .fn()

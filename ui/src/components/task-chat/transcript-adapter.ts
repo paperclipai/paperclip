@@ -875,6 +875,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        // Use producer classification, including the legacy generic Codex
+        // categories, never message-text matching. The run transcript still
+        // retains these diagnostics.
+        if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
+          ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
+            .includes(String(entry.payload.category)))) break;
         const key = `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);

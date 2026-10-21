@@ -1,3 +1,5 @@
+import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
+import { recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
@@ -445,7 +447,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       await isCancelledNativeStartup(db, run, preparationCoordinator);
     if (run.runtimeMode !== "native" && !cancelledPreparation &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
-        !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
+        !(await remoteExecutionHasStopped(db, run.companyId, run.id)) &&
+        !(await recordedLocalExecutionStopped(db, run))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
     const currentRun = run.runtimeMode === "native" ? await getRun(run.id, { includeExecutionEvidence: true }) : null;
@@ -475,6 +478,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     for (const wake of pending) {
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
+      if (readTaskRetryIntent(wake.payload)) { await resumeTaskRetry(wake.companyId, wake.id); continue; }
       let payload = parseObject(wake.payload);
       if (payload.queuedCommentInterrupt) {
         await resumeQueuedCommentInterrupt(wake.companyId, wake.id);
@@ -514,7 +518,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
           agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
           reason, commentId, successorRunId: randomUUID(), dryRun: true,
-          ...((run.runtimeMode === "native" || cancelledPreparation) ? { queuedCommentRequestId: wake.id } : {}),
+          queuedCommentRequestId: wake.id,
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
         if (!admitted) {
@@ -532,7 +536,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId,
-        ...((run.runtimeMode === "native" || cancelledPreparation) ? { queuedCommentRequestId: wake.id } : {}),
+        queuedCommentRequestId: wake.id,
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
       break;
     }
@@ -658,8 +662,42 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     }, queueId);
   }
 
+  async function resumeTaskRetry(companyId: string, requestId: string) {
+    if ((await getSchedulingSuppression()).suppressed) return;
+    const [wake] = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, requestId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.reason, "task_retry"),
+      eq(agentWakeupRequests.requestedByActorType, "user"),
+    ));
+    const intent = readTaskRetryIntent(wake?.payload);
+    if (!wake || !intent || intent.chatActionId || intent.canonicalIntentId || intent.generationId !== wake.id ||
+        intent.actorId !== wake.requestedByActorId) return;
+    const issueId = readNonEmptyString(wake.payload?.issueId);
+    if (!issueId) return;
+    await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
+      payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,
+        responsibleUserId: intent.actorId },
+      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+  }
+
   async function resumeExecutionWaitComments() {
     if ((await getSchedulingSuppression()).suppressed) return;
+    await reconcileTaskChatRetryReceipts(db);
+    const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+      .from(agentWakeupRequests).innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'chatActionId' is null`,
+        notInArray(issues.status, ["done", "cancelled"])))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    for (const retry of retries) {
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(eq(agentWakeupRequests.id, retry.id));
+      await resumeTaskRetry(retry.companyId, retry.id).catch(err => logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred"));
+    }
     const waits = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
@@ -1413,6 +1451,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     resumeExecutionWaitComments,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
+    resumeTaskRetry,
     cancelActiveForAgentInternal,
     cancelInvocationsForAgentsInternal,
   };

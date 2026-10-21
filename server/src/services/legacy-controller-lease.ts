@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
 
 // A boot UUID has meaning across containers; a numeric PID does not.
@@ -52,6 +52,31 @@ export async function renewLegacyControllerLease(
   return Boolean(renewed);
 }
 
+/** One attempt may wait at most this long; a timed-out attempt is retried
+ * until the lease deadline instead of holding the renewal for the whole lease. */
+export const LEGACY_CONTROLLER_RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
+
+function isStatementTimeout(error: unknown): boolean {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    if ((cause as { code?: unknown }).code === "57014") return true;
+  }
+  return false;
+}
+
+/** Renew on the private liveness pool so the write cannot queue behind an
+ * unrelated slow statement on a busy shared connection. */
+async function renewOnLivenessPool(
+  db: Db,
+  run: Pick<Run, "id" | "companyId" | "controllerBootId">,
+  stage: "dispatching" | undefined,
+  statementTimeoutMs: number,
+): Promise<boolean> {
+  return livenessDb(db).transaction(async (tx) => {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
+    return renewLegacyControllerLease(tx as unknown as Db, run, stage);
+  });
+}
+
 export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "native" || !run.controllerBootId) return false;
   const [owner] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -98,7 +123,12 @@ export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<b
 
 /** Abort the adapter if the controller cannot renew. Bound each check by the
  * lease duration even when the database connection never settles. */
-export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortController) {
+export function watchLegacyControllerLease(
+  db: Db,
+  run: Run,
+  controller: AbortController,
+  { renewalStatementTimeoutMs = LEGACY_CONTROLLER_RENEWAL_STATEMENT_TIMEOUT_MS } = {},
+) {
   if (run.runtimeMode === "native" || !run.controllerBootId) {
     return { stop() {}, async assertOwned(_stage?: "dispatching") {} };
   }
@@ -141,9 +171,22 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
       onAbort = () => reject(controller.signal.reason);
       controller.signal.addEventListener("abort", onAbort, { once: true });
     });
+    // The successful attempt's UPDATE writes a fresh lease, so the local
+    // deadline is measured from that attempt rather than the first one.
+    let attemptStartedAt = startedAt;
+    const renew = async () => {
+      for (;;) {
+        attemptStartedAt = Date.now();
+        try {
+          return await renewOnLivenessPool(db, run, stage, renewalStatementTimeoutMs);
+        } catch (error) {
+          if (!isStatementTimeout(error) || stopped || controller.signal.aborted) throw error;
+        }
+      }
+    };
     let renewed: boolean;
     try {
-      renewed = await Promise.race([renewLegacyControllerLease(db, run, stage), aborted]);
+      renewed = await Promise.race([renew(), aborted]);
     } finally {
       renewalsInFlight.delete(renewal);
       controller.signal.removeEventListener("abort", onAbort);
@@ -157,7 +200,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
     if (!stopped) {
       lastRenewedAt = Date.now();
       renewalCount += 1;
-      armDeadline(Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt)));
+      armDeadline(Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - attemptStartedAt)));
     }
   };
   const timer = setInterval(() => {

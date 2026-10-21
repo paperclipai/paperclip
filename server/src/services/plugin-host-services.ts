@@ -1,3 +1,4 @@
+import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { pluginAgentRuntimeState } from "./plugin-agent-runtime-state.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import type { Db } from "@paperclipai/db";
@@ -1862,6 +1863,11 @@ export function buildHostServices(
     },
 
     projects: {
+      async getInstanceSecrets(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectInstanceSecretService(db, pluginId).read(companyId, params.projectId);
+      },
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

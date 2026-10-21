@@ -592,6 +592,9 @@ export interface PluginEventsClient {
 }
 
 export type ResourceLifecycleEvent = {
+  /** Native private credentials for this plugin/project. Only supplied to automatic
+   * project lifecycle callbacks with projects.instance-secrets. Never expose to UI. */
+  instanceSecrets?: Record<string, string>;
   id: string;
   companyId: string;
   resourceId: string;
@@ -609,6 +612,9 @@ export type ResourceLifecycleEvent = {
 export interface ResourceLifecycleResult {
   eventId: string;
   status: "acknowledged" | "retry" | "deferred";
+  /** Project-only patch, saved atomically with acknowledgment. Null removes a key.
+   * Up to 16 lowercase snake_case keys, each value at most 128 KiB. */
+  instanceSecrets?: Record<string, string | null>;
 }
 
 /**
@@ -869,6 +875,10 @@ export interface PluginEntitiesClient {
  * @see PLUGIN_SPEC.md §7 — Project Workspaces
  */
 export interface PluginProjectsClient {
+  /** Trusted worker access to this plugin’s native project credentials.
+   * Requires projects.instance-secrets; never expose via UI/data handlers. */
+  getInstanceSecrets(projectId: string, companyId: string): Promise<Record<string, string>>;
+
   /**
    * List projects visible to the plugin.
    *

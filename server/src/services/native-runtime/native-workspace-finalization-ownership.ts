@@ -103,10 +103,16 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
               eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, run.issueId),
               eq(issueRecoveryActions.id, input.retainedRepairActionId),
             )).for("update");
+            const continuation = repair?.evidence.explicitUserContinuation as {
+              runId?: string; readiness?: { mode?: string; sourceRunId?: string };
+            } | undefined;
+            const independentRun = continuation?.readiness?.mode === "fresh_isolated_workspace"
+              && continuation.readiness.sourceRunId === input.runId ? continuation.runId : undefined;
             return currentRun && issue && repair && repair.evidence.runId === currentRun.id
               && repair.evidence.workspaceRecovery && !coordinator?.leaseOwner
               && ["failed", "interrupted", "timed_out", "cancelled", "succeeded"].includes(currentRun.status)
-              && !issue.executionRunId && !issue.checkoutRunId ? repair : null;
+              && (!issue.executionRunId || issue.executionRunId === independentRun)
+              && (!issue.checkoutRunId || issue.checkoutRunId === independentRun) ? repair : null;
           }
           return coordinator && issue && currentRun ? currentNativeWorkspaceRecoveryResult(db, {
             companyId: input.companyId, coordinator, issue, run: currentRun,

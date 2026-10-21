@@ -25,6 +25,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -351,6 +352,7 @@ export async function settleUnrecoverableExecutions(
   // Keep their evidence and record the policy change in the task's activity log.
   const obsoleteConversationHold = and(
     conversationRecoveryActionPredicate(),
+    sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
     or(
       inArray(issueRecoveryActions.status, ["active", "escalated"]),
       sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
@@ -412,6 +414,7 @@ export async function settleUnrecoverableExecutions(
     .where(
       and(
         not(conversationRecoveryActionPredicate()!),
+        sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
         inArray(issueRecoveryActions.cause, [
@@ -494,6 +497,10 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        // Adoption transfers maintenance to the retained-workspace owner.
+        // This compatibility resolver must not close its hold or relabel it
+        // as a user repair merely because old return-owner metadata is absent.
+        if (readSystemRecovery(action.evidence)) return;
         // Give durable native recovery its chance; never preempt a resume,
         // replacement, result finalizer, or still-owned execution.
         if (

@@ -46,6 +46,10 @@ Verification: `not-run` — Create complete canonical mixed form; same idempoten
 
 Gaps: Legacy wrappers and native dedicated tool have different fields; source availability does not establish every harness.
 
+Provider question cards retain the creation summary and each question's prompt
+and help text when the answer needs a modal. This changes presentation only;
+answer authorization and the private terminal receipt remain unchanged.
+
 ### `answer`
 
 API: `present` — POST /api/issues/{id}/interactions/{interactionId}/respond.

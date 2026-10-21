@@ -258,6 +258,7 @@ vi.mock("@paperclipai/db", () => ({
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
+  closeLivenessDb: vi.fn(async () => {}),
   authUsers: {},
   companies: {},
   companyMemberships: {},

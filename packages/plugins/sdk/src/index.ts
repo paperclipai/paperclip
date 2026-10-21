@@ -468,3 +468,5 @@ export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, Plugi
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 
 export type { PluginEnvironmentRunnerLaunchRequirements, PluginEnvironmentPreparedLaunch } from "./environment-tasks.js";
+
+export * from "./workspace-provider.js";

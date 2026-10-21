@@ -44,6 +44,18 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+The early wizard record (`setupId` on create) and completion of that record
+(`setupAgentId` on hire) require a board actor and company-scoped creation
+permission. Its creator can finish their own inactive setup with that permission;
+changing another person's setup requires configuration permission.
+Creation retries reuse only records owned by the caller. Returning a completed
+record also requires the normal agent-read and configuration-read checks.
+An unfinished record stays paused with a
+`setup` hold and cannot receive API keys or authenticate with keys or JWTs.
+Its standard grants apply at hire. Authorized completion retries recover the
+same record and approval without changing the submitted configuration.
+Normal agent-authored hiring keeps its existing approval policy.
+
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the
 qualified target's default; explicit Legacy is retained. Disabled adapters and

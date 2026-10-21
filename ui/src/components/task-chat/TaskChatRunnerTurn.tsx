@@ -122,6 +122,7 @@ export function TaskChatRunnerTurn({
   items,
   status,
   execution,
+  preparationLabel,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -138,6 +139,8 @@ export function TaskChatRunnerTurn({
   items: readonly TaskChatItem[];
   status: string;
   execution?: ExecutionProjection | null;
+  /** Presentation only while Send/Retry admission has no run yet. */
+  preparationLabel?: string;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
@@ -152,7 +155,8 @@ export function TaskChatRunnerTurn({
   ) => void | Promise<void>;
 }) {
   const terminal = isTerminalRunStatus(status);
-  const waitingLabel = !terminal && execution?.phase === "waiting_for_provider" ? execution.label : null;
+  const waitingLabel = !terminal && execution?.phase === "waiting_for_provider" ? execution.label
+    : !runId && !terminal ? preparationLabel ?? null : null;
   const yielded = items.some(
     (item) =>
       item.kind === "protocol" &&

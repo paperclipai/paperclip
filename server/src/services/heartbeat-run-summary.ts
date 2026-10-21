@@ -130,7 +130,7 @@ const NARRATION_OPENERS =
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
-export const RUN_PRESENTATION_RESOLVER_VERSION = "1";
+export const RUN_PRESENTATION_RESOLVER_VERSION = "2";
 export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
   "allow_chat_run_presentation";
 
@@ -204,6 +204,7 @@ export function isExternalChatPresentationContext(
   // durable source-run or mirrored-comment proof authorizes an external reply.
   if (
     source === "tool_action_review" ||
+    source === "issue.monitor" ||
     source.startsWith("issue.comment") ||
     source === "issue.update"
   )
@@ -282,6 +283,22 @@ function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
       candidate.schema === "paperclip.run_result.v1" &&
       candidate.reportedWorkDisposition === "yielded",
   );
+}
+
+export function readAcceptedMonitorContinuationSummary(
+  resultJson: Record<string, unknown> | null | undefined,
+): string | null {
+  const result = record(resultJson);
+  if (result.finalizationPhase !== "committed" ||
+      !["scheduled_monitor_waiting", "scheduled_monitor_dispatched"].includes(String(result.finalizationReasonCode))) return null;
+  for (const candidate of semanticResultCandidates(result)) {
+    const continuation = record(candidate.continuation);
+    if (candidate.schema === "paperclip.run_result.v1" && candidate.reportedWorkDisposition === "yielded" &&
+        continuation.kind === "monitor" && readCommentText(continuation.idempotencyKey)) {
+      return readCommentText(candidate.summary);
+    }
+  }
+  return null;
 }
 
 function readAcceptedExternalChatResponseWakeSummary(
@@ -379,6 +396,7 @@ export function resolveHeartbeatRunResponse(input: {
   /** Server-owned conversation finalization, after normal governance checks. */
   conversationTurnFinished?: boolean;
   existingComment?: { id: string; body?: string | null } | null;
+  interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
@@ -393,6 +411,23 @@ export function resolveHeartbeatRunResponse(input: {
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
+  const monitorSummary = readAcceptedMonitorContinuationSummary(resultJson);
+  if (monitorSummary) {
+    if (input.interactionOwnsResponse) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_response"] }),
+    };
+    const existing = input.existingComment;
+    const reuse = existing?.body === monitorSummary;
+    return {
+      text: monitorSummary,
+      decision: decision("semantic_result_summary", {
+        commentAction: reuse ? "reuse" : "create",
+        ...(reuse ? { commentId: existing.id } : {}),
+        reasonCodes: ["accepted_scheduled_monitor_summary"],
+      }),
+    };
+  }
   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =

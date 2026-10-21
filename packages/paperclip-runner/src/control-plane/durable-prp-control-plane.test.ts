@@ -656,6 +656,20 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
 });
 
+it("passes structured inputs to an external owner and preserves its replacement veto", () => {
+  const process = { child: { exitCode: null, signalCode: null, kill: () => true },
+    completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }), restart: null };
+  const launcher = vi.fn(() => process);
+  const options = { connection: { mode: "external" as const }, stateDirectory: "/unused", identity,
+    ticket: "synthetic-ticket", maxOutboxBytes: 262144, p0ReserveBytes: 65536,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null } };
+  expect(() => spawnRunner(options)).toThrow("requires a process owner");
+  expect(spawnRunner({ ...options, processLauncher: launcher })).toBe(process);
+  expect(launcher).toHaveBeenCalledWith(expect.objectContaining({ nativeRunner: expect.objectContaining(options) }));
+  expect(launcher.mock.calls[0][0].args).not.toContain("--connect-url");
+});
+
 it("preserves the controller-selected ACPX provider package root", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   spawnRunner({

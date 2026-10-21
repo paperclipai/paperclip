@@ -1,4 +1,5 @@
 import { measureRunTransaction } from "./execution-transaction-timing.js";
+import { readNativeMonitorSource } from "./native-runtime/native-monitor-delivery.js";
 import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTerminalCaseHandoffsForIssue } from "./heartbeat/case-handoff-lifecycle.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, touchedByUserCondition } from "./issue-participation.js";
@@ -1156,7 +1157,10 @@ export async function resolveChatOriginPublicationBindings(
   let contextSnapshot: Record<string, unknown> | null = null;
   let lineageAgentId: string | null = null;
   const visitedRunIds = new Set<string>();
-  for (let depth = 0; depth < 16; depth += 1) {
+  // Every hop needs its own durable authorization receipt. A task may continue
+  // many times; an arbitrary hop limit must not silently discard its replies.
+  // The visited set rejects cycles while keeping valid long lineages readable.
+  while (true) {
     if (visitedRunIds.has(originRunId)) return [];
     visitedRunIds.add(originRunId);
     const run = await dbOrTx
@@ -1389,6 +1393,12 @@ export async function resolveChatOriginPublicationBindings(
     if (contextSource?.startsWith("chat:")) {
       contextSnapshot = snapshot;
       break;
+    }
+    if (contextSource === "issue.monitor") {
+      const sourceRunId = await readNativeMonitorSource(dbOrTx, { companyId, issueId, runId: originRunId });
+      if (!sourceRunId) return [];
+      originRunId = sourceRunId;
+      continue;
     }
     if (
       contextSource !== "issue.interaction.respond" &&

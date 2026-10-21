@@ -3,8 +3,11 @@ import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
 import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
-import { useId, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState } from "react";
+import type { Agent } from "@paperclipai/shared";
+import { agentsApi } from "@/api/agents";
+import { buildNewAgentRuntimeConfig } from "@/lib/new-agent-runtime-config";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -27,6 +30,8 @@ export type AgentBasics = {
   name: string;
   adapterType: string;
   runnerProvider: string;
+  runner: string;
+  setupAgentId: string;
 };
 export { AdapterMark } from "../AdapterMark";
 
@@ -41,15 +46,29 @@ export function AgentBasicsDialog({
   onClose,
   onContinue,
   initialAdapter = "",
+  initialName = "",
+  setupAgentId,
   onInvite,
 }: {
   open: boolean;
   onClose: () => void;
   onContinue: (basics: AgentBasics) => void;
   initialAdapter?: string;
+  initialName?: string;
+  setupAgentId?: string;
   onInvite?: () => void;
 }) {
   const id = useId();
+  const { selectedCompanyId: companyId } = useCompany();
+  const cache = useQueryClient();
+  const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
+  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const saved = useRef<Agent | null>(null);
+  const busy = useRef(false);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const cloud = Boolean(useCloudInstance());
   const experimental = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -57,10 +76,10 @@ export function AgentBasicsDialog({
     enabled: open,
     retry: false,
   });
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName);
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
-  const [step, setStep] = useState<"name" | "adapter">("name");
+  const [step, setStep] = useState<"name" | "adapter">(setupAgentId ? "adapter" : "name");
   const {
     data: adapters,
     isPending,
@@ -88,6 +107,64 @@ export function AgentBasicsDialog({
     && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
     || (experimentalRunnerAvailable && adapterType === "paperclip_runner");
+  async function submit() {
+    if (busy.current || !name.trim() || (step === "adapter" && !validAdapter)) return;
+    busy.current = true;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      if (!companyId) throw new Error("Select an organization to create an agent.");
+      let agent = saved.current;
+      if (!agent && setupAgentId) agent = await agentsApi.get(setupId.current, companyId);
+      const creatingRecord = !agent;
+      if (!agent) {
+        const existing = (await agentsApi.list(companyId)).filter(item => item.id !== setupId.current);
+        const leader = existing.find(item => item.role === "ceo" && item.status !== "terminated");
+        const provisionalAdapter = adapters?.some(item => item.type === "process" && item.disabled)
+          ? choices[0]?.type : "process";
+        if (!provisionalAdapter) throw new Error("No agent adapters are available on this instance.");
+        // This adapter is provisional; the setup hold prevents execution.
+        agent = await agentsApi.create(companyId, {
+          setupId: setupId.current, name: name.trim(), appearance: appearanceDraft.appearance,
+          role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
+          adapterType: provisionalAdapter === "copilot_runtime" ? "paperclip_runner" : provisionalAdapter,
+          ...(provisionalAdapter === "copilot_runtime" ? { adapterConfig: { provider: "acpx", acpxAgent: "copilot" } } : {}),
+          metadata: { setupAdapterPending: true },
+          runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
+        });
+        if (active.current) setName(agent.name);
+      }
+      saved.current = agent;
+      const nextAdapter = ["openai_dot", "copilot_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
+      const nextProvider = adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
+      if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
+        agent = await agentsApi.update(agent.id, {
+          name: name.trim(),
+          ...(step === "adapter" ? {
+            adapterType: nextAdapter, runner: "auto" as const,
+            adapterConfig: nextAdapter === "paperclip_runner" ? {
+              provider: ["claude", "grok", "copilot"].includes(nextProvider) ? "acpx" : nextProvider,
+              ...(["claude", "grok", "copilot"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
+              ...(nextProvider === "grok" ? { model: "grok-4.7" } : {}),
+            } : {},
+            metadata: { ...agent.metadata, setupAdapterPending: false },
+          } : {}),
+        }, companyId);
+        saved.current = agent;
+      }
+      cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
+      void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+      if (!active.current) return;
+      if (step === "name") setStep("adapter");
+      else onContinue({ name: agent.name, adapterType: nextAdapter, runnerProvider: nextProvider,
+        runner: "auto", setupAgentId: agent.id });
+    } catch (cause) {
+      if (active.current) setSaveError(cause instanceof Error ? cause.message : "Could not save agent setup.");
+    } finally {
+      busy.current = false;
+      if (active.current) setSaving(false);
+    }
+  }
   return (
     <Dialog
       open={open}
@@ -121,12 +198,7 @@ export function AgentBasicsDialog({
           className="flex min-h-0 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!name.trim()) return;
-            if (step === "name") setStep("adapter");
-            else if (validAdapter)
-              onContinue({ name: name.trim(),
-                adapterType: ["openai_dot", "copilot_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType,
-                runnerProvider: adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex" });
+            void submit();
           }}
         >
           <div className="flex min-h-0 flex-col gap-7 overflow-y-auto px-6 pb-8 sm:px-10">
@@ -153,6 +225,7 @@ export function AgentBasicsDialog({
                 <Input
                   id={id}
                   autoFocus
+                  disabled={saving}
                   maxLength={100}
                   placeholder="e.g. Darnold"
                   value={name}
@@ -193,6 +266,7 @@ export function AgentBasicsDialog({
                       >
                         <input
                           type="radio"
+                          disabled={saving}
                           name="new-agent-adapter"
                           value={adapter.type}
                           checked={adapterType === adapter.type}
@@ -236,10 +310,12 @@ export function AgentBasicsDialog({
               </fieldset>
             )}
           </div>
+          {saveError && <p role="alert" className="px-6 pb-4 text-sm text-destructive">{saveError}</p>}
           <div className="flex justify-between gap-4 border-t border-border px-6 py-4">
             <Button
               type="button"
               variant="ghost"
+              disabled={saving}
               onClick={() => (step === "name" ? onClose() : setStep("name"))}
             >
               {step === "name" ? (
@@ -253,9 +329,9 @@ export function AgentBasicsDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!name.trim() || (step === "adapter" && !validAdapter)}
+              disabled={saving || !name.trim() || (step === "adapter" && !validAdapter)}
             >
-              {step === "name" ? "Choose adapter" : "Configure agent"}
+              {saving ? "Saving…" : step === "name" ? "Choose adapter" : "Configure agent"}
               <ArrowRight className="size-4" />
             </Button>
           </div>

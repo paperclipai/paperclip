@@ -64,6 +64,18 @@ Gaps: Component host test doesn't prove actual filesystem/provider repair.
 
 Capability ID: `recovery/bounded-continuation`.
 
+Ordinary task Retry uses `POST /api/issues/{id}/retry`. This is authenticated
+board task-mutation authority, not agent retry authority. The only request
+fields are a UUID idempotency key and observed source run (or null). It accepts
+no paths, stop attestations or client-selected strategy. The source-scoped
+exact-run and maintenance APIs retain their existing contracts. Connected-chat
+Retry reuses chat admission and its external identity. See the
+[durable contract](../../doc/task-recovery.md). Agent Chat also requires its
+current conversation owner and feature enablement at admission and locked
+dispatch; generic board mutation permission does not replace chat ownership.
+Local PostgreSQL and assembled
+browser qualification do not establish hosted agent access or recovery.
+
 Review: `operation-reviewed`.
 
 Supported restoration and automatic attempts retain source/owner/attempt authority.

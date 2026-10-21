@@ -230,6 +230,35 @@ describeEmbeddedPostgres(
       };
     }
 
+    it("shows the free-text question and context alongside Respond", async () => {
+      const fixture = await seedBoundIssue(["slack"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          title: "Identify the failed change",
+          summary: "The general migration checks passed. I need one detail to reproduce your specific failure.",
+          payload: {
+            version: 1,
+            title: "Identify the failed change",
+            questions: [{
+              id: "agent", prompt: "Which agent did you try to change?",
+              helpText: "Send the agent link and the error text, if available.",
+              selectionMode: "single", allowOther: true,
+              options: [{ id: "text", label: "Type an answer", freeText: true }],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      const [publication] = await publicationsForInteraction(fixture.companyId, interaction.id);
+      expect(publication.payload.card).toMatchObject({
+        title: "Identify the failed change",
+        body: "The general migration checks passed. I need one detail to reproduce your specific failure.\n\nWhich agent did you try to change?\n\nSend the agent link and the error text, if available.",
+        actions: [expect.objectContaining({ label: "Respond", type: "callback" })],
+      });
+    });
+
     it("publishes prompts only for the endpoint's verified immutable agent", async () => {
       const fixture = await seedBoundIssue();
       const service = issueThreadInteractionService(db);

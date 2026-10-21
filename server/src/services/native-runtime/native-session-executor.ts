@@ -336,6 +336,24 @@ const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
   "auth.json",
   "config.toml",
 ] as const;
+const CODEX_REMOTE_PLUGIN_MARKETPLACES = [
+  "openai-curated-remote",
+  "created-by-me-remote",
+  "workspace-directory",
+  "workspace-shared-with-me",
+  "workspace-shared-with-me-private",
+  "workspace-shared-with-me-unlisted",
+] as const;
+const CODEX_HOME_REDOWNLOADABLE_ENTRIES = [
+  ".remote-plugin-install-staging",
+  "cache/remote_plugin_catalog",
+  "plugins/.remote-plugin-install-staging",
+  ...CODEX_REMOTE_PLUGIN_MARKETPLACES.map((marketplace) => `plugins/cache/${marketplace}`),
+] as const;
+const CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES = [
+  ...CODEX_HOME_NON_PERSISTENT_ENTRIES,
+  ...CODEX_HOME_REDOWNLOADABLE_ENTRIES,
+] as const;
 const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
   "paperclip.runner.durable.control-plane-state.v1";
 const RUNNERD_STATE_SCHEMA = "paperclip.runner.durable.state.v1";
@@ -5518,7 +5536,7 @@ export function resolveNativeHarnessPersistenceProfile(
           // credential source and config.toml can contain the native MCP
           // bearer token. Re-materialize both for a replacement sandbox
           // instead of putting credentials into the disaster-recovery copy.
-          excludeEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
+          excludeEntries: CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES,
         })
       : execution.provider.kind === "opencode"
         ? {
@@ -5541,7 +5559,7 @@ export function resolveNativeHarnessPersistenceProfile(
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
                   : execution.provider.agent === "codex"
-                  ? CODEX_HOME_NON_PERSISTENT_ENTRIES.map(
+                  ? CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES.map(
                       (entry) =>
                         `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/codex-home/${entry}`,
                     )

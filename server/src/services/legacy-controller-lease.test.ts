@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
   renewLegacyControllerLease, revokeExpiredLegacyController, revokeExpiredLegacyControllerWithState,
   watchLegacyControllerLease } from "./legacy-controller-lease.js";
+
+type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
+// A renewal test double: each attempt runs in a transaction on the liveness pool.
+function fakeRenewalDb(returning: () => Promise<unknown>) {
+  const fake = { update: () => ({ set: () => ({ where: () => ({ returning }) }) }),
+    execute: async () => [], transaction: (action: (tx: unknown) => Promise<unknown>) => action(fake) };
+  return fake as unknown as WatchArgs[0];
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
@@ -115,7 +123,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
   it("rejects dispatch at the lease deadline even if the database query never settles", async () => {
     const run = await seed();
-    const hungDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as typeof db;
+    const hungDb = fakeRenewalDb(() => new Promise(() => {}));
     vi.useFakeTimers();
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(hungDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
@@ -128,6 +136,60 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { watch.stop(); vi.useRealTimers(); }
   });
 
+  it("renews without queueing behind a slow statement on a saturated shared pool", async () => {
+    const run = await seed();
+    // postgres.js pipelines onto a busy connection when none is idle.
+    const shared = createDb(database.connectionString, { maxConnections: 1 });
+    const slow = shared.execute(sql`select pg_sleep(5)`).then(() => undefined); // drizzle sends on then()
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(shared, run, controller);
+    try {
+      const startedAt = Date.now();
+      await watch.assertOwned("dispatching");
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(controller.signal.aborted).toBe(false);
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved.executionStage).toBe("dispatching");
+    } finally { watch.stop(); await slow; }
+  }, 15_000);
+
+  it("renews on one private pool per client that shutdown can end", async () => {
+    const run = await seed();
+    const owner = createDb(database.connectionString);
+    const pool = livenessDb(owner);
+    expect(pool).not.toBe(owner);
+    expect(livenessDb(owner)).toBe(pool);
+    const watch = watchLegacyControllerLease(owner, run, new AbortController());
+    try {
+      await watch.assertOwned();
+      const [{ name }] = await pool.execute<{ name: string }>(sql`select current_setting('application_name') as name`);
+      expect(name).toBe("paperclip-controller-lease");
+    } finally { watch.stop(); }
+    await closeLivenessDb(owner, 1);
+    await expect(livenessDb(owner).execute(sql`select 1`)).rejects.toThrow();
+  });
+
+  it("retries a renewal that times out waiting on the run row instead of losing the lease", async () => {
+    const run = await seed();
+    let lockTaken!: () => void, releaseLock!: () => void;
+    const taken = new Promise<void>((resolve) => { lockTaken = resolve; });
+    const released = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      lockTaken();
+      await released;
+    });
+    await taken;
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller, { renewalStatementTimeoutMs: 200 });
+    try {
+      const renewal = watch.assertOwned();
+      setTimeout(releaseLock, 1_000);
+      await expect(renewal).resolves.toBeUndefined();
+      expect(controller.signal.aborted).toBe(false);
+    } finally { releaseLock(); watch.stop(); await holder; }
+  }, 15_000);
+
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
   });
@@ -135,9 +197,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
 describe("legacy controller lease loss attribution", () => {
   it("attributes a failing renewal query to renewal_error", async () => {
-    type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
-    const failingDb = { update: () => ({ set: () => ({ where: () => ({
-      returning: () => Promise.reject(new Error("connection reset")) }) }) }) } as unknown as WatchArgs[0];
+    const failingDb = fakeRenewalDb(() => Promise.reject(new Error("connection reset")));
     vi.useFakeTimers();
     const controller = new AbortController();
     const run = { id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy", controllerBootId: legacyControllerBootId,
@@ -151,16 +211,15 @@ describe("legacy controller lease loss attribution", () => {
     } finally { watch.stop(); vi.useRealTimers(); }
   });
 
-  type WatchArgs = Parameters<typeof watchLegacyControllerLease>;
   const watchedRun = (leaseMs: number) => ({ id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy",
     controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + leaseMs) }) as WatchArgs[1];
 
   it("records a renewal still in flight when a stalled query reaches the deadline", async () => {
     let calls = 0;
-    const stallingDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => {
+    const stallingDb = fakeRenewalDb(() => {
       calls += 1;
       return calls <= 2 ? Promise.resolve([{ id: "run" }]) : new Promise(() => {});
-    } }) }) }) } as unknown as WatchArgs[0];
+    });
     vi.useFakeTimers();
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(stallingDb, watchedRun(LEGACY_CONTROLLER_LEASE_MS), controller);
@@ -174,8 +233,33 @@ describe("legacy controller lease loss attribution", () => {
     } finally { watch.stop(); vi.useRealTimers(); }
   });
 
+  it("measures the next deadline from the retry that renewed the lease", async () => {
+    const timeoutAfterMs = 45_000;
+    let calls = 0;
+    const retryingDb = fakeRenewalDb(() => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("statement timeout"), { code: "57014" })), timeoutAfterMs));
+      }
+      return calls === 2 ? Promise.resolve([{ id: "run" }]) : new Promise(() => {});
+    });
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(retryingDb, watchedRun(LEGACY_CONTROLLER_LEASE_MS), controller);
+    try {
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_RENEW_MS + timeoutAfterMs);
+      expect(calls).toBe(2);
+      // The retry wrote a fresh 60s lease; the first attempt's start must not shorten it.
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_LEASE_MS - 1);
+      expect(controller.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
+      expect(controller.signal.reason.leaseLossTiming).toMatchObject({ sinceRenewalMs: LEGACY_CONTROLLER_LEASE_MS, renewalCount: 1 });
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
   it("records how late the deadline ran when the event loop was blocked", async () => {
-    const idleDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as WatchArgs[0];
+    const idleDb = fakeRenewalDb(() => new Promise(() => {}));
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(idleDb, watchedRun(10), controller);
     try {

@@ -8990,6 +8990,7 @@ it.each([
         events.push(event);
         if (event.eventType === "turn.completed") break;
       }
+      expect(events.find(event => event.eventType === "session.started")?.payload.context).toMatchObject({ model });
       expect(completionCalls).toBe(2);
       expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());

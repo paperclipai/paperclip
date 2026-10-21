@@ -606,7 +606,7 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId && issue.currentExecutionWorkspace?.id === issue.executionWorkspaceId) && !issueUsesMainWorkspace
     && experimentalSettings?.enableIsolatedWorkspaces === true;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null

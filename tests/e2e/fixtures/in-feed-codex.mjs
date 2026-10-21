@@ -55,6 +55,14 @@ async function finish(text, evidenceRef) {
     evidence: [{ ref: evidenceRef }], verification: [{ commandOrCheck: 'Fixture outcome', status: 'passed' }], attentionRequests: [], artifacts: [] });
 }
 async function execute() {
+  if (process.argv.includes('--task-retry-fixture')) {
+    const text = 'The saved result is confirmed. No external publication was repeated.';
+    await call('report_progress', { idempotencyKey: 'saved-result-confirmation', body: text });
+    await finish(text, 'fixture:preserved-result');
+    send({ method: 'item/completed', params: { threadId, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', phase: 'final_answer', text } } });
+    send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    return;
+  }
   if (process.argv.includes('--completion-stream-fixture')) {
     // Report completion before a deliberately slow final answer. The real
     // runner and control plane must keep listening after the tool succeeds.

@@ -134,6 +134,7 @@ export interface ExecutionWorkspaceAdditionalInput {
 }
 
 export interface ExecutionWorkspaceInput {
+  providerBinding?: import("@paperclipai/shared").WorkspaceProviderBinding;
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
   projectId: string | null;
@@ -757,7 +758,7 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function renderWorkspaceTemplate(template: string, input: {
+export function renderWorkspaceTemplate(template: string, input: {
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   projectId: string | null;
@@ -785,7 +786,7 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
+export function sanitizeBranchName(value: string): string {
   return value
     .trim()
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
@@ -4234,6 +4235,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
+  if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);

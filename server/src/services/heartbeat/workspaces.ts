@@ -3324,6 +3324,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     immutableNativeBinding: boolean;
   }): Promise<ResolvedAnchorWorkspaceForRun> {
     const { workspace, agent } = input;
+    if (workspace.providerType === "plugin") {
+      return { cwd: `/workspaces/${workspace.id}`, source: "task_session" as const,
+        projectId: workspace.projectId, workspaceId: workspace.projectWorkspaceId,
+        repoUrl: workspace.repoUrl, repoRef: workspace.baseRef, workspaceHints: [], warnings: [],
+        baseCwdFallback: false, materializationFailures: [] };
+    }
     // Configuration preparation may have awaited credentials and skills since
     // issueRef was read. Match the ordinary anchor resolver's fresh selection
     // check; only an already-admitted native input owns immutable source scope.
@@ -3480,7 +3486,14 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
+      const [sourceProject] = projectWorkspaceRows.length ? await db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
+        .where(and(eq(projects.id, workspaceProjectId!), eq(projects.companyId, agent.companyId))) : [];
       for (const workspace of projectWorkspaceRows) {
+        if (sourceProject?.policy?.storageProviderPluginId) {
+          return { cwd: `/workspaces/${workspace.id}`, source: "project_primary" as const,
+            projectId: workspace.projectId, workspaceId: workspace.id, repoUrl: workspace.repoUrl,
+            repoRef: workspace.repoRef, workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [] };
+        }
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
         try {

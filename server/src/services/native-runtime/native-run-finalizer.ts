@@ -68,11 +68,13 @@ import {
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   findHeartbeatRunCompletionComment,
   isExternalChatPresentationContext,
+  readAcceptedMonitorContinuationSummary,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
 } from "../heartbeat-run-summary.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
+import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import {
   authorizeCommittedChatResponse,
   CommittedChatResponseAuthorizationError,
@@ -961,6 +963,25 @@ export async function repairCommittedNativeChatResponse(
       // presentation contract, including selected attachments. Do not bypass it.
       if (record(decision.decisionJson).externalChatReviewPresentation)
         return false;
+      const monitorResult = { nativeResult: result, finalizationPhase: "committed", finalizationReasonCode: decision.reasonCode };
+      if (readAcceptedMonitorContinuationSummary(monitorResult) && run.status === "succeeded" &&
+          terminal.runTerminalState === "succeeded" && terminal.turnTerminalState === "completed" &&
+          terminal.reportedWorkDisposition === "yielded" && record(run.contextSnapshot).skipIssueComment !== true &&
+          !await hasChatRunOwnedProviderInteraction(tx, input)) {
+        const authorizationReason = await resolveChatRunPresentationAuthorizationReason(tx, input);
+        const resolved = resolveHeartbeatRunResponse({ resultJson: monitorResult });
+        if (!resolved.text) return false;
+        const comment = await issueService(db).addComment(input.issueId, resolved.text,
+          { agentId: run.agentId, runId: run.id }, { authorizationReason, completionReply: true }, tx);
+        await tx.update(heartbeatRuns).set({
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            presentationDecision: { ...resolved.decision, commentId: comment.id,
+              reasonCodes: [...resolved.decision.reasonCodes, "committed_monitor_response_recovered"] },
+          })}::jsonb`, updatedAt: new Date(),
+        }).where(eq(heartbeatRuns.id, run.id));
+        agentId = run.agentId;
+        return true;
+      }
       // Copyback can be owned by reconciliation before the live heartbeat
       // reaches its presentation step. Recover a completed internal task's
       // exact final reply from the same accepted turn, without rerunning work

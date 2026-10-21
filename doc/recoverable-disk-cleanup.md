@@ -51,8 +51,13 @@ this worker never scans or removes them.
 After each remote turn, the server copies the sandbox's harness state (runner
 state plus the provider's session home, such as `codex-home`) to
 `<instance>/runtime/paperclip-runner/durable-sessions/<scope>/failover-backups/current`.
-A replacement sandbox restores the session from this copy. Each session keeps one
-copy, and a single copy can reach several gigabytes.
+A replacement sandbox restores the session from this copy, and an ephemeral sandbox
+restores it at the start of every turn. Each session keeps one copy, and a single
+copy can reach several gigabytes. Codex copies omit credentials, scratch
+directories, and data Codex downloads again on startup: remote plugin bundles under
+`plugins/cache/<remote marketplace>`, the remote plugin catalog cache, and plugin
+install staging. After a restore, remote plugins can be unavailable to a turn until
+Codex finishes downloading them.
 
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per

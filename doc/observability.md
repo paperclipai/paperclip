@@ -285,10 +285,11 @@ attempt or owning phase:
 | Span family | Measured work |
 | --- | --- |
 | `workspace.transaction`, `.entry`, `.commit`, `.rollback` | Transaction lifetime, connection acquisition plus BEGIN, and settlement after the callback returns. Entry cannot distinguish pool wait from BEGIN. |
-| `workspace.provenance_lock`, `workspace.row_lock` | The awaited advisory-lock statement and current workspace row read with its row lock. |
-| `workspace.sources.*` | Source inventory queries, canonicalization, one filesystem alias scan, repository scan, and configured project scan. |
-| `workspace.readers`, `workspace.readers.*`, `workspace.access.*` | Retained-reader groups, identity, trust, project and source authorization, privacy and inventory reads. |
-| `workspace.provenance`, `workspace.notification`, `workspace.write` | Preserved ownership, notification statements, and record writes. |
+| `workspace.row_lock` | Current workspace row read with its row lock. |
+| `workspace.sources.inventory`, `workspace.access.*` | Current selected-record reads, task/run identity, current task and selected-project authorization, and selected-source trust. The execution check is separate from full workspace-record disclosure. |
+| `workspace.repository.*` | Repository admission binding and policy revalidation, receipt reads/writes, catalog access, filesystem preparation, directory publication lock boundaries, ownership verification, and Git inspection. See the nested admission hierarchy below. |
+| `authorization.base`, `.responsible_user`, `.authorizing_user`, `.task_privacy`, `.project_privacy` | The existing base decision, responsible/authorizing-user intersections, and applicable app-record privacy decisions beneath `workspace.access.task_authorization` or `workspace.access.authorization`. These details are scoped to workspace authorization. |
+| `workspace.notification`, `workspace.write` | Notification statements and record writes. |
 | `workspace.materialize.*`, `workspace.checkout.*` | Private source-directory setup and identity verification, existing checkout lookup, Git credential resolution, clone, optional pristine-object cache lookup/publication (`cache_lookup`, `cache_publish`), requested-ref checkout, and atomic publication. The enclosing `heartbeat.prepare.workspace_source_materialize` includes the complete source-materialization path. |
 | `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
 | `runtime_context.instructions`, `.skills`, `.mcp` | The three concurrent runtime-context branches. Their durations overlap. |
@@ -303,6 +304,8 @@ attempt or owning phase:
 | `connectors.browser_use.resolve`, `connectors.speko.resolve`, `connectors.slack.resolve`, `connectors.agentmail.resolve` | Each sequential connector resource resolver beneath configuration or native-controller assignment resolution. Empty/denied assignments still have measurable work. |
 | `connectors.browser_use.connection`, `.catalog`, `.grant` | Browser Use candidate reads, the full authorized catalog listing currently used to discover Browser Use resources, and grant checks. The catalog can contain work for other connectors. |
 | `connectors.discovery.scheduled`, `.queue`, `.build`, `.agent`, `.connections`, `.github`, `.slack`, `.speko`, `.policy`, `.on_demand_policy` | Discovery scheduler lifetime and wait, catalog construction, agent validation, descriptor sources, and policy decisions. Queued work retains the initiating run's trace context even when another run releases the scheduler slot. |
+| `connectors.github.catalog`, `.connections`, `.grants`, `.grant_members`, `.membership`, `.refresh`, `.credentials`, `.repositories`, `.grant_lock`, `.grant_write`, `.webhooks` | Authorized GitHub catalog construction, current connection/grant reads, credential and metadata refresh, repository pagination, grant transaction row lock/write, and parallel webhook binding calls. |
+| `connectors.github.refresh.transaction`, `.entry`, `.commit`, `.rollback` | The existing managed-grant refresh transaction and settlement. Entry combines connection acquisition and BEGIN. |
 | `connectors.slack.candidates`, `.authority`, `.profile`, `.settings`, `.identity`, `.credentials`, `.revision` | Slack endpoint enumeration, authority revalidation, enabled profile, settings, accepted requester provenance, credential reads and authorization revision. |
 | `connectors.slack.authority.transaction*`, `connectors.slack.catalog.transaction*`, `connectors.slack.catalog.lock`, `.entries`, `.write`, `.profile` | Slack authority and catalog transaction entry/settlement, advisory lock, catalog reads/updates and existing-profile lookup. Entry combines pool acquisition and BEGIN; it does not isolate pool wait. |
 | `execution.runtime` | Runtime dispatch, usage, workspace finalization and runtime cleanup; this includes work after provider execution. |
@@ -312,7 +315,7 @@ attempt or owning phase:
 | `response.resolve`, `.authorize`, `.add_comment`, `.transaction*`, `.row_lock`, `.write`, `.publish` | Response selection, existing authorization, comment transaction including commit or rollback, row wait, insert, and external publication enqueue. |
 | `execution.realtime` | Synchronous live-event and plugin publication dispatch. It does not measure browser receipt or paint. |
 
-Detail phases emit at most 16 spans of each name per attempt. Larger reader and
+Detail phases emit at most 16 spans of each name per attempt. Larger receipt and
 asset inventories continue under the containing group without unbounded per-row
 or per-file spans. Adding detail spans does not itself change work, query order,
 authorization, or locks.
@@ -339,8 +342,116 @@ Existing generations remain under the same storage limits. Cached refs stay
 private to the company and credential scope. Task checkouts still authenticate
 online, use the current remote refs, and dissociate their objects from the cache.
 
-Other execution phases carry only the existing hashed run ID; manual boundaries
-have no attributes. Exceptions set status without exporting their messages.
+Other execution phases, including manual boundaries, carry only the existing
+hashed run ID. Exceptions set status without exporting their messages.
+
+#### Repository admission
+
+Repository preparation keeps repeated current-identity and permission checks
+visible. An existing ready checkout still validates its receipt, origin, pin,
+current binding and acquisition authority. A ready checkout can omit clone work
+while retaining catalog, database, filesystem and Git inspection work.
+
+The hierarchy folds those operations beneath the admission that initiated them:
+
+```text
+heartbeat.prepare.workspace_repository_admission
+  workspace.repository.binding                     (repeated at publication boundaries)
+    workspace.repository.db.issue / db.workspace / db.run
+    workspace.repository.paths                     (when the destination must be checked)
+    workspace.repository.current_policy
+      workspace.repository.db.agent / db.project / db.run
+    workspace.access.execution
+      workspace.access.task_read / agent_read / run_read
+      workspace.access.task_authorization
+        authorization.base / responsible_user / authorizing_user / task_privacy
+      workspace.access.workspace_read / source_read / projects_read
+      workspace.access.authorization               (selected project)
+        authorization.base / responsible_user / authorizing_user / project_privacy
+      workspace.access.trust
+        workspace.access.trust.project_read
+  workspace.repository.receipts
+  workspace.repository.paths
+  workspace.repository.catalog
+    connectors.github.catalog                      (when GitHub catalog access is needed)
+      connectors.github.connections / grants / grant_members / membership
+      connectors.github.refresh                    (managed grant, including existing retry)
+        connectors.github.credentials
+        connectors.github.repositories             (metadata and repository pagination)
+        connectors.github.refresh.transaction
+          connectors.github.refresh.transaction.entry
+          connectors.github.grant_lock / grant_write
+          connectors.github.refresh.transaction.commit / rollback
+        connectors.github.webhooks                 (existing parallel binding calls)
+      connectors.github.credentials / repositories (legacy or unmanaged connection)
+  workspace.repository.fs_prepare
+    workspace.repository.ignore_rules
+  workspace.repository.publication                  (one per concrete receipt)
+    workspace.repository.lock_wait
+    workspace.repository.critical_section
+      workspace.repository.checkout_identity
+      workspace.repository.state_write
+      workspace.repository.ownership_read / ownership_verify
+      workspace.repository.acquisition             (repeated current acquisition check)
+        workspace.repository.db.issue / db.workspace
+        workspace.repository.current_policy
+      workspace.repository.materialize
+        workspace.checkout.lookup
+        workspace.checkout.git_auth / git_clone / git_ref / publish (cold path only)
+      workspace.repository.git_origin / git_branch / git_commit
+      workspace.repository.binding                 (same current checks as above)
+      workspace.repository.ownership_write / state_write
+    workspace.repository.lock_release
+```
+
+Optional branches appear only when the corresponding existing operation runs.
+The first binding check precedes the receipt lookup; an empty receipt list returns
+without catalog, path, staging or publication work. Later binding and acquisition
+checks revalidate current authority rather than authorizing historical readers.
+The retired filesystem-history inventory, root-policy reservations and reader
+authorization phases are no longer part of admission.
+
+Catalog groups retain the existing sequential connection processing and any
+credential refresh or pagination it requires. The initial four catalog reads
+can overlap, as can webhook-binding requests. Automatic HTTP spans, when enabled,
+sit beneath the owning credential, repository-metadata or webhook group. They
+do not require a separate execution-attempt root. `credentials` includes its
+existing secret/credential lookup and any OAuth refresh; `repositories` includes
+the whole metadata or token-repository listing, rather than one invented span
+per repository. No repository list or credential value is attached to a custom
+span.
+
+Database read/write spans measure the complete awaited client operation. Their
+duration can include pool acquisition, driver and network time, database work,
+and database lock waits. They do not by themselves identify a slow SQL plan or
+prove a pool wait. `lock_wait` instead measures the directory publication helper
+up to entry into its callback, including canonicalization and lock acquisition.
+`critical_section` measures the callback after acquisition. `lock_release` starts
+after that callback settles and ends when the helper finishes releasing its
+lock. A callback failure marks the critical section and publication as failed;
+a successful release remains successful. These directory boundaries are not
+PostgreSQL pool or row-lock measurements.
+
+Parents include their children, so do not add binding, catalog or publication
+durations to their descendants. Repeated guards and concurrent HTTP requests
+must be read in timeline order. Detail names remain capped at 16 occurrences per
+attempt; later operations still execute under their enclosing group. A missing
+leaf after that cap, or absent automatic driver instrumentation, does not prove
+that no work occurred.
+
+The `authorization.*` details appear only inside a workspace task/project
+authorization group. Unrelated startup decisions do not emit those details or
+consume their per-attempt budget before repository admission reaches its current
+task checks.
+
+These additions use the existing opt-in OpenTelemetry path. With
+`OTEL_EXPORTER_OTLP_ENDPOINT` unset or blank they perform the original work
+without consulting a tracer, even if a provider is globally registered. They add
+no Telemetry events, run-log writes or span-attribute keys. The closed attribute
+allowlist above remains unchanged: no raw SQL, paths, company/task/workspace or
+receipt IDs, repository URLs, refs, credentials, request bodies or error text.
+Tracer failures must preserve the original result or error and must not replay
+authorization, writes, Git commands or lock callbacks.
 
 A committed comment transaction establishes durable server storage. A publication
 enqueue establishes pending delivery, and realtime dispatch establishes a server

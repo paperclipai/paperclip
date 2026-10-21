@@ -393,7 +393,20 @@ export async function buildExecutionContinuation(input: {
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
         input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
       )) : [];
-    const authorization = continuationAuthorizations.find(value => failedRunId
+    const taskRetryId = string(explicitContinuation.taskRetryRequestId);
+    const [taskRetryWake] = taskRetryId && z.string().guid().safeParse(taskRetryId).success
+      ? await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, taskRetryId),
+        eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
+        eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.status, "coalesced"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
+      )) : [];
+    const authorization = continuationAuthorizations.find(value => taskRetryId
+          ? value.taskRetryRequestId === taskRetryId && taskRetryWake?.runId === value.runId &&
+            taskRetryWake.requestedByActorId === value.actorId &&
+            object(taskRetryWake.payload?.taskRetry).sourceRunId === value.previousRunId
+          : failedRunId
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))

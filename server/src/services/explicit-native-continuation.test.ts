@@ -1,4 +1,7 @@
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { execFile } from "node:child_process";
+import os from "node:os";
+import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
@@ -54,6 +57,48 @@ const support = await getEmbeddedPostgresTestSupport();
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it("automatically admits a saved historical local message once after isolated fallback becomes eligible", async () => {
+    const f = await seed();
+    const processStartedAt = new Date();
+    const child = execFile(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise(resolve => child.on("exit", resolve));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    const [source] = await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", nativeIssueId: null, issueId: f.issueId,
+      processPid: child.pid, processGroupId: null, processStartedAt,
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: { workspaceRestoreFailure: "restore_failed" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId)).returning();
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: source.id, agentId: f.agentId,
+      eventType: "native.process_identity_recorded", stream: "system", level: "info",
+      message: "Test child exited", payload: { targetKind: "local", hostname: os.hostname(),
+        processPid: child.pid, processGroupId: null, processStartedAt: processStartedAt.toISOString() } });
+    await db.update(issueRecoveryActions).set({ status: "active", ownerType: "system",
+      cause: "legacy_execution_requires_reconciliation", returnOwnerAgentId: f.agentId,
+      evidence: { runId: source.id, systemRecovery: failSystemRecovery(createSystemRecovery(source.id),
+        new SystemRecoveryFailure("historical_source_missing", "use_alternative_strategy")) },
+    }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    // Keep execution queued so this admission test does not invoke a provider.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId: f.companyId, agentId: f.agentId, source: "on_demand", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", status: "deferred_issue_execution",
+      payload: { issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: {
+        issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId],
+      } },
+    }).returning();
+    const service = heartbeatService(db);
+    await service.resumeRemoteStopComments(source);
+    await service.resumeRemoteStopComments(source);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(receipt).toMatchObject({ status: "coalesced" });
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${f.commentId}`));
+    expect(runs).toHaveLength(1);
+    expect(runs[0].contextSnapshot?.explicitUserContinuation).toMatchObject({
+      readiness: { mode: "fresh_isolated_workspace", retryIntentId: wake.id, sourceRunId: source.id },
+    });
+  }, 30_000);
   it.each(["handoff", "foreign_task", "running_source", "different_owner", "mention", "interaction", "chat"])("adopts former-owner comments only during an authorized handoff (%s)", async kind => {
     const f = await seed(), nextAgentId = randomUUID(), queueId = randomUUID();
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -580,6 +581,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(companySecrets);
     await db.delete(userSecretDefinitions);
     await db.delete(issueThreadInteractions);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
@@ -1383,6 +1385,40 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       agentId: agent.id,
       runId: run.id,
     });
+  });
+
+  it("fences an uncertain upstream mutation after fresh Retry while allowing independent reads", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await createRemoteMcpTool(db, company.id);
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find(item => item.connectionId === remote.connection.id)!;
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      issueId: issue.id, status: "failed", createdAt: new Date(Date.now() - 60_000) }).returning();
+    const intentId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: intentId, companyId: company.id, agentId: agent.id,
+      runId: run.id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: issue.id, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: intentId, sourceRunId: source.id, actorId: "board", strategy: "fresh_isolated_workspace" } } });
+    const [uncertain] = await db.insert(toolInvocations).values({ companyId: company.id,
+      issueId: issue.id, runId: source.id, agentId: agent.id, connectionId: remote.connection.id,
+      toolName: tool.name, riskLevel: "write", status: "timed_out", startedAt: new Date() }).returning();
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name,
+        idempotencyKey: randomUUID(), parameters: { key: "new-key", value: "do not repeat" } }))
+        .rejects.toMatchObject({ status: 409, reasonCode: "recovery_effect_outcome_unresolved" });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(await gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:add",
+        parameters: { a: 2, b: 3 } })).toMatchObject({ status: "completed", result: { content: "5" } });
+      const [retained] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, uncertain.id));
+      expect(retained.status).toBe("timed_out");
+    } finally { fetcher.mockRestore(); }
   });
 
   it("filters discovery, executes a remote HTTP fixture, and audits run and issue links", async () => {

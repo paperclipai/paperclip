@@ -1,3 +1,4 @@
+import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
@@ -984,11 +985,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (projectData.executionWorkspacePolicy !== undefined &&
+          projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
+        await retireRemovedPluginWorkspaceDependents(db, id);
+      }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
       }
@@ -1219,7 +1224,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
-
       const nextCwd =
         data.cwd !== undefined
           ? normalizeWorkspaceCwd(data.cwd)
@@ -1241,7 +1245,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       } else if (!nextCwd && !nextRepoUrl) {
         return null;
       }
-
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
         updatedAt: new Date(),
       };
@@ -1274,6 +1277,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             : data.metadata;
       }
 
+      if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
+          key in patch && patch[key as keyof typeof patch] !== existing[key as keyof typeof existing])) {
+        await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
+      }
       const updated = await db.transaction(async (tx) => {
         if (data.isPrimary === true) {
           await tx
@@ -1376,6 +1383,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
+      await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
 
       const removed = await db.transaction(async (tx) => {
         await detachProjectSkillSource(tx as unknown as Db, existing.companyId, workspaceId);

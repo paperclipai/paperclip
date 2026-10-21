@@ -28,7 +28,7 @@ export interface RunnerExecutionDriver {
       | "runner_ingress_unavailable";
     /** Persists only exact, independently verified suspended remote state. */
     checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
-    release: () => Promise<void> | void;
+    release: (reason?: "detach") => Promise<void> | void;
   }>;
   /** Override process ownership; omission uses the SDK's local process owner. */
   runnerProcessLauncher?: (

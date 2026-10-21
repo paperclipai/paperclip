@@ -141,6 +141,18 @@ records are evidence and do not grant permission to resolve another review.
 
 ### Answered Slack conversations
 
+An accepted scheduled-monitor yield remains unfinished task work. Its committed
+summary is visible as a continuation explanation on the board and its authorized
+chat conversation. A run-owned question or confirmation keeps the response slot;
+the explanation must not duplicate that interaction. Presentation recovery can
+materialize the saved summary once after workspace finalization, without another
+provider turn. Run success alone cannot produce a task-completion claim.
+
+Monitor replies inherit a conversation only through an admitted monitor wake
+and the matching server-issued scheduling receipt on the source run. Company,
+task, agent, requester, schedule identity, and current delivery authorization
+remain enforced. Provider-supplied source IDs do not establish that lineage.
+
 A successful Slack turn with a published final reply and no remaining execution
 or decision path settles to `chat_conversations.state = waiting` and issue
 `in_review`. This is a server-owned passive conversation state, displayed as

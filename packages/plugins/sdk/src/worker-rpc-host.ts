@@ -1,3 +1,5 @@
+import { workspaceProviderBindingSchema } from "@paperclipai/shared";
+import { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } from "./workspace-provider.js";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -727,6 +729,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async get(projectId: string, companyId: string) {
           return callHost("projects.get", { projectId, companyId });
+        },
+        async getInstanceSecrets(projectId, companyId) {
+          return callHost("projects.getInstanceSecrets", { projectId, companyId });
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -1666,6 +1671,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return handleExecuteTool(params as ExecuteToolParams);
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "workspaceOperation": {
+        if (!plugin.definition.onWorkspaceOperation) throw methodNotImplemented("workspaceOperation");
+        const input = pluginWorkspaceParamsSchema.parse(params);
+        return parseWorkspaceProviderResult(input, await plugin.definition.onWorkspaceOperation(input));
+      }
       case "resourceLifecycle":
         if (!plugin.definition.onResourceLifecycle) throw methodNotImplemented("resourceLifecycle");
         return plugin.definition.onResourceLifecycle(params as ResourceLifecycleEvent);
@@ -1686,6 +1696,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentTask": {
         if (!plugin.definition.onEnvironmentTask) throw methodNotImplemented("environmentTask");
         const input = params as PluginEnvironmentTaskParams;
+        if (input.workspace !== undefined) workspaceProviderBindingSchema.parse(input.workspace);
         const operation = environmentTaskOperationSchema.parse(input.operation);
         return parseEnvironmentTaskResult(operation, input.taskId, await plugin.definition.onEnvironmentTask({ ...input, operation }));
       }
@@ -1786,6 +1797,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
 
     manifest = params.manifest;
+    if (manifest.workspaceProvider && (!plugin.definition.onWorkspaceOperation || !plugin.definition.onResourceLifecycle)) {
+      throw new Error("Workspace provider requires workspace operations and project lifecycle handlers");
+    }
     currentConfig = params.config;
     databaseNamespace = params.databaseNamespace ?? null;
 
@@ -1803,6 +1817,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onWorkspaceOperation) supportedMethods.push("workspaceOperation");
     if (plugin.definition.onResourceLifecycle) supportedMethods.push("resourceLifecycle");
     if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");
     if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");

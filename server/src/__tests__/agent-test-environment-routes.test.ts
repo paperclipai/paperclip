@@ -356,7 +356,7 @@ describe("agent test-environment route", () => {
       .query({ provider: "acpx", acpxAgent: "copilot", agentId: "agent-1", ...(environmentId ? { environmentId } : {}) });
     expect(response.status).toBe(200);
     expect(mockCopilotModels).toHaveBeenCalledExactlyOnceWith(expect.anything(), "company-1", "synthetic-copilot-token",
-      environmentId ?? savedEnvironmentId, undefined, expect.anything());
+      environmentId ?? savedEnvironmentId, undefined, expect.objectContaining({ targetAgentId: "agent-1" }));
   });
 
   it("refuses model discovery for a foreign agent before selecting credentials", async () => {
@@ -420,7 +420,7 @@ describe("agent test-environment route", () => {
       .send({ agentId, adapterConfig: {}, ...(environmentId === undefined ? {} : { environmentId }) });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
-      environment: expect.objectContaining({ id: expectedId }),
+      agentId, environment: expect.objectContaining({ id: expectedId }),
     }));
     expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
       "company-1", {}, expect.objectContaining({ consumerType: "environment", consumerId: expectedId }),

@@ -58,75 +58,77 @@ export async function assertTaskWorkspaceExecutionAccess(
   companyId: string,
   input: { issueId: string; workspaceId?: string | null; projectWorkspaceId?: string | null; persistedSelection?: TaskWorkspaceSelection },
 ) {
-  if (actor.companyId && actor.companyId !== companyId) throw forbidden("Task workspace belongs to another company");
-  const [task] = await db.select({
-    id: issues.id, companyId: issues.companyId, projectId: issues.projectId,
-    executionPolicy: issues.executionPolicy, executionWorkspaceId: issues.executionWorkspaceId,
-    projectWorkspaceId: issues.projectWorkspaceId, workspaceSelection: issues.workspaceSelection,
-    workspacePendingSelection: issues.workspacePendingSelection, workspaceBindingRevision: issues.workspaceBindingRevision,
-  }).from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, companyId)));
-  if (!task) throw forbidden("Task workspace task is unavailable");
-  const access = accessService(db as Db);
-  const [agent] = actor.type === "agent" && actor.agentId
-    ? await db.select({ id: agents.id, companyId: agents.companyId, permissions: agents.permissions })
-      .from(agents).where(and(eq(agents.id, actor.agentId), eq(agents.companyId, companyId))) : [];
-  if (actor.type === "agent" && !agent) throw forbidden("Task workspace agent is unavailable");
-  const [run] = actor.runId ? await db.select(taskRepositoryRunColumns).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, companyId))) : [];
-  if ((actor.source === "agent_jwt" && !actor.runId) || (actor.runId && (!run
-    || run.agentId !== actor.agentId || !runRetainsIssueIdentity(run, task.id)))) {
-    throw forbidden("Task workspace run identity is unavailable");
-  }
-  if (run && (actor.onBehalfOfUserId ?? null) !== (run.responsibleUserId === "local-board" ? null : run.responsibleUserId)) {
-    throw forbidden("Task workspace responsible user changed");
-  }
-  const decision = await access.decide({ actor, action: "issue:read", resource: { type: "issue", companyId, issueId: task.id } });
-  if (!decision.allowed) throw forbidden(decision.explanation);
-  const selection = task.workspaceSelection?.selection;
-  const pending = task.workspacePendingSelection;
-  const pendingSelection = pending?.expectedBindingRevision === task.workspaceBindingRevision ? pending.intent.selection : undefined;
-  const effectiveSelection = input.persistedSelection !== undefined
-    ? taskWorkspaceSelectionSchema.parse(input.persistedSelection) : undefined;
-  if (effectiveSelection && (input.workspaceId != null || input.projectWorkspaceId != null
-    || (!isDeepStrictEqual(effectiveSelection, selection) && !isDeepStrictEqual(effectiveSelection, pendingSelection)))) {
-    throw forbidden("Task workspace selection is not a current persisted intent");
-  }
-  const workspaceId = effectiveSelection
-    ? effectiveSelection.kind === "existing" ? effectiveSelection.workspaceId : null
-    : input.workspaceId;
-  const [workspace] = workspaceId ? await db.select({
-    id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
-    projectId: executionWorkspaces.projectId, projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
-  }).from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId))) : [];
-  if (workspaceId && (!workspace || (task.executionWorkspaceId !== workspace.id
-    && !(selection?.kind === "existing" && selection.workspaceId === workspace.id)
-    && !(pendingSelection?.kind === "existing" && pendingSelection.workspaceId === workspace.id)))) {
-    throw forbidden("Task workspace binding is unavailable");
-  }
-  const selectedSourceId = effectiveSelection
-    ? effectiveSelection.kind === "configured_source" ? effectiveSelection.projectWorkspaceId : workspace?.projectWorkspaceId ?? null
-    : input.projectWorkspaceId ?? workspace?.projectWorkspaceId ?? task.projectWorkspaceId;
-  if (input.projectWorkspaceId && input.projectWorkspaceId !== task.projectWorkspaceId
-    && input.projectWorkspaceId !== workspace?.projectWorkspaceId
-    && !(selection?.kind === "configured_source" && selection.projectWorkspaceId === input.projectWorkspaceId)
-    && !(pendingSelection?.kind === "configured_source" && pendingSelection.projectWorkspaceId === input.projectWorkspaceId)) {
-    throw forbidden("Task workspace source binding is unavailable");
-  }
-  const [source] = selectedSourceId ? await db.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId })
-    .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, selectedSourceId), eq(projectWorkspaces.companyId, companyId))) : [];
-  if (selectedSourceId && !source) throw forbidden("Task workspace source is unavailable");
-  const projectIds = [...new Set([task.projectId, workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))];
-  const selectedProjects = projectIds.length ? await db.select({ id: projects.id, companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
-    .from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds))) : [];
-  if (selectedProjects.length !== projectIds.length) throw forbidden("Task workspace project is unavailable");
-  for (const projectId of projectIds) await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId);
-  const sourceProjectId = source?.projectId ?? workspace?.projectId;
-  const trust = resolveCoreTrustPreset({ companyId, agent, issue: task,
-    project: selectedProjects.find(project => project.id === task.projectId),
-    workspaceSourceProject: selectedProjects.find(project => project.id === sourceProjectId),
-    run: run ? { companyId: run.companyId, executionPolicy: run.contextSnapshot?.executionPolicy } : null });
-  if (trust.kind === "denied") throw forbidden(trust.detail);
-  await assertSelectedWorkspaceTrust(db, { companyId, actor, issueId: task.id,
-    sourceProjectId: sourceProjectId ?? null, sourceWorkspaceId: effectiveSelection ? workspace?.id ?? null : workspace?.id });
-  return { task, workspace, source };
+  return measureRunPhase("workspace.access.execution", async () => {
+    if (actor.companyId && actor.companyId !== companyId) throw forbidden("Task workspace belongs to another company");
+    const [task] = await measureRunPhase("workspace.access.task_read", async () => db.select({
+      id: issues.id, companyId: issues.companyId, projectId: issues.projectId,
+      executionPolicy: issues.executionPolicy, executionWorkspaceId: issues.executionWorkspaceId,
+      projectWorkspaceId: issues.projectWorkspaceId, workspaceSelection: issues.workspaceSelection,
+      workspacePendingSelection: issues.workspacePendingSelection, workspaceBindingRevision: issues.workspaceBindingRevision,
+    }).from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, companyId))));
+    if (!task) throw forbidden("Task workspace task is unavailable");
+    const access = accessService(db as Db);
+    const [agent] = actor.type === "agent" && actor.agentId
+      ? await measureRunPhase("workspace.access.agent_read", async () => db.select({ id: agents.id, companyId: agents.companyId, permissions: agents.permissions })
+        .from(agents).where(and(eq(agents.id, actor.agentId!), eq(agents.companyId, companyId)))) : [];
+    if (actor.type === "agent" && !agent) throw forbidden("Task workspace agent is unavailable");
+    const [run] = actor.runId ? await measureRunPhase("workspace.access.run_read", async () => db.select(taskRepositoryRunColumns).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, actor.runId!), eq(heartbeatRuns.companyId, companyId)))) : [];
+    if ((actor.source === "agent_jwt" && !actor.runId) || (actor.runId && (!run
+      || run.agentId !== actor.agentId || !runRetainsIssueIdentity(run, task.id)))) {
+      throw forbidden("Task workspace run identity is unavailable");
+    }
+    if (run && (actor.onBehalfOfUserId ?? null) !== (run.responsibleUserId === "local-board" ? null : run.responsibleUserId)) {
+      throw forbidden("Task workspace responsible user changed");
+    }
+    const decision = await measureRunPhase("workspace.access.task_authorization", () => access.decide({ actor, action: "issue:read", resource: { type: "issue", companyId, issueId: task.id } }));
+    if (!decision.allowed) throw forbidden(decision.explanation);
+    const selection = task.workspaceSelection?.selection;
+    const pending = task.workspacePendingSelection;
+    const pendingSelection = pending?.expectedBindingRevision === task.workspaceBindingRevision ? pending.intent.selection : undefined;
+    const effectiveSelection = input.persistedSelection !== undefined
+      ? taskWorkspaceSelectionSchema.parse(input.persistedSelection) : undefined;
+    if (effectiveSelection && (input.workspaceId != null || input.projectWorkspaceId != null
+      || (!isDeepStrictEqual(effectiveSelection, selection) && !isDeepStrictEqual(effectiveSelection, pendingSelection)))) {
+      throw forbidden("Task workspace selection is not a current persisted intent");
+    }
+    const workspaceId = effectiveSelection
+      ? effectiveSelection.kind === "existing" ? effectiveSelection.workspaceId : null
+      : input.workspaceId;
+    const [workspace] = workspaceId ? await measureRunPhase("workspace.access.workspace_read", async () => db.select({
+      id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
+      projectId: executionWorkspaces.projectId, projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+    }).from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId)))) : [];
+    if (workspaceId && (!workspace || (task.executionWorkspaceId !== workspace.id
+      && !(selection?.kind === "existing" && selection.workspaceId === workspace.id)
+      && !(pendingSelection?.kind === "existing" && pendingSelection.workspaceId === workspace.id)))) {
+      throw forbidden("Task workspace binding is unavailable");
+    }
+    const selectedSourceId = effectiveSelection
+      ? effectiveSelection.kind === "configured_source" ? effectiveSelection.projectWorkspaceId : workspace?.projectWorkspaceId ?? null
+      : input.projectWorkspaceId ?? workspace?.projectWorkspaceId ?? task.projectWorkspaceId;
+    if (input.projectWorkspaceId && input.projectWorkspaceId !== task.projectWorkspaceId
+      && input.projectWorkspaceId !== workspace?.projectWorkspaceId
+      && !(selection?.kind === "configured_source" && selection.projectWorkspaceId === input.projectWorkspaceId)
+      && !(pendingSelection?.kind === "configured_source" && pendingSelection.projectWorkspaceId === input.projectWorkspaceId)) {
+      throw forbidden("Task workspace source binding is unavailable");
+    }
+    const [source] = selectedSourceId ? await measureRunPhase("workspace.access.source_read", async () => db.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId })
+      .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, selectedSourceId), eq(projectWorkspaces.companyId, companyId)))) : [];
+    if (selectedSourceId && !source) throw forbidden("Task workspace source is unavailable");
+    const projectIds = [...new Set([task.projectId, workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))];
+    const selectedProjects = projectIds.length ? await measureRunPhase("workspace.access.projects_read", async () => db.select({ id: projects.id, companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))) : [];
+    if (selectedProjects.length !== projectIds.length) throw forbidden("Task workspace project is unavailable");
+    for (const projectId of projectIds) await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId);
+    const sourceProjectId = source?.projectId ?? workspace?.projectId;
+    const trust = resolveCoreTrustPreset({ companyId, agent, issue: task,
+      project: selectedProjects.find(project => project.id === task.projectId),
+      workspaceSourceProject: selectedProjects.find(project => project.id === sourceProjectId),
+      run: run ? { companyId: run.companyId, executionPolicy: run.contextSnapshot?.executionPolicy } : null });
+    if (trust.kind === "denied") throw forbidden(trust.detail);
+    await measureRunPhase("workspace.access.trust", () => assertSelectedWorkspaceTrust(db, { companyId, actor, issueId: task.id,
+      sourceProjectId: sourceProjectId ?? null, sourceWorkspaceId: effectiveSelection ? workspace?.id ?? null : workspace?.id }));
+    return { task, workspace, source };
+  });
 }

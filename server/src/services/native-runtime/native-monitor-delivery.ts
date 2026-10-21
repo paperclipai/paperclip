@@ -1,5 +1,7 @@
 import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -7,6 +9,41 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 export type NativeMonitorDelivery = { wakeId: string; successorRunId: string };
+
+export async function readNativeMonitorSource(
+  db: Pick<Db, "select">,
+  binding: { companyId: string; issueId: string; runId: string },
+): Promise<string | null> {
+  const source = alias(heartbeatRuns, "monitor_source");
+  const sources = await db.select({ runId: source.id }).from(heartbeatRuns)
+    .innerJoin(agentWakeupRequests, and(
+      eq(agentWakeupRequests.companyId, binding.companyId),
+      eq(agentWakeupRequests.runId, heartbeatRuns.id),
+      eq(agentWakeupRequests.agentId, heartbeatRuns.agentId),
+      eq(agentWakeupRequests.reason, "issue_monitor_due"),
+      ne(agentWakeupRequests.status, "skipped"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${binding.issueId}`,
+      sql`${agentWakeupRequests.idempotencyKey} = 'issue-monitor:' || ${binding.issueId} || ':' || (${agentWakeupRequests.payload}->>'nextCheckAt')`,
+    ))
+    .innerJoin(source, and(
+      eq(source.companyId, binding.companyId), eq(source.agentId, heartbeatRuns.agentId),
+      eq(source.nativeIssueId, binding.issueId), eq(source.runtimeMode, "native"),
+      ne(source.id, heartbeatRuns.id),
+      sql`${source.responsibleUserId} is not distinct from ${heartbeatRuns.responsibleUserId}`,
+      sql`${source.createdAt} <= ${agentWakeupRequests.createdAt}`,
+      sql`exists (select 1 from jsonb_each(case
+        when jsonb_typeof(${source.resultJson}->'semanticToolReceipts') = 'object'
+        then ${source.resultJson}->'semanticToolReceipts' else '{}'::jsonb end) receipt
+        where receipt.value->>'operationId' = 'set_task_monitor'
+          and receipt.value->'result'->>'taskId' = ${binding.issueId}
+          and receipt.value->'result'->'monitor'->>'status' = 'scheduled'
+          and receipt.value->'result'->'monitor'->>'nextCheckAt' = ${agentWakeupRequests.payload}->>'nextCheckAt')`,
+    ))
+    .where(and(eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId),
+      eq(boundRunIssueIdSql(), binding.issueId)))
+    .groupBy(source.id).limit(2);
+  return sources.length === 1 ? sources[0]!.runId : null;
+}
 
 /** A dispatched timer is historical delivery evidence, never authority to run again. */
 export async function readNativeMonitorDelivery(

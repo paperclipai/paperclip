@@ -3,8 +3,8 @@
 An environment driver can provide a Runner task through a worker hook.
 The task API has no shell command or file transfer operation.
 
-This API is a server and worker contract. It does not select an environment
-for a native agent or connect a Runner to a run. Those integrations are separate.
+This API is a server and worker contract. The agent environment test can verify
+a task-capable provider. Native heartbeat dispatch is a separate integration.
 
 ## Declare the hook
 
@@ -34,8 +34,12 @@ See [the schemas](../../packages/plugins/sdk/src/environment-tasks.ts) for all f
 | `describe` | `description` | Return the installed Runner version and SHA-256 digest. |
 | `prepare` | `prepared` | Prepare the provider configuration for the exact Core requirements. Do not start a process. |
 | `submit` | `accepted` | Start the same opaque task at most once. Use the structured launch inputs. |
+| `copilot_metadata` | `copilot_metadata` | Verify a Copilot account and model on a private setup lease. Send no prompt. |
 | `connection` | `connection` | Return an authenticated WSS endpoint and its generation. |
 | `status` | `status` | Report the phase and observed process termination. |
+| `check_project_auth` | `project_auth` | Validate the prepared project configuration before managed credential transfer. |
+| `read_state` | `state` | Read the exact retained Runner checkpoint. |
+| `archive_state` | `state` | Archive suspended authority with an idempotent archive key. Keep provider session files. |
 | `credentials` | `credentials` | Return the selected account after process termination. |
 | `stop` | `accepted` | Stop the task and its descendants. Fence a delayed submission. |
 | `complete` | `accepted` | Release task resources after Core saves required results. |
@@ -75,8 +79,43 @@ must use the same configuration. A different run supplies its current
 requirements. A saved task ID in `resumeFrom` requires the same retained-session
 authority as submission.
 
-This API defines the preparation exchange. Runner transport integration is a
-separate change.
+Core requires preparation version 1 for native plugin execution. It validates
+and saves the result before it submits its configuration ID.
+
+## Launch authentication validation
+
+Declare `projectAuthCheckVersion: 1` in `describe` for each native task launch.
+Core calls `check_project_auth` after preparation and before credential transfer.
+The request names the configuration ID, provider, and authorized project IDs.
+It contains no credential.
+
+The plugin must check the effective configuration for that prepared launch.
+Reject project settings, parent settings, helper commands, or environment routing
+that can replace the selected account or redirect its credential.
+Keep the checked configuration fixed until submission. If the configuration can
+change, reject submission and require new preparation and validation.
+
+Return `project_auth` with the same configuration ID and provider.
+Set `allowed: true` only after the checks pass.
+Core saves this result on the task lease. Core requires the exact configuration,
+provider, and project set before each submission. This also applies when the
+provider uses an installed account.
+A new preparation or check removes the prior validation. A failed check does not
+authorize credential transfer. The dispatch update also checks that validation
+has not changed while Core waited for database work.
+
+## Retained checkpoint operations
+
+`read_state` supplies the exact durable identity and an optional `resumeFrom`.
+`archive_state` supplies the prior identity, a 24-character lowercase hexadecimal
+archive key, and `resumeFrom`. Both return `state` with the task ID and Runner
+state object. They do not accept a filesystem path.
+
+Core authorizes retained sources with the same checks as preparation and launch.
+The plugin must read only that task's state. Archive must require process
+termination and exact suspended identity. It must return the same archived state
+on retry. It must keep the provider session files. Return an error when the state
+is absent or its identity differs. Do not return credentials or environment values.
 
 ## Lease authority
 
@@ -123,3 +162,27 @@ account, or changed session epoch discards the old refresh.
 
 Keep file synchronization and backup outside this API. The provider must retain
 recoverable credential state until task completion succeeds.
+
+## Native environment test
+
+The agent environment test can use a task-capable plugin environment. Core
+creates a short-lived probe lease with a private run and session identity.
+The probe has no project mounts or task tools. It prepares the launch, checks
+authentication routing, and verifies the Runner and provider hello exchange.
+A passing result requires confirmed cleanup. This test does not enable
+heartbeat dispatch to plugin environments.
+
+## Copilot account test
+
+`copilot_metadata` accepts the selected token and an optional model ID. Core
+permits it only on an active private setup lease. The provider must use the
+verified Copilot metadata client. It must send no prompt and use no project
+workspace or tool server. Return the metadata and `executionStopped: true` only
+after the probe and its descendants stop. A lost reply keeps the task available
+for `stop`, `status`, and `complete`. Core checks the profile and model before
+it accepts the account. Do not store the token in task metadata or logs.
+
+For a native hello probe, select a saved AI account or use the installed account.
+Core rejects local environment overrides when no saved account is selected.
+This includes draft credentials. The probe uses the installed VM environment. Core does not test a different installed account in their place.
+Only Core can supply the selected account identity and local credential home.

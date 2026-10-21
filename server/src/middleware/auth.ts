@@ -383,6 +383,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      if (agentRecord.lifecycleHolds?.includes("setup")) {
+        next(unauthorized("Agent setup is incomplete and cannot authenticate"));
+        return;
+      }
       if (agentRecord.status === "terminated") {
         next(unauthorized("Agent is terminated and cannot authenticate"));
         return;
@@ -496,6 +500,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
+      return;
+    }
+    if (agentRecord.lifecycleHolds?.includes("setup")) {
+      next(unauthorized("Agent setup is incomplete and cannot authenticate"));
       return;
     }
     if (agentRecord.status === "terminated") {

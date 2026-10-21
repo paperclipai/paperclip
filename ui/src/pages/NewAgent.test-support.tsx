@@ -8,6 +8,8 @@ import { NewAgent } from "./NewAgent";
 import { ApiError } from "@/api/client";
 
 const api = vi.hoisted(() => ({
+  create: vi.fn(),
+  update: vi.fn(),
   get: vi.fn(),
   adapterModels: vi.fn(),
   list: vi.fn(),
@@ -98,6 +100,7 @@ vi.mock("motion/react", () => ({
 let root: Root;
 let container: HTMLDivElement;
 let cache: QueryClient;
+let setupRecords: Map<string, Record<string, unknown>>;
 async function settle() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -172,12 +175,28 @@ beforeEach(() => {
     "paperclip_runner", "cursor_cloud", "cursor", "gemini_local", "kimi_local", "grok_local", "hermes_local", "hermes_gateway",
   ].map((type) => ({ type, loaded: true, disabled: false }));
   api.adapterModels.mockResolvedValue([]);
+  setupRecords = new Map();
+  api.create.mockImplementation(async (_company, input) => {
+    const record = { ...input, id: input.setupId, companyId: "company-1", status: "paused", lifecycleState: "paused", pauseReason: "setup" };
+    setupRecords.set(record.id, record);
+    return record;
+  });
+  api.get.mockImplementation(async id => {
+    const record = setupRecords.get(id);
+    if (!record) throw new ApiError("Not found", 404, null);
+    return record;
+  });
+  api.update.mockImplementation(async (id, input) => {
+    const record = { ...setupRecords.get(id), ...input, id, companyId: "company-1", status: "paused", lifecycleState: "paused", pauseReason: "setup" };
+    setupRecords.set(id, record);
+    return record;
+  });
   api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
   api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
   api.getClaudeOAuthTokenStatus.mockRejectedValue(new ApiError("Not found", 404, null));
   api.testEnvironment.mockResolvedValue(pass);
   api.hire.mockImplementation(async (_company, input) => ({
-    agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
+    agent: { ...input, id: input.setupAgentId ?? "new-agent", status: "idle", urlKey: "atlas" },
   }));
   envApi.list.mockResolvedValue([
     { id: "local-1", name: "Local", driver: "local", config: {} },

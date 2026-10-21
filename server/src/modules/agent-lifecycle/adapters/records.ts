@@ -14,25 +14,43 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
       if (Object.keys(data).some(key => key.startsWith("lifecycle"))) throw conflict("Lifecycle fields belong to the lifecycle module");
       return effects.transaction(db, companyId, async (txDb) => {
         const tx = txDb;
+        const setupId = options?.setupAgentId ?? (options?.setupOnly ? data.id : undefined);
+        const [setup] = setupId ? await tx.select().from(agents).where(eq(agents.id, setupId)).for("update") : [];
+        if (setup && setup.companyId !== companyId) {
+          throw conflict("Agent setup is no longer available");
+        }
+        if (options?.setupOnly && setup) {
+          if (setup.createdByUserId !== (options.createdByUserId ?? null)) throw notFound("Agent setup not found");
+          const existing = await agentRecordQueries(txDb).getById(setup.id);
+          if (!existing) throw notFound("Agent setup not found");
+          return existing;
+        }
+        if (setup && (setup.lifecycleState !== "paused" || !setup.lifecycleHolds.includes("setup"))) {
+          throw conflict("Agent setup is no longer available");
+        }
+        if (options?.setupAgentId && !setup) throw notFound("Agent setup not found");
         const prepared = await effects.prepareHire(txDb, companyId, data, options);
-        const created = await tx
-          .insert(agents)
-          .values({
-            ...prepared,
-            createdByUserId: options?.createdByUserId ?? null,
-            lifecycleState: data.status === "pending_approval" ? "pending_approval" : data.status === "terminated" ? "terminated" : data.status === "paused" ? "paused" : "preparing",
-            lifecycleVersion: 1,
-            lifecycleHolds: data.status === "paused" ? [data.pauseReason ?? "manual"] : [],
-            pauseReason: data.status === "paused" ? data.pauseReason ?? "manual" : null,
-            pausedAt: data.status === "paused" ? new Date() : null,
-            lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, resumeState: "preparing", responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
-            status: data.status === "pending_approval" ? "pending_approval" : data.status === "terminated" ? "terminated" : "paused",
-            companyId,
-          })
+        const status = options?.setupOnly ? "paused" : data.status;
+        const pauseReason = options?.setupOnly ? "setup" : data.pauseReason;
+        const values: typeof agents.$inferInsert = {
+          ...prepared,
+          createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
+          lifecycleState: status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : status === "paused" ? "paused" : "preparing",
+          lifecycleVersion: setup ? setup.lifecycleVersion + 1 : 1,
+          lifecycleHolds: status === "paused" ? [pauseReason ?? "manual"] : [],
+          pauseReason: status === "paused" ? pauseReason ?? "manual" : null,
+          pausedAt: status === "paused" ? new Date() : null,
+          lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, resumeState: "preparing" as const, responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
+          status: status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused",
+          companyId,
+        };
+        const created = await (options?.setupAgentId
+          ? tx.update(agents).set({ ...values, updatedAt: new Date() }).where(eq(agents.id, options.setupAgentId))
+          : tx.insert(agents).values(values))
           .returning()
           .then((rows) => rows[0]);
         await effects.initializeHire(txDb, created, options);
-        if (created.status !== "pending_approval" && created.status !== "terminated") {
+        if (!options?.setupOnly && created.status !== "pending_approval" && created.status !== "terminated") {
           await effects.recordCreation(txDb, companyId, created.id);
         }
         const normalizedCreated = await agentRecordQueries(txDb).getById(created.id);

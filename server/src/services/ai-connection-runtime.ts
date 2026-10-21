@@ -1,3 +1,4 @@
+import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
@@ -109,6 +110,14 @@ export async function assertManagedAiProjectAuth(
         : [];
   const pattern =
     "apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
+    const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
+    if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
+      throw unprocessable("The plugin environment cannot validate managed project authentication", { code: "ai_connection_incompatible" });
+    }
+    // The process owner checks the exact prepared configuration before it can submit credentials.
+    return;
+  }
   if (target?.kind === "remote" && files.length) {
     // Only inspect for conflicting keys; never return configuration or credential values.
     const result = await runAdapterExecutionTargetProcess(
