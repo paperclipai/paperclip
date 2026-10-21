@@ -147,6 +147,18 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
+The Build lane also supports PR sources from before the runtime bundle existed.
+A declared `build:runtime` must build and pass the bundle boot smoke; a failure
+never selects the older entrypoint. Sources without that declaration must have
+the recognized TSX production command in `Dockerfile` and built server output.
+They run that command through the same `/api/health` readiness smoke. If the
+source has no smoke harness, the workflow checks out only the harness from an
+immutable canonical commit without persisted credentials. Absolute entrypoint
+and loader paths keep the PR source, not the harness checkout, under test.
+Unknown runtime layouts fail. This does not replace any test or required check.
+Run `node --test .github/scripts/tests/pr-runtime-compatibility.test.mjs` to test
+the command selection and failure paths without starting a database.
+
 Runner selection calls `ci-routing.yml@master` on a GitHub-hosted runner. It
 verifies authorization before allocating any AWS capacity and never checks out
 or executes PR code. The author, event sender and rerun actor must each be both
@@ -160,6 +172,20 @@ an outside contributor's PR does not grant it AWS access.
 Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
 AWS fleet. The metadata authorization job remains hosted even for maintainers,
 so stale admission snapshots cannot allocate an AWS runner before verification.
+
+Runner selection calls `ci-routing.yml@master` on the dedicated
+`paperclip-ci-routing-x64` AWS Fleet. The `paperclip-ci-routing` runner group
+admits only `paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`
+and repository ID `1170821064`. GitHub evaluates the canonical repository, author, and sender checks before
+allocating reserved capacity. The validated admission snapshot (`AWS_CI_ROUTING_USER_IDS_SOURCE` and
+`AWS_CI_ROUTING_USER_IDS`) must match `AWS_CI_TRUSTED_USER_IDS`. Refresh it through
+the runner-group configuration helper when the roster changes. Missing, stale,
+or malformed settings keep hosted routing available without evaluating JSON
+in the job's placement expression. Unapproved PRs use hosted metadata routing;
+approved manual canaries on master can use the reserved pool. The routing
+workflow reads GitHub metadata without checking out or executing PR code. Its author, sender, rerun actor,
+repository, head, and merge validation still decide whether tests can use AWS.
+Unapproved test workloads continue to use GitHub-hosted runners.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
