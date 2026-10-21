@@ -88,7 +88,7 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
   });
 
   async function createFixture(
-    statuses: Array<"done" | "in_review">,
+    statuses: Array<"done" | "in_review" | "todo">,
     mode: "isolated_workspace" | "shared_workspace" = "isolated_workspace",
   ) {
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-terminal-workspace-"));
@@ -403,6 +403,29 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
     });
 
     expect(archived).toEqual([prior]);
+    expect(await waitForExit(idle.pid)).toBe(true);
+    expect(await serviceStatus(idle.id)).toBe("stopped");
+    expect(processAlive(leased.pid)).toBe(true);
+    expect(await serviceStatus(leased.id)).toBe("running");
+    expect(processAlive(projectOwned.pid)).toBe(true);
+    expect(await serviceStatus(projectOwned.id)).toBe("running");
+    await releaseRuntimeServicesForRun(leased.runId);
+  }, 30_000);
+
+  it("lets the reaper stop only idle session services when it archives a shared session", async () => {
+    const fixture = await createFixture(["done"], "shared_workspace");
+    const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]!);
+    const idle = await startSessionService({ fixture, executionWorkspaceId: prior, name: "idle", reuseScope: "execution_workspace" });
+    const leased = await startSessionService({
+      fixture, executionWorkspaceId: prior, name: "leased", reuseScope: "execution_workspace", keepLease: true,
+    });
+    const projectOwned = await startSessionService({ fixture, executionWorkspaceId: prior, name: "project", reuseScope: "project_workspace" });
+    const reaper = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+
+    const result = await reaper.sweepTerminalWorkspaces();
+
+    expect(result.cleanupFailed).toBe(0);
+    expect(await statusOf(prior)).toBe("archived");
     expect(await waitForExit(idle.pid)).toBe(true);
     expect(await serviceStatus(idle.id)).toBe("stopped");
     expect(processAlive(leased.pid)).toBe(true);

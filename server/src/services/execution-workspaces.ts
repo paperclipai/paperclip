@@ -2501,6 +2501,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       {
         acquireGitWorktreeCleanupLock,
         cleanupExecutionWorkspaceArtifacts,
+        stopIdleSessionRuntimeServicesForExecutionWorkspace,
         stopRuntimeServicesForExecutionWorkspace,
       },
       { workspaceOperationService },
@@ -2534,13 +2535,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
       await opts.beforeTerminalWorkspaceCleanup?.(workspace);
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
-      await stopRuntimeServicesForExecutionWorkspace({
-        db,
-        executionWorkspaceId: workspace.id,
-        // The cwd of a shared session is the project workspace directory, where the
-        // services of other sessions also run. Stop only the services of this session.
-        workspaceCwd: workspace.mode === "shared_workspace" ? null : workspace.cwd,
-      });
+      if (workspace.mode === "shared_workspace") {
+        // The cwd of a shared session is the project workspace directory, and services
+        // started under this session can be project-owned or leased by a later run.
+        // Stop only the idle services this session owns.
+        await stopIdleSessionRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: workspace.id });
+      } else {
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId: workspace.id,
+          workspaceCwd: workspace.cwd,
+        });
+      }
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
         projectWorkspace,
