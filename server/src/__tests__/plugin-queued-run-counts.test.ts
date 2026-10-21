@@ -323,6 +323,23 @@ describeEmbeddedPostgres("agents.getQueuedRunCounts host aggregate", () => {
     }
   });
 
+  it("drops queued rows filed under another company when the agent matches (run-side company predicate)", async () => {
+    const companyA = await seedCompany("Company A");
+    const companyB = await seedCompany("Company B");
+    const agentA = await seedAgent(companyA, "Agent A");
+    await seedRun(companyA, agentA, "queued");
+    await seedRun(companyB, agentA, "queued");
+
+    const svc = services();
+    try {
+      await expect(
+        svc.agents.getQueuedRunCounts({ companyId: companyA }),
+      ).resolves.toEqual([{ agentId: agentA, queued: 1 }]);
+    } finally {
+      svc.dispose();
+    }
+  });
+
   it("returns [] for an unknown company with no existence oracle", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);

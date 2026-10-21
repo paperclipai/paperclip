@@ -108,6 +108,46 @@ describe("plugin SDK test harness", () => {
     );
   });
 
+  it("requires agents.queued_counts.read before returning queued run counts", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-missing-queued-counts-read",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Missing Queued Counts Read Capability",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: [],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+
+    await expect(
+      harness.ctx.agents.getQueuedRunCounts({ companyId: "company-1" }),
+    ).rejects.toThrow(
+      "missing required capability 'agents.queued_counts.read'",
+    );
+  });
+
+  it("returns empty queued run counts with the queued counts read capability", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-queued-counts-read",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Queued Counts Read Capability",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["agents.queued_counts.read"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+
+    await expect(
+      harness.ctx.agents.getQueuedRunCounts({ companyId: "company-1" }),
+    ).resolves.toEqual([]);
+  });
+
   it("returns tombstone-safe deleted comments from the in-memory issue helper", async () => {
     const manifest: PaperclipPluginManifestV1 = {
       id: "paperclip.test-comment-redaction",
