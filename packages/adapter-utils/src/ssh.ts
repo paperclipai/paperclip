@@ -603,6 +603,12 @@ async function removeLocalEntry(entryPath: string, signal?: AbortSignal | null):
     throwIfWorkspaceRestoreAborted(signal);
     return;
   }
+  // Unlinking a child needs write permission on its parent directory, and the
+  // copy half of this restore preserves read-only source modes (e.g. 0555).
+  // Without this, a second restore of the same tree fails the clear with
+  // EACCES after partially deleting the checkout. The directory itself is
+  // removed below either way.
+  await fs.chmod(entryPath, stat.mode | 0o200);
   for (const entry of await fs.readdir(entryPath)) {
     await removeLocalEntry(path.join(entryPath, entry), signal);
   }
@@ -1602,6 +1608,15 @@ export async function syncDirectoryToSsh(input: {
   }
 }
 
+async function throwIfWorkspaceRestoreAbortedWithProgress(
+  signal: AbortSignal | null | undefined,
+  onProgress?: RuntimeProgressSink,
+): Promise<void> {
+  if (!signal?.aborted) return;
+  await onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
+  throw workspaceRestoreCancelledError();
+}
+
 export async function syncDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
@@ -1610,19 +1625,10 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
-  /**
-   * Run-scoped operator cancellation. Checked before opening the transfer and
-   * again after the stream completes, before the destructive local
-   * clear + copy. The in-flight transfer itself is not preempted: it already
-   * reports progress and is bounded by the transferred bytes. Skipped restores
-   * leave the local checkout untouched.
-   */
+  /** Cancellation interrupts the transfer and is checked again before applying staged files. */
   signal?: AbortSignal | null;
 }): Promise<void> {
-  if (input.signal?.aborted) {
-    await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
-    throw workspaceRestoreCancelledError();
-  }
+  await throwIfWorkspaceRestoreAbortedWithProgress(input.signal, input.onProgress);
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -1665,6 +1671,8 @@ export async function syncDirectoryFromSsh(input: {
       let sshStderr = "";
       let tarStderr = "";
       let settled = false;
+      let onAbort = () => {};
+      const cleanupAbort = () => input.signal?.removeEventListener("abort", onAbort);
       let sshExited = false;
       let tarExited = false;
       let sshExitCode: number | null = null;
@@ -1673,6 +1681,7 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
+        cleanupAbort();
         if ((sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
@@ -1687,10 +1696,20 @@ export async function syncDirectoryFromSsh(input: {
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        cleanupAbort();
         ssh.kill("SIGTERM");
         tar.kill("SIGTERM");
         reject(error);
       };
+      // Abort the transfer itself, not just the apply after it: without this
+      // a Stop mid-download waits for the whole multi-GB stream, the same
+      // unbounded window streamSshToLocalFile was made interruptible for.
+      onAbort = () => fail(workspaceRestoreCancelledError());
+      input.signal?.addEventListener("abort", onAbort, { once: true });
+      if (input.signal?.aborted) {
+        onAbort();
+        return;
+      }
 
       if (progress) {
         progress.counter.on("error", fail);
@@ -1725,10 +1744,7 @@ export async function syncDirectoryFromSsh(input: {
     // checkouts while the run row stayed `running` with no live worker.
     // Yield here when cancelled instead of clearing the shared checkout, so
     // the existing cancellation machinery can terminalize the run promptly.
-    if (input.signal?.aborted) {
-      await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
-      throw workspaceRestoreCancelledError();
-    }
+    await throwIfWorkspaceRestoreAbortedWithProgress(input.signal, input.onProgress);
     await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
     await copyDirectoryContents(stagingDir, input.localDir, input.signal);
   } catch (error) {
@@ -1808,10 +1824,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
   /** Run-scoped operator cancellation; see {@link syncDirectoryFromSsh}. */
   signal?: AbortSignal | null;
 }): Promise<void> {
-  if (input.signal?.aborted) {
-    await input.onProgress?.("[paperclip] Skipping SSH workspace restore: run was cancelled.\n");
-    throw workspaceRestoreCancelledError();
-  }
+  await throwIfWorkspaceRestoreAbortedWithProgress(input.signal, input.onProgress);
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const repositories = input.repositories ?? [];
   for (const repository of repositories) {

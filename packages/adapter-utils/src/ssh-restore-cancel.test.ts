@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,8 +31,12 @@ import {
  * These tests pin the repair: a pre-aborted run-scoped signal makes every
  * restore entry point yield promptly with `workspace_restore_cancelled`
  * without touching the local checkout, while a live (non-aborted) restore
- * keeps its full behavior. All cases are hermetic: the aborted paths throw
- * before any SSH spawn, and the merge cases use local temp dirs only.
+ * keeps its full behavior. The mid-flight cases pin the harder half: Stop
+ * landing after restore work has begun must yield from the transfer, clear,
+ * copy, walk, and merge-apply paths with later entries untouched. All cases
+ * are hermetic: the aborted paths throw before any SSH spawn, the live
+ * transfer runs against a fake `ssh` on PATH, and the merge cases use local
+ * temp dirs only.
  */
 describe("ssh workspace restore cancellation", () => {
   const cleanupDirs: string[] = [];
@@ -69,6 +74,32 @@ describe("ssh workspace restore cancellation", () => {
     const controller = new AbortController();
     controller.abort(new Error("test stop"));
     return controller.signal;
+  }
+
+  // Mid-flight cancellation probe: an AbortSignal-compatible whose `aborted`
+  // flips true once `isCancelled()` observes restore work on disk. Fully
+  // deterministic — no timers, no scheduling dependence: every cancellation
+  // check after the marker appears throws. Removing the per-entry checks
+  // under test lets the operation run to completion, failing the test.
+  function cancelWhen(isCancelled: () => boolean): AbortSignal {
+    return {
+      get aborted() {
+        return isCancelled();
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    } as unknown as AbortSignal;
+  }
+
+  // Read-count variant for paths with no on-disk side effect to gate on
+  // (snapshot walks). `maxReads` must sit strictly between the entry-check
+  // reads and the full-walk reads so the flip lands mid-walk.
+  function cancelAfterReads(maxReads: number): AbortSignal {
+    let reads = 0;
+    return cancelWhen(() => {
+      reads += 1;
+      return reads > maxReads;
+    });
   }
 
   it("classifies the typed cancellation error", () => {
@@ -246,5 +277,292 @@ describe("ssh workspace restore cancellation", () => {
     // exactly that.
     const expectedMode = (0o555 & ~process.umask()) & 0o777;
     expect((await stat(path.join(localDir, "readonly-dir"))).mode & 0o777).toBe(expectedMode);
+  });
+
+  it("syncDirectoryFromSsh restores a read-only tree a second time", async () => {
+    // The first restore copies a 0555 directory; the second restore must
+    // clear it first. Pre-fix the clear recursed into the read-only directory
+    // and the child unlink threw EACCES, failing the whole restore after
+    // partially deleting the checkout.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping second-restore pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    await mkdir(path.join(remoteTree, "readonly-dir"), { recursive: true });
+    await writeFile(path.join(remoteTree, "readonly-dir", "child.txt"), "readonly child\n", "utf8");
+    await chmod(path.join(remoteTree, "readonly-dir"), 0o555);
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    const input = {
+      spec: unreachableSpec(),
+      remoteDir: "/nonexistent",
+      localDir,
+      signal: null,
+    };
+    await syncDirectoryFromSsh(input);
+    expect(await readFile(path.join(localDir, "readonly-dir", "child.txt"), "utf8")).toBe(
+      "readonly child\n",
+    );
+
+    await syncDirectoryFromSsh(input);
+    expect((await readdir(localDir)).sort()).toEqual(["readonly-dir"]);
+    expect(await readFile(path.join(localDir, "readonly-dir", "child.txt"), "utf8")).toBe(
+      "readonly child\n",
+    );
+    // Leave the tree writable so temp-dir cleanup cannot litter on EACCES.
+    await chmod(path.join(localDir, "readonly-dir"), 0o755).catch(() => undefined);
+  });
+
+  it("syncDirectoryFromSsh aborts a held-open transfer promptly", async () => {
+    // The fake remote holds the pipe open for 12s after the payload. Pre-fix
+    // the ssh/tar children had no abort wiring, so Stop was only observed at
+    // the post-transfer check when the stream ended (~12s). Post-fix the
+    // transfer rejects with workspace_restore_cancelled within the bound.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping transfer-abort pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    await writeFile(path.join(remoteTree, "payload.txt"), "payload\n", "utf8");
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(
+      path.join(binDir, "ssh"),
+      `#!/bin/sh\ncat ${JSON.stringify(tarball)}\nsleep 12\n`,
+      "utf8",
+    );
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(new Error("test stop")), 500);
+    try {
+      const started = Date.now();
+      await expect(
+        syncDirectoryFromSsh({
+          spec: unreachableSpec(),
+          remoteDir: "/nonexistent",
+          localDir,
+          signal: controller.signal,
+        }),
+      ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+      expect(Date.now() - started).toBeLessThan(8000);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  }, 20000);
+
+  it("syncDirectoryFromSsh yields mid-copy when Stop lands after work begins", async () => {
+    // 50 remote files; the signal flips once 3 have landed in the checkout.
+    // Without the per-entry copy checks all 50 land and the restore resolves.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping mid-copy pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(remoteTree, `f-${String(i).padStart(2, "0")}.txt`), `remote ${i}\n`, "utf8");
+    }
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    await writeFile(path.join(localDir, "stale.txt"), "stale\n", "utf8");
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(localDir).length >= 3;
+      } catch {
+        return false;
+      }
+    });
+
+    await expect(
+      syncDirectoryFromSsh({
+        spec: unreachableSpec(),
+        remoteDir: "/nonexistent",
+        localDir,
+        signal: gated,
+      }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    // The stale entry was cleared before the copy began; some remote files
+    // landed, and the rest were never touched.
+    const copied = await readdir(localDir);
+    expect(copied).not.toContain("stale.txt");
+    expect(copied.length).toBeGreaterThanOrEqual(2);
+    expect(copied.length).toBeLessThan(50);
+  });
+
+  it("syncDirectoryFromSsh yields mid-clear when Stop lands after work begins", async () => {
+    // 50 stale files; the signal flips once 3 are gone (count <= 47).
+    // Without the per-entry clear checks every stale file is deleted.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping mid-clear pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    await writeFile(path.join(remoteTree, "payload.txt"), "payload\n", "utf8");
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(localDir, `stale-${String(i).padStart(2, "0")}.txt`), "stale\n", "utf8");
+    }
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(localDir).length <= 47;
+      } catch {
+        return false;
+      }
+    });
+
+    await expect(
+      syncDirectoryFromSsh({
+        spec: unreachableSpec(),
+        remoteDir: "/nonexistent",
+        localDir,
+        signal: gated,
+      }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    const remaining = await readdir(localDir);
+    expect(remaining.length).toBeGreaterThan(40);
+    expect(remaining.length).toBeLessThan(50);
+    expect(remaining).not.toContain("payload.txt");
+  });
+
+  it("captureDirectorySnapshot yields mid-walk when Stop lands after work begins", async () => {
+    // 100 files produce ~300 check-reads; flipping at read 60 lands mid-walk,
+    // long after the 2 entry checks. Without the per-entry walk checks the
+    // snapshot completes (only 2 reads ever happen) and this test fails.
+    const rootDir = await makeTempDir("paperclip-snapshot-midwalk-");
+    for (let i = 0; i < 100; i += 1) {
+      await writeFile(path.join(rootDir, `f-${String(i).padStart(3, "0")}.txt`), `content ${i}\n`, "utf8");
+    }
+
+    await expect(
+      captureDirectorySnapshot(rootDir, { exclude: [], signal: cancelAfterReads(60) }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+  });
+
+  it("mergeDirectoryWithBaseline yields mid-delete when Stop lands after work begins", async () => {
+    // 50 remote-deleted files; the signal flips once 3 are gone. Without the
+    // per-entry deletion checks every file is deleted and the merge resolves.
+    const sourceDir = await makeTempDir("paperclip-merge-source-");
+    const targetDir = await makeTempDir("paperclip-merge-target-");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(targetDir, `gone-${String(i).padStart(2, "0")}.txt`), "stale\n", "utf8");
+    }
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(targetDir).length <= 47;
+      } catch {
+        return false;
+      }
+    });
+
+    await expect(
+      mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir, signal: gated }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    const remaining = await readdir(targetDir);
+    expect(remaining.length).toBeGreaterThan(40);
+    expect(remaining.length).toBeLessThan(50);
+  });
+
+  it("mergeDirectoryWithBaseline yields mid-copy when Stop lands after work begins", async () => {
+    // The source adds 50 files to a 1-file target; the signal flips once 3
+    // land. Without the per-entry copy checks all 50 land and the merge
+    // resolves.
+    const sourceDir = await makeTempDir("paperclip-merge-source-");
+    const targetDir = await makeTempDir("paperclip-merge-target-");
+    await writeFile(path.join(targetDir, "sentinel.txt"), "untouched\n", "utf8");
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+    await writeFile(path.join(sourceDir, "sentinel.txt"), "untouched\n", "utf8");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(sourceDir, `new-${String(i).padStart(2, "0")}.txt`), `remote ${i}\n`, "utf8");
+    }
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(targetDir).length >= 4;
+      } catch {
+        return false;
+      }
+    });
+
+    await expect(
+      mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir, signal: gated }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    const present = await readdir(targetDir);
+    expect(present).toContain("sentinel.txt");
+    expect(present.length).toBeGreaterThanOrEqual(3);
+    expect(present.length).toBeLessThan(51);
+  });
+
+  it("mergeDirectoryWithBaseline yields while pruning removed directories", async () => {
+    // 5 removed subdirs x 10 files. Reverse path order prunes sub-05 first;
+    // the signal flips once it is gone, so sub-01..sub-04 must survive. This
+    // pins the prune-loop cancellation check, which the flat mid-delete case
+    // never reaches.
+    const sourceDir = await makeTempDir("paperclip-merge-source-");
+    const targetDir = await makeTempDir("paperclip-merge-target-");
+    for (let s = 1; s <= 5; s += 1) {
+      const sub = path.join(targetDir, `sub-0${s}`);
+      await mkdir(sub, { recursive: true });
+      for (let i = 0; i < 10; i += 1) {
+        await writeFile(path.join(sub, `f-${String(i).padStart(2, "0")}.txt`), "stale\n", "utf8");
+      }
+    }
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+    const gated = cancelWhen(() => !existsSync(path.join(targetDir, "sub-05")));
+
+    await expect(
+      mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir, signal: gated }),
+    ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+
+    expect(existsSync(path.join(targetDir, "sub-05"))).toBe(false);
+    for (const s of ["sub-01", "sub-02", "sub-03", "sub-04"]) {
+      expect((await stat(path.join(targetDir, s))).isDirectory()).toBe(true);
+    }
   });
 });
