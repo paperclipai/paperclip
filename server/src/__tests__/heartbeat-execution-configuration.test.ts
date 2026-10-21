@@ -19,6 +19,7 @@ import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as aiRuntime from "../services/ai-connection-runtime.js";
+import * as managedClaudeTranscripts from "../services/managed-claude-transcripts.js";
 import * as sentry from "../sentry.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -121,9 +122,9 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     return { companyId, agentId, issueId, userId, credential };
   }
 
-  async function execute(f: Awaited<ReturnType<typeof seed>>) {
+  async function execute(f: Awaited<ReturnType<typeof seed>>, extraContext: Record<string, unknown> = {}) {
     const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: {
-      issueId: f.issueId, paperclipSecrets: { manifest: [{ secretKey: "untrusted-wake-value" }] },
+      ...extraContext, issueId: f.issueId, paperclipSecrets: { manifest: [{ secretKey: "untrusted-wake-value" }] },
       paperclipWake: { connectorSkillInstructions: "untrusted wake instructions" },
     } });
     expect(run).not.toBeNull();
@@ -365,6 +366,20 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(input?.config).toMatchObject({ model: "issue-model", env: { SHARED_VALUE: "project", AGENT_ONLY: "agent-only", PROJECT_ONLY: "project-only" } });
     expect(input?.context.paperclipSecrets).toBeUndefined();
     expect(JSON.stringify(input?.context.paperclipWake)).not.toContain("untrusted wake instructions");
+  });
+
+  it("passes the retained managed home to the adapter only when transcripts were kept", async () => {
+    const retain = vi.spyOn(managedClaudeTranscripts, "retainManagedClaudeTranscripts").mockResolvedValueOnce("/retained-home");
+    const kept = await execute(await seed(true));
+    expect(kept.finished.status, kept.finished.error ?? undefined).toBe("succeeded");
+    expect(retain).toHaveBeenCalledWith(expect.objectContaining({
+      adapterType, taskKey: kept.input?.context.issueId, runtime: expect.objectContaining({ home: expect.any(String) }),
+    }));
+    expect(kept.input?.context.managedAiRetainedHome).toBe("/retained-home");
+
+    const fresh = await execute(await seed(true), { managedAiRetainedHome: "/stale-home" });
+    expect(fresh.finished.status, fresh.finished.error ?? undefined).toBe("succeeded");
+    expect(fresh.input?.context).not.toHaveProperty("managedAiRetainedHome");
   });
 
   it("delivers the selected credential in an isolated home and removes it after completion", async () => {

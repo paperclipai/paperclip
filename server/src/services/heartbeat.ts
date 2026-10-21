@@ -278,6 +278,7 @@ import {
   prepareManagedAiRuntime,
   assertManagedAiProjectAuth,
 } from "./ai-connection-runtime.js";
+import { retainManagedClaudeTranscripts } from "./managed-claude-transcripts.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import {
@@ -2935,6 +2936,12 @@ export function heartbeatService(
       if (issueId && (!executionTarget || executionTarget.kind === "local")) {
         await recordLegacyCaseHandoffCleanupIntent(db, { runId: run.id, issueId, controllerBootId: legacyControllerBootId, scratch: runScratch });
       }
+      const managedAiRetainedHome = await retainManagedClaudeTranscripts({
+        runtime: managedAiRuntime, adapterType: agent.adapterType, companyId: agent.companyId, agentId: agent.id,
+        taskKey: deriveTaskKey(context, null), target: executionTarget,
+      });
+      if (managedAiRetainedHome) context.managedAiRetainedHome = managedAiRetainedHome;
+      else delete context.managedAiRetainedHome;
       const gitExecutionEnv = await timePreparation("github_environment", () => prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
