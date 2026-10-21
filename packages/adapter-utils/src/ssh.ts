@@ -1708,12 +1708,29 @@ export async function syncDirectoryFromSsh(input: {
       } else {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
-      // tar exiting (genuinely, or via the abort kill below) while the pipe
-      // still has writes pending raises EPIPE on its stdin. The child close
-      // handlers report the real outcome, so EPIPE is expected noise: swallow
-      // it instead of crashing the server with an unhandled stream error.
+      // tar exiting while the pipe still has writes pending raises EPIPE on
+      // its stdin. On the abort path below (or after settlement) that is
+      // expected noise: the pipe was stopped deliberately and the transfer
+      // already settled, so swallow it instead of crashing the server with
+      // an unhandled stream error. Any other EPIPE means tar died
+      // mid-transfer while ssh is still sending: the broken pipe stops
+      // consuming output, ssh blocks on its next write, and `maybeFinish`
+      // would wait for both children forever. Stop both children and fail
+      // loudly instead of hanging; tar's stderr is kept when it arrived
+      // before the pipe broke so the extraction failure stays diagnosable.
       tar.stdin?.on("error", (error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code !== "EPIPE") fail(error as Error);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EPIPE" && (settled || input.signal?.aborted)) return;
+        if (code === "EPIPE") {
+          fail(
+            new Error(
+              tarStderr.trim() ||
+                "workspace restore transfer failed: extractor exited before the archive finished (EPIPE)",
+            ),
+          );
+          return;
+        }
+        fail(error as Error);
       });
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);

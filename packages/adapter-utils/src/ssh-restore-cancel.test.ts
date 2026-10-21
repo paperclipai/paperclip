@@ -376,6 +376,47 @@ describe("ssh workspace restore cancellation", () => {
     }
   }, 20000);
 
+  it("syncDirectoryFromSsh fails fast when the extractor dies mid-transfer", async () => {
+    // The fake extractor prints its failure and exits 2 without reading stdin
+    // while the fake remote keeps sending a multi-MB payload, so the writes
+    // to the dead extractor raise EPIPE on tar.stdin. Pre-fix the handler
+    // swallowed every EPIPE, the broken pipe stopped consuming ssh output,
+    // and the transfer waited for both children while the sender blocked on
+    // its next write — the restore hung instead of reporting the extraction
+    // failure. Post-fix the transfer rejects promptly with the extractor's
+    // stderr. The extractor sleeps after printing so its stderr always
+    // arrives before the pipe can break (EPIPE is impossible before exit).
+    const payload = path.join(await makeTempDir("paperclip-restore-payload-"), "payload.bin");
+    await writeFile(payload, Buffer.alloc(8 * 1024 * 1024, "x"));
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(
+      path.join(binDir, "ssh"),
+      `#!/bin/sh\ncat ${JSON.stringify(payload)}\nsleep 20\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(binDir, "tar"),
+      `#!/bin/sh\necho "fake tar: corrupt archive" >&2\nsleep 0.5\nexit 2\n`,
+      "utf8",
+    );
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    await chmod(path.join(binDir, "tar"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    const started = Date.now();
+    await expect(
+      syncDirectoryFromSsh({
+        spec: unreachableSpec(),
+        remoteDir: "/nonexistent",
+        localDir,
+        signal: null,
+      }),
+    ).rejects.toThrowError("fake tar: corrupt archive");
+    expect(Date.now() - started).toBeLessThan(8000);
+  }, 20000);
+
   it("syncDirectoryFromSsh yields mid-copy when Stop lands after work begins", async () => {
     // 50 remote files; the signal flips once 3 have landed in the checkout.
     // Without the per-entry copy checks all 50 land and the restore resolves.
