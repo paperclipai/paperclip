@@ -272,7 +272,7 @@ export interface HostServices {
     delete(params: WorkerToHostMethods["issues.documents.delete"][0]): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
   };
 
-  /** Provides `agents.list`, `agents.get`, `agents.getQueuedRunCounts`, `agents.pause`, `agents.resume`, `agents.invoke`. */
+  /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
     getRuntimeIdentity?(params: WorkerToHostMethods["agents.getRuntimeIdentity"][0]): Promise<WorkerToHostMethods["agents.getRuntimeIdentity"][1]>;

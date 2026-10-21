@@ -1704,8 +1704,8 @@ export interface PluginApprovalsClient {
 /**
  * `ctx.agents` — read and manage agents.
  *
- * Requires `agents.read` for reads; `agents.queued_counts.read` for queue depth;
- * `agents.pause` / `agents.resume` / `agents.invoke` for write operations.
+ * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
+ * `agents.invoke` for write operations.
  */
 export interface PluginAgentRuntimeSkill {
   key: string;
@@ -1753,12 +1753,6 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
-  /**
-   * Queued heartbeat-run depth per agent in a company. Requires `agents.queued_counts.read`
-   * (NOT covered by `agents.read`). Returns every agent with at least one `queued` run as
-   * `{ agentId, queued }` pairs — no run/issue ids, prompts, outputs, or timestamps. Unknown
-   * or empty companies return `[]`.
-   */
   getQueuedRunCounts(input: { companyId: string }): Promise<Array<{ agentId: string; queued: number }>>;
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {

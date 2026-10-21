@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  createDb,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  heartbeatRuns,
+} from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   afterAll,
@@ -18,17 +24,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-
-/**
- * Host tests for `agents.getQueuedRunCounts` — the tenant-scoped queued-run
- * aggregate behind the `agents.queued_counts.read` capability.
- *
- * Covers: capability gating (403 without / 200 with, no bundling under
- * `agents.read`), companyId validation with no query, cross-company isolation,
- * the 'queued'-only status filter, GROUP BY integer counts with a 121-row
- * no-truncation regression, the `{ agentId, queued }`-only output shape, and
- * sanitized DB errors.
- */
 
 function manifestWithCapabilities(capabilities: string[]) {
   return { id: "model-capacity", capabilities } as any;
@@ -170,7 +165,7 @@ describeEmbeddedPostgres("agents.getQueuedRunCounts host aggregate", () => {
       "paperclip-plugin-queued-counts-",
     );
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
@@ -316,7 +311,6 @@ describeEmbeddedPostgres("agents.getQueuedRunCounts host aggregate", () => {
     const agentA = await seedAgent(companyA, "Agent A");
     const agentB = await seedAgent(companyB, "Agent B");
     await seedRun(companyA, agentA, "queued");
-    // Cross-company mismatch: run stamped for A but pointing at B's agent.
     await seedRun(companyA, agentB, "queued");
 
     const svc = services();
@@ -430,7 +424,6 @@ describeEmbeddedPostgres("agents.getQueuedRunCounts host aggregate", () => {
   });
 
   it("does not confuse queued counts with other companies sharing agent names", async () => {
-    // Same display name in two companies must still aggregate per agent id.
     const companyA = await seedCompany("Company A");
     const companyB = await seedCompany("Company B");
     const agentA = await seedAgent(companyA, "Engineer");
