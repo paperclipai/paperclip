@@ -1531,6 +1531,74 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(second.repaired).toBe(0);
   });
 
+  it("repairs an issue created directly in blocked, which never gets a blockedTransitionAt stamp", async () => {
+    // Regression: an issue created with `status: "blocked"` never transitions
+    // INTO blocked, so the issues service never writes blockedTransitionAt. It is
+    // orphaned twice over — this backstop skipped the null stamp, and the
+    // resolved-dependency backstop requires a non-null assigneeAgentId. Such an
+    // issue had zero first-class wake path and was invisible to every sweeper.
+    const { sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        unblockDescriptor: null,
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileBlockedWithoutWakePath();
+
+    expect(result.repaired).toBe(1);
+    const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(repaired?.status).toBe("blocked");
+    expect(repaired?.unblockDescriptor).toMatchObject({ owner: "board" });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("no wake path");
+  });
+
+  it("leaves a create-time blocked issue whose unresolved blocker edge is the wake path", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Open blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        unblockDescriptor: null,
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileBlockedWithoutWakePath();
+
+    // The blocker edge is a real wake path, so no board descriptor is backfilled.
+    expect(result.repaired).toBe(0);
+    const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(untouched?.unblockDescriptor).toBeNull();
+  });
+
   it("leaves a blocked issue whose unresolved blocker edge is the wake path", async () => {
     const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
     const blockerId = randomUUID();

@@ -4388,6 +4388,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // prose-blocked issues are not retroactively rewritten into a board-attention
   // storm. Idempotent: repaired issues now carry a descriptor and drop out of
   // the candidate set.
+  //
+  // `blockedTransitionAt IS NULL` is included on purpose. The stamp is only
+  // written on a transition INTO `blocked` (see issues service), so an issue
+  // created directly with `status: "blocked"` keeps a null stamp forever. Such
+  // an issue is orphaned twice over: this backstop skips it on the null stamp,
+  // and the resolved-dependency backstop skips it because it requires a
+  // non-null `assigneeAgentId`. A null stamp cannot be pre-rollout prose-blocked
+  // data (that path always wrote through the transition), so including it stays
+  // prospective while closing the create-time-blocked blind spot.
   async function reconcileBlockedWithoutWakePath() {
     const candidates = await db
       .select()
@@ -4397,7 +4406,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.status, "blocked"),
           isNull(issues.unblockDescriptor),
           isNull(issues.hiddenAt),
-          gte(issues.blockedTransitionAt, ROUTABLE_BLOCKED_ROLLOUT_AT),
+          or(
+            gte(issues.blockedTransitionAt, ROUTABLE_BLOCKED_ROLLOUT_AT),
+            isNull(issues.blockedTransitionAt),
+          ),
         ),
       )
       .orderBy(asc(issues.updatedAt))
