@@ -326,10 +326,13 @@ describe("ssh workspace restore cancellation", () => {
   });
 
   it("syncDirectoryFromSsh aborts a held-open transfer promptly", async () => {
-    // The fake remote holds the pipe open for 12s after the payload. Pre-fix
-    // the ssh/tar children had no abort wiring, so Stop was only observed at
-    // the post-transfer check when the stream ended (~12s). Post-fix the
-    // transfer rejects with workspace_restore_cancelled within the bound.
+    // The fake remote streams a multi-MB payload, then holds the pipe open
+    // for 12s. Stop fires on the first progress line (data flowing, so tar is
+    // killed with writes pending) with a 500ms fallback. Pre-fix the ssh/tar
+    // children had no abort wiring, so Stop was only observed at the
+    // post-transfer check when the stream ended (~12s). Post-fix the transfer
+    // rejects with workspace_restore_cancelled within the bound, and the
+    // pending pipe writes surface as swallowed EPIPE instead of crashing.
     const execFileAsync = promisify(execFile);
     try {
       await execFileAsync("tar", ["--version"]);
@@ -339,7 +342,7 @@ describe("ssh workspace restore cancellation", () => {
     }
 
     const remoteTree = await makeTempDir("paperclip-restore-remote-");
-    await writeFile(path.join(remoteTree, "payload.txt"), "payload\n", "utf8");
+    await writeFile(path.join(remoteTree, "payload.bin"), Buffer.alloc(8 * 1024 * 1024, "x"));
     const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
     await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
 
@@ -362,6 +365,8 @@ describe("ssh workspace restore cancellation", () => {
           spec: unreachableSpec(),
           remoteDir: "/nonexistent",
           localDir,
+          onProgress: () => controller.abort(new Error("test stop")),
+          progressLabel: "workspace",
           signal: controller.signal,
         }),
       ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);

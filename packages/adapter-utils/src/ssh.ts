@@ -1701,15 +1701,6 @@ export async function syncDirectoryFromSsh(input: {
         tar.kill("SIGTERM");
         reject(error);
       };
-      // Abort the transfer itself, not just the apply after it: without this
-      // a Stop mid-download waits for the whole multi-GB stream, the same
-      // unbounded window streamSshToLocalFile was made interruptible for.
-      onAbort = () => fail(workspaceRestoreCancelledError());
-      input.signal?.addEventListener("abort", onAbort, { once: true });
-      if (input.signal?.aborted) {
-        onAbort();
-        return;
-      }
 
       if (progress) {
         progress.counter.on("error", fail);
@@ -1717,6 +1708,13 @@ export async function syncDirectoryFromSsh(input: {
       } else {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
+      // tar exiting (genuinely, or via the abort kill below) while the pipe
+      // still has writes pending raises EPIPE on its stdin. The child close
+      // handlers report the real outcome, so EPIPE is expected noise: swallow
+      // it instead of crashing the server with an unhandled stream error.
+      tar.stdin?.on("error", (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== "EPIPE") fail(error as Error);
+      });
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
       });
@@ -1736,6 +1734,21 @@ export async function syncDirectoryFromSsh(input: {
         tarExitCode = code;
         maybeFinish();
       });
+      // Abort the transfer itself, not just the apply after it: without this
+      // a Stop mid-download waits for the whole multi-GB stream, the same
+      // unbounded window streamSshToLocalFile was made interruptible for.
+      // Registered last so the already-aborted fast path still has every
+      // stream and child handler in place before it can fire.
+      onAbort = () => {
+        ssh.stdout?.unpipe();
+        tar.stdin?.destroy();
+        fail(workspaceRestoreCancelledError());
+      };
+      input.signal?.addEventListener("abort", onAbort, { once: true });
+      if (input.signal?.aborted) {
+        onAbort();
+        return;
+      }
     });
     await progress?.finish();
 

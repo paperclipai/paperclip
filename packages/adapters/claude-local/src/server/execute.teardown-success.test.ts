@@ -39,6 +39,31 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
+// Newer bases probe `claude --version` through the same process runner before
+// the main run (minimum-CLI-version gate); older bases call it once for the
+// main run. Dispatch on argv so the same fixture passes on both: the probe
+// gets a satisfying version, the main run gets the test's fixture. The gate
+// itself is not under test here. (Upstream workspaces-b, PR #16440: without
+// this the probe consumed the main-run fixture and every test failed with
+// claude_cli_version_incompatible.)
+function mockCliRun(mainResult: Record<string, unknown>) {
+  runAdapterExecutionTargetProcess.mockImplementation((async (...call: unknown[]) => {
+    const argv = call[3];
+    if (Array.isArray(argv) && argv.includes("--version")) {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "2.1.999 (Claude Code)\n",
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      } as never;
+    }
+    return mainResult as never;
+  }) as never);
+}
+
 function buildContext() {
   return {
     runId: "run-f5fa47c8",
@@ -116,7 +141,7 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
   });
 
   it("records success with a teardown warning instead of an auth failure on exit 143 after a success result", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+    mockCliRun({
       exitCode: 143,
       signal: "SIGTERM",
       timedOut: false,
@@ -133,7 +158,7 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
         signal: "SIGTERM",
         forceKilled: false,
       },
-    } as never);
+    });
 
     const result = await execute(buildContext() as never);
 
@@ -154,7 +179,7 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
   });
 
   it("keeps a lost duplex channel as a transport failure despite a parsed success", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+    mockCliRun({
       exitCode: 1,
       signal: null,
       timedOut: false,
@@ -164,7 +189,7 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
       startedAt: new Date().toISOString(),
       errorCode: "duplex_channel_lost",
       errorMessage: "control channel closed before clean completion",
-    } as never);
+    });
 
     const result = await execute(buildContext() as never);
 
@@ -188,7 +213,7 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
       session_id: "sess-auth",
       result: "Failed to authenticate. API Error: 401 Invalid bearer token",
     });
-    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+    mockCliRun({
       exitCode: 1,
       signal: null,
       timedOut: false,
