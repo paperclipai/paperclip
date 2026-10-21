@@ -1202,6 +1202,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("agents.get", { agentId, companyId });
         },
 
+        async getQueuedRunCounts(input: { companyId: string }) {
+          return callHost("agents.getQueuedRunCounts", { companyId: input.companyId });
+        },
+
         async pause(agentId: string, companyId: string) {
           return callHost("agents.pause", { agentId, companyId });
         },

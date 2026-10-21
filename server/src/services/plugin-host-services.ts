@@ -3068,6 +3068,50 @@ export function buildHostServices(
         const agent = await agents.getById(params.agentId);
         return (inCompany(agent, companyId) ? agent : null) as Agent | null;
       },
+      async getQueuedRunCounts(params) {
+        // companyId is required and validated BEFORE any query runs: a missing
+        // or empty value rejects without touching the database.
+        const rawCompanyId = params?.companyId;
+        if (typeof rawCompanyId !== "string" || rawCompanyId.trim().length === 0) {
+          throw new Error("companyId is required for this operation");
+        }
+        const companyId = rawCompanyId;
+        await ensurePluginAvailableForCompany(companyId);
+        // Host-enforced aggregate: the status allowlist is the literal 'queued'
+        // ONLY (no caller-supplied status/table/column input). The inner join
+        // drops orphan rows whose agent is gone or belongs to another company.
+        // No row cap: every agent with queued > 0 is returned.
+        try {
+          const rows = await db
+            .select({
+              agentId: heartbeatRuns.agentId,
+              queued: sql<number>`count(*)::int`,
+            })
+            .from(heartbeatRuns)
+            .innerJoin(
+              agentsTable,
+              and(
+                eq(agentsTable.id, heartbeatRuns.agentId),
+                eq(agentsTable.companyId, companyId),
+              ),
+            )
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.status, "queued"),
+              ),
+            )
+            .groupBy(heartbeatRuns.agentId);
+          // Output allowlist: ONLY { agentId, queued }. No run/issue ids,
+          // prompts, outputs, snapshots, timestamps, or error text.
+          return rows.map((row) => ({ agentId: row.agentId, queued: Number(row.queued) }));
+        } catch (err) {
+          // Sanitize upstream DB errors: the plugin must never see raw host
+          // text (connection details, constraint names, query fragments).
+          logger.error({ err, pluginId }, "agents.getQueuedRunCounts query failed");
+          throw new Error("Failed to read queued run counts");
+        }
+      },
       async pause(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

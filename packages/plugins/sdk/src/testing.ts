@@ -2124,6 +2124,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const agent = agents.get(agentId);
         return isInCompany(agent, companyId) ? agent : null;
       },
+      async getQueuedRunCounts(input) {
+        requireCapability(manifest, capabilitySet, "agents.queued_counts.read");
+        requireCompanyId(input?.companyId);
+        // The test harness keeps no heartbeat-run store, so there is no queue to
+        // aggregate. Return the same empty shape the host returns for a company
+        // with no queued runs.
+        return [];
+      },
       async pause(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.pause");
         const cid = requireCompanyId(companyId);
