@@ -452,6 +452,57 @@ describe("sandbox managed runtime", () => {
     } finally { capture.mockRestore(); merge.mockRestore(); }
   });
 
+  it("forwards the run signal from restoreWorkspace into the outbound merge (TOG-25014)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-signal-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline");
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      await writeFile(path.join(remote, "file.txt"), "after");
+      const controller = new AbortController();
+      await prepared.restoreWorkspace(() => {}, controller.signal);
+      expect(merge).toHaveBeenCalled();
+      expect(merge.mock.calls.every(([input]) => input.signal === controller.signal)).toBe(true);
+      expect(await readFile(path.join(local, "file.txt"), "utf8")).toBe("after");
+    } finally { merge.mockRestore(); }
+  });
+
+  it("does not retry a cancelled outbound merge (TOG-25014)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-noretry-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline");
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      await writeFile(path.join(remote, "file.txt"), "after");
+      const controller = new AbortController();
+      controller.abort(new Error("test stop"));
+      const started = Date.now();
+      await expect(prepared.restoreWorkspace(() => {}, controller.signal))
+        .rejects.toThrowError(restoreMerge.WORKSPACE_RESTORE_CANCELLED);
+      // Default retry delays are 2s + 5s: a retried cancellation would take
+      // 7s+ and call the merge three times. The merge count is the
+      // deterministic discriminator; the timing bound has wide margins.
+      expect(Date.now() - started).toBeLessThan(6000);
+      expect(merge).toHaveBeenCalledTimes(1);
+    } finally { merge.mockRestore(); }
+  });
+
   it.each(["host_current", "adopt_remote", "durable_seed"] as const)("stages and restores both project repositories with independent Git histories (%s)", async (mode) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-multi-repo-"));
     cleanupDirs.push(root);

@@ -189,6 +189,7 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    signal?: AbortSignal;
   } = {},
 ) {
   // Skill reconciliation must never inspect or modify the developer's real
@@ -236,6 +237,7 @@ async function runExecutor(
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
       startupTraceContext: options.startupTraceContext,
+      ...(options.signal ? { signal: options.signal } : {}),
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -4597,6 +4599,32 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     expect(failureLine?.text).toBe(
       "[paperclip] Referenced project proj-x failed to stage; the run continues without it: extract failed: boom\n",
     );
+  });
+
+  it("test_remote_seam_receives_run_cancellation_signal", async () => {
+    // The engine forwards ctx.signal into the managed-home seam context so
+    // the per-adapter teardown can pass it to the staged restore: an
+    // operator Stop raised while the sandbox copy-back is pending yields
+    // promptly instead of holding the run (TOG-25014).
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    let captured: Record<string, unknown> | null = null;
+    const controller = new AbortController();
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        signal: controller.signal,
+        prepareRemoteManagedHome: async (input) => {
+          captured = input as unknown as Record<string, unknown>;
+          const stagedRuntime = await input.stage([]);
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    expect(captured).not.toBeNull();
+    expect((captured as unknown as Record<string, unknown>).signal).toBe(controller.signal);
   });
 });
 

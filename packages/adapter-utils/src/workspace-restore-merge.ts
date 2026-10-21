@@ -417,12 +417,16 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
   }
 }
 
-async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS, signal?: AbortSignal | null): Promise<() => Promise<void>> {
   const startedAt = performance.now();
   const deadline = Date.now() + waitMs;
   const databasePath = `${lockDir}.sqlite`;
   const ownerPath = `${lockDir}.owner.json`;
   async function waitForLock(diagnosticOwnerPath: string) {
+    // An operator Stop beats lock contention: yield cancellation instead of
+    // waiting out the remaining budget and misreporting the stop as a lock
+    // timeout. Checked first so a stop racing the deadline still cancels.
+    throwIfWorkspaceRestoreAborted(signal);
     if (Date.now() >= deadline) {
       const timeoutError: NodeJS.ErrnoException & { workspaceRestoreLock?: Record<string, string | number | boolean> } = new Error(
         `Timed out waiting for workspace restore lock at ${lockDir}`,
@@ -576,11 +580,14 @@ export async function withDirectoryMergeLock<T>(
   // Test seam only: overrides how long acquisition waits before it reports a
   // timeout. Production callers must omit this and keep the real budget.
   waitMs: number = LOCK_WAIT_MS,
+  // Optional run-scoped cancellation: when set, a stop waiting on a
+  // contended lock yields promptly instead of burning the wait budget.
+  signal?: AbortSignal | null,
 ): Promise<T> {
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
-  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs);
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs, signal);
 }
 
 export async function withDirectoryPublicationLock<T>(
@@ -623,10 +630,11 @@ async function withCanonicalDirectoryMergeLock<T>(
   env: NodeJS.ProcessEnv,
   diagnosticOperation?: DirectoryMergeLockOperation,
   waitMs: number = LOCK_WAIT_MS,
+  signal?: AbortSignal | null,
 ): Promise<T> {
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
+  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs, signal);
   try {
     return await fn(canonicalTargetDir);
   } finally {
@@ -855,7 +863,7 @@ export async function mergeDirectoryWithBaseline(input: {
         throwIfWorkspaceRestoreAborted(input.signal);
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
-    });
+    }, process.env, undefined, undefined, input.signal);
   } finally { await disposeDirectorySnapshot(source); }
 }
 

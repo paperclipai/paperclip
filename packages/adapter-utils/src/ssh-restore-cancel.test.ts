@@ -801,4 +801,121 @@ describe("ssh workspace restore cancellation", () => {
       await waitForPathGone(target);
     }
   }, 20000);
+
+  it("mergeDirectoryWithBaseline yields promptly when Stop lands while waiting for a contended merge lock", async () => {
+    // Merge A holds the target's directory merge lock inside beforeApply
+    // (the incident topology: a contended shared checkout). Merge B starts
+    // against the same target with a live signal; Stop lands while B waits
+    // for the lock. Pre-fix the lock wait polled for the full 30s budget
+    // with no signal check, so B stayed running and then failed with
+    // ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT, misclassifying an operator stop
+    // as lock contention. Post-fix B yields promptly with
+    // workspace_restore_cancelled and A still completes.
+    const sourceDir = await makeTempDir("paperclip-merge-lock-source-");
+    const targetDir = await makeTempDir("paperclip-merge-lock-target-");
+    await writeFile(path.join(sourceDir, "remote-edit.txt"), "from remote\n", "utf8");
+    await writeFile(path.join(targetDir, "sentinel.txt"), "untouched\n", "utf8");
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+
+    let releaseA!: () => void;
+    const releaseGate = new Promise<void>((resolve) => { releaseA = resolve; });
+    let aHoldsLock!: () => void;
+    const holdsLockGate = new Promise<void>((resolve) => { aHoldsLock = resolve; });
+    const mergeA = mergeDirectoryWithBaseline({
+      baseline,
+      sourceDir,
+      targetDir,
+      beforeApply: async () => {
+        aHoldsLock();
+        await releaseGate;
+      },
+    });
+    await holdsLockGate;
+
+    const controllerB = new AbortController();
+    const mergeB = mergeDirectoryWithBaseline({
+      baseline,
+      sourceDir,
+      targetDir,
+      signal: controllerB.signal,
+    });
+    // B's tiny source capture finishes in milliseconds; after this sleep B
+    // is necessarily spinning in the lock wait (A holds the lock, the wait
+    // budget is 30s). Abort then lands mid-wait, past every pre-lock check.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    controllerB.abort(new Error("test stop"));
+    const started = Date.now();
+    await expect(mergeB).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+    expect(Date.now() - started).toBeLessThan(8000);
+    releaseA();
+    await mergeA;
+    expect(await readFile(path.join(targetDir, "remote-edit.txt"), "utf8")).toBe("from remote\n");
+  }, 45000);
+
+  it("restoreWorkspaceFromSshExecution aborts a held-open git-bundle transfer promptly", async () => {
+    // Git-backed workspaces run the bundle export first on every restore.
+    // The fake remote streams a multi-MB payload, then holds the pipe open
+    // for 12s. Stop fires on the first progress line with a 500ms
+    // fallback. The restore must reject with workspace_restore_cancelled
+    // within the bound, and the local fetch/reset must never apply (HEAD
+    // unchanged, no imported ref). Reverting the `signal` wiring on the
+    // bundle stream leaves this red: the abort is then only observed at the
+    // post-stream checkpoint after the full 12s hold (~12s, over the bound)
+    // instead of interrupting the transfer.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("git", ["--version"]);
+    } catch {
+      console.warn("Skipping bundle-abort pin: git is not available");
+      return;
+    }
+
+    const localRepo = await makeTempDir("paperclip-restore-git-local-");
+    await execFileAsync("git", ["-C", localRepo, "init", "-b", "main"]);
+    await execFileAsync("git", ["-C", localRepo, "config", "user.name", "Paperclip Test"]);
+    await execFileAsync("git", ["-C", localRepo, "config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await execFileAsync("git", ["-C", localRepo, "add", "tracked.txt"]);
+    await execFileAsync("git", ["-C", localRepo, "commit", "-m", "initial"]);
+    const { stdout: headBefore } = await execFileAsync("git", ["-C", localRepo, "rev-parse", "HEAD"]);
+    const baseline = await captureDirectorySnapshot(localRepo, { exclude: [] });
+
+    const payload = path.join(await makeTempDir("paperclip-restore-bundle-"), "payload.bin");
+    await writeFile(payload, Buffer.alloc(8 * 1024 * 1024, "x"));
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(
+      path.join(binDir, "ssh"),
+      `#!/bin/sh\ncat ${JSON.stringify(payload)}\nsleep 12\n`,
+      "utf8",
+    );
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(new Error("test stop")), 500);
+    try {
+      const started = Date.now();
+      await expect(
+        restoreWorkspaceFromSshExecution({
+          spec: unreachableSpec(),
+          localDir: localRepo,
+          remoteDir: "/nonexistent",
+          baselineSnapshot: baseline,
+          restoreGitHistory: true,
+          onProgress: () => controller.abort(new Error("test stop")),
+          signal: controller.signal,
+        }),
+      ).rejects.toThrowError(WORKSPACE_RESTORE_CANCELLED);
+      expect(Date.now() - started).toBeLessThan(8000);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    const { stdout: headAfter } = await execFileAsync("git", ["-C", localRepo, "rev-parse", "HEAD"]);
+    expect(headAfter).toBe(headBefore);
+    const { stdout: importedRefs } = await execFileAsync("git", [
+      "-C", localRepo, "for-each-ref", "refs/paperclip/ssh-sync/imported",
+    ]);
+    expect(importedRefs.trim()).toBe("");
+  }, 20000);
 });

@@ -197,6 +197,51 @@ describe("claude CLI teardown kill after success (TOG-25014)", () => {
     expect(result.exitCode).toBe(1);
   });
 
+  it("keeps a lost duplex channel as a failure when the teardown kill also fired", async () => {
+    // CLI emitted success, the duplex channel was lost (exit 1 + typed
+    // error), AND the terminal-result cleanup kill fired. Pre-fix the
+    // teardown normalization rewrote exit 1 -> 0, and the heartbeat outcome
+    // seam (exit 0 + no errorMessage + no signal, errorCode ignored)
+    // recorded a clean success, dropping the preserved duplex code.
+    mockCliRun({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: successStdoutWithAuthProse(),
+      stderr: "",
+      pid: 456,
+      startedAt: new Date().toISOString(),
+      errorCode: "duplex_channel_lost",
+      errorMessage: "control channel closed before clean completion",
+      terminalResultCleanup: {
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        stopReason: "unmanaged_background_task",
+        reason: "terminal result seen; stopping lingering process",
+        terminalResultSeen: true,
+        signal: "SIGTERM",
+        forceKilled: false,
+      },
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // The real exit is preserved (not normalized to 0), so the heartbeat
+    // records failed instead of a clean success. errorMessage stays null
+    // (parsed success is not a CLI failure); the exit code alone carries it.
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toBeNull();
+    expect(result.signal).toBeNull();
+    // The kill evidence is still recorded alongside the failure.
+    const resultJson = (result.resultJson ?? {}) as Record<string, unknown>;
+    expect(resultJson.teardownWarning).toMatchObject({
+      kind: "teardown_kill_after_success",
+      exitCode: 1,
+      signal: null,
+    });
+  });
+
   it("still classifies a genuine 401 bearer-token failure as auth required", async () => {
     const init = JSON.stringify({
       type: "system",

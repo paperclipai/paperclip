@@ -42,6 +42,7 @@ import {
   directorySnapshotSha256,
   classifyWorkspaceRestoreFailure,
   disposeDirectorySnapshot,
+  isWorkspaceRestoreCancelled,
   selectDirectorySnapshot,
   mergeDirectoryWithBaseline,
   type DirectorySnapshot,
@@ -336,8 +337,10 @@ const WORKSPACE_RESTORE_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 /**
  * Retry a copy-back attempt only while it has written nothing into the host
  * workspace. The baseline stays valid until then, so a fresh attempt is the
- * same merge. Never retry an unsafe archive or a permission failure, and never
- * retry once the merge has started writing host files.
+ * same merge. Never retry an unsafe archive or a permission failure, never
+ * retry operator cancellation (the run is stopping; a retry would only delay
+ * terminalization), and never retry once the merge has started writing host
+ * files.
  */
 async function retryWorkspaceRestoreBeforeHostWrite(
   delaysMs: readonly number[],
@@ -349,6 +352,9 @@ async function retryWorkspaceRestoreBeforeHostWrite(
       await attempt(() => { hostWriteStarted = true; });
       return;
     } catch (error) {
+      // A cancelled error classifies as restore_failed below, so it must be
+      // excluded explicitly: retrying a stop is never correct.
+      if (isWorkspaceRestoreCancelled(error)) throw error;
       const code = classifyWorkspaceRestoreFailure(error);
       const retryable = code === "restore_failed" || code === "restore_lock_timeout";
       if (hostWriteStarted || !retryable || retry >= delaysMs.length) throw error;
@@ -628,7 +634,7 @@ export interface PreparedSandboxManagedRuntime {
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot(): Promise<void>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink, signal?: AbortSignal | null): Promise<void>;
 }
 
 export type WorkspaceInboundMode =
@@ -1978,9 +1984,10 @@ export async function prepareSandboxManagedRuntime(input: {
         ? { baseline: baselineSnapshot, gitSnapshot, ...(!gitSnapshot && repositories.length ? { repositories } : {}) }
         : null,
     cleanupWorkspaceSnapshot,
-    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink, signal?: AbortSignal | null) => {
       try {
       const restoreSink = onProgress ?? input.onProgress;
+      const restoreSignal = signal ?? null;
 
       // Build the ordered outbound restore task list. Each task runs one
       // restore from start to end: the workspace restore, or one asset restore.
@@ -2039,7 +2046,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 onRuntimeProgress: input.onRuntimeProgress,
                 workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
               });
-              await nested.restoreWorkspace(restoreSink);
+              await nested.restoreWorkspace(restoreSink, restoreSignal);
             }
             await retryWorkspaceRestoreBeforeHostWrite(
               input.workspaceRestoreRetryDelaysMs ?? WORKSPACE_RESTORE_RETRY_DELAYS_MS,
@@ -2293,6 +2300,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       sourceDir: extractedDir,
                       ...(checkpointSnapshot ? { snapshots: { source: checkpointSnapshot } } : {}),
                       targetDir: input.workspaceLocalDir,
+                      signal: restoreSignal,
                       // Runs under the merge lock, before the first host write.
                       beforeApply: async () => {
                         markHostWriteStarted();

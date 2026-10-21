@@ -327,6 +327,12 @@ export interface AcpxRemoteManagedHomeContext {
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
   /**
+   * Run-scoped operator cancellation. The seam forwards it into the
+   * teardown's staged restore so an operator Stop raised while the sandbox
+   * copy-back is pending yields promptly instead of holding the run.
+   */
+  signal?: AbortSignal | null;
+  /**
    * The host directory that holds this run's skill bundle. This field is
    * `null` when the agent does not support on-demand skills, when no skill
    * is selected, and when every selected skill fails to materialize.
@@ -2436,6 +2442,7 @@ async function buildRuntime(input: {
               env,
               onLog: input.ctx.onLog,
               onRuntimeProgress: input.ctx.onRuntimeProgress,
+              signal: input.ctx.signal ?? null,
               skillsBundleDir: claudeSkillsBundleDir,
               stage,
             });

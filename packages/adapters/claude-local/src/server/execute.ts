@@ -1271,8 +1271,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // unmanagedBackgroundTask record.
     const teardownKilledAfterSuccess =
       parsedSucceeded && proc.terminalResultCleanup?.stopped === true;
-    const normalizedExitCode = teardownKilledAfterSuccess ? 0 : proc.exitCode;
-    const normalizedSignal = teardownKilledAfterSuccess ? null : proc.signal;
+    // A lost duplex channel invalidates delivery even when the CLI emitted a
+    // success result (see resolvedErrorCode above): the heartbeat outcome
+    // seam keys only on exit/signal/errorMessage and drops errorCode on
+    // success, so normalizing here would record a transport-lost run as a
+    // clean success. Keep the real exit/signal; the teardown kill evidence
+    // still lands in resultJson below.
+    const normalizeTeardownKill =
+      teardownKilledAfterSuccess && resolvedErrorCode !== "duplex_channel_lost";
+    const normalizedExitCode = normalizeTeardownKill ? 0 : proc.exitCode;
+    const normalizedSignal = normalizeTeardownKill ? null : proc.signal;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),

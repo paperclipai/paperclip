@@ -434,4 +434,62 @@ describe("opencode remote execution", () => {
     expect(call?.[2].slice(-2)).toEqual(["--dir", "/operator-supplied"]);
     expect(call?.[2].filter((arg) => arg === "--dir" || arg.startsWith("--dir="))).toHaveLength(1);
   });
+
+  it("forwards the run cancellation signal to the SSH workspace restore (TOG-25014)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-restore-signal-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const controller = new AbortController();
+
+    await execute({
+      runId: "run-restore-signal",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+        extraArgs: ["--", "--dir"],
+        env: {
+          XDG_CONFIG_HOME: path.join(rootDir, "config"),
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      signal: controller.signal,
+      onLog: async () => {},
+    });
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });
